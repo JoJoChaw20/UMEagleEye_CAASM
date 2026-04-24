@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: #0d0e13;
+    color: #e2e3e5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #14161d;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #3e4047;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #60646d;
+  }
+}
+
+@layer components {
+  /* Glassmorphism card */
+  .glass-card {
+    @apply bg-dark-800/60 backdrop-blur-xl border border-dark-700/50 rounded-xl;
+  }
+
+  /* Glowing border effect */
+  .glow-border {
+    @apply border border-eagle-500/30 shadow-[0_0_15px_rgba(51,147,255,0.15)];
+  }
+
+  /* Stat card */
+  .stat-card {
+    @apply glass-card p-5 transition-all duration-300 hover:border-eagle-500/40 hover:shadow-[0_0_20px_rgba(51,147,255,0.2)];
+  }
+
+  /* Severity badges */
+  .badge-critical {
+    @apply bg-red-500/20 text-red-400 border border-red-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-high {
+    @apply bg-orange-500/20 text-orange-400 border border-orange-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-medium {
+    @apply bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-low {
+    @apply bg-green-500/20 text-green-400 border border-green-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+
+  /* Status badges */
+  .badge-open {
+    @apply bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-resolved {
+    @apply bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+  .badge-in-progress {
+    @apply bg-purple-500/20 text-purple-400 border border-purple-500/30 px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+
+  /* Data table */
+  .data-table {
+    @apply w-full text-sm text-left;
+  }
+  .data-table thead {
+    @apply text-xs uppercase text-dark-300 border-b border-dark-700;
+  }
+  .data-table th {
+    @apply px-4 py-3 font-semibold;
+  }
+  .data-table td {
+    @apply px-4 py-3 border-b border-dark-800/50;
+  }
+  .data-table tbody tr {
+    @apply transition-colors hover:bg-dark-800/40;
+  }
+
+  /* Sidebar navigation */
+  .nav-link {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-dark-300 transition-all duration-200 hover:bg-dark-800 hover:text-white;
+  }
+  .nav-link.active {
+    @apply bg-eagle-600/20 text-eagle-400 border-l-2 border-eagle-500;
+  }
+
+  /* Buttons */
+  .btn-primary {
+    @apply bg-eagle-600 hover:bg-eagle-700 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 hover:shadow-[0_0_15px_rgba(51,147,255,0.3)] active:scale-95;
+  }
+  .btn-secondary {
+    @apply bg-dark-700 hover:bg-dark-600 text-dark-200 font-medium px-4 py-2 rounded-lg transition-all duration-200 active:scale-95;
+  }
+  .btn-danger {
+    @apply bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-medium px-4 py-2 rounded-lg transition-all duration-200;
+  }
+
+  /* Input fields */
+  .input-field {
+    @apply bg-dark-800 border border-dark-700 text-white rounded-lg px-4 py-2.5 focus:outline-none focus:border-eagle-500 focus:ring-1 focus:ring-eagle-500/50 transition-all placeholder-dark-400;
+  }
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #3393ff 0%, #00e5ff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Pulse animation for status indicators */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.status-pulse {
+  animation: status-pulse 2s ease-in-out infinite;
+}
