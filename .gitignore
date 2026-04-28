@@ -51,3 +51,6 @@ alembic/versions/__pycache__/
 
 # Generated reports
 *.pdf
+
+# Celery
+backend/celerybeat-schedule
