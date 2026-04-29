@@ -11,7 +11,7 @@ from sqlalchemy import select, func
 from app.core.dependencies import get_db, get_current_user, require_roles
 from app.db.models import Asset, AuditLog, User
 from app.schemas.models import (
-    AssetCreate, AssetUpdate, AssetResponse, AssetListResponse, BaselineSetRequest
+    AssetCreate, AssetUpdate, AssetResponse, AssetListResponse, BaselineSetRequest, SBOMScanRequest
 )
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
@@ -179,3 +179,27 @@ async def get_baseline(
     if not asset.baseline_state:
         raise HTTPException(status_code=404, detail="No baseline set for this asset")
     return asset.baseline_state
+
+
+@router.post("/{asset_id}/scan-sbom", status_code=status.HTTP_202_ACCEPTED)
+async def scan_asset_sbom(
+    asset_id: UUID,
+    payload: SBOMScanRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+):
+    """Trigger an async SBOM generation and vulnerability scan for an asset (FR-02)."""
+    from app.tasks.sbom_tasks import generate_asset_sbom
+
+    # Verify asset exists
+    result = await db.execute(select(Asset).where(Asset.asset_id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    task = generate_asset_sbom.delay(
+        asset_id=str(asset_id),
+        target=payload.target
+    )
+
+    return {"task_id": task.id, "status": "QUEUED"}

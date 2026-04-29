@@ -1,17 +1,30 @@
 import { useState, useEffect } from 'react'
-import { Shield } from 'lucide-react'
+import { Shield, Zap } from 'lucide-react'
 import client from '../api/client'
 
 export default function VulnerabilitiesPage() {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  useEffect(() => { loadEvents() }, [])
+
+  const loadEvents = () => {
+    setLoading(true)
     client.get('/events', { params: { event_type: 'cve_detected', page_size: 50 } })
       .then(res => setEvents(res.data.items || []))
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [])
+  }
+
+  const triggerAdvisory = async (eventId) => {
+    try {
+      await client.post(`/events/${eventId}/advisory`)
+      alert('AI Advisory generation queued. Check Advisories page in a moment.')
+    } catch (err) {
+      console.error(err)
+      alert('Failed to trigger advisory generation.')
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -21,7 +34,7 @@ export default function VulnerabilitiesPage() {
           <div className="flex justify-center py-20"><div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" /></div>
         ) : events.length > 0 ? (
           <table className="data-table">
-            <thead><tr><th>CVE</th><th>Severity</th><th>Package</th><th>CVSS</th><th>Risk Score</th><th>Time</th></tr></thead>
+            <thead><tr><th>CVE</th><th>Severity</th><th>Package</th><th>CVSS</th><th>Risk Score</th><th>Time</th><th>Actions</th></tr></thead>
             <tbody>
               {events.map(e => (
                 <tr key={e.event_id}>
@@ -31,6 +44,15 @@ export default function VulnerabilitiesPage() {
                   <td className="font-mono">{e.details?.cvss_base_score ?? '—'}</td>
                   <td className="font-mono">{e.composite_risk_score ?? '—'}</td>
                   <td className="text-dark-400 text-xs">{new Date(e.timestamp).toLocaleString()}</td>
+                  <td>
+                    <button
+                      onClick={() => triggerAdvisory(e.event_id)}
+                      className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
+                      title="Generate AI Advisory"
+                    >
+                      <Zap className="w-4 h-4" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

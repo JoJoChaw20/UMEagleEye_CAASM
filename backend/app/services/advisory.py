@@ -55,7 +55,7 @@ class AdvisoryService:
         """Generate embedding vector using Gemini embedding model."""
         try:
             result = genai.embed_content(
-                model="models/text-embedding-004",
+                model="models/gemini-embedding-001",
                 content=text_content,
                 task_type="retrieval_document",
             )
@@ -146,6 +146,37 @@ class AdvisoryService:
             logger.error(f"RAG retrieval error: {e}")
             return []
 
+    @staticmethod
+    def retrieve_context_sync(
+        query: str,
+        session,
+        top_k: int = 5,
+    ) -> List[str]:
+        """Synchronous version of retrieve_context for Celery workers."""
+        try:
+            import asyncio
+            # We still need to call the async embedding method
+            loop = asyncio.get_event_loop()
+            query_embedding = loop.run_until_complete(AdvisoryService.embed_text(query))
+            embedding_str = str(query_embedding)
+
+            result = session.execute(
+                text("""
+                    SELECT content, 1 - (embedding <=> :embedding::vector) as similarity
+                    FROM playbook_chunks
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> :embedding::vector
+                    LIMIT :top_k
+                """),
+                {"embedding": embedding_str, "top_k": top_k},
+            )
+
+            rows = result.fetchall()
+            return [row[0] for row in rows]
+        except Exception as e:
+            logger.error(f"Sync RAG retrieval error: {e}")
+            return []
+
     # ═══════════════════════════════════════════════════════════
     # FR-05-02: LLM Prescriptive Inference
     # ═══════════════════════════════════════════════════════════
@@ -186,7 +217,12 @@ class AdvisoryService:
             # Retrieve RAG context
             rag_context = ""
             if db:
-                chunks = await AdvisoryService.retrieve_context(alert_summary, db)
+                if isinstance(db, AsyncSession):
+                    chunks = await AdvisoryService.retrieve_context(alert_summary, db)
+                else:
+                    # Handle sync session (SQLAlchemy Session)
+                    chunks = AdvisoryService.retrieve_context_sync(alert_summary, db)
+                
                 if chunks:
                     rag_context = "\n\nRELEVANT PLAYBOOK CONTEXT:\n" + "\n---\n".join(chunks)
 

@@ -54,9 +54,9 @@ def generate_advisory(self, event_id: str):
             "hostname": asset.hostname if asset else "unknown",
         }
 
-        # Generate advisory (no DB session for sync context - RAG retrieval skipped in sync)
+        # Generate advisory with RAG context
         result = loop.run_until_complete(
-            AdvisoryService.generate_advisory(event_data, asset_data)
+            AdvisoryService.generate_advisory(event_data, asset_data, db=session)
         )
 
         advisory = Advisory(

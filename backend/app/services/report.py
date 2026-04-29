@@ -87,8 +87,9 @@ class ReportService:
         elements.append(Paragraph("Security Posture Score", heading_style))
         elements.append(Paragraph(
             f'<font color="{score_color}" size="48"><b>{score}</b></font><font size="16"> / 100</font>',
-            ParagraphStyle("BigScore", parent=styles["Normal"], alignment=1, spaceAfter=12)
+            ParagraphStyle("BigScore", parent=styles["Normal"], alignment=1, spaceAfter=60, leading=56)
         ))
+        elements.append(Spacer(1, 36))
 
         # Score breakdown table
         breakdown = posture.get("breakdown", {})
@@ -107,6 +108,8 @@ class ReportService:
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
             ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ]))
         elements.append(breakdown_table)
         elements.append(Spacer(1, 16))
@@ -130,6 +133,8 @@ class ReportService:
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
             ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         elements.append(overview_table)
         elements.append(Spacer(1, 16))

@@ -32,11 +32,13 @@ def run_drift_audit():
 
         total_drifts = 0
         for asset in assets:
-            baseline = asset.baseline_state
+            baseline_data = asset.baseline_state
+            # The drift service expects the state dict (os_info)
+            baseline_state = baseline_data.get("os_info") if baseline_data else {}
             current_state = asset.os_info or {}
 
             drift_events = DriftService.compute_drift(
-                baseline=baseline,
+                baseline=baseline_state,
                 current_state=current_state,
                 asset_id=str(asset.asset_id),
             )

@@ -70,3 +70,30 @@ def require_roles(allowed_roles: List[str]):
         return current_user
 
     return role_checker
+
+async def get_current_user_for_download(
+    token: Optional[str] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Special auth dependency that checks both Authorization header and 'token' query param."""
+    final_token = None
+    if credentials:
+        final_token = credentials.credentials
+    elif token:
+        final_token = token
+
+    if not final_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    payload = decode_access_token(final_token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    user_id = payload.get("sub")
+    result = await db.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    return user

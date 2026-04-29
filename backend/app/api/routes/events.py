@@ -64,3 +64,21 @@ async def get_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     return event
+
+
+@router.post("/{event_id}/advisory", status_code=202)
+async def trigger_event_advisory(
+    event_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Trigger AI advisory generation for a specific event."""
+    from app.tasks.advisory_tasks import generate_advisory
+
+    # Verify event exists
+    result = await db.execute(select(Event).where(Event.event_id == event_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    task = generate_advisory.delay(str(event_id))
+    return {"task_id": task.id, "status": "QUEUED"}

@@ -160,6 +160,14 @@ class SBOMDetailResponse(SBOMResponse):
     raw_data: Dict[str, Any]
 
 
+class SBOMScanRequest(BaseModel):
+    """Request to trigger an SBOM scan for an asset."""
+    target: Optional[str] = Field(
+        default="dir:/app",
+        description="Scan target (e.g., 'dir:/app' or 'image:tag'). Defaults to backend /app for testing."
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # CTI Indicator Schemas
 # ═══════════════════════════════════════════════════════════════
@@ -191,7 +199,7 @@ class PostureMetricsResponse(BaseModel):
     total_assets: int
     total_critical_assets: int
     open_critical_events: int
-    top_risks: Optional[Dict[str, Any]]
+    top_risks: Optional[List[Any]] = None
     timestamp: datetime
 
     model_config = {"from_attributes": True}

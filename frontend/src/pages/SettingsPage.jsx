@@ -90,7 +90,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <p className="text-dark-400 mb-1">Default Subnet</p>
-            <p className="text-white font-mono">192.168.1.0/24</p>
+            <p className="text-white font-mono">172.18.0.0/24</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Scan Rate Limit</p>

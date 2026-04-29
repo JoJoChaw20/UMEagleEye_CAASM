@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Server, Search, RefreshCw, Wifi } from 'lucide-react'
+import { Server, Search, RefreshCw, Wifi, Shield, Bookmark } from 'lucide-react'
 import client from '../api/client'
 
 export default function AssetsPage() {
@@ -32,7 +32,29 @@ export default function AssetsPage() {
     } catch (err) { setScanning(false) }
   }
 
-  const icon = (t) => ({ server:'🖥️', workstation:'💻', network:'🌐', iot:'📡' }[t] || '❓')
+  const triggerSbomScan = async (assetId) => {
+    try {
+      await client.post(`/assets/${assetId}/scan-sbom`, {})
+      alert('SBOM Scan queued. Check Vulnerabilities page in a few minutes.')
+    } catch (err) {
+      console.error(err)
+      alert('Failed to trigger SBOM scan.')
+    }
+  }
+
+  const triggerSetBaseline = async (assetId) => {
+    if (!confirm('Set current state as Golden Image baseline? This will overwrite any existing baseline.')) return
+    try {
+      await client.post(`/assets/${assetId}/baseline`, { confirm: true })
+      alert('Baseline set successfully.')
+      loadAssets()
+    } catch (err) {
+      console.error(err)
+      alert('Failed to set baseline.')
+    }
+  }
+
+  const icon = (t) => ({ server: '🖥️', workstation: '💻', network: '🌐', iot: '📡' }[t] || '❓')
 
   return (
     <div className="space-y-6">
@@ -59,7 +81,7 @@ export default function AssetsPage() {
           </div>
         ) : assets.length > 0 ? (
           <table className="data-table">
-            <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th>Criticality</th><th>Baseline</th><th>Last Scanned</th></tr></thead>
+            <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th>Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
             <tbody>
               {assets.map((a) => (
                 <tr key={a.asset_id}>
@@ -70,6 +92,24 @@ export default function AssetsPage() {
                   <td><span className="text-xs">{a.criticality_score}/10</span></td>
                   <td>{a.baseline_state ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
                   <td className="text-dark-400 text-xs">{a.last_scanned ? new Date(a.last_scanned).toLocaleString() : '—'}</td>
+                  <td>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => triggerSbomScan(a.asset_id)}
+                        className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
+                        title="Scan SBOM"
+                      >
+                        <Shield className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => triggerSetBaseline(a.asset_id)}
+                        className={`p-1.5 rounded transition-colors ${a.baseline_state ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
+                        title="Set Baseline"
+                      >
+                        <Bookmark className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

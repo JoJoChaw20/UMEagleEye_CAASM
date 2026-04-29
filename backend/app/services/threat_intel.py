@@ -70,15 +70,24 @@ class ThreatIntelService:
                     headers=headers,
                     params={"modified_since": f"{days}d", "limit": limit},
                 )
-
                 if resp.status_code != 200:
                     logger.error(f"OTX API returned {resp.status_code}")
                     return []
 
                 data = resp.json()
+                if not isinstance(data, dict):
+                    logger.error(f"OTX API returned unexpected format: {type(data)}")
+                    return []
+                    
                 pulses = data.get("results", [])
+                if not isinstance(pulses, list):
+                    logger.error(f"OTX API results is not a list: {type(pulses)}")
+                    return []
 
                 for pulse in pulses:
+                    if not isinstance(pulse, dict):
+                        continue
+                        
                     pulse_name = pulse.get("name", "Unknown Pulse")
                     pulse_tags = pulse.get("tags", [])
                     attack_ids = pulse.get("attack_ids", [])
@@ -86,11 +95,16 @@ class ThreatIntelService:
                     # Extract MITRE ATT&CK info from pulse
                     attack_tactic = ""
                     attack_technique = ""
-                    if attack_ids:
-                        attack_technique = attack_ids[0].get("id", "")
-                        attack_tactic = attack_ids[0].get("name", "")
+                    if attack_ids and isinstance(attack_ids, list) and len(attack_ids) > 0:
+                        aid = attack_ids[0]
+                        if isinstance(aid, dict):
+                            attack_technique = aid.get("id", "")
+                            attack_tactic = aid.get("name", "")
 
                     for ind in pulse.get("indicators", []):
+                        if not isinstance(ind, dict):
+                            continue
+                            
                         indicator_type = ThreatIntelService._map_otx_type(ind.get("type", ""))
                         if not indicator_type:
                             continue
@@ -99,7 +113,7 @@ class ThreatIntelService:
                             "source": "AlienVault OTX",
                             "indicator_type": indicator_type,
                             "value": ind.get("indicator", ""),
-                            "confidence_score": 0.7,  # OTX community default
+                            "confidence_score": 0.7,
                             "attack_tactic": attack_tactic or MITRE_ATTACK_MAP.get(
                                 indicator_type.value, {}
                             ).get("tactic", ""),
@@ -113,8 +127,8 @@ class ThreatIntelService:
 
                 logger.info(f"Fetched {len(indicators)} indicators from {len(pulses)} OTX pulses")
 
-        except Exception as e:
-            logger.error(f"OTX fetch error: {e}")
+        except Exception:
+            logger.exception("OTX fetch error")
 
         return indicators
 
@@ -123,13 +137,16 @@ class ThreatIntelService:
         """Fetch recent IoCs from abuse.ch ThreatFox API."""
         indicators = []
         try:
+            headers = {"User-Agent": "UMEagleEye/2.0 CAASM Threat Intel Engine"}
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     "https://threatfox-api.abuse.ch/api/v1/",
                     json={"query": "get_iocs", "days": days},
+                    headers=headers,
                 )
 
                 if resp.status_code != 200:
+                    logger.warning(f"ThreatFox API returned {resp.status_code}: {resp.text[:100]}")
                     return []
 
                 data = resp.json()

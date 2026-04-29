@@ -286,7 +286,7 @@ class PlaybookChunk(Base):
     )
     source_document: Mapped[str] = mapped_column(String(512), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list] = mapped_column(Vector(768), nullable=True)
+    embedding: Mapped[list] = mapped_column(Vector(3072), nullable=True)
     metadata_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

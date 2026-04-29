@@ -145,10 +145,8 @@ class DriftService:
                 })
 
         # ── Compare OS info changes ──
-        baseline_os = baseline.get("os_info", {})
-        current_os = current_state.get("os_info", {})
-        if baseline_os and current_os:
-            if baseline_os.get("name") != current_os.get("name"):
+        if baseline and current_state:
+            if baseline.get("name") != current_state.get("name"):
                 drift_events.append({
                     "asset_id": asset_id,
                     "event_type": EventType.CONFIG_CHANGE,
@@ -156,8 +154,8 @@ class DriftService:
                     "details": {
                         "changed_attribute": "os_info",
                         "action": "os_changed",
-                        "previous_value": baseline_os.get("name"),
-                        "new_value": current_os.get("name"),
+                        "previous_value": baseline.get("name"),
+                        "new_value": current_state.get("name"),
                     },
                 })
 

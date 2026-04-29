@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db, get_current_user, require_roles
+from app.core.dependencies import get_db, get_current_user, require_roles, get_current_user_for_download
 from app.db.models import User
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
@@ -39,7 +39,7 @@ async def list_reports(
     current_user: User = Depends(get_current_user),
 ):
     """List available PDF reports."""
-    report_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "reports")
+    report_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "reports"))
     if not os.path.exists(report_dir):
         return {"reports": []}
 
@@ -59,10 +59,14 @@ async def list_reports(
 @router.get("/download/{filename}")
 async def download_report(
     filename: str,
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer", "mssp_analyst", "business_owner"])),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_for_download),
 ):
-    """Download a generated PDF report (FR-08-03)."""
-    report_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "reports")
+    """Download a generated PDF report (FR-08-03). Supports ?token= query param."""
+    # Check roles manually
+    if current_user.role.value not in ["ops_lead", "security_engineer", "mssp_analyst", "business_owner"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    report_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "reports"))
     filepath = os.path.join(report_dir, filename)
 
     if not os.path.exists(filepath) or not filename.endswith(".pdf"):

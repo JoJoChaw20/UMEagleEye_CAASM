@@ -67,3 +67,16 @@ async def get_scan_status(
         response.result = result.result if isinstance(result.result, dict) else {"message": str(result.result)}
 
     return response
+
+
+@router.post("/drift-audit", response_model=ScanStatusResponse)
+async def trigger_drift_audit(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+):
+    """Trigger a manual drift audit against all baselined assets."""
+    from app.tasks.drift_tasks import run_drift_audit
+
+    task = run_drift_audit.delay()
+
+    return ScanStatusResponse(task_id=task.id, status="QUEUED")

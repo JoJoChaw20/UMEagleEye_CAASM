@@ -28,6 +28,13 @@ Access control is enforced at the API layer using FastAPI dependencies.
 * **Role Verification:** The `require_roles` dependency extracts the role from the signed JWT token.
 * **Tamper-Proofing:** Because the token is cryptographically signed, users cannot modify their role (e.g., from `auditor` to `ops_lead`) without invalidating the signature, which the server checks on every request.
 
+### Hybrid Asset Discovery (Sprint 1)
+The core of the CAASM platform is the continuous discovery of cyber assets across the network.
+* **Active Scanning (FR-01-01):** Utilizes **Nmap** (and Masscan for high-speed sweeps) to probe subnets for live hosts. It captures hostnames, IP addresses, open ports, and service versions (`-sV`) along with OS fingerprinting (`-O`).
+* **Passive Discovery (FR-01-02):** A background **Scapy** listener sniffs network traffic to identify devices based on ARP requests and DHCP broadcasts without active probing.
+* **Persistence & Schema:** Discovered data is normalized and stored in a PostgreSQL `Asset` table. The schema uses `INET` and `MACADDR` types for network integrity and `JSONB` for flexible OS/Port metadata.
+* **Asynchronous Execution:** Discovery tasks are decoupled from the API using **Celery**. This allows for long-running scans to occur in the background without blocking the user interface.
+
 ---
 
 ## 2. Design Justifications
@@ -42,6 +49,12 @@ Access control is enforced at the API layer using FastAPI dependencies.
 * **Swagger UI:** A developer tool that requires manual token management (copy-paste) because it is a stateless API explorer.
 * **Frontend App:** The production interface handles authorization automatically. It captures the token after login and attaches it to all background API calls without the user ever seeing the "Value" box or token strings.
 
+### Agentless Hybrid Discovery
+**Justification:** Zero-Trust Visibility for SMEs.
+* **Low Friction:** SMEs typically lack the infrastructure to deploy agents (like CrowdStrike) on every machine. Agentless discovery provides immediate value with zero deployment effort.
+* **Comprehensive Coverage:** Passive listening catches transient devices (like mobile phones or rogue laptops) that might be offline during a scheduled active scan.
+
+
 ---
 
 ## 3. Future Improvements (Industry Standards)
@@ -50,7 +63,11 @@ Based on current CAASM industry leaders (Axonius, JupiterOne) and cybersecurity 
 
 ### Short-Term (UX & Security)
 * **MFA Recovery Codes:** Implement backup/recovery codes for users who lose access to their TOTP device.
+* **API-Based Cloud Connectors:** Integrate with AWS/Azure APIs to discover cloud-native assets (EC2, RDS) that are not discoverable via standard network probing.
+
 * **Frontend MFA UI:** Build a dedicated UI in the React application for QR code enrollment and TOTP code entry to improve the user experience.
+* **Advanced Entity Resolution:** Implement a deduplication algorithm to merge asset records when a device changes its IP address but retains its MAC address.
+
 * **Session Management:** Implement token revocation (blacklisting) or "Refresh Tokens" to allow for longer sessions while maintaining the ability to kick users out if needed.
 
 ### Long-Term (Enterprise Standards)
