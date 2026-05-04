@@ -135,3 +135,42 @@
 .status-pulse {
   animation: status-pulse 2s ease-in-out infinite;
 }
+
+/* ── Tab Toggle ── */
+.tab-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #7b7f87;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  background: transparent;
+}
+.tab-toggle:hover {
+  color: #e2e3e5;
+  background: rgba(62, 64, 71, 0.3);
+}
+.tab-toggle.active {
+  color: #3393ff;
+  background: rgba(51, 147, 255, 0.12);
+  box-shadow: 0 0 12px rgba(51, 147, 255, 0.1);
+}
+
+/* ── Graph Container ── */
+.graph-container {
+  background: #0d0e13;
+  border-radius: 12px;
+  border: 1px solid rgba(30, 32, 40, 0.6);
+  overflow: hidden;
+  position: relative;
+}
+.graph-container canvas {
+  display: block;
+  width: 100%;
+}
+

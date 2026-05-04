@@ -4,8 +4,7 @@ import ProtectedRoute from './components/common/ProtectedRoute'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import AssetsPage from './pages/AssetsPage'
-import VulnerabilitiesPage from './pages/VulnerabilitiesPage'
-import DriftPage from './pages/DriftPage'
+import AlertsPage from './pages/AlertsPage'
 import AdvisoriesPage from './pages/AdvisoriesPage'
 import ThreatIntelPage from './pages/ThreatIntelPage'
 import ReportsPage from './pages/ReportsPage'
@@ -20,8 +19,7 @@ export default function App() {
       }>
         <Route index element={<DashboardPage />} />
         <Route path="assets" element={<AssetsPage />} />
-        <Route path="vulnerabilities" element={<VulnerabilitiesPage />} />
-        <Route path="drift" element={<DriftPage />} />
+        <Route path="alerts" element={<AlertsPage />} />
         <Route path="advisories" element={<AdvisoriesPage />} />
         <Route path="threat-intel" element={<ThreatIntelPage />} />
         <Route path="reports" element={<ReportsPage />} />

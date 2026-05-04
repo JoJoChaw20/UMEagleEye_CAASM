@@ -83,9 +83,16 @@ def ingest_mycert_feeds():
 
                 # Cross-reference against internal assets (FR-04-02)
                 if ind["indicator_type"].value == "ip":
+                    search_ip = value
+                    # Strip port for IPv4 or bracketed IPv6 to prevent INET cast errors
+                    if search_ip.count(":") == 1:
+                        search_ip = search_ip.split(":")[0]
+                    elif "]" in search_ip:
+                        search_ip = search_ip.split("]")[0].lstrip("[")
+
                     asset = session.execute(
                         select(Asset).where(
-                            Asset.ip_address == value
+                            Asset.ip_address == search_ip
                         )
                     ).scalar_one_or_none()
 

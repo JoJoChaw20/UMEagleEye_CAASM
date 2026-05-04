@@ -31,6 +31,7 @@ celery_app.conf.update(
         "app.tasks.advisory_tasks",
         "app.tasks.report_tasks",
         "app.tasks.sla_tasks",
+        "app.tasks.relationship_tasks",
     ],
 )
 
@@ -60,6 +61,12 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=7, minute=0),
         "args": (),
     },
+    # Daily NVD CWE enrichment (runs after Grype DB update)
+    "daily-nvd-cwe-enrichment": {
+        "task": "app.tasks.sbom_tasks.enrich_nvd_cwe_daily",
+        "schedule": crontab(hour=8, minute=0),
+        "args": (),
+    },
     # SLA monitoring every 30 minutes
     "sla-monitor": {
         "task": "app.tasks.sla_tasks.check_sla_breaches",
@@ -70,6 +77,12 @@ celery_app.conf.beat_schedule = {
     "daily-posture-snapshot": {
         "task": "app.tasks.report_tasks.generate_posture_snapshot",
         "schedule": crontab(hour=0, minute=0),
+        "args": (),
+    },
+    # Relationship inference after each discovery cycle
+    "periodic-relationship-inference": {
+        "task": "app.tasks.relationship_tasks.infer_asset_relationships",
+        "schedule": (settings.DISCOVERY_CYCLE_MINUTES + 5) * 60,  # 5 min after scan
         "args": (),
     },
 }

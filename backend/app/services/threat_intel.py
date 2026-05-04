@@ -135,9 +135,16 @@ class ThreatIntelService:
     @staticmethod
     async def fetch_abusech_threatfox(days: int = 7) -> List[Dict[str, Any]]:
         """Fetch recent IoCs from abuse.ch ThreatFox API."""
+        if not settings.THREATFOX_API_KEY:
+            logger.warning("THREATFOX_API_KEY not configured")
+            return []
+
         indicators = []
         try:
-            headers = {"User-Agent": "UMEagleEye/2.0 CAASM Threat Intel Engine"}
+            headers = {
+                "User-Agent": "UMEagleEye/2.0 CAASM Threat Intel Engine",
+                "Auth-Key": settings.THREATFOX_API_KEY
+            }
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     "https://threatfox-api.abuse.ch/api/v1/",

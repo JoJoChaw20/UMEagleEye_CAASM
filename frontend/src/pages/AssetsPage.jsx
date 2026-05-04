@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
-import { Server, Search, RefreshCw, Wifi, Shield, Bookmark } from 'lucide-react'
+import { Server, Search, RefreshCw, Wifi, Shield, Bookmark, GitBranch, Target } from 'lucide-react'
 import client from '../api/client'
+import AssetGraph from '../components/common/AssetGraph'
+import BlastRadiusModal from '../components/common/BlastRadiusModal'
 
 export default function AssetsPage() {
   const [assets, setAssets] = useState([])
@@ -9,6 +11,9 @@ export default function AssetsPage() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
+  const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
+  const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
+  const [graphBlastId, setGraphBlastId] = useState(null)
 
   useEffect(() => { loadAssets() }, [page, search])
 
@@ -33,9 +38,11 @@ export default function AssetsPage() {
   }
 
   const triggerSbomScan = async (assetId) => {
+    const target = prompt("Enter scan target (e.g. image:ubuntu:22.04, image:nginx:alpine, dir:/app):", "image:nginx:alpine");
+    if (!target) return;
     try {
-      await client.post(`/assets/${assetId}/scan-sbom`, {})
-      alert('SBOM Scan queued. Check Vulnerabilities page in a few minutes.')
+      await client.post(`/assets/${assetId}/scan-sbom`, { target })
+      alert('SBOM Scan queued. Check Alerts page in a few minutes.')
     } catch (err) {
       console.error(err)
       alert('Failed to trigger SBOM scan.')
@@ -54,6 +61,10 @@ export default function AssetsPage() {
     }
   }
 
+  const handleGraphAssetSelect = (assetId) => {
+    setGraphBlastId(prev => prev === assetId ? null : assetId)
+  }
+
   const icon = (t) => ({ server: '🖥️', workstation: '💻', network: '🌐', iot: '📡' }[t] || '❓')
 
   return (
@@ -68,60 +79,111 @@ export default function AssetsPage() {
           {scanning ? 'Scanning...' : 'Active Scan'}
         </button>
       </div>
-      <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-        <input type="text" placeholder="Search by hostname or IP..." value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-          className="input-field w-full pl-10" id="asset-search" />
+
+      {/* Tab Toggle */}
+      <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50" id="asset-view-toggle">
+        <button
+          onClick={() => setActiveTab('inventory')}
+          className={`tab-toggle ${activeTab === 'inventory' ? 'active' : ''}`}
+          id="tab-inventory"
+        >
+          <Server className="w-4 h-4" />
+          Inventory
+        </button>
+        <button
+          onClick={() => setActiveTab('graph')}
+          className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}
+          id="tab-graph"
+        >
+          <GitBranch className="w-4 h-4" />
+          Relationship Graph
+        </button>
       </div>
-      <div className="glass-card overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+
+      {/* Inventory View */}
+      {activeTab === 'inventory' && (
+        <>
+          <div className="relative max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+            <input type="text" placeholder="Search by hostname or IP..." value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+              className="input-field w-full pl-10" id="asset-search" />
           </div>
-        ) : assets.length > 0 ? (
-          <table className="data-table">
-            <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th>Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
-            <tbody>
-              {assets.map((a) => (
-                <tr key={a.asset_id}>
-                  <td>{icon(a.device_type)}</td>
-                  <td className="font-medium text-white">{a.hostname || '—'}</td>
-                  <td className="font-mono text-sm text-accent-cyan">{a.ip_address}</td>
-                  <td className="text-dark-300 text-sm">{a.hardware_vendor || '—'}</td>
-                  <td><span className="text-xs">{a.criticality_score}/10</span></td>
-                  <td>{a.baseline_state ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
-                  <td className="text-dark-400 text-xs">{a.last_scanned ? new Date(a.last_scanned).toLocaleString() : '—'}</td>
-                  <td>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => triggerSbomScan(a.asset_id)}
-                        className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
-                        title="Scan SBOM"
-                      >
-                        <Shield className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => triggerSetBaseline(a.asset_id)}
-                        className={`p-1.5 rounded transition-colors ${a.baseline_state ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
-                        title="Set Baseline"
-                      >
-                        <Bookmark className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <div className="text-center py-20 text-dark-400">
-            <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p>No assets yet. Run a scan to start.</p>
-            <button onClick={triggerScan} className="btn-primary mt-4">Start Scan</button>
+          <div className="glass-card overflow-hidden">
+            {loading ? (
+              <div className="flex items-center justify-center py-20">
+                <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+              </div>
+            ) : assets.length > 0 ? (
+              <table className="data-table">
+                <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th>Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {assets.map((a) => (
+                    <tr key={a.asset_id}>
+                      <td>{icon(a.device_type)}</td>
+                      <td className="font-medium text-white">{a.hostname || '—'}</td>
+                      <td className="font-mono text-sm text-accent-cyan">{a.ip_address}</td>
+                      <td className="text-dark-300 text-sm">{a.hardware_vendor || '—'}</td>
+                      <td><span className="text-xs">{a.criticality_score}/10</span></td>
+                      <td>{a.baseline_state ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
+                      <td className="text-dark-400 text-xs">{a.last_scanned ? new Date(a.last_scanned).toLocaleString() : '—'}</td>
+                      <td>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => triggerSbomScan(a.asset_id)}
+                            className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
+                            title="Scan SBOM"
+                          >
+                            <Shield className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => triggerSetBaseline(a.asset_id)}
+                            className={`p-1.5 rounded transition-colors ${a.baseline_state ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
+                            title="Set Baseline"
+                          >
+                            <Bookmark className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setBlastRadiusAssetId(a.asset_id)}
+                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                            title="Blast Radius"
+                          >
+                            <Target className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="text-center py-20 text-dark-400">
+                <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p>No assets yet. Run a scan to start.</p>
+                <button onClick={triggerScan} className="btn-primary mt-4">Start Scan</button>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
+
+      {/* Graph View */}
+      {activeTab === 'graph' && (
+        <div className="glass-card p-5">
+          <AssetGraph
+            onSelectAsset={handleGraphAssetSelect}
+            blastRadiusId={graphBlastId}
+          />
+        </div>
+      )}
+
+      {/* Blast Radius Modal */}
+      {blastRadiusAssetId && (
+        <BlastRadiusModal
+          assetId={blastRadiusAssetId}
+          onClose={() => setBlastRadiusAssetId(null)}
+        />
+      )}
     </div>
   )
 }

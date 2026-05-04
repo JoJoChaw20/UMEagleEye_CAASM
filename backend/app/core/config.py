@@ -43,9 +43,10 @@ class Settings(BaseSettings):
     MYCERT_USERNAME: str = ""
     MYCERT_PASSWORD: str = ""
 
-    # ── AlienVault OTX ──
+    # ── AlienVault OTX & ThreatFox ──
     OTX_API_KEY: str = ""
     OTX_TAXII_URL: str = "https://otx.alienvault.com/taxii/discovery"
+    THREATFOX_API_KEY: str = ""
 
     # ── NVD API ──
     NVD_API_KEY: str = ""

@@ -4,7 +4,7 @@ UMEagleEye - Main API router aggregating all sub-routers.
 
 from fastapi import APIRouter
 
-from app.api.routes import auth, assets, scans, events, advisories, posture, cti, reports
+from app.api.routes import auth, assets, scans, events, advisories, posture, cti, reports, relationships
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -16,3 +16,5 @@ api_router.include_router(advisories.router)
 api_router.include_router(posture.router)
 api_router.include_router(cti.router)
 api_router.include_router(reports.router)
+api_router.include_router(relationships.router)
+

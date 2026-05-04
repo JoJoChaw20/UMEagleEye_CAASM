@@ -169,6 +169,27 @@ class SBOMScanRequest(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════
+# Dependency Schemas (FR-02-02)
+# ═══════════════════════════════════════════════════════════════
+class DependencyResponse(BaseModel):
+    dependency_id: UUID
+    asset_id: UUID
+    sbom_id: UUID
+    name: str
+    version: str
+    package_manager: Optional[str]
+    purl: Optional[str]
+    licenses: Optional[Any]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DependencyListResponse(BaseModel):
+    items: List[DependencyResponse]
+    total: int
+
+# ═══════════════════════════════════════════════════════════════
 # CTI Indicator Schemas
 # ═══════════════════════════════════════════════════════════════
 class CTIIndicatorResponse(BaseModel):
@@ -229,3 +250,78 @@ class AuditLogListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# ═══════════════════════════════════════════════════════════════
+# Asset Relationship Schemas (Graph)
+# ═══════════════════════════════════════════════════════════════
+class AssetRelationshipCreate(BaseModel):
+    source_asset_id: UUID
+    target_asset_id: UUID
+    relationship_type: str = Field(..., pattern="^(connects_to|depends_on|same_subnet|authenticates_to|exposes_service)$")
+    metadata_json: Optional[Dict[str, Any]] = None
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+
+
+class AssetRelationshipResponse(BaseModel):
+    relationship_id: UUID
+    source_asset_id: UUID
+    target_asset_id: UUID
+    relationship_type: str
+    metadata_json: Optional[Dict[str, Any]]
+    confidence: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AssetGraphNode(BaseModel):
+    asset_id: UUID
+    hostname: Optional[str]
+    ip_address: str
+    device_type: str
+    criticality_score: int
+    is_internet_facing: bool
+    edge_count: int = 0
+
+    @field_validator("ip_address", mode="before")
+    @classmethod
+    def cast_ip(cls, v):
+        return str(v) if v else v
+
+
+class AssetGraphEdge(BaseModel):
+    relationship_id: UUID
+    source: UUID
+    target: UUID
+    relationship_type: str
+    confidence: Optional[float]
+    metadata_json: Optional[Dict[str, Any]]
+
+
+class AssetGraphResponse(BaseModel):
+    nodes: List[AssetGraphNode]
+    edges: List[AssetGraphEdge]
+    total_nodes: int
+    total_edges: int
+
+
+class BlastRadiusAffectedAsset(BaseModel):
+    asset_id: UUID
+    hostname: Optional[str]
+    ip_address: str
+    depth: int
+    path: List[str]
+
+    @field_validator("ip_address", mode="before")
+    @classmethod
+    def cast_ip(cls, v):
+        return str(v) if v else v
+
+
+class BlastRadiusResponse(BaseModel):
+    origin_asset_id: UUID
+    affected_assets: List[BlastRadiusAffectedAsset]
+    total_affected: int
+    max_depth: int

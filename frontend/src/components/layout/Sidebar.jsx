@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Server, Shield, AlertTriangle,
+  LayoutDashboard, Server, Bell,
   FileSearch, Globe, FileText, Settings, LogOut, Eye
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
@@ -11,10 +11,9 @@ const navItems = [
   ]},
   { label: 'DISCOVERY', items: [
     { to: '/assets', icon: Server, label: 'Assets' },
-    { to: '/vulnerabilities', icon: Shield, label: 'Vulnerabilities' },
+    { to: '/alerts', icon: Bell, label: 'Alerts' },
   ]},
   { label: 'ANALYSIS', items: [
-    { to: '/drift', icon: AlertTriangle, label: 'Drift Detection' },
     { to: '/advisories', icon: FileSearch, label: 'Advisories' },
     { to: '/threat-intel', icon: Globe, label: 'Threat Intel' },
   ]},

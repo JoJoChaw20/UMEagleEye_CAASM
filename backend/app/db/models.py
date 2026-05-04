@@ -18,7 +18,7 @@ from pgvector.sqlalchemy import Vector
 from app.db.database import Base
 from app.db.enums import (
     DeviceType, Severity, EventType, IndicatorType,
-    AdvisoryStatus, UserRole, SBOMFormat
+    AdvisoryStatus, UserRole, SBOMFormat, RelationshipType
 )
 
 
@@ -73,6 +73,15 @@ class Asset(Base):
     # Relationships
     sboms: Mapped[List["SBOM"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
     events: Mapped[List["Event"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    dependencies: Mapped[List["Dependency"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    relationships_out: Mapped[List["AssetRelationship"]] = relationship(
+        back_populates="source_asset", foreign_keys="AssetRelationship.source_asset_id",
+        cascade="all, delete-orphan"
+    )
+    relationships_in: Mapped[List["AssetRelationship"]] = relationship(
+        back_populates="target_asset", foreign_keys="AssetRelationship.target_asset_id",
+        cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_assets_ip_hostname", "ip_address", "hostname"),
@@ -95,7 +104,7 @@ class SBOM(Base):
         Enum(SBOMFormat), default=SBOMFormat.CYCLONEDX, nullable=False
     )
     format_version: Mapped[str] = mapped_column(String(20), default="1.5", nullable=False)
-    raw_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -104,6 +113,41 @@ class SBOM(Base):
 
     # Relationships
     asset: Mapped["Asset"] = relationship(back_populates="sboms")
+    dependencies: Mapped[List["Dependency"]] = relationship(back_populates="sbom", cascade="all, delete-orphan")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Table 2b: Dependency (SBOM Component Linking - FR-02-02)
+# ═══════════════════════════════════════════════════════════════
+class Dependency(Base):
+    """Links parsed SBOM components back to asset records."""
+    __tablename__ = "dependencies"
+
+    dependency_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assets.asset_id", ondelete="CASCADE"), nullable=False
+    )
+    sbom_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sboms.sbom_id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(100), nullable=False)
+    package_manager: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    purl: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    licenses: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    # Relationships
+    asset: Mapped["Asset"] = relationship(back_populates="dependencies")
+    sbom: Mapped["SBOM"] = relationship(back_populates="dependencies")
+
+    __table_args__ = (
+        Index("ix_dependencies_asset_name", "asset_id", "name"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -290,4 +334,49 @@ class PlaybookChunk(Base):
     metadata_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Asset Relationship (Adjacency-List Graph Edges)
+# ═══════════════════════════════════════════════════════════════
+class AssetRelationship(Base):
+    """Adjacency-list edge for asset relationship graph.
+    Enables blast-radius estimation, attack-path visualisation,
+    and context-aware AI advisory."""
+    __tablename__ = "asset_relationships"
+
+    relationship_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    source_asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assets.asset_id", ondelete="CASCADE"), nullable=False
+    )
+    target_asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("assets.asset_id", ondelete="CASCADE"), nullable=False
+    )
+    relationship_type: Mapped[RelationshipType] = mapped_column(
+        Enum(RelationshipType), nullable=False
+    )
+    metadata_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Numeric(3, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    # Relationships
+    source_asset: Mapped["Asset"] = relationship(
+        back_populates="relationships_out", foreign_keys=[source_asset_id]
+    )
+    target_asset: Mapped["Asset"] = relationship(
+        back_populates="relationships_in", foreign_keys=[target_asset_id]
+    )
+
+    __table_args__ = (
+        Index("ix_asset_rel_source", "source_asset_id"),
+        Index("ix_asset_rel_target", "target_asset_id"),
+        Index("ix_asset_rel_unique", "source_asset_id", "target_asset_id", "relationship_type", unique=True),
     )

@@ -30,9 +30,15 @@ async def list_events(
     query = select(Event)
 
     if severity:
-        query = query.where(Event.severity == severity)
+        try:
+            query = query.where(Event.severity == Severity(severity))
+        except ValueError:
+            pass
     if event_type:
-        query = query.where(Event.event_type == event_type)
+        try:
+            query = query.where(Event.event_type == EventType(event_type))
+        except ValueError:
+            pass
     if asset_id:
         query = query.where(Event.asset_id == asset_id)
 
@@ -82,3 +88,79 @@ async def trigger_event_advisory(
 
     task = generate_advisory.delay(str(event_id))
     return {"task_id": task.id, "status": "QUEUED"}
+
+
+@router.get("/stats/summary")
+async def get_event_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get aggregate event statistics for the Alerts dashboard."""
+    from datetime import timedelta, datetime, timezone
+    from app.db.models import Advisory
+    from app.db.enums import AdvisoryStatus
+
+    # Total events
+    total = (await db.execute(select(func.count(Event.event_id)))).scalar() or 0
+
+    # By severity
+    severity_counts = {}
+    for sev in Severity:
+        count = (await db.execute(
+            select(func.count(Event.event_id)).where(Event.severity == sev)
+        )).scalar() or 0
+        severity_counts[sev.value] = count
+
+    # By event type
+    type_counts = {}
+    for etype in EventType:
+        count = (await db.execute(
+            select(func.count(Event.event_id)).where(Event.event_type == etype)
+        )).scalar() or 0
+        if count > 0:
+            type_counts[etype.value] = count
+
+    # Average risk score
+    avg_score = (await db.execute(
+        select(func.avg(Event.composite_risk_score)).where(
+            Event.composite_risk_score.isnot(None)
+        )
+    )).scalar()
+
+    # Resolution rate (advisories resolved / total)
+    total_advisories = (await db.execute(
+        select(func.count(Advisory.advisory_id))
+    )).scalar() or 0
+    resolved_advisories = (await db.execute(
+        select(func.count(Advisory.advisory_id)).where(
+            Advisory.status == AdvisoryStatus.RESOLVED
+        )
+    )).scalar() or 0
+    resolution_rate = (resolved_advisories / total_advisories * 100) if total_advisories > 0 else 100
+
+    # Daily trend (last 7 days)
+    daily_trend = []
+    for i in range(6, -1, -1):
+        day_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) - timedelta(days=i)
+        day_end = day_start + timedelta(days=1)
+        day_count = (await db.execute(
+            select(func.count(Event.event_id)).where(
+                Event.timestamp >= day_start,
+                Event.timestamp < day_end,
+            )
+        )).scalar() or 0
+        daily_trend.append({
+            "date": day_start.strftime("%b %d"),
+            "count": day_count,
+        })
+
+    return {
+        "total_alerts": total,
+        "by_severity": severity_counts,
+        "by_type": type_counts,
+        "avg_risk_score": round(float(avg_score), 1) if avg_score else 0,
+        "resolution_rate": round(resolution_rate, 1),
+        "daily_trend": daily_trend,
+    }

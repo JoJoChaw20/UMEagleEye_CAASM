@@ -61,6 +61,15 @@ class UserRole(str, enum.Enum):
     MSSP_ANALYST = "mssp_analyst"
 
 
+class RelationshipType(str, enum.Enum):
+    """Asset-to-asset relationship types for graph modelling."""
+    CONNECTS_TO = "connects_to"
+    DEPENDS_ON = "depends_on"
+    SAME_SUBNET = "same_subnet"
+    AUTHENTICATES_TO = "authenticates_to"
+    EXPOSES_SERVICE = "exposes_service"
+
+
 class SBOMFormat(str, enum.Enum):
     """SBOM format standards."""
     CYCLONEDX = "cyclonedx"
