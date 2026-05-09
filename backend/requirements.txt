@@ -21,8 +21,9 @@ celery[redis]==5.4.0
 redis==5.1.1
 
 # ── AI / RAG ──
-google-generativeai==0.8.3
-numpy==2.1.3
+openai==1.30.5
+fastembed==0.3.6
+numpy==1.26.4
 
 # ── Scanning ──
 python-nmap==0.7.1

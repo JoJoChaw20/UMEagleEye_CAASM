@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
-    # ── Gemini AI ──
-    GEMINI_API_KEY: str = ""
+    # ── OpenRouter AI (DeepSeek via OpenRouter) ──
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "deepseek/deepseek-chat"
 
     # ── Telegram Bot ──
     TELEGRAM_BOT_TOKEN: str = ""

@@ -1,15 +1,16 @@
 """
 UMEagleEye - AI Advisory Service (FR-05).
-RAG pipeline: pgvector retrieval + Gemini 2.0 Flash prescriptive generation.
+RAG pipeline: pgvector retrieval (fastembed/ONNX) + DeepSeek via OpenRouter.
 """
 
 import logging
 import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
+from functools import lru_cache
 
-import google.generativeai as genai
 import numpy as np
+from openai import OpenAI
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,9 +19,26 @@ from app.db.models import PlaybookChunk, Advisory, Event
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-if settings.GEMINI_API_KEY:
-    genai.configure(api_key=settings.GEMINI_API_KEY)
+# ── OpenRouter client (OpenAI-compatible) ──
+def _get_openrouter_client() -> OpenAI:
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=settings.OPENROUTER_API_KEY,
+    )
+
+# ── Lightweight ONNX embedding model (fastembed, no PyTorch needed) ──
+@lru_cache(maxsize=1)
+def _get_embedding_model():
+    """Load fastembed model once and cache it. Downloads ~50MB ONNX model on first use."""
+    try:
+        from fastembed import TextEmbedding
+        logger.info("Loading fastembed model: BAAI/bge-small-en-v1.5")
+        return TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    except Exception as e:
+        logger.error(f"Failed to load fastembed model: {e}")
+        return None
+
+EMBEDDING_DIM = 384  # BAAI/bge-small-en-v1.5 output dimension
 
 SYSTEM_PROMPT = """You are UMEagleEye, an AI security advisor for Malaysian SMEs.
 You provide prescriptive, step-by-step remediation guidance for cybersecurity incidents.
@@ -44,7 +62,7 @@ Respond ONLY with valid JSON in this format:
 
 
 class AdvisoryService:
-    """RAG-based AI advisory generation using Gemini + pgvector."""
+    """RAG-based AI advisory generation using DeepSeek (OpenRouter) + pgvector."""
 
     # ═══════════════════════════════════════════════════════════
     # FR-05-01: RAG Knowledge Base Generation
@@ -52,17 +70,30 @@ class AdvisoryService:
 
     @staticmethod
     async def embed_text(text_content: str) -> List[float]:
-        """Generate embedding vector using Gemini embedding model."""
+        """Generate embedding vector using fastembed (ONNX, no GPU/PyTorch needed)."""
         try:
-            result = genai.embed_content(
-                model="models/gemini-embedding-001",
-                content=text_content,
-                task_type="retrieval_document",
-            )
-            return result["embedding"]
+            model = _get_embedding_model()
+            if model is None:
+                return [0.0] * EMBEDDING_DIM
+            # fastembed returns a generator; take the first (and only) result
+            embeddings = list(model.embed([text_content]))
+            return embeddings[0].tolist()
         except Exception as e:
             logger.error(f"Embedding error: {e}")
-            return [0.0] * 768
+            return [0.0] * EMBEDDING_DIM
+
+    @staticmethod
+    def embed_text_sync(text_content: str) -> List[float]:
+        """Synchronous embedding for Celery workers (fastembed is sync-native)."""
+        try:
+            model = _get_embedding_model()
+            if model is None:
+                return [0.0] * EMBEDDING_DIM
+            embeddings = list(model.embed([text_content]))
+            return embeddings[0].tolist()
+        except Exception as e:
+            logger.error(f"Sync embedding error: {e}")
+            return [0.0] * EMBEDDING_DIM
 
     @staticmethod
     async def ingest_playbook(
@@ -130,10 +161,10 @@ class AdvisoryService:
 
             result = await db.execute(
                 text("""
-                    SELECT content, 1 - (embedding <=> :embedding::vector) as similarity
+                    SELECT content, 1 - (embedding <=> CAST(:embedding AS vector)) as similarity
                     FROM playbook_chunks
                     WHERE embedding IS NOT NULL
-                    ORDER BY embedding <=> :embedding::vector
+                    ORDER BY embedding <=> CAST(:embedding AS vector)
                     LIMIT :top_k
                 """),
                 {"embedding": embedding_str, "top_k": top_k},
@@ -154,18 +185,15 @@ class AdvisoryService:
     ) -> List[str]:
         """Synchronous version of retrieve_context for Celery workers."""
         try:
-            import asyncio
-            # We still need to call the async embedding method
-            loop = asyncio.get_event_loop()
-            query_embedding = loop.run_until_complete(AdvisoryService.embed_text(query))
+            query_embedding = AdvisoryService.embed_text_sync(query)
             embedding_str = str(query_embedding)
 
             result = session.execute(
                 text("""
-                    SELECT content, 1 - (embedding <=> :embedding::vector) as similarity
+                    SELECT content, 1 - (embedding <=> CAST(:embedding AS vector)) as similarity
                     FROM playbook_chunks
                     WHERE embedding IS NOT NULL
-                    ORDER BY embedding <=> :embedding::vector
+                    ORDER BY embedding <=> CAST(:embedding AS vector)
                     LIMIT :top_k
                 """),
                 {"embedding": embedding_str, "top_k": top_k},
@@ -187,7 +215,7 @@ class AdvisoryService:
         asset_data: Dict[str, Any],
         db: AsyncSession = None,
     ) -> Dict[str, str]:
-        """Generate prescriptive advisory using Gemini with RAG context.
+        """Generate prescriptive advisory using DeepSeek (OpenRouter) with RAG context.
 
         Args:
             event_data: Event details (type, severity, details JSON)
@@ -197,12 +225,13 @@ class AdvisoryService:
         Returns:
             Dict with summary and recommended_action
         """
-        if not settings.GEMINI_API_KEY:
+        if not settings.OPENROUTER_API_KEY:
             return {
                 "summary": f"Security event detected: {event_data.get('event_type', 'unknown')}",
-                "recommended_action": "Gemini API key not configured. Please review the event manually.",
+                "recommended_action": "OpenRouter API key not configured. Please review the event manually.",
             }
 
+        response_text = ""
         try:
             # Build safe prompt (no PII per FR-05 requirements)
             alert_summary = (
@@ -220,31 +249,38 @@ class AdvisoryService:
                 if isinstance(db, AsyncSession):
                     chunks = await AdvisoryService.retrieve_context(alert_summary, db)
                 else:
-                    # Handle sync session (SQLAlchemy Session)
+                    # Handle sync session (Celery workers)
                     chunks = AdvisoryService.retrieve_context_sync(alert_summary, db)
-                
+
                 if chunks:
                     rag_context = "\n\nRELEVANT PLAYBOOK CONTEXT:\n" + "\n---\n".join(chunks)
 
-            # Call Gemini
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            prompt = f"{SYSTEM_PROMPT}\n\nALERT DATA:\n{alert_summary}{rag_context}"
+            # Call DeepSeek via OpenRouter
+            client = _get_openrouter_client()
+            prompt = f"{alert_summary}{rag_context}"
 
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.3,
-                    max_output_tokens=2048,
-                ),
+            completion = client.chat.completions.create(
+                model=settings.OPENROUTER_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=2048,
+                extra_headers={
+                    "HTTP-Referer": "https://umeagleeye.local",
+                    "X-Title": "UMEagleEye CAASM",
+                },
             )
 
-            response_text = response.text.strip()
+            response_text = completion.choices[0].message.content.strip()
 
-            # Parse JSON response
+            # Strip markdown code fences if present
             if response_text.startswith("```"):
                 response_text = response_text.split("```")[1]
                 if response_text.startswith("json"):
                     response_text = response_text[4:]
+                response_text = response_text.rstrip("`").strip()
 
             result = json.loads(response_text)
             return {
@@ -255,10 +291,10 @@ class AdvisoryService:
         except json.JSONDecodeError:
             return {
                 "summary": f"Security alert: {event_data.get('event_type', 'unknown')} detected",
-                "recommended_action": response_text if 'response_text' in dir() else "Review manually",
+                "recommended_action": response_text if response_text else "Review manually",
             }
         except Exception as e:
-            logger.error(f"Gemini advisory error: {e}")
+            logger.error(f"DeepSeek advisory error: {e}")
             return {
                 "summary": f"Auto-advisory for {event_data.get('event_type', 'unknown')} event",
                 "recommended_action": f"Error generating AI advisory: {str(e)}. Please review the event manually.",
