@@ -13,7 +13,7 @@ class ReportService:
     """Generate PDF reports as bytes buffers."""
 
     @staticmethod
-    def generate_posture_pdf(snapshot) -> bytes:
+    def generate_posture_pdf(snapshot, weekly_metrics: dict = None) -> bytes:
         """
         Build a posture report PDF from a PostureMetrics snapshot.
         Returns raw PDF bytes suitable for sending as a Telegram document.
@@ -27,6 +27,12 @@ class ReportService:
             )
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+            # Handle both dict and model object
+            def get_val(obj, key, default=0):
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
+                return getattr(obj, key, default)
 
             buf = io.BytesIO()
             doc = SimpleDocTemplate(buf, pagesize=A4,
@@ -43,7 +49,7 @@ class ReportService:
             body_style = styles["Normal"]
 
             # ── Score colour ──────────────────────────────────────
-            score = snapshot.overall_score
+            score = get_val(snapshot, "overall_score", 0)
             if score >= 80:
                 score_color = colors.HexColor("#27ae60")
             elif score >= 50:
@@ -73,9 +79,9 @@ class ReportService:
             # Summary table
             summary_data = [
                 ["Metric", "Value"],
-                ["Total Assets",          str(snapshot.total_assets)],
-                ["Critical Assets",       str(snapshot.total_critical_assets)],
-                ["Open Critical Events",  str(snapshot.open_critical_events)],
+                ["Total Assets",          str(get_val(snapshot, "total_assets"))],
+                ["Critical Assets",       str(get_val(snapshot, "total_critical_assets"))],
+                ["Open Critical Events",  str(get_val(snapshot, "open_critical_events"))],
             ]
             summary_table = Table(summary_data, colWidths=[9*cm, 7*cm])
             summary_table.setStyle(TableStyle([
@@ -90,8 +96,29 @@ class ReportService:
             story.append(summary_table)
             story.append(Spacer(1, 0.4*cm))
 
+            # Weekly Insights (if provided)
+            if weekly_metrics:
+                story.append(Paragraph("Weekly Operational Insights", heading_style))
+                insight_data = [
+                    ["Metric", "Value"],
+                    ["Weekly Drift Events", str(weekly_metrics.get("drift_events", 0))],
+                    ["SLA Resolution Rate", f"{weekly_metrics.get('sla_resolution_rate', 0)}%"],
+                    ["Resolved Advisories", f"{weekly_metrics.get('resolved_advisories', 0)} / {weekly_metrics.get('total_advisories', 0)}"],
+                ]
+                insight_table = Table(insight_data, colWidths=[9*cm, 7*cm])
+                insight_table.setStyle(TableStyle([
+                    ("BACKGROUND",   (0, 0), (-1, 0), colors.HexColor("#16213e")),
+                    ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f0f4f8"), colors.white]),
+                    ("GRID",         (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+                    ("PADDING",      (0, 0), (-1, -1), 8),
+                ]))
+                story.append(insight_table)
+                story.append(Spacer(1, 0.4*cm))
+
             # Top risks
-            top_risks = snapshot.top_risks or []
+            top_risks = get_val(snapshot, "top_risks", [])
             if top_risks:
                 story.append(Paragraph("Top Risks", heading_style))
                 risk_data = [["Event Type", "Severity", "Risk Score"]]

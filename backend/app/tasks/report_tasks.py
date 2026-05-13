@@ -63,7 +63,7 @@ def generate_pdf_report(self, report_type: str = "weekly"):
         metrics = PostureService.aggregate_weekly_metrics(session)
 
         # Generate PDF
-        pdf_bytes = ReportService.generate_posture_pdf(metrics, posture)
+        pdf_bytes = ReportService.generate_posture_pdf(posture, metrics)
 
         # Save locally
         report_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "reports")
