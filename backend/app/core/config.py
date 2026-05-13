@@ -34,6 +34,9 @@ class Settings(BaseSettings):
 
     # ── Telegram Bot ──
     TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+    TELEGRAM_WEBHOOK_SECRET: str = ""  # optional secret token for webhook verification
+    TELEGRAM_WEBHOOK_URL: str = ""     # e.g. https://<ngrok-id>.ngrok-free.app/api/v1/telegram/webhook
 
     # ── Google Cloud Storage ──
     GCS_BUCKET_NAME: str = "umeagleeye-reports"

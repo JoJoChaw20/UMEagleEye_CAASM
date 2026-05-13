@@ -86,7 +86,10 @@ async def trigger_event_advisory(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Event not found")
 
-    task = generate_advisory.delay(str(event_id))
+    task = generate_advisory.delay(
+        str(event_id), 
+        triggered_by_chat_id=current_user.telegram_chat_id
+    )
     return {"task_id": task.id, "status": "QUEUED"}
 
 

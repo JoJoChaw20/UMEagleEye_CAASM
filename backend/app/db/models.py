@@ -288,6 +288,9 @@ class User(Base):
     last_login: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    telegram_chat_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True
+    )
 
     # Relationships
     assigned_advisories: Mapped[List["Advisory"]] = relationship(back_populates="assignee")

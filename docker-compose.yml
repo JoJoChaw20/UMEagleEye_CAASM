@@ -38,6 +38,8 @@ services:
       dockerfile: Dockerfile
     container_name: umeagleeye-backend
     restart: always
+    dns:
+      - 8.8.8.8
     ports:
       - "8000:8000"
     env_file:
@@ -90,21 +92,22 @@ services:
         condition: service_healthy
     command: celery -A app.tasks.celery_app beat --loglevel=info
 
-  # ── Telegram Bot ──
-  telegram-bot:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: umeagleeye-telegram-bot
-    restart: always
-    env_file:
-      - .env
-    volumes:
-      - ./backend:/app
-    depends_on:
-      backend:
-        condition: service_started
-    command: python -m app.bot.telegram_bot
+#   telegram-bot:
+#     build:
+#       context: ./backend
+#       dockerfile: Dockerfile
+#     container_name: umeagleeye-telegram-bot
+#     restart: always
+#     dns:
+#       - 8.8.8.8
+#     env_file:
+#       - .env
+#     volumes:
+#       - ./backend:/app
+#     depends_on:
+#       backend:
+#         condition: service_started
+#     command: python -m app.bot.telegram_bot
 
   # ── React Frontend (Vite dev server) ──
   frontend:

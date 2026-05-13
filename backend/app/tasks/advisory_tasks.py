@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.tasks.celery_app import celery_app
 from app.core.config import settings
 from app.services.advisory import AdvisoryService
+from app.services.telegram_notifier import notify_new_advisory
 from app.db.models import Event, Asset, Advisory
 from app.db.enums import AdvisoryStatus
 
@@ -22,8 +23,8 @@ def get_sync_session() -> Session:
 
 
 @celery_app.task(name="app.tasks.advisory_tasks.generate_advisory", bind=True)
-def generate_advisory(self, event_id: str):
-    """Generate AI advisory for a specific event via Gemini RAG pipeline."""
+def generate_advisory(self, event_id: str, triggered_by_chat_id: str = None):
+    """Generate AI advisory for a specific event; notifies target or technical team."""
     session = get_sync_session()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -67,6 +68,34 @@ def generate_advisory(self, event_id: str):
         )
         session.add(advisory)
         session.commit()
+
+        # Push Telegram notification for new advisory
+        from app.services.telegram_notifier import send_telegram_message, notify_new_advisory
+        
+        if triggered_by_chat_id:
+            # Send ONLY to the person who clicked 'Generate' on the UI
+            from app.services.telegram_formatter import format_advisory_message
+            text, markup = format_advisory_message(
+                advisory_id=str(advisory.advisory_id),
+                event_type=event_data.get("event_type", "unknown"),
+                severity=event_data.get("severity", "medium"),
+                summary=result["summary"],
+                recommended_action="View full details on the UMEagleEye dashboard.",
+                asset_ip=str(asset.ip_address) if asset else "Unknown",
+                role=None,
+            )
+            # Use raw sender to target the specific user
+            from app.services.telegram_notifier import _markup_to_dict
+            send_telegram_message(text, chat_id=triggered_by_chat_id, reply_markup=_markup_to_dict(markup))
+        else:
+            # System-generated broadcast (filtered by role in the service)
+            notify_new_advisory(
+                event_type=event_data.get("event_type", "unknown"),
+                severity=event_data.get("severity", "medium"),
+                summary=result["summary"],
+                asset_ip=str(asset.ip_address) if asset else "Unknown",
+                advisory_id=str(advisory.advisory_id),
+            )
 
         logger.info(f"Advisory generated for event {event_id}")
         return {

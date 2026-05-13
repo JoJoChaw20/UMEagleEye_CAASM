@@ -299,3 +299,53 @@ class AdvisoryService:
                 "summary": f"Auto-advisory for {event_data.get('event_type', 'unknown')} event",
                 "recommended_action": f"Error generating AI advisory: {str(e)}. Please review the event manually.",
             }
+
+    @staticmethod
+    def debug_advisory(advisory: Advisory, user_question: str) -> str:
+        """Interactive Chatbot mode: Answer user questions about a specific advisory."""
+        if not settings.OPENROUTER_API_KEY:
+            return "OpenRouter API key not configured. Cannot debug with AI."
+
+        system_prompt = (
+            "You are UMEagleEye, an expert AI security engineer for Malaysian SMEs.\n"
+            "The user is asking a follow-up question regarding a specific security advisory.\n"
+            "Use the provided advisory context to answer their question directly.\n"
+            "Be extremely concise, provide exact CLI commands, and format your output using standard Markdown (but do NOT use JSON here)."
+        )
+
+        context_prompt = (
+            f"--- ADVISORY CONTEXT ---\n"
+            f"Advisory ID: {advisory.advisory_id}\n"
+            f"Status: {advisory.status.value}\n"
+            f"Summary: {advisory.summary}\n"
+            f"Original Recommended Action: {advisory.recommended_action}\n"
+            f"--- END CONTEXT ---\n\n"
+            f"User Question or Terminal Output:\n{user_question}"
+        )
+
+        try:
+            client = _get_openrouter_client()
+            completion = client.chat.completions.create(
+                model=settings.OPENROUTER_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1024,
+                extra_headers={
+                    "HTTP-Referer": "https://umeagleeye.local",
+                    "X-Title": "UMEagleEye CAASM",
+                },
+            )
+            response_text = completion.choices[0].message.content.strip()
+            
+            # Strip DeepSeek R1 thinking process if present
+            if "<think>" in response_text and "</think>" in response_text:
+                import re
+                response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
+            
+            return response_text[:4000]
+        except Exception as e:
+            logger.error(f"AI Debug error: {e}")
+            return f"Error connecting to AI: {str(e)}"
