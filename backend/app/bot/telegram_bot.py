@@ -82,18 +82,25 @@ async def _require_role(update: Update, allowed=("admin", "security_analyst")):
     return user
 
 
-def get_main_keyboard():
-    keyboard = [
-        ["📊 Status", "🖥️ Assets"],
-        ["🚨 Alerts", "📋 Advisories"],
-        ["🛡️ Posture Score", "🔍 Network Scan"]
-    ]
+def get_main_keyboard(role: str = None):
+    if role == "business_owner":
+        keyboard = [
+            ["📊 Status", "🛡️ Posture Score"]
+        ]
+    else:
+        keyboard = [
+            ["📊 Status", "🖥️ Assets"],
+            ["🚨 Alerts", "📋 Advisories"],
+            ["🛡️ Posture Score", "🔍 Network Scan"]
+        ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 # ── /start /help ──────────────────────────────────────────────────
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply_markup = get_main_keyboard()
+    user = await _get_linked_user(update)
+    role = user.role.value if (user and hasattr(user, "role")) else None
+    reply_markup = get_main_keyboard(role=role)
 
     await update.message.reply_text(
         "🦅 *UMEagleEye CAASM Bot*\n\n"
@@ -133,6 +140,7 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ *Linked* to *{_esc(user.username)}* \\({_esc(user.role.value)}\\)\\.\nAlerts will arrive here\\.",
             parse_mode="MarkdownV2",
+            reply_markup=get_main_keyboard(role=user.role.value)
         )
 
 async def unlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -173,6 +181,9 @@ async def assets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await _require_auth(update)
     if not user:
         return
+    if hasattr(user, "role") and user.role.value == "business_owner":
+        await update.message.reply_text("⛔ *Access Denied*: Business Owners cannot view detailed asset inventory.", parse_mode="MarkdownV2")
+        return
     from sqlalchemy import select
     from app.db.models import Asset
     with _session() as s:
@@ -193,6 +204,9 @@ async def assets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await _require_auth(update)
     if not user:
+        return
+    if hasattr(user, "role") and user.role.value == "business_owner":
+        await update.message.reply_text("⛔ *Access Denied*: Business Owners cannot view technical alerts.", parse_mode="MarkdownV2")
         return
     from sqlalchemy import select
     from app.db.models import Event
@@ -218,6 +232,9 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def advisories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await _require_auth(update)
     if not user:
+        return
+    if hasattr(user, "role") and user.role.value == "business_owner":
+        await update.message.reply_text("⛔ *Access Denied*: Business Owners cannot view technical advisories.", parse_mode="MarkdownV2")
         return
     from sqlalchemy import select
     from app.db.models import Advisory
@@ -293,6 +310,9 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = await _require_auth(update)
     if not user:
         return
+    if hasattr(user, "role") and user.role.value == "business_owner":
+        await update.message.reply_text("⛔ *Access Denied*: Business Owners cannot use the AI remediation assistant.", parse_mode="MarkdownV2")
+        return
     query = " ".join(context.args) if context.args else ""
     if not query:
         await update.message.reply_text("Usage: `/ask <security question>`", parse_mode="MarkdownV2")
@@ -335,6 +355,9 @@ async def fix_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /fix_<advisory_short_id> sent from /advisories listing."""
     user = await _require_auth(update)
     if not user:
+        return
+    if hasattr(user, "role") and user.role.value == "business_owner":
+        await update.message.reply_text("⛔ *Access Denied*: Business Owners cannot perform remediation actions.", parse_mode="MarkdownV2")
         return
     text = update.message.text or ""
     short_id = text.split("_", 1)[1].strip() if "_" in text else ""
