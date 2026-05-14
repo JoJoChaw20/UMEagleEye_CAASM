@@ -1,0 +1,18 @@
+# Production overrides — removes --reload and disables the Vite dev server container.
+# Usage (via deploy.ps1 or manually):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d db redis backend celery-worker celery-beat
+
+services:
+  backend:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+  celery-worker:
+    command: celery -A app.tasks.celery_app worker --loglevel=warning --concurrency=4
+
+  celery-beat:
+    command: celery -A app.tasks.celery_app beat --loglevel=warning
+
+  # Frontend is served via Cloudflare Pages in production — disable this container.
+  frontend:
+    profiles:
+      - dev-only
