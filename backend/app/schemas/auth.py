@@ -24,6 +24,10 @@ class UserLogin(BaseModel):
     password: str
 
 
+class GoogleLoginRequest(BaseModel):
+    credential: str  # Google ID token from frontend
+
+
 class MFASetupResponse(BaseModel):
     totp_secret: str
     qr_code_base64: str

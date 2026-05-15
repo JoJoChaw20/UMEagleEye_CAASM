@@ -1,21 +1,26 @@
 """
-UMEagleEye - Auth API routes: register, login, MFA setup/verify.
+UMEagleEye - Auth API routes: register, login, MFA setup/verify, Google OAuth.
 """
 
+import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
+from app.core.config import settings
 from app.core.dependencies import get_db, get_current_user
 from app.core.security import (
     hash_password, verify_password, create_access_token,
     generate_totp_secret, generate_totp_qr_base64, verify_totp
 )
 from app.db.models import User, AuditLog
+from app.db.enums import UserRole
 from app.schemas.auth import (
     UserRegister, UserLogin, TokenResponse,
-    MFASetupResponse, MFAVerify, UserResponse
+    MFASetupResponse, MFAVerify, UserResponse, GoogleLoginRequest
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -135,6 +140,75 @@ async def verify_mfa(payload: MFAVerify, db: AsyncSession = Depends(get_db)):
 
     if not verify_totp(user.totp_secret, payload.code):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
+
+    user.last_login = datetime.now(timezone.utc)
+
+    token = create_access_token(data={
+        "sub": str(user.user_id),
+        "role": user.role.value,
+        "username": user.username,
+    })
+
+    return TokenResponse(
+        access_token=token,
+        role=user.role.value,
+        user_id=str(user.user_id),
+    )
+
+
+@router.post("/google", response_model=TokenResponse)
+async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(get_db)):
+    """Authenticate via Google ID token and return a JWT."""
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=501, detail="Google login is not configured")
+
+    try:
+        id_info = id_token.verify_oauth2_token(
+            payload.credential,
+            google_requests.Request(),
+            settings.GOOGLE_CLIENT_ID,
+        )
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    google_sub = id_info["sub"]
+    email = id_info.get("email", "")
+
+    # 1. Find by google_id
+    result = await db.execute(select(User).where(User.google_id == google_sub))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        # 2. Link to existing account that shares the same email
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user:
+            user.google_id = google_sub
+        else:
+            # 3. Create a new account
+            base = email.split("@")[0] if email else "user"
+            username = base
+            counter = 1
+            while True:
+                dup = await db.execute(select(User).where(User.username == username))
+                if not dup.scalar_one_or_none():
+                    break
+                username = f"{base}{counter}"
+                counter += 1
+
+            user = User(
+                username=username,
+                email=email,
+                password_hash=hash_password(secrets.token_hex(32)),
+                google_id=google_sub,
+                role=UserRole.BUSINESS_OWNER,
+            )
+            db.add(user)
+            await db.flush()
+            await db.refresh(user)
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
 
     user.last_login = datetime.now(timezone.utc)
 

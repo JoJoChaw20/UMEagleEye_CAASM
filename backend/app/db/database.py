@@ -51,3 +51,10 @@ async def init_db():
         )
         from app.db.models import Base  # noqa: F811
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column migrations for schema evolution without Alembic
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                "google_id VARCHAR(255) UNIQUE"
+            )
+        )

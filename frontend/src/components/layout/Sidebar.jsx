@@ -1,7 +1,7 @@
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Server, Bell,
-  FileSearch, Globe, FileText, Settings, LogOut, Eye
+  LayoutDashboard, Server, Bell, FileSearch, Globe, FileText,
+  Settings, LogOut, Eye, Network, Radar, GitBranch, Bot, Building2
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 
@@ -9,25 +9,37 @@ const navItems = [
   { label: 'OVERVIEW', items: [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   ]},
-  { label: 'DISCOVERY', items: [
-    { to: '/assets', icon: Server, label: 'Assets' },
-    { to: '/alerts', icon: Bell, label: 'Alerts' },
+  { label: 'ASSETS', items: [
+    { to: '/my-assets',  icon: Server,    label: 'My Assets' },
+    { to: '/discovery',  icon: Radar,     label: 'Discovery' },
+    { to: '/topology',   icon: GitBranch, label: 'Topology' },
   ]},
-  { label: 'ANALYSIS', items: [
-    { to: '/advisories', icon: FileSearch, label: 'Advisories' },
-    { to: '/threat-intel', icon: Globe, label: 'Threat Intel' },
+  { label: 'SECURITY', items: [
+    { to: '/alerts',     icon: Bell,      label: 'Alerts' },
+    { to: '/advisories', icon: FileSearch,label: 'Advisories' },
+    { to: '/threat-intel',icon: Globe,    label: 'Threat Intel' },
   ]},
   { label: 'REPORTS', items: [
-    { to: '/reports', icon: FileText, label: 'Reports' },
+    { to: '/reports',    icon: FileText,  label: 'Reports' },
   ]},
   { label: 'SYSTEM', items: [
-    { to: '/settings', icon: Settings, label: 'Settings' },
+    { to: '/agents',     icon: Bot,       label: 'Agents' },
+    { to: '/settings',   icon: Settings,  label: 'Settings' },
+  ]},
+]
+
+// SuperAdmin-only section
+const adminNavItems = [
+  { label: 'ADMIN', items: [
+    { to: '/tenants', icon: Building2, label: 'Tenants' },
   ]},
 ]
 
 export default function Sidebar() {
   const { logout, user } = useAuth()
-  const location = useLocation()
+  const isSuperAdmin = user?.role === 'superadmin'
+
+  const sections = isSuperAdmin ? [...navItems, ...adminNavItems] : navItems
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-64 bg-dark-900 border-r border-dark-700/50 flex flex-col z-50">
@@ -46,7 +58,7 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-4 px-3">
-        {navItems.map((section) => (
+        {sections.map((section) => (
           <div key={section.label} className="mb-5">
             <p className="text-[10px] font-semibold text-dark-500 tracking-widest uppercase px-3 mb-2">
               {section.label}
@@ -55,9 +67,7 @@ export default function Sidebar() {
               <NavLink
                 key={item.to}
                 to={item.to}
-                className={({ isActive }) =>
-                  `nav-link mb-0.5 ${isActive ? 'active' : ''}`
-                }
+                className={({ isActive }) => `nav-link mb-0.5 ${isActive ? 'active' : ''}`}
                 end={item.to === '/'}
               >
                 <item.icon className="w-4 h-4" />
@@ -77,7 +87,7 @@ export default function Sidebar() {
             </div>
             <div>
               <p className="text-sm font-medium text-dark-200">{user?.username || 'User'}</p>
-              <p className="text-[10px] text-dark-400">{user?.role?.replace('_', ' ') || 'Role'}</p>
+              <p className="text-[10px] text-dark-400 capitalize">{user?.role?.replace(/_/g, ' ') || 'Role'}</p>
             </div>
           </div>
           <button onClick={logout} className="text-dark-400 hover:text-red-400 transition-colors" title="Logout">

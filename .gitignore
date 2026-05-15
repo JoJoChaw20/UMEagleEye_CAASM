@@ -28,10 +28,15 @@ docker-compose.override.yml
 # Node
 node_modules/
 frontend/node_modules/
+workers/node_modules/
 frontend/dist/
+workers/dist/
 frontend/.env.production
 .tunnel-url
 .tunnel-pid
+
+# Wrangler
+workers/.wrangler/
 
 # OS
 .DS_Store

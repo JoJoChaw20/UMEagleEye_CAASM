@@ -1,0 +1,65 @@
+name = "umeagleeye-api"
+main = "src/index.ts"
+compatibility_date = "2024-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ── R2 bucket for PDF reports ──
+[[r2_buckets]]
+binding = "REPORTS_BUCKET"
+bucket_name = "umeagleeye-reports"
+
+# ── KV for rate-limiting / short-lived caches ──
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "d4fd3c299a5d4d4ab7e3d9061367f78e"
+
+# ── Queue: advisory generation jobs ──
+[[queues.producers]]
+queue = "advisory-queue"
+binding = "ADVISORY_QUEUE"
+
+[[queues.consumers]]
+queue = "advisory-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 2
+
+# ── Queue: PDF report generation jobs ──
+[[queues.producers]]
+queue = "report-queue"
+binding = "REPORT_QUEUE"
+
+[[queues.consumers]]
+queue = "report-queue"
+max_batch_size = 5
+max_batch_timeout = 60
+max_retries = 2
+
+# ── Cron triggers ──
+# Times are UTC; Malaysia (MYT) = UTC+8
+[triggers]
+crons = [
+  "*/15 * * * *",  # Drift audit every 15 min
+  "*/30 * * * *",  # SLA monitor every 30 min
+  "0 22 * * *",    # CTI ingestion 6:00 AM MYT
+  "0 23 * * *",    # NVD update  7:00 AM MYT
+  "0 16 * * *",    # Posture snapshot midnight MYT
+]
+
+# ── Secrets (set via: wrangler secret put VAR_NAME) ──
+# DATABASE_URL       — Neon PostgreSQL connection string
+# JWT_SECRET_KEY     — HS256 signing secret (min 32 chars)
+# GOOGLE_CLIENT_ID   — Google OAuth client ID
+# OPENROUTER_API_KEY — DeepSeek via OpenRouter
+# OTX_API_KEY        — AlienVault OTX
+# THREATFOX_API_KEY  — ThreatFox
+# NVD_API_KEY        — NIST NVD
+# TELEGRAM_BOT_TOKEN — Telegram bot
+# TELEGRAM_CHAT_ID   — Default notification chat
+
+[vars]
+APP_ENV = "production"
+OPENROUTER_MODEL = "deepseek/deepseek-chat"
+SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
+JWT_EXPIRE_MINUTES = "60"
+FRONTEND_URL = "https://umeagleeye.pages.dev"
