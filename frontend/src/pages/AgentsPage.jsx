@@ -173,7 +173,7 @@ function RegisterModal({ onClose, onSubmit }) {
 }
 
 // ── Config view/edit modal ────────────────────────────────────────
-function ConfigModal({ agent, onClose, onSave }) {
+function ConfigModal({ agent, onClose, onSave, readOnly }) {
   const [configText, setConfigText] = useState(JSON.stringify(agent.config || {}, null, 2))
   const [nameText, setNameText] = useState(agent.name)
   const [saving, setSaving] = useState(false)
@@ -190,7 +190,7 @@ function ConfigModal({ agent, onClose, onSave }) {
     }
     setSaving(true)
     try {
-      await onSave(agent.agent_id, { name: nameText, config })
+      await onSave(agent.agentId, { name: nameText, config })
       onClose()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to save config')
@@ -203,11 +203,19 @@ function ConfigModal({ agent, onClose, onSave }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="glass-card w-full max-w-lg p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Agent Config — {agent.name}</h2>
+          <h2 className="text-lg font-semibold text-white">
+            {readOnly ? 'View' : 'Edit'} Config — {agent.name}
+          </h2>
           <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {readOnly && (
+          <p className="text-xs text-dark-400 bg-dark-800/60 border border-dark-700/40 rounded-lg px-3 py-2">
+            View-only — you do not have permission to edit agent configuration.
+          </p>
+        )}
 
         {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
 
@@ -217,7 +225,8 @@ function ConfigModal({ agent, onClose, onSave }) {
             type="text"
             value={nameText}
             onChange={(e) => setNameText(e.target.value)}
-            className="input-field w-full text-sm"
+            disabled={readOnly}
+            className="input-field w-full text-sm disabled:opacity-50"
           />
         </div>
 
@@ -227,16 +236,21 @@ function ConfigModal({ agent, onClose, onSave }) {
             value={configText}
             onChange={(e) => setConfigText(e.target.value)}
             rows={10}
-            className="input-field w-full text-sm font-mono resize-none"
+            disabled={readOnly}
+            className="input-field w-full text-sm font-mono resize-none disabled:opacity-50"
           />
         </div>
 
         <div className="flex gap-3">
-          <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="btn-primary flex-1 text-sm flex items-center justify-center gap-2">
-            {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
-            Save Config
+          <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">
+            {readOnly ? 'Close' : 'Cancel'}
           </button>
+          {!readOnly && (
+            <button onClick={handleSave} disabled={saving} className="btn-primary flex-1 text-sm flex items-center justify-center gap-2">
+              {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
+              Save Config
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -279,14 +293,14 @@ export default function AgentsPage() {
 
   const handleSaveConfig = async (agentId, updates) => {
     await client.patch(`/agents/${agentId}`, updates)
-    setAgents(prev => prev.map(a => a.agent_id === agentId ? { ...a, ...updates } : a))
+    setAgents(prev => prev.map(a => a.agentId === agentId ? { ...a, ...updates } : a))
   }
 
   const handleDelete = async (agentId, name) => {
     if (!confirm(`Delete agent "${name}"? This cannot be undone.`)) return
     try {
       await client.delete(`/agents/${agentId}`)
-      setAgents(prev => prev.filter(a => a.agent_id !== agentId))
+      setAgents(prev => prev.filter(a => a.agentId !== agentId))
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to delete agent')
     }
@@ -342,16 +356,16 @@ export default function AgentsPage() {
             </thead>
             <tbody>
               {agents.map((a) => (
-                <tr key={a.agent_id}>
+                <tr key={a.agentId}>
                   <td>
                     <div>
                       <p className="font-medium text-white">{a.name}</p>
-                      <p className="text-xs text-dark-500 font-mono">{a.agent_id?.slice(0, 12)}...</p>
+                      <p className="text-xs text-dark-500 font-mono">{a.agentId?.slice(0, 12)}...</p>
                     </div>
                   </td>
                   <td><StatusBadge status={a.status} /></td>
-                  <td className="text-dark-400 text-sm">{relativeTime(a.last_heartbeat)}</td>
-                  <td className="font-mono text-sm text-accent-cyan">{a.gateway_ip || '—'}</td>
+                  <td className="text-dark-400 text-sm">{relativeTime(a.lastHeartbeat)}</td>
+                  <td className="font-mono text-sm text-accent-cyan">{a.gatewayIp || '—'}</td>
                   <td className="text-dark-400 text-sm">{a.version || '—'}</td>
                   <td>
                     <div className="flex items-center gap-1">
@@ -364,7 +378,7 @@ export default function AgentsPage() {
                       </button>
                       {canManage && (
                         <button
-                          onClick={() => handleDelete(a.agent_id, a.name)}
+                          onClick={() => handleDelete(a.agentId, a.name)}
                           className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
                           title="Delete Agent"
                         >
@@ -416,6 +430,7 @@ export default function AgentsPage() {
           agent={configAgent}
           onClose={() => setConfigAgent(null)}
           onSave={handleSaveConfig}
+          readOnly={!canManage}
         />
       )}
     </div>

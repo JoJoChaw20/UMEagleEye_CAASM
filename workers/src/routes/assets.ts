@@ -228,9 +228,18 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
+    const snapshot = {
+      os: existing.osInfo ?? {},
+      ports: (existing.osInfo as Record<string, unknown> | null)?.ports ?? [],
+      criticality_score: existing.criticalityScore,
+      is_internet_facing: existing.isInternetFacing,
+      hostname: existing.hostname,
+      captured_at: new Date().toISOString(),
+    }
+
     const [updated] = await db
       .update(assets)
-      .set({ baselineState: existing.osInfo, updatedAt: new Date() })
+      .set({ baselineState: snapshot, updatedAt: new Date() })
       .where(eq(assets.assetId, assetId))
       .returning()
 
@@ -238,6 +247,185 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
   } catch (err) {
     console.error('assets POST baseline error:', err)
     return c.json({ detail: 'Failed to set baseline' }, 500)
+  }
+})
+
+// ── POST /import ─── CSV bulk import ─────────────────────────────
+function parseCSVRow(line: string): string[] {
+  const result: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++ }
+      else { inQuotes = !inQuotes }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim())
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  result.push(current.trim())
+  return result
+}
+
+const VALID_DEVICE_TYPES = new Set(['server', 'workstation', 'network', 'iot', 'unknown'])
+
+app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+
+    let formData: FormData
+    try {
+      formData = await c.req.formData()
+    } catch {
+      return c.json({ detail: 'Request must be multipart/form-data' }, 400)
+    }
+
+    const file = formData.get('file') as File | null
+    if (!file || file.size === 0) {
+      return c.json({ detail: 'No CSV file provided' }, 400)
+    }
+
+    const text = await file.text()
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+
+    if (lines.length < 2) {
+      return c.json({ detail: 'CSV must have a header row and at least one data row' }, 400)
+    }
+
+    const headers = parseCSVRow(lines[0]!).map(h => h.toLowerCase().replace(/\s+/g, '_'))
+
+    if (!headers.includes('ip_address')) {
+      return c.json({ detail: 'CSV must include an "ip_address" column' }, 400)
+    }
+
+    // ── Phase 1: parse all rows (no DB calls) ─────────────────────
+    type ParsedRow = {
+      rowNum: number
+      ipAddress: string
+      hostname?: string
+      macAddress?: string
+      owner?: string
+      deviceType: 'server' | 'workstation' | 'network' | 'iot' | 'unknown'
+      hardwareVendor?: string
+      osInfo: Record<string, unknown>
+      criticalityScore: number
+      isInternetFacing: boolean
+    }
+
+    const parsed: ParsedRow[] = []
+    const errors: string[] = []
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCSVRow(lines[i]!)
+      const row: Record<string, string> = {}
+      headers.forEach((h, idx) => { row[h] = cols[idx] ?? '' })
+
+      const ipAddress = row['ip_address']
+      if (!ipAddress || !/^[\d.:/a-fA-F]+$/.test(ipAddress)) {
+        errors.push(`Row ${i + 1}: invalid or missing ip_address`)
+        continue
+      }
+
+      const rawScore = parseInt(row['criticality_score'] ?? '5')
+      const criticalityScore = isNaN(rawScore) ? 5 : Math.min(10, Math.max(1, rawScore))
+      const deviceTypeRaw = row['device_type']?.toLowerCase()
+      const deviceType = (VALID_DEVICE_TYPES.has(deviceTypeRaw ?? '') ? deviceTypeRaw : 'unknown') as ParsedRow['deviceType']
+      const isInternetFacing = row['is_internet_facing']?.toLowerCase() === 'true'
+
+      const osInfo: Record<string, unknown> = {}
+      if (row['os_name']) osInfo.name = row['os_name']
+      if (row['os_version']) osInfo.version = row['os_version']
+      if (row['open_ports']) {
+        osInfo.ports = row['open_ports'].split(/[\s,]+/).map(p => p.trim()).filter(Boolean)
+      }
+
+      parsed.push({
+        rowNum: i + 1,
+        ipAddress,
+        hostname: row['hostname'] || undefined,
+        macAddress: row['mac_address'] || undefined,
+        owner: row['owner'] || undefined,
+        deviceType,
+        hardwareVendor: row['hardware_vendor'] || undefined,
+        osInfo,
+        criticalityScore,
+        isInternetFacing,
+      })
+    }
+
+    if (parsed.length === 0) {
+      return c.json({ imported: 0, updated: 0, errors })
+    }
+
+    // ── Phase 2: one SELECT to find all existing IPs (1 subrequest) ─
+    const allIps = parsed.map(r => r.ipAddress)
+    const tenantConditions = user.tenantId
+      ? and(sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`, eq(assets.tenantId, user.tenantId))
+      : sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`
+
+    const existingRows = await db
+      .select({ assetId: assets.assetId, ipAddress: assets.ipAddress })
+      .from(assets)
+      .where(tenantConditions)
+
+    const existingMap = new Map(existingRows.map(r => [r.ipAddress, r.assetId]))
+
+    const toInsert = parsed.filter(r => !existingMap.has(r.ipAddress))
+    const toUpdate = parsed.filter(r => existingMap.has(r.ipAddress))
+
+    // ── Phase 3: batch INSERT all new rows (1 subrequest) ──────────
+    if (toInsert.length > 0) {
+      try {
+        await db.insert(assets).values(
+          toInsert.map(r => ({
+            ipAddress: r.ipAddress,
+            hostname: r.hostname,
+            macAddress: r.macAddress,
+            owner: r.owner,
+            deviceType: r.deviceType,
+            hardwareVendor: r.hardwareVendor,
+            osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {},
+            criticalityScore: r.criticalityScore,
+            isInternetFacing: r.isInternetFacing,
+            tenantId: user.tenantId ?? null,
+          }))
+        )
+      } catch (insertErr) {
+        toInsert.forEach(r => errors.push(`Row ${r.rowNum} (${r.ipAddress}): ${(insertErr as Error).message}`))
+        toInsert.length = 0
+      }
+    }
+
+    // ── Phase 4: individual UPDATEs for existing assets (M subrequests) ─
+    for (const r of toUpdate) {
+      const assetId = existingMap.get(r.ipAddress)!
+      try {
+        await db.update(assets).set({
+          ...(r.hostname ? { hostname: r.hostname } : {}),
+          ...(r.macAddress ? { macAddress: r.macAddress } : {}),
+          ...(r.owner ? { owner: r.owner } : {}),
+          deviceType: r.deviceType,
+          ...(r.hardwareVendor ? { hardwareVendor: r.hardwareVendor } : {}),
+          ...(Object.keys(r.osInfo).length > 0 ? { osInfo: r.osInfo } : {}),
+          criticalityScore: r.criticalityScore,
+          isInternetFacing: r.isInternetFacing,
+          updatedAt: new Date(),
+        }).where(eq(assets.assetId, assetId))
+      } catch (updateErr) {
+        errors.push(`Row ${r.rowNum} (${r.ipAddress}): ${(updateErr as Error).message}`)
+        toUpdate.splice(toUpdate.indexOf(r), 1)
+      }
+    }
+
+    return c.json({ imported: toInsert.length, updated: toUpdate.length, errors })
+  } catch (err) {
+    console.error('assets POST /import error:', err)
+    return c.json({ detail: 'Failed to import assets' }, 500)
   }
 })
 

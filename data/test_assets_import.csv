@@ -1,0 +1,29 @@
+ip_address,hostname,mac_address,owner,device_type,criticality_score,is_internet_facing,hardware_vendor,os_name,os_version,open_ports
+192.168.1.2,fw-01,00:1A:2B:3C:4D:01,Network Team / netops@cyberforce.com,network,10,true,Fortinet,FortiOS,7.4.1,22/tcp 443/tcp 8443/tcp
+192.168.1.3,fw-02,00:1A:2B:3C:4D:02,Network Team / netops@cyberforce.com,network,10,true,Fortinet,FortiOS,7.4.1,22/tcp 443/tcp 8443/tcp
+192.168.1.5,core-sw-01,00:1A:2B:3C:4D:05,Network Team / netops@cyberforce.com,network,9,false,Cisco,IOS XE,17.9.4,22/tcp 23/tcp 161/udp
+192.168.1.6,core-sw-02,00:1A:2B:3C:4D:06,Network Team / netops@cyberforce.com,network,9,false,Cisco,IOS XE,17.9.4,22/tcp 23/tcp 161/udp
+192.168.1.20,web-server-01,00:1A:2B:3C:4D:20,IT Dept / webmaster@cyberforce.com,server,9,true,Dell PowerEdge,Ubuntu,22.04 LTS,22/tcp 80/tcp 443/tcp
+192.168.1.21,web-server-02,00:1A:2B:3C:4D:21,IT Dept / webmaster@cyberforce.com,server,9,true,Dell PowerEdge,Ubuntu,22.04 LTS,22/tcp 80/tcp 443/tcp
+192.168.1.30,db-server-01,00:1A:2B:3C:4D:30,IT Dept / dba@cyberforce.com,server,10,false,HPE ProLiant,Ubuntu,20.04 LTS,22/tcp 3306/tcp 33060/tcp
+192.168.1.31,db-server-02,00:1A:2B:3C:4D:31,IT Dept / dba@cyberforce.com,server,10,false,HPE ProLiant,Ubuntu,20.04 LTS,22/tcp 5432/tcp
+192.168.1.40,mail-server-01,00:1A:2B:3C:4D:40,IT Dept / sysadmin@cyberforce.com,server,8,true,Dell PowerEdge,Windows Server,2022,25/tcp 465/tcp 587/tcp 993/tcp 3389/tcp
+192.168.1.41,file-server-01,00:1A:2B:3C:4D:41,IT Dept / sysadmin@cyberforce.com,server,8,false,HPE ProLiant,Windows Server,2019,445/tcp 139/tcp 3389/tcp
+192.168.1.50,dns-server-01,00:1A:2B:3C:4D:50,IT Dept / sysadmin@cyberforce.com,server,7,false,Dell PowerEdge,Ubuntu,22.04 LTS,22/tcp 53/tcp 53/udp
+192.168.1.51,ntp-server-01,00:1A:2B:3C:4D:51,IT Dept / sysadmin@cyberforce.com,server,5,false,Dell,Ubuntu,20.04 LTS,22/tcp 123/udp
+192.168.1.60,docker-host-01,00:1A:2B:3C:4D:60,DevOps / devops@cyberforce.com,server,8,false,Dell PowerEdge,Ubuntu,22.04 LTS,"22/tcp 80/tcp 443/tcp 2376/tcp 8080/tcp 9000/tcp"
+192.168.1.70,k8s-master-01,00:1A:2B:3C:4D:70,DevOps / devops@cyberforce.com,server,9,false,HPE,Ubuntu,22.04 LTS,"22/tcp 443/tcp 6443/tcp 10250/tcp 10259/tcp"
+192.168.2.10,workstation-03,00:2A:3B:4C:5D:10,Finance Dept / tan.wei@cyberforce.com,workstation,5,false,Lenovo,Windows,11,135/tcp 3389/tcp 445/tcp
+192.168.2.11,workstation-04,00:2A:3B:4C:5D:11,Finance Dept / lim.hui@cyberforce.com,workstation,5,false,Lenovo,Windows,11,135/tcp 3389/tcp 445/tcp
+192.168.2.12,workstation-05,00:2A:3B:4C:5D:12,Finance Dept / ahmad.faris@cyberforce.com,workstation,5,false,Dell,Windows,10,135/tcp 3389/tcp
+192.168.2.20,workstation-06,00:2A:3B:4C:5D:20,R&D Dept / nurul.ain@cyberforce.com,workstation,6,false,Apple,macOS,14.4,22/tcp 5900/tcp
+192.168.2.21,workstation-07,00:2A:3B:4C:5D:21,R&D Dept / jason.loh@cyberforce.com,workstation,6,false,Apple,macOS,14.4,22/tcp 5900/tcp
+192.168.2.30,workstation-08,00:2A:3B:4C:5D:30,Management / ceo@cyberforce.com,workstation,7,false,Apple,macOS,14.4,22/tcp
+192.168.3.10,ip-cam-floor1,00:3A:4B:5C:6D:10,Facilities / facilities@cyberforce.com,iot,6,false,Hikvision,Linux (embedded),2.6.32,80/tcp 554/tcp 8000/tcp
+192.168.3.11,ip-cam-floor2,00:3A:4B:5C:6D:11,Facilities / facilities@cyberforce.com,iot,6,false,Hikvision,Linux (embedded),2.6.32,80/tcp 554/tcp 8000/tcp
+192.168.3.20,smart-ups-01,00:3A:4B:5C:6D:20,Facilities / facilities@cyberforce.com,iot,7,false,APC,AOS,6.9.6,80/tcp 443/tcp 161/udp
+192.168.3.30,hvac-controller,00:3A:4B:5C:6D:30,Facilities / facilities@cyberforce.com,iot,8,false,Siemens,BACnet/IP,,47808/udp 80/tcp
+192.168.4.10,vpn-gateway-01,00:4A:5B:6C:7D:10,Security Team / secops@cyberforce.com,network,10,true,Palo Alto,PAN-OS,11.0.2,"22/tcp 443/tcp 1194/udp 4501/udp"
+192.168.4.20,ids-sensor-01,00:4A:5B:6C:7D:20,Security Team / secops@cyberforce.com,server,8,false,Dell,Ubuntu,22.04 LTS,22/tcp
+192.168.4.30,siem-server-01,00:4A:5B:6C:7D:30,Security Team / secops@cyberforce.com,server,9,false,HPE,Ubuntu,22.04 LTS,"22/tcp 514/tcp 514/udp 9200/tcp 5601/tcp"
+192.168.5.10,backup-server-01,00:5A:6B:7C:8D:10,IT Dept / sysadmin@cyberforce.com,server,8,false,Synology,DSM,7.2,22/tcp 80/tcp 443/tcp 5000/tcp

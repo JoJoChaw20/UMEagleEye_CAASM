@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter, RefreshCw, Activity } from 'lucide-react'
 import { PieChart, Pie, Cell, AreaChart, Area, BarChart, Bar, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 import client from '../api/client'
@@ -32,9 +32,7 @@ export default function AlertsPage() {
   const [severityFilter, setSeverityFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
 
-  useEffect(() => { loadData() }, [page, severityFilter, typeFilter])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true)
     try {
       const params = { page, page_size: 15 }
@@ -54,7 +52,9 @@ export default function AlertsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [page, severityFilter, typeFilter])
+
+  useEffect(() => { loadData() }, [loadData])
 
   const triggerAdvisory = async (eventId) => {
     try {

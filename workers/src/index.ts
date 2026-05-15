@@ -25,9 +25,14 @@ const app = new Hono<{ Bindings: Env }>()
 app.use('*', logger())
 
 app.use('*', async (c, next) => {
-  const origin = c.env.FRONTEND_URL ?? 'https://umeagleeye.pages.dev'
   const corsHandler = cors({
-    origin: [origin, 'http://localhost:5173', 'http://localhost:3000'],
+    origin: [
+      'https://umeagleeye.csnet.my',
+      'https://umeagleeye.pages.dev',
+      c.env.FRONTEND_URL ?? '',
+      'http://localhost:5173',
+      'http://localhost:3000',
+    ].filter(Boolean),
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
     maxAge: 86400,

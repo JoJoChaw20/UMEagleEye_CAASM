@@ -82,7 +82,7 @@ function NewScanModal({ onClose, onSubmit, agents }) {
             <select value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
               <option value="">Auto-select</option>
               {agents.map((a) => (
-                <option key={a.agent_id} value={a.agent_id}>{a.name} ({a.status})</option>
+                <option key={a.agentId} value={a.agentId}>{a.name} ({a.status})</option>
               ))}
             </select>
           </div>
@@ -121,7 +121,7 @@ function NewScanModal({ onClose, onSubmit, agents }) {
 
 // ── Discovered hosts side panel ────────────────────────────────────
 function HostsPanel({ scan, onClose, onAddAsset }) {
-  const hosts = scan?.raw_results || []
+  const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
 
   const handleAdd = async (host) => {
@@ -303,18 +303,18 @@ export default function DiscoveryPage() {
             <tbody>
               {scans.map((scan) => (
                 <tr
-                  key={scan.scan_id}
+                  key={scan.scanId}
                   className={scan.status === 'completed' ? 'cursor-pointer hover:bg-dark-700/30' : ''}
                   onClick={() => scan.status === 'completed' && setSelectedScan(scan)}
                 >
-                  <td className="font-mono text-xs text-dark-400">{scan.scan_id?.slice(0, 12)}...</td>
-                  <td className="text-dark-300 text-sm">{scan.agent_id?.slice(0, 8) || '—'}</td>
+                  <td className="font-mono text-xs text-dark-400">{scan.scanId?.slice(0, 12)}...</td>
+                  <td className="text-dark-300 text-sm">{scan.agentId?.slice(0, 8) || '—'}</td>
                   <td className="font-mono text-sm text-accent-cyan">{scan.subnet || '—'}</td>
-                  <td className="text-xs text-dark-300 capitalize">{scan.scan_type || 'active'}</td>
+                  <td className="text-xs text-dark-300 capitalize">{scan.scanType || 'active'}</td>
                   <td><StatusBadge status={scan.status} /></td>
-                  <td className="font-medium text-white">{scan.hosts_discovered ?? 0}</td>
-                  <td className="text-dark-400 text-xs">{relativeTime(scan.started_at)}</td>
-                  <td className="text-dark-400 text-xs">{relativeTime(scan.completed_at)}</td>
+                  <td className="font-medium text-white">{scan.hostsDiscovered ?? 0}</td>
+                  <td className="text-dark-400 text-xs">{relativeTime(scan.startedAt)}</td>
+                  <td className="text-dark-400 text-xs">{relativeTime(scan.completedAt)}</td>
                   <td>
                     {scan.status === 'completed' && (
                       <ChevronRight className="w-4 h-4 text-dark-400" />

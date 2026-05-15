@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Globe, RefreshCw, Shield } from 'lucide-react'
-import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import { BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import client from '../api/client'
 
 const MITRE_TACTICS = [
@@ -152,7 +152,7 @@ export default function ThreatIntelPage() {
                   <Tooltip contentStyle={{ background: '#1e2028', border: '1px solid #3e4047', borderRadius: '8px', color: '#e2e3e5' }} />
                   <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                     {matrixChartData.map((entry, idx) => (
-                      <Bar key={idx} dataKey="count" fill={entry.fill} />
+                      <Cell key={idx} fill={entry.fill} />
                     ))}
                   </Bar>
                 </BarChart>

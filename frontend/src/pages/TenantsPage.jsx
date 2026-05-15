@@ -323,18 +323,6 @@ export default function TenantsPage() {
   const [editTenant, setEditTenant] = useState(null)
   const [usersTenant, setUsersTenant] = useState(null)
 
-  // Redirect non-superadmin
-  if (user && user.role !== 'superadmin') {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center text-dark-400">
-          <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p>Access denied. SuperAdmin only.</p>
-        </div>
-      </div>
-    )
-  }
-
   const loadTenants = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -342,7 +330,6 @@ export default function TenantsPage() {
       const res = await client.get('/tenants')
       const rows = res.data.tenants || []
       setTenants(rows)
-      // Load detail (user count, asset count) for each tenant
       const details = {}
       await Promise.allSettled(rows.map(async (t) => {
         try {
@@ -359,6 +346,18 @@ export default function TenantsPage() {
   }, [])
 
   useEffect(() => { loadTenants() }, [loadTenants])
+
+  // Redirect non-superadmin (after all hooks)
+  if (user && user.role !== 'superadmin') {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center text-dark-400">
+          <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p>Access denied. SuperAdmin only.</p>
+        </div>
+      </div>
+    )
+  }
 
   const handleCreate = async ({ name, slug }) => {
     await client.post('/tenants', { name, slug })

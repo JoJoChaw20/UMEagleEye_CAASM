@@ -40,22 +40,17 @@ export default function DashboardPage() {
   const score = posture?.overall_score ?? 100
   const scoreColor = score >= 80 ? '#00e676' : score >= 50 ? '#ffc400' : '#ff5252'
 
-  // Mock data for charts when no data is available
-  const trendData = history.length > 0 ? history.map((h, i) => ({
+  const trendData = history.map((h, i) => ({
     day: `Day ${i + 1}`,
     score: h.overall_score,
     assets: h.total_assets,
-  })) : Array.from({ length: 14 }, (_, i) => ({
-    day: `Day ${i + 1}`,
-    score: Math.floor(70 + Math.random() * 25),
-    assets: Math.floor(10 + Math.random() * 40),
   }))
 
   const severityData = [
-    { name: 'Critical', value: events.filter(e => e.severity === 'critical').length || 2, color: SEVERITY_COLORS.critical },
-    { name: 'High', value: events.filter(e => e.severity === 'high').length || 5, color: SEVERITY_COLORS.high },
-    { name: 'Medium', value: events.filter(e => e.severity === 'medium').length || 8, color: SEVERITY_COLORS.medium },
-    { name: 'Low', value: events.filter(e => e.severity === 'low').length || 12, color: SEVERITY_COLORS.low },
+    { name: 'Critical', value: events.filter(e => e.severity === 'critical').length, color: SEVERITY_COLORS.critical },
+    { name: 'High', value: events.filter(e => e.severity === 'high').length, color: SEVERITY_COLORS.high },
+    { name: 'Medium', value: events.filter(e => e.severity === 'medium').length, color: SEVERITY_COLORS.medium },
+    { name: 'Low', value: events.filter(e => e.severity === 'low').length, color: SEVERITY_COLORS.low },
   ]
 
   return (

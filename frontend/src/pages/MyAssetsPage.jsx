@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -202,6 +202,243 @@ function EditableCell({ value, type = 'text', onSave, readOnly }) {
   )
 }
 
+// ── CSV Import Modal ──────────────────────────────────────────────
+const TEMPLATE_HEADERS = [
+  'ip_address', 'hostname', 'mac_address', 'owner',
+  'device_type', 'criticality_score', 'is_internet_facing',
+  'hardware_vendor', 'os_name', 'os_version', 'open_ports',
+]
+const TEMPLATE_SAMPLE = [
+  ['192.168.1.1', 'router-01', 'AA:BB:CC:11:22:33', 'Network Team / netops@corp.com',
+   'network', '9', 'true', 'Cisco', 'IOS XE', '16.9', '22/tcp 23/tcp 443/tcp'],
+  ['192.168.1.10', 'server-01', 'AA:BB:CC:44:55:66', 'IT Dept / admin@corp.com',
+   'server', '8', 'false', 'Dell', 'Ubuntu', '22.04', '22/tcp 80/tcp 443/tcp 3306/tcp'],
+  ['192.168.1.50', 'workstation-01', '', 'HR Dept / alice@corp.com',
+   'workstation', '4', 'false', 'HP', 'Windows', '11', '3389/tcp'],
+]
+
+function parseCSVLine(line) {
+  const result = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++ }
+      else { inQuotes = !inQuotes }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim()); current = ''
+    } else {
+      current += ch
+    }
+  }
+  result.push(current.trim())
+  return result
+}
+
+function ImportModal({ onClose, onImport }) {
+  const [file, setFile] = useState(null)
+  const [headers, setHeaders] = useState([])
+  const [preview, setPreview] = useState([])
+  const [importing, setImporting] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  const downloadTemplate = () => {
+    const escape = (v) => (v.includes(',') || v.includes(' ') ? `"${v}"` : v)
+    const rows = [TEMPLATE_HEADERS, ...TEMPLATE_SAMPLE].map(r => r.map(escape).join(','))
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'assets_import_template.csv'
+    document.body.appendChild(a); a.click()
+    document.body.removeChild(a); URL.revokeObjectURL(url)
+  }
+
+  const handleFileChange = (e) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    setFile(f); setResult(null); setError(null)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const lines = ev.target.result.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+      if (lines.length < 2) { setError('File must have a header row and at least one data row'); return }
+      const hdrs = parseCSVLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, '_'))
+      const rows = lines.slice(1, 6).map(line => {
+        const cols = parseCSVLine(line)
+        const row = {}
+        hdrs.forEach((h, i) => { row[h] = cols[i] ?? '' })
+        return row
+      })
+      setHeaders(hdrs); setPreview(rows)
+    }
+    reader.readAsText(f)
+  }
+
+  const handleImport = async () => {
+    if (!file) return
+    setImporting(true); setError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await client.post('/assets/import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setResult(res.data)
+      await onImport()
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Import failed')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const DISPLAY_COLS = ['ip_address', 'hostname', 'device_type', 'criticality_score', 'owner', 'os_name', 'open_ports']
+  const visibleHeaders = headers.filter(h => DISPLAY_COLS.includes(h))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="glass-card w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Import Assets via CSV</h2>
+            <p className="text-xs text-dark-400 mt-0.5">Bulk import assets with OS, port and criticality data</p>
+          </div>
+          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Template download */}
+        <div className="flex items-center justify-between p-3 bg-dark-800/60 border border-dark-700/40 rounded-xl">
+          <div className="flex items-center gap-3">
+            <FileText className="w-5 h-5 text-eagle-400 flex-shrink-0" />
+            <div>
+              <p className="text-sm text-white font-medium">Download CSV Template</p>
+              <p className="text-xs text-dark-400">Includes sample rows with all supported columns</p>
+            </div>
+          </div>
+          <button onClick={downloadTemplate} className="btn-secondary text-sm flex items-center gap-2">
+            <Download className="w-4 h-4" />
+            Template
+          </button>
+        </div>
+
+        {/* Supported columns hint */}
+        <div className="p-3 bg-dark-800/40 rounded-xl border border-dark-700/30">
+          <p className="text-xs text-dark-400 mb-1.5 font-medium">Supported columns</p>
+          <div className="flex flex-wrap gap-1.5">
+            {TEMPLATE_HEADERS.map(h => (
+              <span key={h} className={`text-xs px-2 py-0.5 rounded font-mono ${h === 'ip_address' ? 'bg-eagle-500/20 text-eagle-400 border border-eagle-500/30' : 'bg-dark-700/60 text-dark-300'}`}>
+                {h}{h === 'ip_address' && ' *'}
+              </span>
+            ))}
+          </div>
+          <p className="text-xs text-dark-500 mt-2">
+            <span className="text-eagle-400">open_ports</span>: space or comma-separated (e.g. <code className="font-mono">22/tcp 80/tcp 443/tcp</code>)
+          </p>
+        </div>
+
+        {/* File input */}
+        <div>
+          <label className="block text-xs text-dark-400 mb-2">Select CSV File</label>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleFileChange}
+            className="block w-full text-sm text-dark-300
+              file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+              file:text-sm file:font-medium file:bg-eagle-500/20 file:text-eagle-400
+              hover:file:bg-eagle-500/30 cursor-pointer"
+          />
+        </div>
+
+        {/* Preview table */}
+        {preview.length > 0 && !result && (
+          <div>
+            <p className="text-xs text-dark-400 mb-2">Preview — first {preview.length} row(s)</p>
+            <div className="overflow-x-auto rounded-xl border border-dark-700/40">
+              <table className="w-full text-xs">
+                <thead className="bg-dark-800/80">
+                  <tr>
+                    {visibleHeaders.map(h => (
+                      <th key={h} className="px-3 py-2 text-left text-dark-400 font-medium whitespace-nowrap">
+                        {h.replace(/_/g, ' ')}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.map((row, i) => (
+                    <tr key={i} className="border-t border-dark-700/30">
+                      {visibleHeaders.map(h => (
+                        <td key={h} className="px-3 py-2 text-dark-300 max-w-[150px] truncate" title={row[h]}>
+                          {row[h] || <span className="text-dark-600">—</span>}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>
+        )}
+
+        {/* Result */}
+        {result && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-xl text-center">
+                <p className="text-3xl font-bold text-green-400">{result.imported}</p>
+                <p className="text-xs text-dark-400 mt-1">New assets created</p>
+              </div>
+              <div className="p-4 bg-eagle-500/10 border border-eagle-500/30 rounded-xl text-center">
+                <p className="text-3xl font-bold text-eagle-400">{result.updated}</p>
+                <p className="text-xs text-dark-400 mt-1">Existing assets updated</p>
+              </div>
+            </div>
+            {result.errors?.length > 0 && (
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl">
+                <p className="text-xs font-medium text-red-400 mb-2">{result.errors.length} row(s) skipped:</p>
+                <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                  {result.errors.map((e, i) => (
+                    <p key={i} className="text-xs text-dark-400 font-mono">{e}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Buttons */}
+        <div className="flex gap-3 pt-1">
+          <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">
+            {result ? 'Done' : 'Cancel'}
+          </button>
+          {!result && (
+            <button
+              onClick={handleImport}
+              disabled={!file || importing}
+              className="btn-primary flex-1 text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {importing
+                ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                : <Upload className="w-4 h-4" />
+              }
+              {importing ? 'Importing…' : 'Import Assets'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────
 export default function MyAssetsPage() {
   const { user } = useAuth()
@@ -209,6 +446,7 @@ export default function MyAssetsPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [error, setError] = useState(null)
 
   const isReadOnly = user?.role === 'business_owner'
@@ -233,6 +471,10 @@ export default function MyAssetsPage() {
 
   const handleAddAsset = async (form) => {
     await client.post('/assets', form)
+    await loadAssets()
+  }
+
+  const handleImportDone = async () => {
     await loadAssets()
   }
 
@@ -269,7 +511,7 @@ export default function MyAssetsPage() {
   // Filter by search
   const filtered = search
     ? assets.filter(a =>
-        a.ip_address?.includes(search) ||
+        a.ipAddress?.includes(search) ||
         a.hostname?.toLowerCase().includes(search.toLowerCase())
       )
     : assets
@@ -283,10 +525,16 @@ export default function MyAssetsPage() {
           <p className="text-dark-400 text-sm mt-1">Manually managed asset inventory</p>
         </div>
         {!isReadOnly && (
-          <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-2">
-            <Plus className="w-4 h-4" />
-            Add Asset
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-2">
+              <Upload className="w-4 h-4" />
+              Import CSV
+            </button>
+            <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-2">
+              <Plus className="w-4 h-4" />
+              Add Asset
+            </button>
+          </div>
         )}
       </div>
 
@@ -332,51 +580,51 @@ export default function MyAssetsPage() {
             </thead>
             <tbody>
               {filtered.map((a) => (
-                <tr key={a.asset_id}>
-                  <td className="font-mono text-sm text-accent-cyan">{a.ip_address}</td>
+                <tr key={a.assetId}>
+                  <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
                   <td className="font-medium text-white">{a.hostname || '—'}</td>
                   <td>
-                    <span className="text-xs text-dark-300 capitalize">{a.device_type}</span>
+                    <span className="text-xs text-dark-300 capitalize">{a.deviceType}</span>
                   </td>
                   <td>
                     <EditableCell
                       value={a.owner}
                       readOnly={isReadOnly}
-                      onSave={(v) => handleUpdate(a.asset_id, 'owner', v)}
+                      onSave={(v) => handleUpdate(a.assetId, 'owner', v)}
                     />
                   </td>
                   <td>
                     {isReadOnly ? (
-                      <CriticalityBadge score={a.criticality_score} />
+                      <CriticalityBadge score={a.criticalityScore} />
                     ) : (
                       <div className="flex items-center gap-2">
-                        <CriticalityBadge score={a.criticality_score} />
+                        <CriticalityBadge score={a.criticalityScore} />
                         <input
                           type="range"
                           min="1"
                           max="10"
-                          value={a.criticality_score}
-                          onChange={(e) => handleUpdate(a.asset_id, 'criticality_score', Number(e.target.value))}
+                          value={a.criticalityScore}
+                          onChange={(e) => handleUpdate(a.assetId, 'criticality_score', Number(e.target.value))}
                           className="w-20 accent-eagle-500"
                         />
                       </div>
                     )}
                   </td>
                   <td>
-                    {a.is_internet_facing
+                    {a.isInternetFacing
                       ? <span className="text-xs text-yellow-400 font-medium">Yes</span>
                       : <span className="text-xs text-dark-500">No</span>
                     }
                   </td>
                   <td className="text-dark-400 text-xs">
-                    {a.last_scanned ? new Date(a.last_scanned).toLocaleString() : '—'}
+                    {a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}
                   </td>
                   <td>
                     <div className="flex items-center gap-1">
                       {!isReadOnly && (
                         <button
-                          onClick={() => handleBaseline(a.asset_id)}
-                          className={`p-1.5 rounded transition-colors ${a.baseline_state ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`}
+                          onClick={() => handleBaseline(a.assetId)}
+                          className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`}
                           title="Set Baseline"
                         >
                           <Bookmark className="w-4 h-4" />
@@ -384,7 +632,7 @@ export default function MyAssetsPage() {
                       )}
                       {canDelete && (
                         <button
-                          onClick={() => handleDelete(a.asset_id)}
+                          onClick={() => handleDelete(a.assetId)}
                           className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
                           title="Delete Asset"
                         >
@@ -419,6 +667,14 @@ export default function MyAssetsPage() {
         <AddAssetModal
           onClose={() => setShowAdd(false)}
           onSave={handleAddAsset}
+        />
+      )}
+
+      {/* Import Modal */}
+      {showImport && (
+        <ImportModal
+          onClose={() => setShowImport(false)}
+          onImport={handleImportDone}
         />
       )}
     </div>

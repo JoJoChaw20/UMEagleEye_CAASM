@@ -18,6 +18,67 @@ async function sha256Hex(input: string): Promise<string> {
     .join('')
 }
 
+// ── GET / ─── list scans for authenticated user ──────────────────
+app.get('/', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+
+    let rows = await db
+      .select()
+      .from(scanResults)
+      .limit(100)
+
+    if (user.role !== 'superadmin' && user.tenantId) {
+      rows = rows.filter(r => r.tenantId === user.tenantId)
+    }
+
+    return c.json({ scans: rows, total: rows.length })
+  } catch (err) {
+    console.error('scans GET / error:', err)
+    return c.json({ detail: 'Failed to fetch scans' }, 500)
+  }
+})
+
+// ── GET /pending ─── agent polls for pending scans ───────────────
+app.get('/pending', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return c.json({ detail: 'Missing or invalid Authorization header' }, 401)
+    }
+    const incomingKey = authHeader.slice(7)
+    const enc = new TextEncoder()
+    const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(incomingKey))
+    const incomingKeyHash = Array.from(new Uint8Array(hashBuf))
+      .map(b => b.toString(16).padStart(2, '0')).join('')
+
+    const agentId = c.req.header('X-Agent-ID')
+    if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
+
+    const db = getDb(c.env.DATABASE_URL)
+    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+    if (!agent || incomingKeyHash !== agent.apiKeyHash) {
+      return c.json({ detail: 'Invalid agent credentials' }, 401)
+    }
+
+    await db.update(agents)
+      .set({ status: 'online', lastHeartbeat: new Date() })
+      .where(eq(agents.agentId, agentId))
+
+    const pending = await db
+      .select()
+      .from(scanResults)
+      .where(and(eq(scanResults.agentId, agentId), eq(scanResults.status, 'pending')))
+      .limit(5)
+
+    return c.json({ scans: pending })
+  } catch (err) {
+    console.error('scans GET /pending error:', err)
+    return c.json({ detail: 'Failed to fetch pending scans' }, 500)
+  }
+})
+
 // ── POST /active ─────────────────────────────────────────────────
 const activeScanSchema = z.object({
   subnet: z.string().optional(),

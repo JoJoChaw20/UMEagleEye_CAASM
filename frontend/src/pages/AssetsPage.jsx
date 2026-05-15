@@ -119,32 +119,32 @@ export default function AssetsPage() {
                 <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th>Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
                 <tbody>
                   {assets.map((a) => (
-                    <tr key={a.asset_id}>
-                      <td>{icon(a.device_type)}</td>
+                    <tr key={a.assetId}>
+                      <td>{icon(a.deviceType)}</td>
                       <td className="font-medium text-white">{a.hostname || '—'}</td>
-                      <td className="font-mono text-sm text-accent-cyan">{a.ip_address}</td>
-                      <td className="text-dark-300 text-sm">{a.hardware_vendor || '—'}</td>
-                      <td><span className="text-xs">{a.criticality_score}/10</span></td>
-                      <td>{a.baseline_state ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
-                      <td className="text-dark-400 text-xs">{a.last_scanned ? new Date(a.last_scanned).toLocaleString() : '—'}</td>
+                      <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
+                      <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>
+                      <td><span className="text-xs">{a.criticalityScore}/10</span></td>
+                      <td>{a.baselineState ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
+                      <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
                       <td>
                         <div className="flex items-center gap-1">
                           <button
-                            onClick={() => triggerSbomScan(a.asset_id)}
+                            onClick={() => triggerSbomScan(a.assetId)}
                             className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
                             title="Scan SBOM"
                           >
                             <Shield className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => triggerSetBaseline(a.asset_id)}
-                            className={`p-1.5 rounded transition-colors ${a.baseline_state ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
+                            onClick={() => triggerSetBaseline(a.assetId)}
+                            className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
                             title="Set Baseline"
                           >
                             <Bookmark className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => setBlastRadiusAssetId(a.asset_id)}
+                            onClick={() => setBlastRadiusAssetId(a.assetId)}
                             className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
                             title="Blast Radius"
                           >

@@ -39,7 +39,7 @@ async function checkSlaBreaches(db: ReturnType<typeof getDb>, telegramToken: str
   }
 }
 
-export async function handleCron(event: ScheduledEvent, env: Env): Promise<void> {
+export async function handleCron(event: ScheduledController, env: Env): Promise<void> {
   const db = getDb(env.DATABASE_URL)
   const name = getCronName(event.cron)
   console.log(`[cron] Running: ${name} (${event.cron})`)
