@@ -71,16 +71,20 @@ try {
         Write-Ok "Set secret: $key"
     }
 
-    # ── Deploy the Worker ──────────────────────────────────────────
+    # ── Deploy the Worker and capture its URL ─────────────────────
     Write-Step "Deploying Worker: $WorkerName"
-    npx wrangler deploy
+    $deployLogs = npx wrangler deploy 2>&1
+    $deployLogs | Write-Host
     if ($LASTEXITCODE -ne 0) { throw "wrangler deploy failed" }
     Write-Ok "Worker deployed"
 
-    # Get the Workers URL
-    $workersUrl = "https://$WorkerName.$((npx wrangler whoami 2>&1 | Select-String 'account ID').ToString() -replace '.*ID: (.+)', '$1' ).workers.dev"
-    # Fallback: use standard pattern
-    $workersUrl = "https://$WorkerName.workers.dev"
+    # Extract the actual URL from wrangler output (e.g. https://umeagleeye-api.syntaxch404.workers.dev)
+    $urlLine = $deployLogs | Where-Object { $_ -match 'https://[^\s]+\.workers\.dev' } | Select-Object -First 1
+    if ($urlLine -match '(https://[^\s]+\.workers\.dev)') {
+        $workersUrl = $matches[1]
+    } else {
+        $workersUrl = "https://$WorkerName.workers.dev"
+    }
     Write-Ok "Workers URL: $workersUrl"
 
 } finally {
@@ -106,6 +110,10 @@ if (-not [string]::IsNullOrEmpty($googleClientId)) {
 Write-Step "Building and deploying frontend to Cloudflare Pages"
 Push-Location (Join-Path $ScriptDir "frontend")
 try {
+    npm install
+    if ($LASTEXITCODE -ne 0) { throw "npm install (frontend) failed" }
+    Write-Ok "Frontend dependencies installed"
+
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
     Write-Ok "Build done"

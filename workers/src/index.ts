@@ -15,6 +15,7 @@ import relationshipRoutes from './routes/relationships'
 import agentRoutes from './routes/agents'
 import topologyRoutes from './routes/topology'
 import tenantRoutes from './routes/tenants'
+import notificationRoutes from './routes/notifications'
 
 import { handleQueue } from './queues/consumer'
 import { handleCron } from './cron/triggers'
@@ -59,6 +60,7 @@ api.route('/relationships', relationshipRoutes)
 api.route('/agents', agentRoutes)
 api.route('/topology', topologyRoutes)
 api.route('/tenants', tenantRoutes)
+api.route('/notifications', notificationRoutes)
 
 app.route('/api/v1', api)
 

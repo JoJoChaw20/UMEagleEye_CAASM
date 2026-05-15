@@ -24,9 +24,9 @@ export default function AdvisoriesPage() {
 
   useEffect(() => { fetchAdvisories() }, [fetchAdvisories])
 
-  const handleResolve = async (id) => {
+  const handleStatus = async (id, status) => {
     try {
-      await client.patch(`/advisories/${id}/status`, { status: 'resolved' })
+      await client.patch(`/advisories/${id}/status`, { status })
       setSelectedAdvisory(null)
       fetchAdvisories()
     } catch (err) { console.error(err) }
@@ -36,7 +36,7 @@ export default function AdvisoriesPage() {
     try {
       await client.patch(`/advisories/${id}/status`, {
         status: 'in_progress',
-        assigned_to: user.user_id
+        assigned_to: user.user_id,
       })
       setSelectedAdvisory(null)
       fetchAdvisories()
@@ -45,10 +45,10 @@ export default function AdvisoriesPage() {
 
   const statusBadgeClass = (s) => {
     const map = {
-      open: 'bg-red-500/20 text-red-400 border-red-500/30',
+      open:         'bg-red-500/20 text-red-400 border-red-500/30',
       acknowledged: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-      in_progress: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-      resolved: 'bg-green-500/20 text-green-400 border-green-500/30',
+      in_progress:  'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      resolved:     'bg-green-500/20 text-green-400 border-green-500/30',
     }
     return `text-xs px-2 py-0.5 rounded-full border font-medium ${map[s] || 'bg-dark-600/40 text-dark-400 border-dark-500/30'}`
   }
@@ -90,15 +90,15 @@ export default function AdvisoriesPage() {
             <tbody>
               {advisories.map(a => (
                 <tr
-                  key={a.advisory_id}
+                  key={a.advisoryId}
                   onClick={() => setSelectedAdvisory(a)}
                   className="cursor-pointer hover:bg-white/5 transition-colors"
                 >
                   <td className="max-w-md truncate text-dark-200 font-medium">{a.summary}</td>
-                  <td><span className={statusBadgeClass(a.status)}>{a.status.replace('_', ' ')}</span></td>
-                  <td className="text-dark-400 text-xs">{a.assigned_to ? a.assigned_to.slice(0, 8) + '...' : '—'}</td>
-                  <td className="text-dark-400 text-xs">{new Date(a.created_at).toLocaleString()}</td>
-                  <td className="text-dark-400 text-xs">{a.resolved_at ? new Date(a.resolved_at).toLocaleString() : '—'}</td>
+                  <td><span className={statusBadgeClass(a.status)}>{a.status?.replace('_', ' ')}</span></td>
+                  <td className="text-dark-400 text-xs">{a.assignedTo ? a.assignedTo.slice(0, 8) + '...' : '—'}</td>
+                  <td className="text-dark-400 text-xs">{new Date(a.createdAt).toLocaleString()}</td>
+                  <td className="text-dark-400 text-xs">{a.resolvedAt ? new Date(a.resolvedAt).toLocaleString() : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -111,19 +111,17 @@ export default function AdvisoriesPage() {
         )}
       </div>
 
-      {/* Advisory Detail Modal */}
       {selectedAdvisory && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
 
-            {/* Header */}
             <div className="p-6 border-b border-dark-600 flex justify-between items-start bg-dark-900/50 rounded-t-xl">
               <div className="flex items-center gap-3">
                 <ShieldAlert className="w-8 h-8 text-eagle-500" />
                 <div>
                   <h2 className="text-xl font-bold text-white">Advisory Details</h2>
                   <p className="text-sm text-dark-400 mt-1">
-                    Generated {new Date(selectedAdvisory.created_at).toLocaleString()}
+                    Generated {new Date(selectedAdvisory.createdAt).toLocaleString()}
                   </p>
                 </div>
               </div>
@@ -132,7 +130,6 @@ export default function AdvisoriesPage() {
               </button>
             </div>
 
-            {/* Content */}
             <div className="p-6 overflow-y-auto custom-scrollbar flex-1 space-y-6">
               <div>
                 <h3 className="text-sm font-semibold text-eagle-400 uppercase tracking-wider mb-2">Summary</h3>
@@ -143,20 +140,19 @@ export default function AdvisoriesPage() {
               <div>
                 <h3 className="text-sm font-semibold text-eagle-400 uppercase tracking-wider mb-2">Recommended Action</h3>
                 <div className="bg-dark-900 p-4 rounded-lg border border-dark-700 text-dark-100 whitespace-pre-wrap font-mono text-sm leading-relaxed">
-                  {selectedAdvisory.recommended_action}
+                  {selectedAdvisory.recommendedAction}
                 </div>
               </div>
             </div>
 
-            {/* Footer */}
             <div className="p-6 border-t border-dark-600 bg-dark-900/50 rounded-b-xl flex justify-between items-center">
               <div className="space-y-1">
                 <span className={statusBadgeClass(selectedAdvisory.status)}>
-                  {selectedAdvisory.status.replace('_', ' ')}
+                  {selectedAdvisory.status?.replace('_', ' ')}
                 </span>
-                {selectedAdvisory.assigned_to && (
+                {selectedAdvisory.assignedTo && (
                   <p className="text-xs text-dark-400 mt-1">
-                    Assigned to: <span className="font-mono">{selectedAdvisory.assigned_to.slice(0, 16)}...</span>
+                    Assigned to: <span className="font-mono">{selectedAdvisory.assignedTo.slice(0, 16)}...</span>
                   </p>
                 )}
               </div>
@@ -165,7 +161,7 @@ export default function AdvisoriesPage() {
                 <button onClick={() => setSelectedAdvisory(null)} className="btn-secondary">Close</button>
                 {selectedAdvisory.status === 'open' && (
                   <button
-                    onClick={() => handleAssignToMe(selectedAdvisory.advisory_id)}
+                    onClick={() => handleAssignToMe(selectedAdvisory.advisoryId)}
                     className="btn-primary flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white"
                   >
                     <UserPlus className="w-4 h-4" />
@@ -174,7 +170,7 @@ export default function AdvisoriesPage() {
                 )}
                 {selectedAdvisory.status !== 'resolved' && (
                   <button
-                    onClick={() => handleResolve(selectedAdvisory.advisory_id)}
+                    onClick={() => handleStatus(selectedAdvisory.advisoryId, 'resolved')}
                     className="btn-primary flex items-center gap-2"
                   >
                     <CheckCircle className="w-4 h-4" />

@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:generate": "drizzle-kit generate",
-    "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:generate": "node --env-file=../.env node_modules/drizzle-kit/bin.cjs generate",
+    "db:push": "node --env-file=../.env node_modules/drizzle-kit/bin.cjs push",
+    "db:studio": "node --env-file=../.env node_modules/drizzle-kit/bin.cjs studio"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.4.1",
