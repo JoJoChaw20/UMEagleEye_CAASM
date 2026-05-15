@@ -6,6 +6,7 @@ export interface Env {
   JWT_SECRET_KEY: string
   GOOGLE_CLIENT_ID: string
   OPENROUTER_API_KEY: string
+  DEEPSEEK_API_KEY: string
   OTX_API_KEY: string
   THREATFOX_API_KEY: string
   NVD_API_KEY: string

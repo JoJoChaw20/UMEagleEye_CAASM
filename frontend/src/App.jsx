@@ -14,6 +14,7 @@ import SettingsPage from './pages/SettingsPage'
 import TopologyPage from './pages/TopologyPage'
 import AgentsPage from './pages/AgentsPage'
 import TenantsPage from './pages/TenantsPage'
+import ChatbotPage from './pages/ChatbotPage'
 
 export default function App() {
   return (
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="reports" element={<ReportsPage />} />
         {/* System */}
         <Route path="agents" element={<AgentsPage />} />
+        <Route path="chatbot" element={<ChatbotPage />} />
         <Route path="tenants" element={<TenantsPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

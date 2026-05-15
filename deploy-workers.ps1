@@ -17,7 +17,7 @@
 #>
 param(
     [string]$WorkerName  = "umeagleeye-api",
-    [string]$ProjectName = "umeagleeye"
+    [string]$ProjectName = "umeagleeye-caasm"
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,7 +57,7 @@ try {
     Write-Step "Pushing secrets to Cloudflare Workers"
     $secrets = @(
         "DATABASE_URL", "JWT_SECRET_KEY", "GOOGLE_CLIENT_ID",
-        "OPENROUTER_API_KEY", "OTX_API_KEY", "THREATFOX_API_KEY",
+        "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "OTX_API_KEY", "THREATFOX_API_KEY",
         "NVD_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"
     )
     foreach ($key in $secrets) {

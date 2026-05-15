@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Bell, FileSearch, Globe, FileText,
   Settings, LogOut, Eye, Network, Radar, GitBranch, Bot, Building2,
-  ChevronLeft,
+  ChevronLeft, MessageCircle,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 
@@ -25,8 +25,9 @@ const navSections = [
     { to: '/reports',      icon: FileText,   label: 'Reports' },
   ]},
   { label: 'SYSTEM', items: [
-    { to: '/agents',       icon: Bot,        label: 'Agents' },
-    { to: '/settings',     icon: Settings,   label: 'Settings' },
+    { to: '/agents',       icon: Bot,           label: 'Agents' },
+    { to: '/chatbot',      icon: MessageCircle, label: 'Chatbot' },
+    { to: '/settings',     icon: Settings,      label: 'Settings' },
   ]},
 ]
 
