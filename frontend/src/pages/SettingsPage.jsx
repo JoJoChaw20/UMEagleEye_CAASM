@@ -96,7 +96,9 @@ export default function SettingsPage() {
           </div>
           <div>
             <p className="text-dark-400 mb-1">Tenant</p>
-            <p className="text-white font-medium font-mono text-xs">{user?.tenant_id?.slice(0, 16) || '—'}...</p>
+            <p className="text-white font-medium">
+              {user?.tenantName ?? (user?.role === 'superadmin' ? 'All Tenants' : '—')}
+            </p>
           </div>
         </div>
       </div>

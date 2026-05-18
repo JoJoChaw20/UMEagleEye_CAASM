@@ -1,27 +1,41 @@
 import { useState, useEffect } from 'react'
-import { Server, Search, RefreshCw, Wifi, Shield, Bookmark, GitBranch, Target } from 'lucide-react'
+import { Server, Search, RefreshCw, Wifi, Shield, Bookmark, GitBranch, Target, Building2 } from 'lucide-react'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
 import AssetGraph from '../components/common/AssetGraph'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
 
 export default function AssetsPage() {
+  const { user } = useAuth()
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
+  const [tenantFilter, setTenantFilter] = useState('')
+  const [tenants, setTenants] = useState([])
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
   const [graphBlastId, setGraphBlastId] = useState(null)
 
-  useEffect(() => { loadAssets() }, [page, search])
+  // Fetch tenant list for superadmin filter
+  useEffect(() => {
+    if (user?.role === 'superadmin') {
+      client.get('/tenants')
+        .then(res => setTenants(res.data.tenants || []))
+        .catch(() => {})
+    }
+  }, [user?.role])
+
+  useEffect(() => { loadAssets() }, [page, search, tenantFilter])
 
   const loadAssets = async () => {
     setLoading(true)
     try {
-      const params = { page, page_size: 25 }
+      const params = { page, limit: 25 }
       if (search) params.search = search
+      if (tenantFilter) params.tenant_id = tenantFilter
       const res = await client.get('/assets', { params })
       setAssets(res.data.items || [])
       setTotal(res.data.total || 0)
@@ -67,12 +81,17 @@ export default function AssetsPage() {
 
   const icon = (t) => ({ server: '🖥️', workstation: '💻', network: '🌐', iot: '📡' }[t] || '❓')
 
+  const activeTenantName = tenants.find(t => t.tenant_id === tenantFilter)?.name
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Asset Inventory</h1>
-          <p className="text-dark-400 text-sm mt-1">{total} assets discovered</p>
+          <p className="text-dark-400 text-sm mt-1">
+            {total} assets discovered
+            {activeTenantName && <span className="ml-2 text-eagle-400">· {activeTenantName}</span>}
+          </p>
         </div>
         <button onClick={triggerScan} disabled={scanning} className="btn-primary flex items-center gap-2" id="scan-btn">
           {scanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Wifi className="w-4 h-4" />}
@@ -80,35 +99,58 @@ export default function AssetsPage() {
         </button>
       </div>
 
-      {/* Tab Toggle */}
-      <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50" id="asset-view-toggle">
-        <button
-          onClick={() => setActiveTab('inventory')}
-          className={`tab-toggle ${activeTab === 'inventory' ? 'active' : ''}`}
-          id="tab-inventory"
-        >
-          <Server className="w-4 h-4" />
-          Inventory
-        </button>
-        <button
-          onClick={() => setActiveTab('graph')}
-          className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}
-          id="tab-graph"
-        >
-          <GitBranch className="w-4 h-4" />
-          Relationship Graph
-        </button>
+      {/* Tab Toggle + shared Tenant Filter */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50" id="asset-view-toggle">
+          <button
+            onClick={() => setActiveTab('inventory')}
+            className={`tab-toggle ${activeTab === 'inventory' ? 'active' : ''}`}
+            id="tab-inventory"
+          >
+            <Server className="w-4 h-4" />
+            Inventory
+          </button>
+          <button
+            onClick={() => setActiveTab('graph')}
+            className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}
+            id="tab-graph"
+          >
+            <GitBranch className="w-4 h-4" />
+            Relationship Graph
+          </button>
+        </div>
+
+        {/* Tenant filter — superadmin only, shared between both tabs */}
+        {user?.role === 'superadmin' && tenants.length > 0 && (
+          <div className="relative">
+            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
+            <select
+              value={tenantFilter}
+              onChange={(e) => { setTenantFilter(e.target.value); setPage(1) }}
+              className="input-field pl-9 pr-8 text-sm appearance-none min-w-[180px]"
+            >
+              <option value="">All Tenants</option>
+              {tenants.map((t) => (
+                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Inventory View */}
       {activeTab === 'inventory' && (
         <>
-          <div className="relative max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-            <input type="text" placeholder="Search by hostname or IP..." value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-              className="input-field w-full pl-10" id="asset-search" />
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Search */}
+            <div className="relative flex-1 min-w-[200px] max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+              <input type="text" placeholder="Search by hostname or IP..." value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+                className="input-field w-full pl-10" id="asset-search" />
+            </div>
           </div>
+
           <div className="glass-card overflow-hidden">
             {loading ? (
               <div className="flex items-center justify-center py-20">
@@ -173,6 +215,7 @@ export default function AssetsPage() {
           <AssetGraph
             onSelectAsset={handleGraphAssetSelect}
             blastRadiusId={graphBlastId}
+            tenantFilter={tenantFilter}
           />
         </div>
       )}

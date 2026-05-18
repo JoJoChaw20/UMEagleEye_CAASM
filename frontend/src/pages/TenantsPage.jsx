@@ -166,53 +166,140 @@ function EditTenantModal({ tenant, onClose, onSave }) {
   )
 }
 
-// ── Assign User Modal ─────────────────────────────────────────────
-function AssignUserModal({ tenantId, onClose, onAssign }) {
+// ── Invite / Assign User Modal ────────────────────────────────────
+function InviteUserModal({ tenantId, onClose, onInvite }) {
+  const [mode, setMode] = useState('email') // 'email' | 'uuid'
+  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
+  const [role, setRole] = useState('business_owner')
   const [userId, setUserId] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSubmitting(true)
     setError(null)
+    setResult(null)
     try {
-      await onAssign(tenantId, userId)
-      onClose()
+      const res = await onInvite(tenantId, mode === 'email' ? { email, username: username || undefined, role } : { user_id: userId })
+      setResult(res)
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to assign user')
+      setError(err?.response?.data?.detail || 'Failed to invite user')
     } finally {
       setSubmitting(false)
     }
+  }
+
+  if (result) {
+    return (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="glass-card w-full max-w-sm p-5 space-y-4">
+          <div className="flex items-center gap-2 text-green-400">
+            <Check className="w-5 h-5" />
+            <h3 className="font-semibold text-white text-sm">
+              {result.action === 'created' ? 'User Created & Assigned' : 'User Assigned'}
+            </h3>
+          </div>
+          <div className="bg-dark-800/60 rounded-xl p-3 text-xs space-y-1 border border-dark-700/40">
+            <p className="text-dark-300"><span className="text-dark-500">Username:</span> {result.username}</p>
+            <p className="text-dark-300"><span className="text-dark-500">Email:</span> {result.email}</p>
+            <p className="text-dark-300"><span className="text-dark-500">Role:</span> {result.role}</p>
+            {result.action === 'created' && (
+              <p className="text-yellow-400 pt-1">User must sign in via Google using this email address.</p>
+            )}
+          </div>
+          <button onClick={onClose} className="btn-primary w-full text-sm">Done</button>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="glass-card w-full max-w-sm p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-white text-sm">Assign User to Tenant</h3>
+          <h3 className="font-semibold text-white text-sm">Add User to Tenant</h3>
           <button onClick={onClose} className="text-dark-400 hover:text-white">
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Mode toggle */}
+        <div className="flex gap-1 p-1 bg-dark-800/60 rounded-lg border border-dark-700/50">
+          <button
+            type="button"
+            onClick={() => setMode('email')}
+            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'email' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
+          >
+            Invite by Email
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('uuid')}
+            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'uuid' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
+          >
+            Assign by UUID
+          </button>
+        </div>
+
         {error && <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</p>}
+
         <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">User ID (UUID)</label>
-            <input
-              type="text"
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              className="input-field w-full text-sm font-mono"
-              required
-            />
-          </div>
-          <div className="flex gap-2">
+          {mode === 'email' ? (
+            <>
+              <div>
+                <label className="block text-xs text-dark-400 mb-1">Email *</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="user@gmail.com"
+                  className="input-field w-full text-sm"
+                  required
+                />
+                <p className="text-xs text-dark-500 mt-1">If no account exists, one will be created. User must sign in via Google.</p>
+              </div>
+              <div>
+                <label className="block text-xs text-dark-400 mb-1">Username <span className="text-dark-600">(optional — auto-derived from email)</span></label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="auto-generated"
+                  className="input-field w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-dark-400 mb-1">Role</label>
+                <select value={role} onChange={(e) => setRole(e.target.value)} className="input-field w-full text-sm">
+                  <option value="business_owner">Business Owner</option>
+                  <option value="security_engineer">Security Engineer</option>
+                  <option value="ops_lead">Ops Lead</option>
+                  <option value="mssp_analyst">MSSP Analyst</option>
+                </select>
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="block text-xs text-dark-400 mb-1">User ID (UUID)</label>
+              <input
+                type="text"
+                value={userId}
+                onChange={(e) => setUserId(e.target.value)}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="input-field w-full text-sm font-mono"
+                required
+              />
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-1">
             <button type="button" onClick={onClose} className="btn-secondary flex-1 text-xs py-1.5">Cancel</button>
             <button type="submit" disabled={submitting} className="btn-primary flex-1 text-xs py-1.5 flex items-center justify-center gap-1">
               {submitting ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-3 h-3" />}
-              Assign
+              {mode === 'email' ? 'Invite' : 'Assign'}
             </button>
           </div>
         </form>
@@ -234,12 +321,19 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
       .finally(() => setLoading(false))
   }, [tenant.tenant_id])
 
-  const handleAssign = async (tenantId, userId) => {
-    await client.post(`/tenants/${tenantId}/users`, { user_id: userId })
-    // Reload users
-    const res = await client.get(`/tenants/${tenantId}/users`)
-    setUsers(res.data.users || [])
+  const handleInvite = async (tenantId, payload) => {
+    let result
+    if (payload.user_id) {
+      await client.post(`/tenants/${tenantId}/users`, { user_id: payload.user_id })
+      result = { action: 'assigned', username: payload.user_id, email: '', role: '' }
+    } else {
+      const r = await client.post(`/tenants/${tenantId}/users/invite`, payload)
+      result = r.data
+    }
+    const updated = await client.get(`/tenants/${tenantId}/users`)
+    setUsers(updated.data.users || [])
     if (onAssigned) onAssigned()
+    return result
   }
 
   const ROLE_COLORS = {
@@ -264,7 +358,7 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
               className="btn-secondary text-xs py-1 px-2 flex items-center gap-1"
             >
               <Plus className="w-3 h-3" />
-              Assign
+              Add User
             </button>
             <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
               <X className="w-5 h-5" />
@@ -302,10 +396,10 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
       </div>
 
       {showAssign && (
-        <AssignUserModal
+        <InviteUserModal
           tenantId={tenant.tenant_id}
           onClose={() => setShowAssign(false)}
-          onAssign={handleAssign}
+          onInvite={handleInvite}
         />
       )}
     </div>

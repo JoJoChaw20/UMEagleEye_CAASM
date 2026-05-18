@@ -1,15 +1,17 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { topologyNodes, assets, assetRelationships } from '../db/schema'
+import { topologyNodes, assets, tenants } from '../db/schema'
 
 const router = new Hono<{ Bindings: Env }>()
 
 // ── Types ─────────────────────────────────────────────────────────
+type NodeType = 'gateway' | 'router' | 'switch' | 'access_point' | 'host'
+
 interface TreeNode {
   node_id: string
   label: string | null
@@ -20,10 +22,85 @@ interface TreeNode {
   children: TreeNode[]
 }
 
-// ── Helper: build tree from flat node list ────────────────────────
+// ── Asset classification ──────────────────────────────────────────
+// Rules (priority order):
+//   network + internet_facing            → gateway   L1
+//   network + fw-/gw- prefix (internal)  → router    L2
+//   network + core-sw/core-router prefix → switch    L2
+//   network + router/lab-router keyword  → router    L2
+//   network + dist-sw prefix             → switch    L3
+//   network + wifi/ap- keyword           → access_point L3
+//   network (default)                    → switch    L3
+//   server + internet_facing             → host      L2  (DMZ)
+//   server                               → host      L4
+//   workstation                          → host      L5
+//   iot                                  → host      L6
+function classifyAsset(asset: typeof assets.$inferSelect): { nodeType: NodeType; layer: number } {
+  const h = (asset.hostname ?? '').toLowerCase()
+  const dt = asset.deviceType
+
+  if (dt === 'network') {
+    if (asset.isInternetFacing)                              return { nodeType: 'gateway',      layer: 1 }
+    if (/^(fw|gw|firewall)[-_]/.test(h))                    return { nodeType: 'router',       layer: 2 }
+    if (/(core[-_])(sw|switch|router|rtr)/.test(h))         return { nodeType: 'switch',       layer: 2 }
+    if (/(^router[-_]|^rtr[-_]|lab[-_]router)/.test(h))    return { nodeType: 'router',       layer: 2 }
+    if (/(dist[-_])(sw|switch|router)/.test(h))             return { nodeType: 'switch',       layer: 3 }
+    if (/(wifi|^ap[-_]|wap[-_]|access[-_]?point)/.test(h)) return { nodeType: 'access_point', layer: 3 }
+    return { nodeType: 'switch', layer: 3 }
+  }
+
+  if (dt === 'server')      return { nodeType: 'host', layer: asset.isInternetFacing ? 2 : 4 }
+  if (dt === 'workstation') return { nodeType: 'host', layer: 5 }
+  if (dt === 'iot')         return { nodeType: 'host', layer: 6 }
+  return { nodeType: 'host', layer: 4 }
+}
+
+function getSubnet(ip: string): string {
+  return ip.split('.').slice(0, 3).join('.')
+}
+
+// ── Parent resolution ─────────────────────────────────────────────
+interface FlatNode {
+  nodeId: string
+  nodeType: NodeType
+  layer: number
+  ip: string
+  subnet: string
+}
+
+// Type preference: closer to a physical switch is better for hosts
+const TYPE_SCORE: Record<string, number> = { switch: 4, router: 3, gateway: 2, access_point: 2, host: 0 }
+
+function resolveParent(node: FlatNode, others: FlatNode[]): string | null {
+  // Step 1: same-subnet candidates with strictly lower layer
+  const subnetCandidates = others
+    .filter(n => n.subnet === node.subnet && n.layer < node.layer)
+    .sort((a, b) =>
+      b.layer - a.layer || (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0)
+    )
+  if (subnetCandidates.length > 0) return subnetCandidates[0]?.nodeId ?? null
+
+  // Step 2: cross-subnet, target layer = this layer - 1
+  // Use last IP octet to distribute evenly across same-layer parents
+  const targetLayer = node.layer - 1
+  const layerCandidates = others
+    .filter(n => n.layer === targetLayer)
+    .sort((a, b) => (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0))
+  if (layerCandidates.length > 0) {
+    const lastOctet = parseInt(node.ip.split('.').pop() ?? '1', 10)
+    return layerCandidates[lastOctet % layerCandidates.length]?.nodeId ?? null
+  }
+
+  // Step 3: any node with lower layer
+  const fallback = others
+    .filter(n => n.layer < node.layer)
+    .sort((a, b) => b.layer - a.layer)
+  return fallback[0]?.nodeId ?? null
+}
+
+// ── Build tree from flat rows ─────────────────────────────────────
 function buildTree(rows: typeof topologyNodes.$inferSelect[]): TreeNode[] {
   const nodeMap = new Map<string, TreeNode>()
-
   for (const row of rows) {
     nodeMap.set(row.nodeId, {
       node_id: row.nodeId,
@@ -35,7 +112,6 @@ function buildTree(rows: typeof topologyNodes.$inferSelect[]): TreeNode[] {
       children: [],
     })
   }
-
   const roots: TreeNode[] = []
   for (const row of rows) {
     const node = nodeMap.get(row.nodeId)!
@@ -43,47 +119,138 @@ function buildTree(rows: typeof topologyNodes.$inferSelect[]): TreeNode[] {
       roots.push(node)
     } else {
       const parent = nodeMap.get(row.parentNodeId)
-      if (parent) {
-        parent.children.push(node)
-      } else {
-        roots.push(node)
-      }
+      if (parent) parent.children.push(node)
+      else roots.push(node)
     }
   }
-
+  // Sort children by layer then label for consistent display
+  function sortTree(nodes: TreeNode[]): void {
+    nodes.sort((a, b) => a.layer - b.layer || (a.label ?? '').localeCompare(b.label ?? ''))
+    for (const n of nodes) sortTree(n.children)
+  }
+  sortTree(roots)
   return roots
 }
 
-// ── GET / — Return full topology tree for current tenant ──────────
+// ── Infer topology for a single tenant's assets ───────────────────
+async function inferForTenant(
+  db: ReturnType<typeof getDb>,
+  tenantAssets: (typeof assets.$inferSelect)[],
+  tenantId: string | null,
+): Promise<number> {
+  if (tenantAssets.length === 0) return 0
+
+  // Insert all nodes without parent refs
+  const insertRows: (typeof topologyNodes.$inferInsert)[] = tenantAssets.map(asset => {
+    const { nodeType, layer } = classifyAsset(asset)
+    return {
+      tenantId,
+      assetId: asset.assetId,
+      parentNodeId: null,
+      nodeType,
+      layer,
+      label: asset.hostname ?? asset.ipAddress,
+      metadata: {
+        ip_address: asset.ipAddress,
+        device_type: asset.deviceType,
+        criticality_score: asset.criticalityScore,
+        is_internet_facing: asset.isInternetFacing,
+      },
+    }
+  })
+
+  const insertedNodes = await db.insert(topologyNodes).values(insertRows).returning()
+
+  // Build flat view for parent resolution
+  const assetMap = new Map(tenantAssets.map(a => [a.assetId, a]))
+  const flatNodes: FlatNode[] = insertedNodes
+    .filter(n => n.assetId != null)
+    .map(n => {
+      const a = assetMap.get(n.assetId!)!
+      return { nodeId: n.nodeId, nodeType: n.nodeType as NodeType, layer: n.layer, ip: a.ipAddress, subnet: getSubnet(a.ipAddress) }
+    })
+
+  // Resolve parents and batch-update
+  const updates: Array<{ nodeId: string; parentId: string }> = []
+  for (const node of flatNodes) {
+    if (node.layer === 1) continue // gateways have no parent
+    const parentId = resolveParent(node, flatNodes.filter(n => n.nodeId !== node.nodeId))
+    if (parentId) updates.push({ nodeId: node.nodeId, parentId })
+  }
+
+  await Promise.all(
+    updates.map(({ nodeId, parentId }) =>
+      db.update(topologyNodes).set({ parentNodeId: parentId }).where(eq(topologyNodes.nodeId, nodeId))
+    )
+  )
+
+  return insertedNodes.length
+}
+
+// ── GET / — Topology tree for current user ────────────────────────
+// Superadmin: returns { tenant_trees: [{tenant_id, tenant_name, tree, node_count}] }
+//             or { tree: [...] } when ?tenant_id= is specified
+// Regular user: { tree: [...] }
 router.get('/', authMiddleware, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
+  const tenantIdFilter = c.req.query('tenant_id')
 
-  if (!user.tenantId && user.role !== 'superadmin') {
-    return c.json({ tree: [] })
+  if (!user.tenantId && user.role !== 'superadmin') return c.json({ tree: [] })
+
+  // Single-tenant view (regular user or superadmin with filter)
+  if (user.role !== 'superadmin' || tenantIdFilter) {
+    const scopedId = tenantIdFilter ?? user.tenantId!
+    const rows = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, scopedId))
+    return c.json({ tree: buildTree(rows) })
   }
 
-  const rows = user.role === 'superadmin'
-    ? await db.select().from(topologyNodes)
-    : await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, user.tenantId!))
+  // Superadmin all-tenant view
+  const allRows = await db.select().from(topologyNodes)
+  const allTenants = await db.select().from(tenants)
+  const tenantNameMap = new Map(allTenants.map(t => [t.tenantId, t.name]))
 
-  const tree = buildTree(rows)
-  return c.json({ tree })
+  const byTenant = new Map<string, typeof allRows>()
+  for (const row of allRows) {
+    const key = row.tenantId ?? '__null__'
+    if (!byTenant.has(key)) byTenant.set(key, [])
+    byTenant.get(key)!.push(row)
+  }
+
+  const tenantTrees = []
+  for (const [tid, rows] of byTenant.entries()) {
+    if (tid === '__null__') continue // skip unassigned nodes
+    const tree = buildTree(rows)
+    function countNodes(nodes: TreeNode[]): number {
+      return nodes.reduce((s, n) => s + 1 + countNodes(n.children), 0)
+    }
+    tenantTrees.push({
+      tenant_id: tid,
+      tenant_name: tenantNameMap.get(tid) ?? 'Unknown',
+      node_count: countNodes(tree),
+      tree,
+    })
+  }
+
+  // Sort tenants alphabetically
+  tenantTrees.sort((a, b) => a.tenant_name.localeCompare(b.tenant_name))
+
+  return c.json({ tree: [], tenant_trees: tenantTrees })
 })
 
-// ── POST /nodes — Create/upsert topology nodes ────────────────────
+// ── POST /nodes — Create topology nodes manually ──────────────────
 router.post(
   '/nodes',
   authMiddleware,
   requireRoles('ops_lead', 'security_engineer', 'superadmin'),
   zValidator('json', z.object({
     nodes: z.array(z.object({
-      asset_id: z.string().uuid().optional(),
+      asset_id:       z.string().uuid().optional(),
       parent_node_id: z.string().uuid().optional(),
-      node_type: z.enum(['gateway', 'router', 'switch', 'access_point', 'host']),
-      layer: z.number().int().min(1).max(7).default(4),
-      label: z.string().max(100).optional(),
-      metadata: z.record(z.unknown()).optional(),
+      node_type:      z.enum(['gateway', 'router', 'switch', 'access_point', 'host']),
+      layer:          z.number().int().min(1).max(7).default(4),
+      label:          z.string().max(100).optional(),
+      metadata:       z.record(z.unknown()).optional(),
     })),
   })),
   async (c) => {
@@ -96,18 +263,18 @@ router.post(
     }
 
     const inserted = await db.insert(topologyNodes).values(
-      nodes.map((n) => ({
-        tenantId: user.tenantId ?? null,
-        assetId: n.asset_id ?? null,
+      nodes.map(n => ({
+        tenantId:     user.tenantId ?? null,
+        assetId:      n.asset_id ?? null,
         parentNodeId: n.parent_node_id ?? null,
-        nodeType: n.node_type,
-        layer: n.layer,
-        label: n.label ?? null,
-        metadata: n.metadata ?? {},
+        nodeType:     n.node_type,
+        layer:        n.layer,
+        label:        n.label ?? null,
+        metadata:     n.metadata ?? {},
       }))
     ).returning()
 
-    return c.json({ nodes: inserted.map((n) => ({ node_id: n.nodeId, label: n.label })) }, 201)
+    return c.json({ nodes: inserted.map(n => ({ node_id: n.nodeId, label: n.label })) }, 201)
   }
 )
 
@@ -132,7 +299,7 @@ router.delete(
   }
 )
 
-// ── POST /infer — Infer topology from asset relationships ─────────
+// ── POST /infer — Rebuild topology from assets ────────────────────
 router.post(
   '/infer',
   authMiddleware,
@@ -145,107 +312,33 @@ router.post(
       return c.json({ detail: 'User has no tenant assigned' }, 400)
     }
 
-    // Fetch assets for this tenant
-    const tenantAssets = user.role === 'superadmin'
-      ? await db.select().from(assets)
-      : await db.select().from(assets).where(eq(assets.tenantId, user.tenantId!))
+    let totalNodes = 0
+    let tenantsProcessed = 0
 
-    // Fetch connects_to relationships
-    const allRels = await db.select().from(assetRelationships)
-    const connectsTo = allRels.filter(r => r.relationshipType === 'connects_to')
-
-    // Count outbound connections per asset
-    const outboundCount = new Map<string, number>()
-    for (const rel of connectsTo) {
-      outboundCount.set(rel.sourceAssetId, (outboundCount.get(rel.sourceAssetId) ?? 0) + 1)
-    }
-
-    // Clear existing topology nodes for this tenant
     if (user.role === 'superadmin') {
+      // Clear ALL topology nodes then re-infer per tenant
       await db.delete(topologyNodes)
+
+      const allTenants = await db.select().from(tenants)
+      for (const tenant of allTenants) {
+        const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenant.tenantId))
+        const count = await inferForTenant(db, tenantAssets, tenant.tenantId)
+        if (count > 0) tenantsProcessed++
+        totalNodes += count
+      }
     } else {
+      // Clear and re-infer for this tenant only
       await db.delete(topologyNodes).where(eq(topologyNodes.tenantId, user.tenantId!))
+      const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, user.tenantId!))
+      totalNodes = await inferForTenant(db, tenantAssets, user.tenantId!)
+      tenantsProcessed = 1
     }
 
-    const nodeRows: (typeof topologyNodes.$inferInsert)[] = []
-
-    // Classify assets into topology roles
-    let gatewayId: string | null = null
-
-    for (const asset of tenantAssets) {
-      const outbound = outboundCount.get(asset.assetId) ?? 0
-      const hostnameLC = (asset.hostname ?? '').toLowerCase()
-      const ipLast = asset.ipAddress.split('.').pop()
-
-      let nodeType: 'gateway' | 'router' | 'switch' | 'access_point' | 'host' = 'host'
-      let layer = 4
-
-      if (hostnameLC.includes('gateway') || ipLast === '1') {
-        nodeType = 'gateway'
-        layer = 1
-        gatewayId = asset.assetId
-      } else if (hostnameLC.includes('router') || (outbound > 3 && asset.deviceType !== 'network')) {
-        nodeType = 'router'
-        layer = 2
-      } else if (asset.deviceType === 'network' && outbound > 3) {
-        nodeType = 'switch'
-        layer = 3
-      } else if (hostnameLC.includes('ap') || hostnameLC.includes('wifi') || hostnameLC.includes('access_point')) {
-        nodeType = 'access_point'
-        layer = 3
-      }
-
-      nodeRows.push({
-        tenantId: user.tenantId ?? null,
-        assetId: asset.assetId,
-        parentNodeId: null, // will be resolved below
-        nodeType,
-        layer,
-        label: asset.hostname ?? asset.ipAddress,
-        metadata: { ip_address: asset.ipAddress, device_type: asset.deviceType },
-      })
-    }
-
-    if (nodeRows.length === 0) {
-      return c.json({ nodes_created: 0, message: 'No assets found to infer topology' })
-    }
-
-    // Insert all nodes first without parent relationships
-    const insertedNodes = await db.insert(topologyNodes).values(nodeRows).returning()
-
-    // Build a map: assetId -> nodeId
-    const assetToNodeId = new Map<string, string>()
-    for (const n of insertedNodes) {
-      if (n.assetId) assetToNodeId.set(n.assetId, n.nodeId)
-    }
-
-    // Find gateway node and router nodes
-    const gatewayNodeId = gatewayId ? assetToNodeId.get(gatewayId) : null
-    const routerNodes = insertedNodes.filter(n => n.nodeType === 'router')
-    const switchNodes = insertedNodes.filter(n => n.nodeType === 'switch')
-
-    // Assign parent relationships: routers -> gateway, switches -> router, hosts -> switch/gateway
-    for (const node of insertedNodes) {
-      let parentId: string | null = null
-
-      if (node.nodeType === 'router' && gatewayNodeId) {
-        parentId = gatewayNodeId
-      } else if (node.nodeType === 'switch') {
-        parentId = routerNodes[0]?.nodeId ?? gatewayNodeId ?? null
-      } else if (node.nodeType === 'access_point') {
-        parentId = switchNodes[0]?.nodeId ?? routerNodes[0]?.nodeId ?? gatewayNodeId ?? null
-      } else if (node.nodeType === 'host') {
-        parentId = switchNodes[0]?.nodeId ?? routerNodes[0]?.nodeId ?? gatewayNodeId ?? null
-      }
-
-      if (parentId && parentId !== node.nodeId) {
-        await db.update(topologyNodes)
-          .set({ parentNodeId: parentId })
-          .where(eq(topologyNodes.nodeId, node.nodeId))
-      }
-    }
-
-    return c.json({ nodes_created: insertedNodes.length, message: 'Topology inferred successfully' })
+    return c.json({
+      nodes_created: totalNodes,
+      tenants_processed: tenantsProcessed,
+      message: `Topology inferred: ${totalNodes} nodes across ${tenantsProcessed} tenant(s)`,
+    })
   }
 )
 

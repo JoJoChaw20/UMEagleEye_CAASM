@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, desc, ilike, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, desc, ilike, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -24,6 +24,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     const offset = (page - 1) * limit
     const device_type = c.req.query('device_type')
     const hostname = c.req.query('hostname')
+    const search = c.req.query('search')
     const tenant_id_param = c.req.query('tenant_id')
 
     const conditions = []
@@ -45,6 +46,14 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 
     if (hostname) {
       conditions.push(ilike(assets.hostname, `%${hostname}%`))
+    }
+
+    if (search) {
+      const searchCondition = or(
+        ilike(assets.hostname, `%${search}%`),
+        ilike(assets.ipAddress, `%${search}%`),
+      )
+      if (searchCondition) conditions.push(searchCondition)
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
@@ -102,6 +111,7 @@ const createAssetSchema = z.object({
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
+  tenant_id: z.string().uuid().optional(),
 })
 
 app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', createAssetSchema), async (c) => {
@@ -109,6 +119,11 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
     const body = c.req.valid('json')
+
+    // Superadmin can target any tenant via body.tenant_id; others use their own
+    const targetTenantId = (user.role === 'superadmin' && body.tenant_id)
+      ? body.tenant_id
+      : (user.tenantId ?? null)
 
     const [asset] = await db
       .insert(assets)
@@ -122,7 +137,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         osInfo: body.os_info ?? {},
         criticalityScore: body.criticality_score ?? 5,
         isInternetFacing: body.is_internet_facing ?? false,
-        tenantId: user.tenantId ?? null,
+        tenantId: targetTenantId,
       })
       .returning()
 
@@ -278,6 +293,11 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
+    // Superadmin can target any tenant via ?tenant_id=; others use their own
+    const targetTenantId = user.role === 'superadmin'
+      ? (c.req.query('tenant_id') || user.tenantId || null)
+      : (user.tenantId ?? null)
+
     let formData: FormData
     try {
       formData = await c.req.formData()
@@ -362,11 +382,13 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       return c.json({ imported: 0, updated: 0, errors })
     }
 
-    // ── Phase 2: one SELECT to find all existing IPs (1 subrequest) ─
+    // ── Phase 2: find existing IPs in target tenant OR with null tenant ─
     const allIps = parsed.map(r => r.ipAddress)
-    const tenantConditions = user.tenantId
-      ? and(sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`, eq(assets.tenantId, user.tenantId))
-      : sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`
+    const ipInList = sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`
+
+    const tenantConditions = targetTenantId
+      ? and(ipInList, or(eq(assets.tenantId, targetTenantId), isNull(assets.tenantId)))
+      : ipInList
 
     const existingRows = await db
       .select({ assetId: assets.assetId, ipAddress: assets.ipAddress })
@@ -392,7 +414,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
             osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {},
             criticalityScore: r.criticalityScore,
             isInternetFacing: r.isInternetFacing,
-            tenantId: user.tenantId ?? null,
+            tenantId: targetTenantId,
           }))
         )
       } catch (insertErr) {
@@ -414,6 +436,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           ...(Object.keys(r.osInfo).length > 0 ? { osInfo: r.osInfo } : {}),
           criticalityScore: r.criticalityScore,
           isInternetFacing: r.isInternetFacing,
+          ...(targetTenantId ? { tenantId: targetTenantId } : {}),
           updatedAt: new Date(),
         }).where(eq(assets.assetId, assetId))
       } catch (updateErr) {

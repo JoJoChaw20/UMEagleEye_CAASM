@@ -163,7 +163,7 @@ router.get('/:tenantId/users', ...superadminOnly, async (c) => {
   })
 })
 
-// ── POST /:tenantId/users — Assign user to tenant ─────────────────
+// ── POST /:tenantId/users — Assign existing user to tenant ────────
 router.post(
   '/:tenantId/users',
   ...superadminOnly,
@@ -184,6 +184,61 @@ router.post(
     await db.update(users).set({ tenantId }).where(eq(users.userId, user_id))
 
     return c.json({ ok: true, user_id, tenant_id: tenantId })
+  }
+)
+
+// ── POST /:tenantId/users/invite — Create or assign user by email ──
+router.post(
+  '/:tenantId/users/invite',
+  ...superadminOnly,
+  zValidator('json', z.object({
+    email: z.string().email(),
+    username: z.string().min(3).max(100).optional(),
+    role: z.enum(['ops_lead', 'security_engineer', 'business_owner', 'mssp_analyst']).optional(),
+  })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const { tenantId } = c.req.param()
+    const { email, username, role } = c.req.valid('json')
+
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+
+    // If user with this email already exists, just assign them
+    const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
+    if (existing) {
+      await db.update(users).set({ tenantId }).where(eq(users.userId, existing.userId))
+      return c.json({
+        ok: true,
+        user_id: existing.userId,
+        username: existing.username,
+        email: existing.email,
+        role: existing.role,
+        action: 'assigned',
+      })
+    }
+
+    // Create new Google-only account (no password — user must sign in via Google)
+    const uname = username ?? (email.split('@')[0] ?? email).toLowerCase().replace(/[^a-z0-9_]/g, '_')
+    const inserted = await db.insert(users).values({
+      username: uname,
+      email,
+      passwordHash: 'google_oauth_no_password',
+      role: role ?? 'business_owner',
+      tenantId,
+    }).returning()
+
+    const newUser = inserted[0]
+    if (!newUser) return c.json({ detail: 'Failed to create user' }, 500)
+
+    return c.json({
+      ok: true,
+      user_id: newUser.userId,
+      username: newUser.username,
+      email: newUser.email,
+      role: newUser.role,
+      action: 'created',
+    }, 201)
   }
 )
 

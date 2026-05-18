@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, Link } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Bell, FileSearch, Globe, FileText,
   Settings, LogOut, Eye, Network, Radar, GitBranch, Bot, Building2,
@@ -49,7 +49,7 @@ export default function Sidebar({ collapsed, onToggle }) {
     >
       {/* Logo row */}
       <div className="flex items-center justify-between border-b border-dark-700/50 px-3 h-14 flex-shrink-0">
-        <div className={`flex items-center gap-3 ${collapsed ? 'w-full justify-center' : ''}`}>
+        <Link to="/" title="Dashboard" className={`flex items-center gap-3 hover:opacity-80 transition-opacity ${collapsed ? 'w-full justify-center' : ''}`}>
           <div className="w-8 h-8 bg-gradient-to-br from-eagle-500 to-accent-cyan rounded-lg flex items-center justify-center flex-shrink-0">
             <Eye className="w-4 h-4 text-white" />
           </div>
@@ -59,7 +59,7 @@ export default function Sidebar({ collapsed, onToggle }) {
               <p className="text-[9px] text-dark-400 tracking-wider uppercase">CAASM Platform</p>
             </div>
           )}
-        </div>
+        </Link>
         {!collapsed && (
           <button
             onClick={onToggle}

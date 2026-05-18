@@ -5,7 +5,7 @@ import { eq, or } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { users } from '../db/schema'
+import { users, tenants } from '../db/schema'
 import {
   hashPassword,
   verifyPassword,
@@ -313,28 +313,30 @@ app.get('/me', authMiddleware, async (c) => {
     const authUser = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
-    const [user] = await db
+    const [row] = await db
       .select({
-        userId: users.userId,
-        username: users.username,
-        email: users.email,
-        role: users.role,
-        tenantId: users.tenantId,
-        mfaEnabled: users.mfaEnabled,
-        isActive: users.isActive,
-        createdAt: users.createdAt,
-        lastLogin: users.lastLogin,
+        userId:         users.userId,
+        username:       users.username,
+        email:          users.email,
+        role:           users.role,
+        tenantId:       users.tenantId,
+        tenantName:     tenants.name,
+        mfaEnabled:     users.mfaEnabled,
+        isActive:       users.isActive,
+        createdAt:      users.createdAt,
+        lastLogin:      users.lastLogin,
         telegramChatId: users.telegramChatId,
       })
       .from(users)
+      .leftJoin(tenants, eq(users.tenantId, tenants.tenantId))
       .where(eq(users.userId, authUser.userId))
       .limit(1)
 
-    if (!user) {
+    if (!row) {
       return c.json({ detail: 'User not found' }, 404)
     }
 
-    return c.json(user)
+    return c.json(row)
   } catch (err) {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)

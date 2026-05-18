@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText } from 'lucide-react'
+import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Building2 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -236,7 +236,7 @@ function parseCSVLine(line) {
   return result
 }
 
-function ImportModal({ onClose, onImport }) {
+function ImportModal({ onClose, onImport, tenantId }) {
   const [file, setFile] = useState(null)
   const [headers, setHeaders] = useState([])
   const [preview, setPreview] = useState([])
@@ -281,7 +281,8 @@ function ImportModal({ onClose, onImport }) {
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const res = await client.post('/assets/import', formData, {
+      const url = tenantId ? `/assets/import?tenant_id=${tenantId}` : '/assets/import'
+      const res = await client.post(url, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       setResult(res.data)
@@ -302,7 +303,9 @@ function ImportModal({ onClose, onImport }) {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Import Assets via CSV</h2>
-            <p className="text-xs text-dark-400 mt-0.5">Bulk import assets with OS, port and criticality data</p>
+            <p className="text-xs text-dark-400 mt-0.5">
+              {tenantId ? <span>Importing into <span className="text-eagle-400">selected tenant</span></span> : 'Bulk import assets with OS, port and criticality data'}
+            </p>
           </div>
           <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
@@ -445,6 +448,8 @@ export default function MyAssetsPage() {
   const [assets, setAssets] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [tenantFilter, setTenantFilter] = useState('')
+  const [tenants, setTenants] = useState([])
   const [showAdd, setShowAdd] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [error, setError] = useState(null)
@@ -452,12 +457,22 @@ export default function MyAssetsPage() {
   const isReadOnly = user?.role === 'business_owner'
   const canDelete = ['ops_lead', 'superadmin'].includes(user?.role)
 
+  // Fetch tenant list for superadmin filter
+  useEffect(() => {
+    if (user?.role === 'superadmin') {
+      client.get('/tenants')
+        .then(res => setTenants(res.data.tenants || []))
+        .catch(() => {})
+    }
+  }, [user?.role])
+
   const loadAssets = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const params = { source: 'manual' }
       if (search) params.search = search
+      if (tenantFilter) params.tenant_id = tenantFilter
       const res = await client.get('/assets', { params })
       setAssets(res.data.items || [])
     } catch (err) {
@@ -465,12 +480,13 @@ export default function MyAssetsPage() {
     } finally {
       setLoading(false)
     }
-  }, [search])
+  }, [search, tenantFilter])
 
   useEffect(() => { loadAssets() }, [loadAssets])
 
   const handleAddAsset = async (form) => {
-    await client.post('/assets', form)
+    const payload = tenantFilter ? { ...form, tenant_id: tenantFilter } : form
+    await client.post('/assets', payload)
     await loadAssets()
   }
 
@@ -538,16 +554,33 @@ export default function MyAssetsPage() {
         )}
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-        <input
-          type="text"
-          placeholder="Search by IP or hostname..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="input-field w-full pl-10 text-sm"
-        />
+      {/* Search + Tenant filter */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {user?.role === 'superadmin' && tenants.length > 0 && (
+          <div className="relative">
+            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
+            <select
+              value={tenantFilter}
+              onChange={(e) => setTenantFilter(e.target.value)}
+              className="input-field pl-9 pr-8 text-sm appearance-none min-w-[180px]"
+            >
+              <option value="">All Tenants</option>
+              {tenants.map((t) => (
+                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+          <input
+            type="text"
+            placeholder="Search by IP or hostname..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input-field w-full pl-10 text-sm"
+          />
+        </div>
       </div>
 
       {/* Error */}
@@ -675,6 +708,7 @@ export default function MyAssetsPage() {
         <ImportModal
           onClose={() => setShowImport(false)}
           onImport={handleImportDone}
+          tenantId={tenantFilter || undefined}
         />
       )}
     </div>

@@ -15,19 +15,22 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Asset Inventory (My Assets)** — Manual asset registry with criticality scoring, baseline snapshots, and drift detection
 - **CSV Bulk Import** — Import assets from CSV with OS, port, and criticality data; upserts by IP per tenant
 - **Network Discovery** — EagleEye scanning agents push Nmap scan results to the platform; discovered hosts can be promoted to the asset registry
-- **Network Topology** — Interactive tree view (gateway → router → switch → host) with BFS-based relationship inference
+- **Network Topology** — Interactive collapsible tree view with subnet-aware inference: classifies assets by device type and hostname pattern into gateway → router → switch → access_point → host hierarchy; per-tenant tree sections for superadmin; DMZ badge, criticality dot, IP inline display
+- **Asset Relationship Graph** — Force-directed canvas graph showing asset connectivity; device type and relationship type filter pills; tenant-scoped view; BFS blast-radius highlighting; drag, zoom, and pan controls
 - **Continuous Posture Management** — Automated drift detection and ongoing posture scoring tracked over time
 - **Threat Intelligence Integration** — Ingests live feeds (AlienVault OTX, ThreatFox, NVD) to identify vulnerable assets proactively
 - **AI-Driven Advisory Pipeline** — DeepSeek (via OpenRouter) generates actionable remediation instructions for security events
-- **Asset Relationship Graph** — Visualises asset dependencies and lateral movement blast-radius via BFS
 - **Automated Reporting** — Queued PDF report generation stored in Cloudflare R2; secure blob download (no token in URL)
 - **ChatOps Integration** — Telegram bot with role-based filtering and real-time security alerts
-- **Multi-Tenant Support** — SuperAdmin role manages multiple tenant organisations; all data scoped by tenant
+- **Notification Centre** — In-app notification bell with unread count badge; aggregates recent advisories, SLA breaches (>72 h), and agent offline/degraded alerts; last-seen timestamp persisted in localStorage
+- **Global Search** — Live asset search in the top header bar (hostname + IP); debounced 300 ms; results dropdown with device type; navigates to Asset Inventory
+- **Multi-Tenant Support** — SuperAdmin role manages multiple tenant organisations; all data scoped by tenant; tenant filter shared between inventory and graph tabs
 - **Agent Management** — Register and monitor EagleEye scanning agents; SHA-256 hashed API keys; read-only config view for non-admin roles
 - **MFA / TOTP** — Per-user two-factor authentication via authenticator apps
 - **Google OAuth** — Sign in with Google; auto-links to existing account by email
-- **Collapsible Sidebar** — Sidebar collapses to icon-only mode (64 px) or expands to full labels (256 px); toggle via header button or in-sidebar chevron; state persists via localStorage
+- **Collapsible Sidebar** — Sidebar collapses to icon-only mode (64 px) or expands to full labels (256 px); logo click navigates to Dashboard; state persists via localStorage
 - **Customisable Theme** — Dark, Light, and System theme modes; colours driven by CSS custom properties so the entire UI switches without touching component code; preference persists via localStorage
+- **Profile Dropdown** — Header avatar opens a dropdown with username, role, tenant name, email; links to Profile & Settings; logout
 
 ## Technology Stack
 
@@ -97,17 +100,18 @@ UMEagleEye2.0/
 │   │   ├── middleware/
 │   │   │   └── auth.ts          # JWT middleware + role guard
 │   │   ├── routes/              # API route handlers
-│   │   │   ├── auth.ts          # register, login, MFA, Google, change-password
-│   │   │   ├── assets.ts        # Asset CRUD + baseline + CSV import
+│   │   │   ├── auth.ts          # register, login, MFA, Google, change-password, /me (with tenant name)
+│   │   │   ├── assets.ts        # Asset CRUD + baseline + CSV import + search (hostname + IP)
 │   │   │   ├── scans.ts         # Trigger scan, agent poll, agent ingest, status
 │   │   │   ├── events.ts        # Security events
 │   │   │   ├── advisories.ts    # AI advisory management
 │   │   │   ├── posture.ts       # Posture score + history
 │   │   │   ├── cti.ts           # Threat indicators, MITRE
 │   │   │   ├── reports.ts       # PDF report queue + download
-│   │   │   ├── relationships.ts # Asset graph + BFS blast-radius
+│   │   │   ├── relationships.ts # Asset graph (tenant_id filter) + subnet inference + BFS blast-radius
+│   │   │   ├── notifications.ts # Aggregated notification feed (advisories, SLA, agents)
 │   │   │   ├── agents.ts        # EagleEye agent registry
-│   │   │   ├── topology.ts      # Network topology tree
+│   │   │   ├── topology.ts      # Network topology tree with subnet-aware inference
 │   │   │   └── tenants.ts       # Multi-tenant management (superadmin)
 │   │   ├── services/            # Business logic
 │   │   ├── queues/
@@ -121,20 +125,27 @@ UMEagleEye2.0/
 │   └── package.json
 ├── frontend/                    # React SPA
 │   ├── src/
-│   │   ├── components/layout/   # Sidebar (collapsible), Header (theme toggle), MainLayout
+│   │   ├── components/
+│   │   │   ├── layout/
+│   │   │   │   ├── Sidebar.jsx      # Collapsible nav; logo = dashboard link
+│   │   │   │   ├── Header.jsx       # Search bar, notification bell, profile dropdown
+│   │   │   │   └── MainLayout.jsx
+│   │   │   └── common/
+│   │   │       ├── AssetGraph.jsx   # Canvas force-graph with device/rel-type filter pills
+│   │   │       └── BlastRadiusModal.jsx
 │   │   ├── context/             # AuthContext (login, Google login, logout), ThemeContext (dark/light/system)
 │   │   ├── pages/
 │   │   │   ├── LoginPage.jsx
 │   │   │   ├── DashboardPage.jsx
-│   │   │   ├── AssetsPage.jsx       # All assets — inventory + graph view
+│   │   │   ├── AssetsPage.jsx       # Inventory + graph; tenant filter shared between tabs
 │   │   │   ├── MyAssetsPage.jsx     # Manual assets — add, import CSV, baseline
 │   │   │   ├── DiscoveryPage.jsx    # Scan dispatch + discovered host panel
 │   │   │   ├── AlertsPage.jsx       # Security events with severity/type filters
 │   │   │   ├── AdvisoriesPage.jsx   # AI advisories with status filter
 │   │   │   ├── ThreatIntelPage.jsx  # CTI indicators + MITRE heatmap
 │   │   │   ├── ReportsPage.jsx      # Report generation + secure blob download
-│   │   │   ├── SettingsPage.jsx     # Profile, password change, integrations
-│   │   │   ├── TopologyPage.jsx
+│   │   │   ├── SettingsPage.jsx     # Profile (with tenant name), password change, integrations
+│   │   │   ├── TopologyPage.jsx     # Collapsible tree; per-tenant sections; DMZ + criticality badges
 │   │   │   ├── AgentsPage.jsx       # Agent registry + RBAC config modal
 │   │   │   └── TenantsPage.jsx      # SuperAdmin only
 │   │   └── App.jsx
@@ -144,10 +155,8 @@ UMEagleEye2.0/
 │   ├── eagleeye_agent.py        # Poll → Nmap → ingest loop
 │   ├── requirements.txt         # requests, python-nmap
 │   └── README.md
-├── data/
-│   ├── test_assets_import.csv   # 28 sample assets for import testing
-│   └── reports/
-├── backend/                     # Legacy FastAPI backend (retained for reference)
+├── cyberforce_corporation_assets.csv  # Sample dataset — 33 assets (CyberForce)
+├── vanilla_corporation_assets.csv     # Sample dataset — 30 assets (Vanilla Corp)
 ├── deploy-workers.ps1           # One-shot full deployment script
 ├── .env                         # All secrets (git-ignored)
 └── .env.example                 # Template for required variables
@@ -157,11 +166,98 @@ UMEagleEye2.0/
 
 | Role | Description |
 |------|-------------|
-| `superadmin` | Full platform access + tenant management |
+| `superadmin` | Full platform access + tenant management; sees all tenants in topology, graph, and inventory |
 | `ops_lead` | Full operational access — scans, assets, reports, advisories, agent config |
 | `security_engineer` | Discovery, threat intel, drift management, advisory pipeline; read-only agent config |
 | `mssp_analyst` | Read-only operational modules, advisories, posture reports |
 | `business_owner` | Executive overview — posture metrics and executive reports only; read-only assets |
+
+## Network Topology Inference
+
+The `POST /topology/infer` endpoint rebuilds the topology tree from the asset inventory using device classification and subnet-aware parent assignment:
+
+### Classification rules (priority order)
+
+| Condition | Node Type | Layer |
+|-----------|-----------|-------|
+| `network` + `is_internet_facing` | gateway | L1 |
+| `network` + hostname matches `fw-`, `gw-`, `firewall-` | router | L2 |
+| `network` + hostname matches `core-sw`, `core-router` | switch | L2 |
+| `network` + hostname matches `router-`, `lab-router` | router | L2 |
+| `network` + hostname matches `dist-sw` | switch | L3 |
+| `network` + hostname matches `wifi`, `ap-`, `wap-` | access_point | L3 |
+| `network` (default) | switch | L3 |
+| `server` + `is_internet_facing` | host | L2 (DMZ) |
+| `server` | host | L4 |
+| `workstation` | host | L5 |
+| `iot` | host | L6 |
+
+### Parent assignment (3-step resolution)
+
+1. **Same-subnet candidates** with strictly lower layer — prefers highest layer number (closest parent), then switch > router > gateway type score
+2. **Cross-subnet candidates** at `target_layer = this_layer - 1` — distributes evenly by `lastOctet % candidateCount`
+3. **Fallback** — any node with lower layer
+
+## Asset Relationship Inference
+
+The `POST /relationships/infer` endpoint builds a star-topology relationship graph per `/24` subnet:
+
+- **`same_subnet`** edges — hub (network device or lowest-IP asset) connects to every other asset in the same subnet
+- **`connects_to`** edges — internet-facing gateway connects to the hub of every other subnet
+
+Runs per tenant; clears existing relationships before reinferring.
+
+## UI / UX
+
+### Top Header Bar
+
+| Element | Behaviour |
+|---------|-----------|
+| Sidebar toggle (PanelLeft) | Collapses/expands sidebar |
+| Global search | Live asset search (hostname + IP); 300 ms debounce; results dropdown with device type |
+| Theme picker | Dark / Light / System; stored in localStorage |
+| Notification bell | Fetches `/notifications`; shows unread count badge; dropdown lists advisories, SLA breaches, agent alerts |
+| Profile avatar | Dropdown: username, role, tenant name, email; links to Settings; Logout |
+
+### Sidebar Logo
+
+Clicking the UMEagleEye logo at the top of the sidebar always navigates to the **Dashboard** (`/`).
+
+### Collapsible Sidebar
+
+The sidebar toggles between expanded (256 px) and collapsed (64 px, icons only):
+
+- **PanelLeft** in the header bar toggles from outside
+- **ChevronLeft** inside the sidebar collapses it
+- Collapsed state persists via `localStorage('sidebar-collapsed')`
+- All nav items show a tooltip (route label) when collapsed
+
+### Theme System
+
+| Mode | Behaviour |
+|------|-----------|
+| `dark` | Default dark palette (dark-950 body, dark-900 surfaces) |
+| `light` | Inverted light palette (white surfaces, near-black text) |
+| `system` | Follows OS `prefers-color-scheme`; updates automatically |
+
+All `dark-XXX` Tailwind colours are backed by CSS custom properties in `index.css`. Adding `html.light` swaps every variable — no JSX needs conditional class logic.
+
+### Asset Relationship Graph Filters
+
+The graph tab includes two rows of toggle pills above the canvas:
+
+- **Device type pills** — Server / Workstation / Network / IoT; each colored to match the node; click to show/hide that node type (edges to hidden nodes are also hidden)
+- **Relationship type pills** — Subnet / Connects / Depends / Auth / Exposes; click to show/hide that edge type
+
+Filters apply instantly without re-running the force simulation. Both pill rows also reflect the count of each type from the loaded data.
+
+### Network Topology View
+
+- Superadmin sees one collapsible card per tenant; each shows node count and collapses independently
+- Per-node: colored icon by type, hostname, IP, layer badge, type badge
+- **DMZ** badge for `is_internet_facing` assets
+- Criticality dot (red ≥10, orange ≥9, yellow ≥8) for high-risk nodes
+- Tenant filter dropdown (superadmin) also filters the topology tree
 
 ## EagleEye Agent
 
@@ -223,6 +319,13 @@ Tenants can bulk-import assets from a CSV file via **My Assets → Import CSV**.
 - Port data is stored in `osInfo.ports` and included in baseline snapshots
 - Download the template from within the Import modal
 
+Sample datasets are included in the repository root:
+
+| File | Tenant | Assets |
+|------|--------|--------|
+| `cyberforce_corporation_assets.csv` | CyberForce Corporation | 33 |
+| `vanilla_corporation_assets.csv` | Vanilla Corporation | 30 |
+
 ## Baseline Snapshots
 
 Setting a baseline via **My Assets → Bookmark icon** captures a point-in-time snapshot of:
@@ -238,30 +341,6 @@ Setting a baseline via **My Assets → Bookmark icon** captures a point-in-time 
 ```
 
 The advisory worker (`drift_check` queue messages) compares incoming scan results against this snapshot to detect configuration drift.
-
-## UI / UX
-
-### Collapsible Sidebar
-
-The sidebar can be toggled between expanded (256 px, icons + labels) and collapsed (64 px, icons only):
-
-- Click the **`PanelLeft`** button in the top-left of the header bar to toggle at any time
-- Click the **`ChevronLeft`** button inside the sidebar logo row to collapse
-- When collapsed, all nav items show a native browser tooltip (the route label) on hover
-- The main content area transitions smoothly with `transition-all duration-300`
-- Collapsed state persists across page reloads via `localStorage('sidebar-collapsed')`
-
-### Theme System
-
-A three-way theme selector (Moon / Sun / Monitor icons) is in the header bar:
-
-| Mode | Behaviour |
-|------|-----------|
-| `dark` | Default dark palette (dark-950 body, dark-900 surfaces) |
-| `light` | Inverted light palette (white surfaces, near-black text) |
-| `system` | Follows OS `prefers-color-scheme`; updates automatically |
-
-**Implementation** — All `dark-XXX` Tailwind colours are backed by CSS custom properties (`--dark-50` … `--dark-950`) defined in `index.css`. Adding `html.light` class swaps every variable to its light-mode counterpart, so no JSX component needs conditional class logic. Preference persists via `localStorage('theme')`.
 
 ## Deployment
 
@@ -352,5 +431,5 @@ npm run dev
 
 ---
 
-*Final Year Project — University of Malaya, Faculty of Computer Science & Information Technology*
+*Final Year Project — University of Malaya, Faculty of Computer Science & Information Technology*  
 *Supervisor: Dr. Badrul Hisham*

@@ -1,0 +1,34 @@
+ip_address,hostname,mac_address,owner,device_type,criticality_score,is_internet_facing,hardware_vendor,os_name,os_version,open_ports
+10.30.1.1,fw-cyberforce-ext,00:CF:00:AA:10:01,NetSec Team / netsec@cyberforce.com,network,10,true,Palo Alto,PAN-OS,11.1,22/tcp 443/tcp 8443/tcp
+10.30.1.2,fw-cyberforce-int,00:CF:00:AA:10:02,NetSec Team / netsec@cyberforce.com,network,9,false,Palo Alto,PAN-OS,11.1,22/tcp 443/tcp
+10.30.1.3,core-sw-cf,00:CF:00:AA:10:03,NetSec Team / netsec@cyberforce.com,network,9,false,Aruba,ArubaOS,10.4,22/tcp 443/tcp
+10.30.1.4,dist-sw-soc,00:CF:00:AA:10:04,NetSec Team / netsec@cyberforce.com,network,8,false,Aruba,ArubaOS,10.4,22/tcp 443/tcp
+10.30.1.5,dist-sw-lab,00:CF:00:AA:10:05,Lab Admin / lab@cyberforce.com,network,7,false,Cisco,IOS XE,17.6,22/tcp 80/tcp
+10.30.1.6,wifi-corp,00:CF:00:AA:10:06,NetSec Team / netsec@cyberforce.com,network,6,false,Ubiquiti,UniFi OS,3.2,443/tcp
+10.30.2.1,siem-srv,00:CF:00:BB:10:01,SOC Team / soc@cyberforce.com,server,10,false,Dell,Ubuntu,22.04,22/tcp 514/tcp 5601/tcp 9200/tcp
+10.30.2.2,ids-srv,00:CF:00:BB:10:02,SOC Team / soc@cyberforce.com,server,10,false,Dell,Ubuntu,22.04,22/tcp 514/udp
+10.30.2.3,vuln-scanner,00:CF:00:BB:10:03,Red Team / redteam@cyberforce.com,server,9,false,HPE,Ubuntu,22.04,22/tcp 8834/tcp
+10.30.2.4,ticketing-srv,00:CF:00:BB:10:04,IT Admin / itadmin@cyberforce.com,server,8,false,Dell,Ubuntu,22.04,22/tcp 443/tcp 8080/tcp
+10.30.2.5,log-aggregator,00:CF:00:BB:10:05,SOC Team / soc@cyberforce.com,server,9,false,HPE,Ubuntu,22.04,22/tcp 5044/tcp 9600/tcp
+10.30.2.6,threat-intel-srv,00:CF:00:BB:10:06,CTI Team / cti@cyberforce.com,server,9,false,Dell,Ubuntu,22.04,22/tcp 443/tcp 8080/tcp
+10.30.2.7,dc-cf-01,00:CF:00:BB:10:07,IT Admin / itadmin@cyberforce.com,server,10,false,Dell,Windows Server,2022,22/tcp 88/tcp 389/tcp 443/tcp 3389/tcp
+10.30.2.8,jump-server,00:CF:00:BB:10:08,IT Admin / itadmin@cyberforce.com,server,10,true,HPE,Ubuntu,22.04,22/tcp
+10.30.2.9,malware-sandbox,00:CF:00:BB:10:09,Red Team / redteam@cyberforce.com,server,8,false,Dell,Windows Server,2019,3389/tcp 8080/tcp
+10.30.2.10,honeypot-01,00:CF:00:BB:10:10,Blue Team / blueteam@cyberforce.com,server,6,true,Dell,Ubuntu,22.04,22/tcp 80/tcp 443/tcp 3306/tcp
+10.30.2.11,ca-srv,00:CF:00:BB:10:11,IT Admin / itadmin@cyberforce.com,server,10,false,HPE,Ubuntu,22.04,22/tcp 443/tcp
+10.30.2.12,vpn-srv,00:CF:00:BB:10:12,NetSec Team / netsec@cyberforce.com,server,9,true,HPE,Ubuntu,22.04,22/tcp 1194/udp 443/tcp
+10.30.3.1,ws-soc-analyst1,00:CF:00:CC:10:01,SOC / soc.analyst1@cyberforce.com,workstation,7,false,Dell,Ubuntu,22.04,22/tcp
+10.30.3.2,ws-soc-analyst2,00:CF:00:CC:10:02,SOC / soc.analyst2@cyberforce.com,workstation,7,false,Dell,Ubuntu,22.04,22/tcp
+10.30.3.3,ws-soc-lead,00:CF:00:CC:10:03,SOC / soc.lead@cyberforce.com,workstation,8,false,Dell,Ubuntu,22.04,22/tcp
+10.30.3.4,ws-redteam-01,00:CF:00:CC:10:04,Red Team / redteam1@cyberforce.com,workstation,7,false,Lenovo,Kali Linux,2024.1,22/tcp
+10.30.3.5,ws-redteam-02,00:CF:00:CC:10:05,Red Team / redteam2@cyberforce.com,workstation,7,false,Lenovo,Kali Linux,2024.1,22/tcp
+10.30.3.6,ws-cti-01,00:CF:00:CC:10:06,CTI / cti1@cyberforce.com,workstation,6,false,Lenovo,Ubuntu,22.04,22/tcp
+10.30.3.7,ws-dev-cf-01,00:CF:00:CC:10:07,Dev Team / dev1@cyberforce.com,workstation,5,false,Lenovo,Ubuntu,22.04,22/tcp
+10.30.3.8,ws-dev-cf-02,00:CF:00:CC:10:08,Dev Team / dev2@cyberforce.com,workstation,5,false,Lenovo,Windows,11,3389/tcp
+10.30.3.9,ws-mgmt-01,00:CF:00:CC:10:09,Management / ciso@cyberforce.com,workstation,8,false,Apple,macOS,14.4,22/tcp 5900/tcp
+10.30.3.10,ws-mgmt-02,00:CF:00:CC:10:10,Management / cto@cyberforce.com,workstation,8,false,Apple,macOS,14.4,22/tcp 5900/tcp
+10.30.4.1,lab-target-win,00:CF:00:DD:10:01,Lab Admin / lab@cyberforce.com,workstation,5,false,Dell,Windows,10,135/tcp 445/tcp 3389/tcp
+10.30.4.2,lab-target-lin,00:CF:00:DD:10:02,Lab Admin / lab@cyberforce.com,server,5,false,HPE,Ubuntu,20.04,22/tcp 80/tcp 3306/tcp
+10.30.4.3,lab-router,00:CF:00:DD:10:03,Lab Admin / lab@cyberforce.com,network,4,false,MikroTik,RouterOS,7.14,22/tcp 80/tcp 8291/tcp
+10.30.4.4,badge-reader-ctrl,00:CF:00:DD:10:04,Facilities / facilities@cyberforce.com,iot,7,false,HID,Embedded,3.1,80/tcp 443/tcp
+10.30.4.5,cctv-ctrl,00:CF:00:DD:10:05,Security / physical.sec@cyberforce.com,iot,7,false,Axis,Linux,11.0,80/tcp 443/tcp 554/tcp

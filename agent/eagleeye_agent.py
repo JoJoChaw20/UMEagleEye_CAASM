@@ -3,6 +3,8 @@
 EagleEye Agent — network scanner for UMEagleEye CAASM platform.
 
 Polls the backend for pending scans, runs Nmap, and POSTs results.
+A background thread sends heartbeats every --heartbeat-interval seconds
+so the dashboard shows the agent as online even between scans.
 
 Usage:
     python eagleeye_agent.py \
@@ -11,7 +13,8 @@ Usage:
         --agent-id <uuid-from-dashboard>
 
 Or via environment variables:
-    EAGLEEYE_API_URL, EAGLEEYE_API_KEY, EAGLEEYE_AGENT_ID, EAGLEEYE_POLL_INTERVAL
+    EAGLEEYE_API_URL, EAGLEEYE_API_KEY, EAGLEEYE_AGENT_ID,
+    EAGLEEYE_POLL_INTERVAL, EAGLEEYE_HEARTBEAT_INTERVAL
 """
 
 import argparse
@@ -21,8 +24,9 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -33,7 +37,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("eagleeye")
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 # ── Nmap runner ───────────────────────────────────────────────────────────────
@@ -44,7 +48,7 @@ def run_nmap(subnet: str) -> list[dict[str, Any]]:
     try:
         import nmap  # type: ignore
         nm = nmap.PortScanner()
-        nm.scan(hosts=subnet, arguments="-sV -T4 --open -p 22,80,443,3389,8080,8443,3306,5432,6379,27017")
+        nm.scan(hosts=subnet, arguments="-sV -T4 --open -p 22,23,80,161,443,3389,8080,8443,3306,5432,6379,27017")
         hosts = []
         for ip in nm.all_hosts():
             host = nm[ip]
@@ -91,7 +95,6 @@ def _ping_sweep(subnet: str) -> list[dict[str, Any]]:
         )
         hosts = []
         import re
-        # Very simple XML parse without xml library dependency
         for ip_match in re.finditer(r'addr="([\d.]+)"', result.stdout):
             ip = ip_match.group(1)
             if not ip.startswith("0."):
@@ -101,6 +104,17 @@ def _ping_sweep(subnet: str) -> list[dict[str, Any]]:
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log.error(f"nmap not available: {e}")
         return []
+
+
+# ── Local IP helper ───────────────────────────────────────────────────────────
+
+def _local_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
 
 
 # ── API client ────────────────────────────────────────────────────────────────
@@ -116,6 +130,24 @@ class AgentClient:
             "Content-Type": "application/json",
             "User-Agent": f"EagleEye-Agent/{VERSION}",
         })
+
+    def send_heartbeat(self) -> bool:
+        """POST /agents/:agentId/heartbeat — keeps status green on the dashboard."""
+        payload = {
+            "version": VERSION,
+            "gateway_ip": _local_ip(),
+        }
+        try:
+            resp = self.session.post(
+                f"{self.api_url}/agents/{self.agent_id}/heartbeat",
+                data=json.dumps(payload),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as e:
+            log.warning(f"Heartbeat failed: {e}")
+            return False
 
     def get_pending_scans(self) -> list[dict]:
         try:
@@ -151,26 +183,50 @@ class AgentClient:
             return False
 
 
+# ── Heartbeat thread ──────────────────────────────────────────────────────────
+
+def _heartbeat_thread(client: AgentClient, interval: int) -> None:
+    log.info(f"Heartbeat thread started (interval={interval}s)")
+    while True:
+        time.sleep(interval)
+        client.send_heartbeat()
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="EagleEye network scanning agent")
-    parser.add_argument("--api-url",    default=os.getenv("EAGLEEYE_API_URL", ""),  help="Backend API base URL")
-    parser.add_argument("--api-key",    default=os.getenv("EAGLEEYE_API_KEY", ""),  help="Agent API key (from dashboard)")
-    parser.add_argument("--agent-id",   default=os.getenv("EAGLEEYE_AGENT_ID", ""), help="Agent UUID (from dashboard)")
-    parser.add_argument("--interval",   type=int, default=int(os.getenv("EAGLEEYE_POLL_INTERVAL", "30")), help="Poll interval in seconds (default: 30)")
+    parser.add_argument("--api-url",            default=os.getenv("EAGLEEYE_API_URL", ""),        help="Backend or bridge API base URL")
+    parser.add_argument("--api-key",            default=os.getenv("EAGLEEYE_API_KEY", ""),        help="Agent API key (from dashboard)")
+    parser.add_argument("--agent-id",           default=os.getenv("EAGLEEYE_AGENT_ID", ""),       help="Agent UUID (from dashboard)")
+    parser.add_argument("--interval",           type=int, default=int(os.getenv("EAGLEEYE_POLL_INTERVAL", "30")),       help="Scan poll interval in seconds (default: 30)")
+    parser.add_argument("--heartbeat-interval", type=int, default=int(os.getenv("EAGLEEYE_HEARTBEAT_INTERVAL", "30")), help="Heartbeat interval in seconds (default: 30)")
     args = parser.parse_args()
 
     if not args.api_url or not args.api_key or not args.agent_id:
         parser.error("--api-url, --api-key, and --agent-id are required (or set env vars)")
 
     log.info(f"EagleEye Agent v{VERSION} starting")
-    log.info(f"API URL  : {args.api_url}")
-    log.info(f"Agent ID : {args.agent_id}")
-    log.info(f"Hostname : {socket.gethostname()}")
-    log.info(f"Polling every {args.interval}s")
+    log.info(f"API URL     : {args.api_url}")
+    log.info(f"Agent ID    : {args.agent_id}")
+    log.info(f"Hostname    : {socket.gethostname()}")
+    log.info(f"Gateway IP  : {_local_ip()}")
+    log.info(f"Poll every  : {args.interval}s")
+    log.info(f"Heartbeat   : {args.heartbeat_interval}s")
 
     client = AgentClient(args.api_url, args.api_key, args.agent_id)
+
+    # Send initial heartbeat so agent appears online immediately
+    client.send_heartbeat()
+
+    # Background heartbeat thread
+    hb = threading.Thread(
+        target=_heartbeat_thread,
+        args=(client, args.heartbeat_interval),
+        daemon=True,
+        name="heartbeat",
+    )
+    hb.start()
 
     while True:
         try:

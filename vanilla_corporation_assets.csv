@@ -1,0 +1,31 @@
+ip_address,hostname,mac_address,owner,device_type,criticality_score,is_internet_facing,hardware_vendor,os_name,os_version,open_ports
+10.20.1.1,fw-vanilla-main,00:1A:2B:3C:10:01,Network Team / netops@vanilla.com,network,10,true,Fortinet,FortiOS,7.4,22/tcp 443/tcp 8443/tcp
+10.20.1.2,core-sw-vanilla,00:1A:2B:3C:10:02,Network Team / netops@vanilla.com,network,9,false,Cisco,IOS XE,17.9,22/tcp 443/tcp
+10.20.1.3,dist-sw-floor1,00:1A:2B:3C:10:03,Network Team / netops@vanilla.com,network,7,false,Cisco,IOS,15.2,22/tcp 23/tcp
+10.20.1.4,dist-sw-floor2,00:1A:2B:3C:10:04,Network Team / netops@vanilla.com,network,7,false,Cisco,IOS,15.2,22/tcp 23/tcp
+10.20.1.5,wifi-ap-lobby,00:1A:2B:3C:10:05,Network Team / netops@vanilla.com,network,5,false,Ubiquiti,UniFi OS,3.2,22/tcp 80/tcp 443/tcp
+10.20.2.1,dc-vanilla-01,00:2C:3D:4E:10:01,IT Admin / admin@vanilla.com,server,10,false,Dell,Windows Server,2022,22/tcp 88/tcp 389/tcp 443/tcp 3389/tcp
+10.20.2.2,dc-vanilla-02,00:2C:3D:4E:10:02,IT Admin / admin@vanilla.com,server,10,false,Dell,Windows Server,2022,22/tcp 88/tcp 389/tcp 443/tcp 3389/tcp
+10.20.2.3,fileserver-01,00:2C:3D:4E:10:03,IT Admin / admin@vanilla.com,server,9,false,HP,Windows Server,2019,22/tcp 445/tcp 3389/tcp
+10.20.2.4,mailserver-01,00:2C:3D:4E:10:04,IT Admin / admin@vanilla.com,server,9,true,Dell,Ubuntu,22.04,22/tcp 25/tcp 143/tcp 443/tcp 587/tcp
+10.20.2.5,webserver-ext,00:2C:3D:4E:10:05,DevOps / devops@vanilla.com,server,8,true,Dell,Ubuntu,22.04,22/tcp 80/tcp 443/tcp
+10.20.2.6,db-postgres-01,00:2C:3D:4E:10:06,DBA Team / dba@vanilla.com,server,10,false,HPE,Ubuntu,22.04,22/tcp 5432/tcp
+10.20.2.7,db-mysql-01,00:2C:3D:4E:10:07,DBA Team / dba@vanilla.com,server,10,false,HPE,Ubuntu,20.04,22/tcp 3306/tcp
+10.20.2.8,monitoring-srv,00:2C:3D:4E:10:08,DevOps / devops@vanilla.com,server,6,false,Dell,Ubuntu,22.04,22/tcp 3000/tcp 9090/tcp
+10.20.2.9,backup-srv-01,00:2C:3D:4E:10:09,IT Admin / admin@vanilla.com,server,8,false,Synology,DSM,7.2,22/tcp 443/tcp 5000/tcp
+10.20.2.10,vpn-gateway,00:2C:3D:4E:10:10,Network Team / netops@vanilla.com,server,9,true,Fortinet,FortiOS,7.2,22/tcp 443/tcp 1194/udp
+10.20.3.1,ws-ceo-laptop,00:3E:4F:5A:10:01,Executive / ceo@vanilla.com,workstation,8,false,Apple,macOS,14.4,22/tcp 5900/tcp
+10.20.3.2,ws-hr-mgr,00:3E:4F:5A:10:02,HR Dept / hr.manager@vanilla.com,workstation,5,false,HP,Windows,11,3389/tcp
+10.20.3.3,ws-finance-01,00:3E:4F:5A:10:03,Finance / finance@vanilla.com,workstation,6,false,Dell,Windows,11,3389/tcp
+10.20.3.4,ws-finance-02,00:3E:4F:5A:10:04,Finance / finance@vanilla.com,workstation,6,false,Dell,Windows,11,3389/tcp
+10.20.3.5,ws-dev-01,00:3E:4F:5A:10:05,Dev Team / dev1@vanilla.com,workstation,4,false,Lenovo,Ubuntu,22.04,22/tcp
+10.20.3.6,ws-dev-02,00:3E:4F:5A:10:06,Dev Team / dev2@vanilla.com,workstation,4,false,Lenovo,Ubuntu,22.04,22/tcp
+10.20.3.7,ws-dev-03,00:3E:4F:5A:10:07,Dev Team / dev3@vanilla.com,workstation,4,false,Lenovo,Windows,11,3389/tcp
+10.20.3.8,ws-ops-01,00:3E:4F:5A:10:08,Ops / ops1@vanilla.com,workstation,5,false,HP,Windows,11,3389/tcp
+10.20.3.9,ws-ops-02,00:3E:4F:5A:10:09,Ops / ops2@vanilla.com,workstation,5,false,HP,Windows,11,3389/tcp
+10.20.3.10,ws-design-01,00:3E:4F:5A:10:10,Design / designer@vanilla.com,workstation,3,false,Apple,macOS,14.4,22/tcp
+10.20.4.1,printer-floor1,00:4A:5B:6C:10:01,IT Admin / admin@vanilla.com,iot,3,false,HP,HPGL,2.0,80/tcp 443/tcp 9100/tcp
+10.20.4.2,printer-floor2,00:4A:5B:6C:10:02,IT Admin / admin@vanilla.com,iot,3,false,Canon,CUPS,2.3,80/tcp 9100/tcp
+10.20.4.3,cctv-lobby,00:4A:5B:6C:10:03,Security / security@vanilla.com,iot,6,false,Hikvision,Linux,4.1,80/tcp 443/tcp 554/tcp
+10.20.4.4,cctv-carpark,00:4A:5B:6C:10:04,Security / security@vanilla.com,iot,6,false,Hikvision,Linux,4.1,80/tcp 443/tcp 554/tcp
+10.20.4.5,smart-ac-ctrl,00:4A:5B:6C:10:05,Facilities / facilities@vanilla.com,iot,4,false,Daikin,Embedded,1.0,80/tcp
