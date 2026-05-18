@@ -75,9 +75,22 @@ function ApiKeyModal({ agentName, apiKey, onClose }) {
   )
 }
 
+const DEFAULT_AGENT_CONFIG = JSON.stringify({
+  subnet:       "192.168.1.0/24",
+  location:     "Main Office – Server Room A",
+  description:  "Primary LAN scanner",
+  scan_options: {
+    ports:    "22,80,443,3389,8080,8443,3306,5432",
+    timing:   "T4",
+    version_detection: true,
+  },
+  notify_on_offline: true,
+  tags: ["production", "internal"],
+}, null, 2)
+
 function RegisterModal({ onClose, onSubmit }) {
   const [name, setName] = useState('')
-  const [configText, setConfigText] = useState('{}')
+  const [configText, setConfigText] = useState(DEFAULT_AGENT_CONFIG)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
@@ -106,8 +119,11 @@ function RegisterModal({ onClose, onSubmit }) {
             <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="branch-office-agent-01" className="input-field w-full text-sm" required />
           </div>
           <div>
-            <label className="block text-xs text-dark-400 mb-1">Config (JSON)</label>
-            <textarea value={configText} onChange={e => setConfigText(e.target.value)} rows={4} className="input-field w-full text-sm font-mono resize-none" />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-dark-400">Config (JSON)</label>
+              <span className="text-[10px] text-dark-500">Edit to match your network</span>
+            </div>
+            <textarea value={configText} onChange={e => setConfigText(e.target.value)} rows={14} className="input-field w-full text-xs font-mono resize-y" />
           </div>
           <div className="flex gap-3">
             <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
