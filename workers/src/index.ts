@@ -13,6 +13,7 @@ import ctiRoutes from './routes/cti'
 import reportRoutes from './routes/reports'
 import relationshipRoutes from './routes/relationships'
 import agentRoutes from './routes/agents'
+import bridgeRoutes from './routes/bridges'
 import topologyRoutes from './routes/topology'
 import tenantRoutes from './routes/tenants'
 import notificationRoutes from './routes/notifications'
@@ -59,6 +60,7 @@ api.route('/cti', ctiRoutes)
 api.route('/reports', reportRoutes)
 api.route('/relationships', relationshipRoutes)
 api.route('/agents', agentRoutes)
+api.route('/bridges', bridgeRoutes)
 api.route('/topology', topologyRoutes)
 api.route('/tenants', tenantRoutes)
 api.route('/notifications', notificationRoutes)

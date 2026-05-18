@@ -46,6 +46,7 @@ router.get('/', authMiddleware, async (c) => {
     gateway_ip: a.gatewayIp,
     version: a.version,
     config: a.config,
+    bridge_id: a.bridgeId,
     created_at: a.createdAt,
   }))
 
@@ -60,11 +61,12 @@ router.post(
   zValidator('json', z.object({
     name: z.string().min(1).max(100),
     config: z.record(z.unknown()).optional(),
+    bridge_id: z.string().uuid().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
-    const { name, config } = c.req.valid('json')
+    const { name, config, bridge_id } = c.req.valid('json')
 
     if (!user.tenantId && user.role !== 'superadmin') {
       return c.json({ detail: 'User has no tenant assigned' }, 400)
@@ -78,6 +80,7 @@ router.post(
       name,
       apiKeyHash,
       config: config ?? {},
+      bridgeId: bridge_id ?? null,
     }).returning()
 
     const agent = inserted[0]
@@ -114,6 +117,7 @@ router.get('/:agentId', authMiddleware, async (c) => {
     gateway_ip: agent.gatewayIp,
     version: agent.version,
     config: agent.config,
+    bridge_id: agent.bridgeId,
     created_at: agent.createdAt,
   })
 })
