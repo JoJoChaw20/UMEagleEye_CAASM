@@ -25,7 +25,6 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     const device_type = c.req.query('device_type')
     const hostname = c.req.query('hostname')
     const search = c.req.query('search')
-    const source = c.req.query('source')
     const tenant_id_param = c.req.query('tenant_id')
 
     const conditions = []
@@ -47,10 +46,6 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 
     if (hostname) {
       conditions.push(ilike(assets.hostname, `%${hostname}%`))
-    }
-
-    if (source && (source === 'manual' || source === 'discovered')) {
-      conditions.push(eq(assets.source, source))
     }
 
     if (search) {
@@ -117,7 +112,6 @@ const createAssetSchema = z.object({
   criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
   tenant_id: z.string().uuid().optional(),
-  source: z.enum(['manual', 'discovered']).optional(),
 })
 
 app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', createAssetSchema), async (c) => {
@@ -144,7 +138,6 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         criticalityScore: body.criticality_score ?? 5,
         isInternetFacing: body.is_internet_facing ?? false,
         tenantId: targetTenantId,
-        source: body.source ?? 'manual',
       })
       .returning()
 

@@ -485,7 +485,7 @@ export default function MyAssetsPage() {
   useEffect(() => { loadAssets() }, [loadAssets])
 
   const handleAddAsset = async (form) => {
-    const payload = { ...form, source: 'manual', ...(tenantFilter ? { tenant_id: tenantFilter } : {}) }
+    const payload = tenantFilter ? { ...form, tenant_id: tenantFilter } : form
     await client.post('/assets', payload)
     await loadAssets()
   }

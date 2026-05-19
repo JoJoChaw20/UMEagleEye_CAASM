@@ -1,19 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, Plus, RefreshCw, X, Wifi, Globe, CheckCircle2, Download } from 'lucide-react'
+import { Search, Plus, RefreshCw, X, ChevronRight, Wifi, Server, Globe } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
-function relativeTime(ts) {
-  if (!ts) return '—'
-  const diff = Date.now() - new Date(ts).getTime()
-  const min = Math.floor(diff / 60000)
-  if (min < 1) return 'just now'
-  if (min < 60) return `${min}m ago`
-  const h = Math.floor(min / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
-
+// ── Status badge ──────────────────────────────────────────────────
 function StatusBadge({ status }) {
   const map = {
     pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
@@ -28,6 +18,19 @@ function StatusBadge({ status }) {
   )
 }
 
+// ── Relative time helper ──────────────────────────────────────────
+function relativeTime(ts) {
+  if (!ts) return '—'
+  const diff = Date.now() - new Date(ts).getTime()
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min}m ago`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
+
+// ── New Scan Modal ────────────────────────────────────────────────
 function NewScanModal({ onClose, onSubmit, agents }) {
   const [subnet, setSubnet] = useState(import.meta.env.VITE_SCAN_DEFAULT_SUBNET || '192.168.1.0/24')
   const [agentId, setAgentId] = useState('')
@@ -116,31 +119,91 @@ function NewScanModal({ onClose, onSubmit, agents }) {
   )
 }
 
+// ── Discovered hosts side panel ────────────────────────────────────
+function HostsPanel({ scan, onClose, onAddAsset }) {
+  const hosts = scan?.rawResults || scan?.raw_results || []
+  const [adding, setAdding] = useState({})
+
+  const handleAdd = async (host) => {
+    setAdding(prev => ({ ...prev, [host.ip]: true }))
+    try {
+      await onAddAsset(host)
+    } finally {
+      setAdding(prev => ({ ...prev, [host.ip]: false }))
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/40 backdrop-blur-sm">
+      <div className="glass-card w-full sm:w-[480px] h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
+        <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
+          <div>
+            <h3 className="font-semibold text-white">Discovered Hosts</h3>
+            <p className="text-xs text-dark-400 mt-0.5">{scan.subnet} — {hosts.length} hosts</p>
+          </div>
+          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {hosts.length === 0 ? (
+            <p className="text-dark-400 text-sm text-center py-8">No hosts in results</p>
+          ) : (
+            hosts.map((host, i) => (
+              <div key={i} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm text-accent-cyan">{host.ip || host.ip_address}</p>
+                    {host.hostname && <p className="text-xs text-dark-300 mt-0.5">{host.hostname}</p>}
+                    {host.mac && <p className="text-xs text-dark-500 font-mono mt-0.5">{host.mac}</p>}
+                    {host.os && <p className="text-xs text-dark-400 mt-1">{host.os}</p>}
+                    {host.ports && host.ports.length > 0 && (
+                      <p className="text-xs text-dark-500 mt-1 truncate">
+                        Ports: {Array.isArray(host.ports) ? host.ports.join(', ') : host.ports}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleAdd(host)}
+                    disabled={adding[host.ip || host.ip_address]}
+                    className="btn-secondary text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1"
+                  >
+                    {adding[host.ip || host.ip_address]
+                      ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
+                      : <Plus className="w-3 h-3" />
+                    }
+                    Add
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main page ─────────────────────────────────────────────────────
 export default function DiscoveryPage() {
   const { user } = useAuth()
   const [scans, setScans] = useState([])
   const [agents, setAgents] = useState([])
-  const [importedIps, setImportedIps] = useState(new Set())
   const [loading, setLoading] = useState(true)
-  const [importing, setImporting] = useState({})
-  const [search, setSearch] = useState('')
   const [showNew, setShowNew] = useState(false)
+  const [selectedScan, setSelectedScan] = useState(null)
   const [error, setError] = useState(null)
   const intervalRef = useRef(null)
 
-  const canImport = ['ops_lead', 'superadmin'].includes(user?.role)
-
   const loadData = useCallback(async () => {
     try {
-      const [scansRes, agentsRes, importedRes] = await Promise.all([
+      const [scansRes, agentsRes] = await Promise.all([
         client.get('/scans'),
         client.get('/agents'),
-        client.get('/assets', { params: { source: 'discovered', limit: 200 } }),
       ])
       setScans(scansRes.data.scans || scansRes.data.items || [])
       setAgents(agentsRes.data.agents || [])
-      const ips = new Set((importedRes.data.items || []).map(a => a.ipAddress))
-      setImportedIps(ips)
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load data')
     } finally {
@@ -148,8 +211,11 @@ export default function DiscoveryPage() {
     }
   }, [])
 
-  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => {
+    loadData()
+  }, [loadData])
 
+  // Auto-refresh every 10s if any scan is pending/running
   useEffect(() => {
     const hasActive = scans.some(s => s.status === 'pending' || s.status === 'running')
     if (hasActive) {
@@ -160,100 +226,50 @@ export default function DiscoveryPage() {
     return () => clearInterval(intervalRef.current)
   }, [scans, loadData])
 
-  // Flatten all hosts from completed scans, deduplicate by IP (keep most recent)
-  const hosts = (() => {
-    const allHosts = scans
-      .filter(s => s.status === 'completed' && s.rawResults?.length > 0)
-      .flatMap(s => (s.rawResults || []).map(h => ({ ...h, scanId: s.scanId, subnet: s.subnet, scannedAt: s.completedAt })))
-    const seen = new Map()
-    for (const h of allHosts) {
-      const ip = h.ip || h.ip_address
-      if (!ip) continue
-      if (!seen.has(ip) || new Date(h.scannedAt) > new Date(seen.get(ip).scannedAt)) {
-        seen.set(ip, h)
-      }
-    }
-    return Array.from(seen.values())
-  })()
-
-  const filtered = search
-    ? hosts.filter(h => {
-        const ip = h.ip || h.ip_address || ''
-        const hn = h.hostname || ''
-        return ip.includes(search) || hn.toLowerCase().includes(search.toLowerCase())
-      })
-    : hosts
-
   const handleStartScan = async ({ subnet, agent_id, scan_type }) => {
     await client.post('/scans/active', { subnet, agent_id, scan_type })
     await loadData()
   }
 
-  const handleImport = async (host) => {
-    const ip = host.ip || host.ip_address
-    setImporting(prev => ({ ...prev, [ip]: true }))
+  const handleAddAsset = async (host) => {
     try {
       await client.post('/assets', {
-        ip_address: ip,
-        hostname: host.hostname || undefined,
-        mac_address: host.mac || undefined,
-        source: 'discovered',
+        ip_address: host.ip || host.ip_address,
+        hostname: host.hostname,
+        mac_address: host.mac,
       })
-      setImportedIps(prev => new Set([...prev, ip]))
+      alert(`Asset ${host.ip || host.ip_address} added to inventory.`)
     } catch (err) {
-      alert(err?.response?.data?.detail || 'Failed to import asset')
-    } finally {
-      setImporting(prev => ({ ...prev, [ip]: false }))
+      alert(err?.response?.data?.detail || 'Failed to add asset')
     }
   }
-
-  const completedScans = scans.filter(s => s.status === 'completed')
-  const activeScans = scans.filter(s => s.status === 'pending' || s.status === 'running')
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Discovery</h1>
-          <p className="text-dark-400 text-sm mt-1">All hosts discovered by network scans</p>
+          <h1 className="text-2xl font-bold text-white">Asset Discovery</h1>
+          <p className="text-dark-400 text-sm mt-1">Trigger network scans and review discovered hosts</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={loadData} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
+          <button
+            onClick={loadData}
+            disabled={loading}
+            className="btn-secondary flex items-center gap-2 text-sm"
+          >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <button onClick={() => setShowNew(true)} className="btn-primary flex items-center gap-2">
+          <button
+            onClick={() => setShowNew(true)}
+            className="btn-primary flex items-center gap-2"
+          >
             <Plus className="w-4 h-4" />
             New Scan
           </button>
         </div>
       </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {[
-          { label: 'Discovered Hosts', value: hosts.length, color: 'text-accent-cyan' },
-          { label: 'Imported to Assets', value: importedIps.size, color: 'text-green-400' },
-          { label: 'Completed Scans', value: completedScans.length, color: 'text-eagle-400' },
-          { label: 'Active Scans', value: activeScans.length, color: 'text-yellow-400' },
-        ].map(({ label, value, color }) => (
-          <div key={label} className="glass-card p-4">
-            <p className={`text-2xl font-bold ${color}`}>{value}</p>
-            <p className="text-xs text-dark-400 mt-1">{label}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Active scans notice */}
-      {activeScans.length > 0 && (
-        <div className="glass-card p-4 border border-blue-500/30 flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse flex-shrink-0" />
-          <p className="text-sm text-blue-300">
-            {activeScans.length} scan{activeScans.length > 1 ? 's' : ''} in progress — auto-refreshing every 10s
-          </p>
-        </div>
-      )}
 
       {/* Error */}
       {error && (
@@ -263,146 +279,78 @@ export default function DiscoveryPage() {
         </div>
       )}
 
-      {/* Search */}
-      <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-        <input
-          type="text"
-          placeholder="Search by IP or hostname..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="input-field w-full pl-10 text-sm"
-        />
-      </div>
-
-      {/* Hosts table */}
+      {/* Scans table */}
       <div className="glass-card overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-        ) : filtered.length > 0 ? (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>IP Address</th>
-                <th>Hostname</th>
-                <th>MAC</th>
-                <th>OS</th>
-                <th>Open Ports</th>
-                <th>Subnet</th>
-                <th>Scanned</th>
-                <th>Status</th>
-                {canImport && <th></th>}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((host, i) => {
-                const ip = host.ip || host.ip_address
-                const isImported = importedIps.has(ip)
-                return (
-                  <tr key={`${ip}-${i}`}>
-                    <td className="font-mono text-sm text-accent-cyan">{ip}</td>
-                    <td className="text-dark-300 text-sm">{host.hostname || '—'}</td>
-                    <td className="font-mono text-xs text-dark-400">{host.mac || '—'}</td>
-                    <td className="text-xs text-dark-300">{host.os || '—'}</td>
-                    <td className="text-xs text-dark-500 max-w-[160px] truncate" title={Array.isArray(host.ports) ? host.ports.join(', ') : host.ports}>
-                      {host.ports?.length > 0
-                        ? (Array.isArray(host.ports) ? host.ports.slice(0, 5).join(', ') : host.ports)
-                        : '—'
-                      }
-                    </td>
-                    <td className="font-mono text-xs text-dark-400">{host.subnet || '—'}</td>
-                    <td className="text-dark-400 text-xs">{relativeTime(host.scannedAt)}</td>
-                    <td>
-                      {isImported
-                        ? <span className="flex items-center gap-1 text-xs text-green-400 font-medium"><CheckCircle2 className="w-3.5 h-3.5" />Imported</span>
-                        : <span className="text-xs text-dark-500">Not imported</span>
-                      }
-                    </td>
-                    {canImport && (
-                      <td>
-                        {!isImported && (
-                          <button
-                            onClick={() => handleImport(host)}
-                            disabled={importing[ip]}
-                            className="btn-secondary text-xs py-1 px-3 flex items-center gap-1"
-                          >
-                            {importing[ip]
-                              ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                              : <Download className="w-3 h-3" />
-                            }
-                            Import
-                          </button>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        ) : (
-          <div className="text-center py-20 text-dark-400">
-            <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p className="text-lg font-medium mb-2">
-              {hosts.length > 0 && search ? 'No hosts match your search' : 'No discovered hosts yet'}
-            </p>
-            <p className="text-sm mb-4">
-              {hosts.length > 0 && search
-                ? 'Try a different search term.'
-                : 'Run a network scan to discover hosts on your network.'}
-            </p>
-            {!search && (
-              <button onClick={() => setShowNew(true)} className="btn-primary">
-                <Plus className="w-4 h-4 mr-2" />
-                Start First Scan
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Scan history */}
-      {scans.length > 0 && (
-        <div className="glass-card overflow-hidden">
-          <div className="p-4 border-b border-dark-700/50">
-            <h2 className="text-sm font-semibold text-dark-200">Scan History</h2>
-          </div>
+        ) : scans.length > 0 ? (
           <table className="data-table">
             <thead>
               <tr>
                 <th>Scan ID</th>
+                <th>Agent</th>
                 <th>Subnet</th>
                 <th>Type</th>
                 <th>Status</th>
                 <th>Hosts Found</th>
                 <th>Started</th>
                 <th>Completed</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {scans.map((scan) => (
-                <tr key={scan.scanId}>
-                  <td className="font-mono text-xs text-dark-400">{scan.scanId?.slice(0, 12)}…</td>
+                <tr
+                  key={scan.scanId}
+                  className={scan.status === 'completed' ? 'cursor-pointer hover:bg-dark-700/30' : ''}
+                  onClick={() => scan.status === 'completed' && setSelectedScan(scan)}
+                >
+                  <td className="font-mono text-xs text-dark-400">{scan.scanId?.slice(0, 12)}...</td>
+                  <td className="text-dark-300 text-sm">{scan.agentId?.slice(0, 8) || '—'}</td>
                   <td className="font-mono text-sm text-accent-cyan">{scan.subnet || '—'}</td>
                   <td className="text-xs text-dark-300 capitalize">{scan.scanType || 'active'}</td>
                   <td><StatusBadge status={scan.status} /></td>
                   <td className="font-medium text-white">{scan.hostsDiscovered ?? 0}</td>
                   <td className="text-dark-400 text-xs">{relativeTime(scan.startedAt)}</td>
                   <td className="text-dark-400 text-xs">{relativeTime(scan.completedAt)}</td>
+                  <td>
+                    {scan.status === 'completed' && (
+                      <ChevronRight className="w-4 h-4 text-dark-400" />
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        ) : (
+          <div className="text-center py-20 text-dark-400">
+            <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
+            <p className="text-lg font-medium mb-2">No scans yet</p>
+            <p className="text-sm mb-4">Run your first scan to discover network assets.</p>
+            <button onClick={() => setShowNew(true)} className="btn-primary">
+              <Plus className="w-4 h-4 mr-2" />
+              Start First Scan
+            </button>
+          </div>
+        )}
+      </div>
 
+      {/* Modals */}
       {showNew && (
         <NewScanModal
           onClose={() => setShowNew(false)}
           onSubmit={handleStartScan}
           agents={agents}
+        />
+      )}
+
+      {selectedScan && (
+        <HostsPanel
+          scan={selectedScan}
+          onClose={() => setSelectedScan(null)}
+          onAddAsset={handleAddAsset}
         />
       )}
     </div>
