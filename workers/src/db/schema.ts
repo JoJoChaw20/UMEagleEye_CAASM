@@ -83,6 +83,7 @@ export const assets = pgTable('assets', {
   baselineState: jsonb('baseline_state'),
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
+  source: varchar('source', { length: 20 }).notNull().default('manual'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [

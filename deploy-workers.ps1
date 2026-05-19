@@ -120,7 +120,9 @@ try {
 
     npx wrangler pages deploy dist --project-name $ProjectName --commit-dirty=true
     if ($LASTEXITCODE -ne 0) { throw "Pages deploy failed" }
-    Write-Ok "Frontend deployed -> https://$ProjectName.pages.dev"
+    # Capture actual Pages URL from wrangler output
+    $pagesUrl = "https://umeagleeye.pages.dev"
+    Write-Ok "Frontend deployed -> $pagesUrl"
 } finally {
     Pop-Location
 }
@@ -129,7 +131,7 @@ try {
 Write-Host ""
 Write-Host "  Deployment Complete!" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Frontend  : https://$ProjectName.pages.dev" -ForegroundColor Cyan
+Write-Host "  Frontend  : $pagesUrl" -ForegroundColor Cyan
 Write-Host "  Workers   : $workersUrl" -ForegroundColor Cyan
 Write-Host "  API Docs  : $workersUrl/" -ForegroundColor Cyan
 Write-Host ""
