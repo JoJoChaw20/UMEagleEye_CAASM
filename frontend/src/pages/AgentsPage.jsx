@@ -508,7 +508,10 @@ export default function AgentsPage() {
                     <td>
                       <div>
                         <p className="font-medium text-white">{b.name}</p>
-                        <p className="text-xs text-dark-500 font-mono">{b.bridge_id?.slice(0, 12)}...</p>
+                        <div className="flex items-center gap-1">
+                          <p className="text-xs text-dark-500 font-mono">{b.bridge_id?.slice(0, 12)}...</p>
+                          <CopyButton text={b.bridge_id} />
+                        </div>
                       </div>
                     </td>
                     <td>
@@ -582,7 +585,10 @@ export default function AgentsPage() {
                     <td>
                       <div>
                         <p className="font-medium text-white">{a.name}</p>
-                        <p className="text-xs text-dark-500 font-mono">{a.agent_id?.slice(0, 12)}...</p>
+                        <div className="flex items-center gap-1">
+                          <p className="text-xs text-dark-500 font-mono">{a.agent_id?.slice(0, 12)}...</p>
+                          <CopyButton text={a.agent_id} />
+                        </div>
                       </div>
                     </td>
                     <td>
