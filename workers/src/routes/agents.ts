@@ -122,7 +122,7 @@ router.get('/:agentId', authMiddleware, async (c) => {
   })
 })
 
-// ── PATCH /:agentId — Update config ──────────────────────────────
+// ── PATCH /:agentId — Update config / tenant ─────────────────────
 router.patch(
   '/:agentId',
   authMiddleware,
@@ -130,6 +130,7 @@ router.patch(
   zValidator('json', z.object({
     name: z.string().min(1).max(100).optional(),
     config: z.record(z.unknown()).optional(),
+    tenant_id: z.string().uuid().nullable().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -143,9 +144,15 @@ router.patch(
       return c.json({ detail: 'Forbidden' }, 403)
     }
 
+    // Only superadmin can reassign tenant
+    if (updates.tenant_id !== undefined && user.role !== 'superadmin') {
+      return c.json({ detail: 'Only superadmin can reassign tenant' }, 403)
+    }
+
     const updateData: Record<string, unknown> = {}
     if (updates.name !== undefined) updateData.name = updates.name
     if (updates.config !== undefined) updateData.config = updates.config
+    if (updates.tenant_id !== undefined) updateData.tenantId = updates.tenant_id
 
     const patched = await db.update(agents).set(updateData).where(eq(agents.agentId, agentId)).returning()
     const updated = patched[0]
@@ -153,6 +160,7 @@ router.patch(
 
     return c.json({
       agent_id: updated.agentId,
+      tenant_id: updated.tenantId,
       name: updated.name,
       config: updated.config,
     })

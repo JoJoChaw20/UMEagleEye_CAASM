@@ -85,6 +85,7 @@ export const assets = pgTable('assets', {
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
   source: assetSourceEnum('source').notNull().default('manual'),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
+  source: assetSourceEnum('source').notNull().default('manual'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [

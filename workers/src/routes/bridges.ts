@@ -105,6 +105,42 @@ router.post(
   }
 )
 
+// ── PATCH /:bridgeId — Update name / tenant ──────────────────────
+router.patch(
+  '/:bridgeId',
+  authMiddleware,
+  requireRoles('ops_lead', 'superadmin'),
+  zValidator('json', z.object({
+    name: z.string().min(1).max(100).optional(),
+    tenant_id: z.string().uuid().nullable().optional(),
+  })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { bridgeId } = c.req.param()
+    const updates = c.req.valid('json')
+
+    const [existing] = await db.select().from(bridges).where(eq(bridges.bridgeId, bridgeId)).limit(1)
+    if (!existing) return c.json({ detail: 'Bridge not found' }, 404)
+    if (user.role !== 'superadmin' && existing.tenantId !== user.tenantId) {
+      return c.json({ detail: 'Forbidden' }, 403)
+    }
+    if (updates.tenant_id !== undefined && user.role !== 'superadmin') {
+      return c.json({ detail: 'Only superadmin can reassign tenant' }, 403)
+    }
+
+    const updateData: Record<string, unknown> = {}
+    if (updates.name !== undefined) updateData.name = updates.name
+    if (updates.tenant_id !== undefined) updateData.tenantId = updates.tenant_id
+
+    const patched = await db.update(bridges).set(updateData).where(eq(bridges.bridgeId, bridgeId)).returning()
+    const updated = patched[0]
+    if (!updated) return c.json({ detail: 'Failed to update bridge' }, 500)
+
+    return c.json({ bridge_id: updated.bridgeId, tenant_id: updated.tenantId, name: updated.name })
+  }
+)
+
 // ── DELETE /:bridgeId — Remove a bridge ───────────────────────────
 router.delete(
   '/:bridgeId',

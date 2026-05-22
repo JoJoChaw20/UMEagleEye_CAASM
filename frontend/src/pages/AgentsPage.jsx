@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Settings, Copy, Check, X, RefreshCw, Radio, AlertCircle, Waypoints, Network } from 'lucide-react'
+import { Plus, Trash2, Settings, Copy, Check, X, RefreshCw, Radio, AlertCircle, Waypoints, Network, Building2 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -357,6 +357,68 @@ function BridgeApiKeyModal({ bridgeName, apiKey, bridgeId, onClose }) {
   )
 }
 
+// ── Assign Tenant Modal ───────────────────────────────────────────
+function AssignTenantModal({ target, type, tenants, onClose, onSubmit }) {
+  const [tenantId, setTenantId] = useState(target.tenant_id ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      await onSubmit(target, tenantId || null)
+      onClose()
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to assign tenant')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="glass-card w-full max-w-sm p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">
+            Assign Tenant — {target.name}
+          </h2>
+          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <p className="text-xs text-dark-400">
+          Assign this {type} to a tenant. Scan results and assets will be scoped to the selected tenant.
+        </p>
+        {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs text-dark-400 mb-1">Tenant</label>
+            <select
+              value={tenantId}
+              onChange={(e) => setTenantId(e.target.value)}
+              className="input-field w-full text-sm"
+            >
+              <option value="">— Unassigned —</option>
+              {tenants.map((t) => (
+                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex gap-3">
+            <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
+            <button type="submit" disabled={saving} className="btn-primary flex-1 text-sm flex items-center justify-center gap-2">
+              {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
+              Assign
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────
 export default function AgentsPage() {
   const { user } = useAuth()
@@ -372,6 +434,10 @@ export default function AgentsPage() {
   const [bridgesLoading, setBridgesLoading] = useState(true)
   const [showRegisterBridge, setShowRegisterBridge] = useState(false)
   const [newBridgeKey, setNewBridgeKey] = useState(null)
+
+  // Tenant assignment state
+  const [tenants, setTenants] = useState([])
+  const [assignTarget, setAssignTarget] = useState(null) // { item, type: 'agent'|'bridge' }
 
   const isReadOnly = ['mssp_analyst', 'business_owner'].includes(user?.role)
   const canManage = ['ops_lead', 'superadmin'].includes(user?.role)
@@ -404,7 +470,10 @@ export default function AgentsPage() {
   useEffect(() => {
     loadAgents()
     loadBridges()
-  }, [loadAgents, loadBridges])
+    if (user?.role === 'superadmin') {
+      client.get('/tenants').then(r => setTenants(r.data.tenants || [])).catch(() => {})
+    }
+  }, [loadAgents, loadBridges, user?.role])
 
   const handleRegister = async ({ name, config }) => {
     const res = await client.post('/agents', { name, config })
@@ -433,6 +502,16 @@ export default function AgentsPage() {
     await loadBridges()
   }
 
+  const handleAssignTenant = async (target, tenantId) => {
+    if (assignTarget.type === 'agent') {
+      await client.patch(`/agents/${target.agent_id}`, { tenant_id: tenantId })
+      setAgents(prev => prev.map(a => a.agent_id === target.agent_id ? { ...a, tenant_id: tenantId } : a))
+    } else {
+      await client.patch(`/bridges/${target.bridge_id}`, { tenant_id: tenantId })
+      setBridges(prev => prev.map(b => b.bridge_id === target.bridge_id ? { ...b, tenant_id: tenantId } : b))
+    }
+  }
+
   const handleDeleteBridge = async (bridgeId, name) => {
     if (!confirm(`Delete bridge "${name}"? This cannot be undone.`)) return
     try {
@@ -445,16 +524,22 @@ export default function AgentsPage() {
 
   return (
     <div className="space-y-6">
-      {/* ── Page header ──────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Agents</h1>
-          <p className="text-dark-400 text-sm mt-1">Manage scanning agents and network bridges</p>
+          <p className="text-dark-400 text-sm mt-1">{agents.length} agent{agents.length !== 1 ? 's' : ''} registered</p>
         </div>
-        <button onClick={() => { loadAgents(); loadBridges() }} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => { loadAgents(); loadBridges() }} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+          {canManage && (
+            <button onClick={() => setShowRegister(true)} className="btn-primary flex items-center gap-2 text-sm">
+              <Plus className="w-4 h-4" /> Register Agent
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -463,118 +548,15 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {/* ── Agents section ───────────────────────────────────────── */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Scanning Agents</h2>
-            <p className="text-dark-400 text-xs mt-0.5">{agents.length} agent{agents.length !== 1 ? 's' : ''} registered — run nmap scans and report results</p>
-          </div>
-          {canManage && (
-            <button onClick={() => setShowRegister(true)} className="btn-primary flex items-center gap-2 text-sm">
-              <Plus className="w-4 h-4" /> Register Agent
-            </button>
-          )}
-        </div>
-
-        <div className="glass-card overflow-hidden">
-          {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
-            </div>
-          ) : agents.length > 0 ? (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Agent Name</th>
-                  <th>Connection</th>
-                  <th>Status</th>
-                  <th>Last Heartbeat</th>
-                  <th>Gateway IP</th>
-                  <th>Version</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((a) => {
-                  const bridge = a.bridge_id ? bridges.find((b) => b.bridge_id === a.bridge_id) : null
-                  return (
-                    <tr key={a.agent_id}>
-                      <td>
-                        <div>
-                          <p className="font-medium text-white">{a.name}</p>
-                          <div className="flex items-center gap-1">
-                            <p className="text-xs text-dark-500 font-mono">{a.agent_id?.slice(0, 12)}...</p>
-                            <CopyButton text={a.agent_id} />
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        {a.bridge_id ? (
-                          <span className="bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded text-xs flex items-center gap-1 w-fit">
-                            <Network className="w-3 h-3" />
-                            {bridge ? bridge.name : 'via bridge'}
-                          </span>
-                        ) : (
-                          <span className="bg-dark-700/60 text-dark-400 border border-dark-600/30 px-2 py-0.5 rounded text-xs">
-                            Direct
-                          </span>
-                        )}
-                      </td>
-                      <td><StatusBadge status={a.status} /></td>
-                      <td className="text-dark-400 text-sm">{relativeTime(a.last_heartbeat)}</td>
-                      <td className="font-mono text-sm text-accent-cyan">{a.gateway_ip || '—'}</td>
-                      <td className="text-dark-400 text-sm">{a.version || '—'}</td>
-                      <td>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => setConfigAgent(a)}
-                            className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-white transition-colors"
-                            title={isReadOnly ? 'View Config' : 'Edit Config'}
-                          >
-                            <Settings className="w-4 h-4" />
-                          </button>
-                          {canManage && (
-                            <button
-                              onClick={() => handleDelete(a.agent_id, a.name)}
-                              className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                              title="Delete Agent"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          ) : (
-            <div className="text-center py-20 text-dark-400">
-              <Radio className="w-16 h-16 mx-auto mb-4 opacity-20" />
-              <p className="text-lg font-medium mb-2">No agents registered</p>
-              <p className="text-sm mb-1">Register your first EagleEye agent to start scanning.</p>
-              <p className="text-sm text-dark-500 mb-4">Run: <code className="font-mono text-accent-cyan">./eagleeye-agent --api-key &lt;key&gt;</code></p>
-              {canManage && (
-                <button onClick={() => setShowRegister(true)} className="btn-primary">
-                  <Plus className="w-4 h-4 mr-2" /> Register Agent
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* ── Bridges section ──────────────────────────────────────── */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Bridges</h2>
-            <p className="text-dark-400 text-xs mt-0.5">Optional relay for agents in isolated networks with no internet access</p>
+            <p className="text-dark-400 text-xs mt-0.5">Relay servers for isolated network segments</p>
           </div>
           {canManage && (
-            <button onClick={() => setShowRegisterBridge(true)} className="btn-secondary flex items-center gap-2 text-sm">
+            <button onClick={() => setShowRegisterBridge(true)} className="btn-primary flex items-center gap-2 text-sm">
               <Plus className="w-4 h-4" />
               Register Bridge
             </button>
@@ -592,6 +574,7 @@ export default function AgentsPage() {
                 <tr>
                   <th>Bridge Name</th>
                   <th>Mode</th>
+                  <th>Tenant</th>
                   <th>Status</th>
                   <th>Last Heartbeat</th>
                   <th>Bridge IP</th>
@@ -605,10 +588,7 @@ export default function AgentsPage() {
                     <td>
                       <div>
                         <p className="font-medium text-white">{b.name}</p>
-                        <div className="flex items-center gap-1">
-                          <p className="text-xs text-dark-500 font-mono">{b.bridge_id?.slice(0, 12)}...</p>
-                          <CopyButton text={b.bridge_id} />
-                        </div>
+                        <p className="text-xs text-dark-500 font-mono">{b.bridge_id?.slice(0, 12)}...</p>
                       </div>
                     </td>
                     <td>
@@ -620,32 +600,46 @@ export default function AgentsPage() {
                         {b.mode}
                       </span>
                     </td>
+                    <td className="text-dark-300 text-sm">
+                      {tenants.find(t => t.tenant_id === b.tenant_id)?.name ?? <span className="text-dark-500">—</span>}
+                    </td>
                     <td><StatusBadge status={b.status} /></td>
                     <td className="text-dark-400 text-sm">{relativeTime(b.last_heartbeat)}</td>
                     <td className="font-mono text-sm text-accent-cyan">{b.bridge_ip || '—'}</td>
                     <td className="text-dark-400 text-sm">{b.agent_count ?? 0}</td>
                     <td>
-                      {canManage && (
-                        <button
-                          onClick={() => handleDeleteBridge(b.bridge_id, b.name)}
-                          className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                          title="Delete Bridge"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1">
+                        {user?.role === 'superadmin' && (
+                          <button
+                            onClick={() => setAssignTarget({ item: b, type: 'bridge' })}
+                            className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
+                            title="Assign Tenant"
+                          >
+                            <Building2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canManage && (
+                          <button
+                            onClick={() => handleDeleteBridge(b.bridge_id, b.name)}
+                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                            title="Delete Bridge"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           ) : (
-            <div className="text-center py-12 text-dark-400">
-              <Waypoints className="w-12 h-12 mx-auto mb-3 opacity-20" />
-              <p className="text-base font-medium mb-1">No bridges registered</p>
-              <p className="text-sm text-dark-500">Only needed if your agent machine has no internet access.</p>
+            <div className="text-center py-16 text-dark-400">
+              <Waypoints className="w-16 h-16 mx-auto mb-4 opacity-20" />
+              <p className="text-lg font-medium mb-2">No bridges registered</p>
+              <p className="text-sm">Register a bridge to relay agents in isolated network segments.</p>
               {canManage && (
-                <button onClick={() => setShowRegisterBridge(true)} className="btn-secondary mt-4">
+                <button onClick={() => setShowRegisterBridge(true)} className="btn-primary mt-4">
                   <Plus className="w-4 h-4 mr-2" />
                   Register Bridge
                 </button>
@@ -653,6 +647,105 @@ export default function AgentsPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* ── Agents table ─────────────────────────────────────────── */}
+      <div className="glass-card overflow-hidden">
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+          </div>
+        ) : agents.length > 0 ? (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Agent Name</th>
+                <th>Connection</th>
+                <th>Tenant</th>
+                <th>Status</th>
+                <th>Last Heartbeat</th>
+                <th>Gateway IP</th>
+                <th>Version</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agents.map((a) => {
+                const bridge = a.bridge_id ? bridges.find((b) => b.bridge_id === a.bridge_id) : null
+                return (
+                  <tr key={a.agent_id}>
+                    <td>
+                      <div>
+                        <p className="font-medium text-white">{a.name}</p>
+                        <p className="text-xs text-dark-500 font-mono">{a.agent_id?.slice(0, 12)}...</p>
+                      </div>
+                    </td>
+                    <td>
+                      {a.bridge_id ? (
+                        <span className="bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded text-xs flex items-center gap-1 w-fit">
+                          <Network className="w-3 h-3" />
+                          {bridge ? bridge.name : 'via bridge'}
+                        </span>
+                      ) : (
+                        <span className="bg-dark-700/60 text-dark-400 border border-dark-600/30 px-2 py-0.5 rounded text-xs">
+                          Direct
+                        </span>
+                      )}
+                    </td>
+                    <td className="text-dark-300 text-sm">
+                      {tenants.find(t => t.tenant_id === a.tenant_id)?.name ?? <span className="text-dark-500">—</span>}
+                    </td>
+                    <td><StatusBadge status={a.status} /></td>
+                    <td className="text-dark-400 text-sm">{relativeTime(a.last_heartbeat)}</td>
+                    <td className="font-mono text-sm text-accent-cyan">{a.gateway_ip || '—'}</td>
+                    <td className="text-dark-400 text-sm">{a.version || '—'}</td>
+                    <td>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setConfigAgent(a)}
+                          className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-white transition-colors"
+                          title={isReadOnly ? 'View Config' : 'Edit Config'}
+                        >
+                          <Settings className="w-4 h-4" />
+                        </button>
+                        {user?.role === 'superadmin' && (
+                          <button
+                            onClick={() => setAssignTarget({ item: a, type: 'agent' })}
+                            className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
+                            title="Assign Tenant"
+                          >
+                            <Building2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canManage && (
+                          <button
+                            onClick={() => handleDelete(a.agent_id, a.name)}
+                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                            title="Delete Agent"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-center py-20 text-dark-400">
+            <Radio className="w-16 h-16 mx-auto mb-4 opacity-20" />
+            <p className="text-lg font-medium mb-2">No agents registered</p>
+            <p className="text-sm mb-1">Register your first EagleEye agent to start scanning.</p>
+            <p className="text-sm text-dark-500 mb-4">Run: <code className="font-mono text-accent-cyan">./eagleeye-agent --api-key &lt;key&gt;</code></p>
+            {canManage && (
+              <button onClick={() => setShowRegister(true)} className="btn-primary">
+                <Plus className="w-4 h-4 mr-2" /> Register Agent
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {showRegister && (
@@ -675,6 +768,16 @@ export default function AgentsPage() {
 
       {showRegisterBridge && (
         <RegisterBridgeModal onClose={() => setShowRegisterBridge(false)} onSubmit={handleRegisterBridge} />
+      )}
+
+      {assignTarget && (
+        <AssignTenantModal
+          target={assignTarget.item}
+          type={assignTarget.type}
+          tenants={tenants}
+          onClose={() => setAssignTarget(null)}
+          onSubmit={handleAssignTenant}
+        />
       )}
 
       {newBridgeKey && (
