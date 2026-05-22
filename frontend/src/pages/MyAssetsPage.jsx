@@ -497,7 +497,9 @@ export default function MyAssetsPage() {
   const handleUpdate = async (assetId, field, value) => {
     try {
       await client.patch(`/assets/${assetId}`, { [field]: value })
-      setAssets(prev => prev.map(a => a.asset_id === assetId ? { ...a, [field]: value } : a))
+      // Map snake_case API field names to camelCase state keys
+      const camelField = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+      setAssets(prev => prev.map(a => a.assetId === assetId ? { ...a, [camelField]: value } : a))
     } catch (err) {
       alert(err?.response?.data?.detail || 'Update failed')
     }
@@ -518,7 +520,7 @@ export default function MyAssetsPage() {
     if (!confirm('Delete this asset permanently?')) return
     try {
       await client.delete(`/assets/${assetId}`)
-      setAssets(prev => prev.filter(a => a.asset_id !== assetId))
+      setAssets(prev => prev.filter(a => a.assetId !== assetId))
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to delete asset')
     }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, Plus, RefreshCw, X, ChevronRight, Wifi, Server, Globe } from 'lucide-react'
+import { Plus, RefreshCw, X, ChevronRight, Wifi, Globe } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -30,6 +30,20 @@ function relativeTime(ts) {
   return `${Math.floor(h / 24)}d ago`
 }
 
+// ── Port display helper ───────────────────────────────────────────
+function formatPorts(ports) {
+  if (!Array.isArray(ports) || ports.length === 0) return null
+  return ports
+    .map(p => {
+      if (typeof p === 'object' && p !== null) {
+        return p.port ? `${p.port}/${p.protocol || 'tcp'}` : null
+      }
+      return String(p)
+    })
+    .filter(Boolean)
+    .join(', ')
+}
+
 // ── New Scan Modal ────────────────────────────────────────────────
 function NewScanModal({ onClose, onSubmit, agents }) {
   const [subnet, setSubnet] = useState(import.meta.env.VITE_SCAN_DEFAULT_SUBNET || '192.168.1.0/24')
@@ -42,8 +56,21 @@ function NewScanModal({ onClose, onSubmit, agents }) {
     e.preventDefault()
     setSubmitting(true)
     setError(null)
+
+    // Resolve agent: use selected or auto-pick first online
+    let effectiveAgentId = agentId
+    if (!effectiveAgentId) {
+      const onlineAgent = agents.find(a => a.status === 'online')
+      if (!onlineAgent) {
+        setError('No online agents available. Please ensure an agent is running before scanning.')
+        setSubmitting(false)
+        return
+      }
+      effectiveAgentId = onlineAgent.agent_id
+    }
+
     try {
-      await onSubmit({ subnet, agent_id: agentId || undefined, scan_type: scanType })
+      await onSubmit({ subnet, agent_id: effectiveAgentId, scan_type: scanType })
       onClose()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to start scan')
@@ -80,9 +107,9 @@ function NewScanModal({ onClose, onSubmit, agents }) {
           <div>
             <label className="block text-xs text-dark-400 mb-1">Agent</label>
             <select value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
-              <option value="">Auto-select</option>
+              <option value="">Auto-select (first online)</option>
               {agents.map((a) => (
-                <option key={a.agentId} value={a.agentId}>{a.name} ({a.status})</option>
+                <option key={a.agent_id} value={a.agent_id}>{a.name} ({a.status})</option>
               ))}
             </select>
           </div>
@@ -120,16 +147,19 @@ function NewScanModal({ onClose, onSubmit, agents }) {
 }
 
 // ── Discovered hosts side panel ────────────────────────────────────
-function HostsPanel({ scan, onClose, onAddAsset }) {
+function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
   const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
+  const [justAdded, setJustAdded] = useState(new Set())
 
   const handleAdd = async (host) => {
-    setAdding(prev => ({ ...prev, [host.ip]: true }))
+    const ip = host.ip || host.ip_address
+    setAdding(prev => ({ ...prev, [ip]: true }))
     try {
       await onAddAsset(host)
+      setJustAdded(prev => new Set([...prev, ip]))
     } finally {
-      setAdding(prev => ({ ...prev, [host.ip]: false }))
+      setAdding(prev => ({ ...prev, [ip]: false }))
     }
   }
 
@@ -150,34 +180,44 @@ function HostsPanel({ scan, onClose, onAddAsset }) {
           {hosts.length === 0 ? (
             <p className="text-dark-400 text-sm text-center py-8">No hosts in results</p>
           ) : (
-            hosts.map((host, i) => (
-              <div key={i} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-mono text-sm text-accent-cyan">{host.ip || host.ip_address}</p>
-                    {host.hostname && <p className="text-xs text-dark-300 mt-0.5">{host.hostname}</p>}
-                    {host.mac && <p className="text-xs text-dark-500 font-mono mt-0.5">{host.mac}</p>}
-                    {host.os && <p className="text-xs text-dark-400 mt-1">{host.os}</p>}
-                    {host.ports && host.ports.length > 0 && (
-                      <p className="text-xs text-dark-500 mt-1 truncate">
-                        Ports: {Array.isArray(host.ports) ? host.ports.join(', ') : host.ports}
-                      </p>
-                    )}
+            hosts.map((host, i) => {
+              const ip = host.ip || host.ip_address
+              const portStr = formatPorts(host.ports)
+              const osLabel = host.os
+                ? (typeof host.os === 'string' ? host.os : host.os.name || null)
+                : null
+              const isInventoried = inventoriedIps.has(ip) || justAdded.has(ip)
+
+              return (
+                <div key={i} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-mono text-sm text-accent-cyan">{ip}</p>
+                      {host.hostname && <p className="text-xs text-dark-300 mt-0.5">{host.hostname}</p>}
+                      {host.mac && <p className="text-xs text-dark-500 font-mono mt-0.5">{host.mac}</p>}
+                      {osLabel && <p className="text-xs text-dark-400 mt-1">{osLabel}</p>}
+                      {portStr && (
+                        <p className="text-xs text-dark-500 mt-1 truncate">Ports: {portStr}</p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handleAdd(host)}
+                      disabled={adding[ip]}
+                      className={`text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1 ${isInventoried ? 'btn-secondary' : 'btn-primary'}`}
+                    >
+                      {adding[ip] ? (
+                        <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : isInventoried ? (
+                        <RefreshCw className="w-3 h-3" />
+                      ) : (
+                        <Plus className="w-3 h-3" />
+                      )}
+                      {isInventoried ? 'Update' : 'Add'}
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleAdd(host)}
-                    disabled={adding[host.ip || host.ip_address]}
-                    className="btn-secondary text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1"
-                  >
-                    {adding[host.ip || host.ip_address]
-                      ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                      : <Plus className="w-3 h-3" />
-                    }
-                    Add
-                  </button>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       </div>
@@ -194,16 +234,20 @@ export default function DiscoveryPage() {
   const [showNew, setShowNew] = useState(false)
   const [selectedScan, setSelectedScan] = useState(null)
   const [error, setError] = useState(null)
+  const [inventoriedIps, setInventoriedIps] = useState(new Set())
   const intervalRef = useRef(null)
 
   const loadData = useCallback(async () => {
     try {
-      const [scansRes, agentsRes] = await Promise.all([
+      const [scansRes, agentsRes, assetsRes] = await Promise.all([
         client.get('/scans'),
         client.get('/agents'),
+        client.get('/assets', { params: { source: 'manual', limit: 200 } }),
       ])
       setScans(scansRes.data.scans || scansRes.data.items || [])
       setAgents(agentsRes.data.agents || [])
+      const ips = new Set((assetsRes.data.items || []).map(a => a.ipAddress))
+      setInventoriedIps(ips)
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load data')
     } finally {
@@ -215,7 +259,7 @@ export default function DiscoveryPage() {
     loadData()
   }, [loadData])
 
-  // Auto-refresh every 10s if any scan is pending/running
+  // Auto-refresh every 10s while any scan is pending/running
   useEffect(() => {
     const hasActive = scans.some(s => s.status === 'pending' || s.status === 'running')
     if (hasActive) {
@@ -232,15 +276,18 @@ export default function DiscoveryPage() {
   }
 
   const handleAddAsset = async (host) => {
+    const ip = host.ip || host.ip_address
     try {
       await client.post('/assets', {
-        ip_address: host.ip || host.ip_address,
-        hostname: host.hostname,
-        mac_address: host.mac,
+        ip_address: ip,
+        hostname: host.hostname || undefined,
+        mac_address: host.mac || undefined,
+        tenant_id: selectedScan?.tenantId || undefined,
       })
-      alert(`Asset ${host.ip || host.ip_address} added to inventory.`)
+      setInventoriedIps(prev => new Set([...prev, ip]))
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to add asset')
+      throw err
     }
   }
 
@@ -351,6 +398,7 @@ export default function DiscoveryPage() {
           scan={selectedScan}
           onClose={() => setSelectedScan(null)}
           onAddAsset={handleAddAsset}
+          inventoriedIps={inventoriedIps}
         />
       )}
     </div>

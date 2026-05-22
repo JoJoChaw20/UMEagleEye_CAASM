@@ -56,6 +56,12 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       if (searchCondition) conditions.push(searchCondition)
     }
 
+    const source = c.req.query('source')
+    const validSources = ['manual', 'scan_active', 'scan_passive'] as const
+    if (source && (validSources as readonly string[]).includes(source)) {
+      conditions.push(eq(assets.source, source as typeof validSources[number]))
+    }
+
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
     const [rows, countRows] = await Promise.all([
@@ -103,8 +109,8 @@ app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 // ── POST / ───────────────────────────────────────────────────────
 const createAssetSchema = z.object({
   ip_address: z.string().min(1).max(45),
-  hostname: z.string().max(255).optional(),
-  mac_address: z.string().max(17).optional(),
+  hostname: z.string().max(255).nullish(),
+  mac_address: z.string().max(17).nullish(),
   owner: z.string().max(255).optional(),
   device_type: z.enum(['server', 'workstation', 'network', 'iot', 'unknown']).optional(),
   hardware_vendor: z.string().max(255).optional(),
@@ -120,17 +126,41 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     const db = getDb(c.env.DATABASE_URL)
     const body = c.req.valid('json')
 
-    // Superadmin can target any tenant via body.tenant_id; others use their own
     const targetTenantId = (user.role === 'superadmin' && body.tenant_id)
       ? body.tenant_id
       : (user.tenantId ?? null)
 
+    // Upsert: find existing asset by IP + tenant to avoid duplicates
+    const ipConditions = [eq(assets.ipAddress, body.ip_address)]
+    if (targetTenantId) {
+      ipConditions.push(eq(assets.tenantId, targetTenantId))
+    } else {
+      ipConditions.push(isNull(assets.tenantId))
+    }
+    const [existing] = await db.select().from(assets).where(and(...ipConditions)).limit(1)
+
+    if (existing) {
+      // Promote to manual and update provided fields
+      const updateData: Record<string, unknown> = { source: 'manual', updatedAt: new Date() }
+      if (body.hostname != null) updateData.hostname = body.hostname
+      if (body.mac_address != null) updateData.macAddress = body.mac_address
+      if (body.owner != null) updateData.owner = body.owner
+      if (body.device_type !== undefined) updateData.deviceType = body.device_type
+      if (body.hardware_vendor != null) updateData.hardwareVendor = body.hardware_vendor
+      if (body.os_info !== undefined) updateData.osInfo = body.os_info
+      if (body.criticality_score !== undefined) updateData.criticalityScore = body.criticality_score
+      if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
+      const [updated] = await db.update(assets).set(updateData).where(eq(assets.assetId, existing.assetId)).returning()
+      return c.json(updated, 200)
+    }
+
+    // Create new with source='manual'
     const [asset] = await db
       .insert(assets)
       .values({
         ipAddress: body.ip_address,
-        hostname: body.hostname,
-        macAddress: body.mac_address,
+        hostname: body.hostname ?? null,
+        macAddress: body.mac_address ?? null,
         owner: body.owner,
         deviceType: body.device_type ?? 'unknown',
         hardwareVendor: body.hardware_vendor,
@@ -138,6 +168,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         criticalityScore: body.criticality_score ?? 5,
         isInternetFacing: body.is_internet_facing ?? false,
         tenantId: targetTenantId,
+        source: 'manual',
       })
       .returning()
 
