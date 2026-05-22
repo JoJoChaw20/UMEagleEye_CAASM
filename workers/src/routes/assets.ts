@@ -155,13 +155,16 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     const [existing] = await db.select().from(assets).where(and(...ipConditions)).limit(1)
 
     // Preserve scanned device type — only override if existing is unknown or absent
-    const deviceType = (existing?.deviceType && existing.deviceType !== 'unknown')
-      ? existing.deviceType
-      : (body.device_type ?? 'unknown')
+    const existingDeviceKnown = existing?.deviceType && existing.deviceType !== 'unknown'
+    const deviceType = existingDeviceKnown ? existing!.deviceType : (body.device_type ?? 'unknown')
     const isInternetFacing = body.is_internet_facing ?? existing?.isInternetFacing ?? false
     const osInfo = (body.os_info ?? existing?.osInfo ?? {}) as Record<string, unknown>
     const hostname = body.hostname ?? existing?.hostname
-    const computedScore = computeAssetCriticality({ deviceType, isInternetFacing, hostname, osInfo })
+
+    // Preserve criticality from scan when device type is unchanged; recompute only when type improves
+    const computedScore = (existing?.criticalityScore && deviceType === existing.deviceType)
+      ? existing.criticalityScore
+      : computeAssetCriticality({ deviceType, isInternetFacing, hostname, osInfo })
 
     if (existing) {
       // Promote to manual and update provided fields
@@ -173,7 +176,8 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       if (body.hostname != null) updateData.hostname = body.hostname
       if (body.mac_address != null) updateData.macAddress = body.mac_address
       if (body.owner != null) updateData.owner = body.owner
-      if (body.device_type !== undefined) updateData.deviceType = body.device_type
+      // Only write device type if upgrading from unknown
+      if (body.device_type !== undefined && !existingDeviceKnown) updateData.deviceType = body.device_type
       if (body.hardware_vendor != null) updateData.hardwareVendor = body.hardware_vendor
       if (body.os_info !== undefined) updateData.osInfo = body.os_info
       if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
