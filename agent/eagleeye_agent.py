@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-EagleEye Agent — network scanner for UMEagleEye CAASM platform.
+EagleEye Agent — active + passive network scanner for UMEagleEye CAASM platform.
 
-Polls the backend for pending scans, runs Nmap, and POSTs results.
-A background thread sends heartbeats every --heartbeat-interval seconds
-so the dashboard shows the agent as online even between scans.
+Active mode  : polls the backend for pending scans, runs Nmap, and POSTs results.
+Passive mode : sniffs ARP broadcasts continuously; discovered hosts are ingested
+               every --passive-interval seconds without requiring a prior scan dispatch.
+
+A background thread sends heartbeats every --heartbeat-interval seconds so the
+dashboard shows the agent as online even between scans.
 
 Usage:
     python eagleeye_agent.py \
@@ -12,9 +15,15 @@ Usage:
         --api-key <key-from-dashboard> \
         --agent-id <uuid-from-dashboard>
 
+    # With passive ARP sniffing enabled:
+    python eagleeye_agent.py \
+        --api-url ... --api-key ... --agent-id ... \
+        --passive [--passive-interface eth0] [--passive-interval 60]
+
 Or via environment variables:
     EAGLEEYE_API_URL, EAGLEEYE_API_KEY, EAGLEEYE_AGENT_ID,
-    EAGLEEYE_POLL_INTERVAL, EAGLEEYE_HEARTBEAT_INTERVAL
+    EAGLEEYE_POLL_INTERVAL, EAGLEEYE_HEARTBEAT_INTERVAL,
+    EAGLEEYE_PASSIVE, EAGLEEYE_PASSIVE_INTERFACE, EAGLEEYE_PASSIVE_INTERVAL
 """
 
 import argparse
@@ -37,10 +46,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("eagleeye")
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
-# ── Nmap runner ───────────────────────────────────────────────────────────────
+# ── Active scanning: Nmap ─────────────────────────────────────────────────────
 
 def run_nmap(subnet: str) -> list[dict[str, Any]]:
     """Run nmap -sV on subnet, return list of host dicts."""
@@ -69,12 +78,10 @@ def run_nmap(subnet: str) -> list[dict[str, Any]]:
             if "osmatch" in host and host["osmatch"]:
                 best = host["osmatch"][0]
                 os_info = {"name": best.get("name", ""), "accuracy": best.get("accuracy", "")}
-            hostname = ""
-            if host.hostname():
-                hostname = host.hostname()
+            hostname = host.hostname() or None
             hosts.append({
                 "ip": ip,
-                "hostname": hostname or None,
+                "hostname": hostname,
                 "mac": host.get("addresses", {}).get("mac") or None,
                 "ports": ports,
                 "os": os_info or None,
@@ -106,6 +113,73 @@ def _ping_sweep(subnet: str) -> list[dict[str, Any]]:
         return []
 
 
+# ── Passive scanning: ARP sniffer ─────────────────────────────────────────────
+
+class ArpSniffer:
+    """
+    Listens for ARP requests/replies on the local network and records the
+    source IP + MAC of every active host — no probes sent.
+
+    Requires scapy and root/Administrator privileges.
+    """
+
+    def __init__(self, interface: Optional[str] = None) -> None:
+        self.interface = interface
+        self._lock = threading.Lock()
+        self._seen: dict[str, dict[str, Any]] = {}   # ip -> {mac, last_seen}
+        self._running = False
+
+    def start(self) -> bool:
+        """Start sniffing in a background daemon thread. Returns False if scapy unavailable."""
+        try:
+            from scapy.all import sniff, ARP  # type: ignore  # noqa: F401
+        except ImportError:
+            log.warning("scapy not installed — passive ARP disabled. Run: pip install scapy")
+            return False
+
+        self._running = True
+        t = threading.Thread(target=self._sniff_loop, daemon=True, name="arp-sniffer")
+        t.start()
+        iface_label = self.interface or "default"
+        log.info(f"Passive ARP sniffer started on interface={iface_label}")
+        return True
+
+    def _sniff_loop(self) -> None:
+        try:
+            from scapy.all import sniff, ARP  # type: ignore
+
+            def handle(pkt: Any) -> None:
+                # Capture both ARP requests (op=1) and replies (op=2)
+                if not pkt.haslayer(ARP):
+                    return
+                ip  = pkt[ARP].psrc
+                mac = pkt[ARP].hwsrc
+                if not ip or ip.startswith("0.") or ip == "0.0.0.0":
+                    return
+                with self._lock:
+                    self._seen[ip] = {"mac": mac, "last_seen": time.time()}
+
+            kwargs: dict[str, Any] = {"filter": "arp", "prn": handle, "store": False}
+            if self.interface:
+                kwargs["iface"] = self.interface
+
+            sniff(**kwargs)  # blocks until process exits
+        except PermissionError:
+            log.error("Passive ARP requires root/Administrator privileges — sniffer stopped")
+        except Exception as exc:
+            log.error(f"ARP sniffer error: {exc}")
+
+    def drain(self) -> list[dict[str, Any]]:
+        """Return all discovered hosts since last drain and clear the buffer."""
+        with self._lock:
+            hosts = [
+                {"ip": ip, "mac": info["mac"], "hostname": None, "ports": [], "os": None}
+                for ip, info in self._seen.items()
+            ]
+            self._seen.clear()
+        return hosts
+
+
 # ── Local IP helper ───────────────────────────────────────────────────────────
 
 def _local_ip() -> str:
@@ -121,27 +195,22 @@ def _local_ip() -> str:
 
 class AgentClient:
     def __init__(self, api_url: str, api_key: str, agent_id: str):
-        self.api_url = api_url.rstrip("/")
+        self.api_url  = api_url.rstrip("/")
         self.agent_id = agent_id
-        self.session = requests.Session()
+        self.session  = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {api_key}",
-            "X-Agent-ID": agent_id,
-            "Content-Type": "application/json",
-            "User-Agent": f"EagleEye-Agent/{VERSION}",
+            "X-Agent-ID":    agent_id,
+            "Content-Type":  "application/json",
+            "User-Agent":    f"EagleEye-Agent/{VERSION}",
         })
 
     def send_heartbeat(self) -> bool:
-        """POST /agents/:agentId/heartbeat — keeps status green on the dashboard."""
-        payload = {
-            "version": VERSION,
-            "gateway_ip": _local_ip(),
-        }
+        payload = {"version": VERSION, "gateway_ip": _local_ip()}
         try:
             resp = self.session.post(
                 f"{self.api_url}/agents/{self.agent_id}/heartbeat",
-                data=json.dumps(payload),
-                timeout=10,
+                data=json.dumps(payload), timeout=10,
             )
             resp.raise_for_status()
             return True
@@ -159,31 +228,46 @@ class AgentClient:
             return []
 
     def ingest_results(self, scan_id: str, hosts: list[dict]) -> bool:
+        """Ingest results for an active scan dispatched from the dashboard."""
         payload = {
-            "agent_id": self.agent_id,
-            "scan_id": scan_id,
-            "hosts": hosts,
+            "agent_id":  self.agent_id,
+            "scan_id":   scan_id,
+            "scan_type": "active",
+            "hosts":     hosts,
         }
+        return self._post_ingest(payload, label=f"active scan {scan_id[:8]}…")
+
+    def ingest_passive(self, hosts: list[dict]) -> bool:
+        """Ingest passively discovered hosts — backend auto-creates the scan record."""
+        if not hosts:
+            return True
+        payload = {
+            "agent_id":  self.agent_id,
+            "scan_type": "passive",
+            "hosts":     hosts,
+        }
+        return self._post_ingest(payload, label=f"passive ({len(hosts)} host(s))")
+
+    def _post_ingest(self, payload: dict, label: str) -> bool:
         try:
             resp = self.session.post(
                 f"{self.api_url}/scans/ingest",
-                data=json.dumps(payload),
-                timeout=30,
+                data=json.dumps(payload), timeout=30,
             )
             resp.raise_for_status()
             data = resp.json()
             log.info(
-                f"Ingested scan {scan_id[:8]}… — "
+                f"Ingested {label} — "
                 f"{data.get('hosts_discovered', 0)} hosts, "
                 f"{data.get('assets_upserted', 0)} assets upserted"
             )
             return True
         except requests.RequestException as e:
-            log.error(f"Failed to ingest scan results: {e}")
+            log.error(f"Failed to ingest {label}: {e}")
             return False
 
 
-# ── Heartbeat thread ──────────────────────────────────────────────────────────
+# ── Background threads ────────────────────────────────────────────────────────
 
 def _heartbeat_thread(client: AgentClient, interval: int) -> None:
     log.info(f"Heartbeat thread started (interval={interval}s)")
@@ -192,42 +276,88 @@ def _heartbeat_thread(client: AgentClient, interval: int) -> None:
         client.send_heartbeat()
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
+def _passive_flush_thread(client: AgentClient, sniffer: ArpSniffer, interval: int) -> None:
+    """Periodically drain the ARP sniffer buffer and ingest discovered hosts."""
+    log.info(f"Passive flush thread started (interval={interval}s)")
+    while True:
+        time.sleep(interval)
+        hosts = sniffer.drain()
+        if hosts:
+            log.info(f"Passive ARP: flushing {len(hosts)} host(s)")
+            client.ingest_passive(hosts)
+        else:
+            log.debug("Passive ARP: no new hosts this interval")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="EagleEye network scanning agent")
-    parser.add_argument("--api-url",            default=os.getenv("EAGLEEYE_API_URL", ""),        help="Backend or bridge API base URL")
-    parser.add_argument("--api-key",            default=os.getenv("EAGLEEYE_API_KEY", ""),        help="Agent API key (from dashboard)")
-    parser.add_argument("--agent-id",           default=os.getenv("EAGLEEYE_AGENT_ID", ""),       help="Agent UUID (from dashboard)")
-    parser.add_argument("--interval",           type=int, default=int(os.getenv("EAGLEEYE_POLL_INTERVAL", "30")),       help="Scan poll interval in seconds (default: 30)")
-    parser.add_argument("--heartbeat-interval", type=int, default=int(os.getenv("EAGLEEYE_HEARTBEAT_INTERVAL", "30")), help="Heartbeat interval in seconds (default: 30)")
+
+    # ── Existing args (unchanged) ──
+    parser.add_argument("--api-url",            default=os.getenv("EAGLEEYE_API_URL", ""),
+                        help="Backend or bridge API base URL")
+    parser.add_argument("--api-key",            default=os.getenv("EAGLEEYE_API_KEY", ""),
+                        help="Agent API key (from dashboard)")
+    parser.add_argument("--agent-id",           default=os.getenv("EAGLEEYE_AGENT_ID", ""),
+                        help="Agent UUID (from dashboard)")
+    parser.add_argument("--interval",           type=int,
+                        default=int(os.getenv("EAGLEEYE_POLL_INTERVAL", "30")),
+                        help="Active scan poll interval in seconds (default: 30)")
+    parser.add_argument("--heartbeat-interval", type=int,
+                        default=int(os.getenv("EAGLEEYE_HEARTBEAT_INTERVAL", "30")),
+                        help="Heartbeat interval in seconds (default: 30)")
+
+    # ── Passive scanning args (new, all optional) ──
+    parser.add_argument("--passive",            action="store_true",
+                        default=os.getenv("EAGLEEYE_PASSIVE", "").lower() in ("1", "true", "yes"),
+                        help="Enable passive ARP sniffing (requires root/Administrator + scapy)")
+    parser.add_argument("--passive-interface",  default=os.getenv("EAGLEEYE_PASSIVE_INTERFACE", ""),
+                        help="Network interface for ARP sniffing (default: auto-detect)")
+    parser.add_argument("--passive-interval",   type=int,
+                        default=int(os.getenv("EAGLEEYE_PASSIVE_INTERVAL", "60")),
+                        help="Seconds between passive discovery flushes (default: 60)")
+
     args = parser.parse_args()
 
     if not args.api_url or not args.api_key or not args.agent_id:
         parser.error("--api-url, --api-key, and --agent-id are required (or set env vars)")
 
     log.info(f"EagleEye Agent v{VERSION} starting")
-    log.info(f"API URL     : {args.api_url}")
-    log.info(f"Agent ID    : {args.agent_id}")
-    log.info(f"Hostname    : {socket.gethostname()}")
-    log.info(f"Gateway IP  : {_local_ip()}")
-    log.info(f"Poll every  : {args.interval}s")
-    log.info(f"Heartbeat   : {args.heartbeat_interval}s")
+    log.info(f"API URL      : {args.api_url}")
+    log.info(f"Agent ID     : {args.agent_id}")
+    log.info(f"Hostname     : {socket.gethostname()}")
+    log.info(f"Gateway IP   : {_local_ip()}")
+    log.info(f"Active poll  : {args.interval}s")
+    log.info(f"Heartbeat    : {args.heartbeat_interval}s")
+    log.info(f"Passive ARP  : {'enabled' if args.passive else 'disabled'}")
 
     client = AgentClient(args.api_url, args.api_key, args.agent_id)
 
-    # Send initial heartbeat so agent appears online immediately
+    # Initial heartbeat so agent appears online immediately
     client.send_heartbeat()
 
-    # Background heartbeat thread
-    hb = threading.Thread(
+    # Heartbeat background thread
+    threading.Thread(
         target=_heartbeat_thread,
         args=(client, args.heartbeat_interval),
-        daemon=True,
-        name="heartbeat",
-    )
-    hb.start()
+        daemon=True, name="heartbeat",
+    ).start()
 
+    # Passive ARP thread (only if --passive is set)
+    if args.passive:
+        sniffer = ArpSniffer(interface=args.passive_interface or None)
+        started = sniffer.start()
+        if started:
+            threading.Thread(
+                target=_passive_flush_thread,
+                args=(client, sniffer, args.passive_interval),
+                daemon=True, name="passive-flush",
+            ).start()
+        else:
+            log.warning("Passive ARP could not start — running in active-only mode")
+
+    # Active scan poll loop
     while True:
         try:
             pending = client.get_pending_scans()
@@ -235,7 +365,7 @@ def main():
                 log.info(f"Found {len(pending)} pending scan(s)")
                 for scan in pending:
                     scan_id = scan.get("scan_id") or scan.get("scanId")
-                    subnet = scan.get("subnet", "192.168.1.0/24")
+                    subnet  = scan.get("subnet", "192.168.1.0/24")
                     log.info(f"Processing scan {scan_id[:8]}… subnet={subnet}")
                     hosts = run_nmap(subnet)
                     client.ingest_results(scan_id, hosts)

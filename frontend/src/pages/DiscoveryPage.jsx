@@ -119,65 +119,132 @@ function NewScanModal({ onClose, onSubmit, agents }) {
   )
 }
 
+// ── Helpers ───────────────────────────────────────────────────────
+function formatOs(os) {
+  if (!os) return null
+  if (typeof os === 'string') return os
+  if (typeof os === 'object') {
+    const name = os.name || ''
+    const acc = os.accuracy ? ` (${os.accuracy}%)` : ''
+    return name ? name + acc : null
+  }
+  return null
+}
+
+function formatPorts(ports) {
+  if (!ports || ports.length === 0) return null
+  const list = Array.isArray(ports)
+    ? ports.slice(0, 8).map(p => typeof p === 'object' ? `${p.port}/${p.protocol || 'tcp'}` : String(p))
+    : [String(ports)]
+  const extra = Array.isArray(ports) && ports.length > 8 ? ` +${ports.length - 8} more` : ''
+  return list.join('  ') + extra
+}
+
 // ── Discovered hosts side panel ────────────────────────────────────
 function HostsPanel({ scan, onClose, onAddAsset }) {
   const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
+  const [accepted, setAccepted] = useState(new Set())
 
   const handleAdd = async (host) => {
-    setAdding(prev => ({ ...prev, [host.ip]: true }))
+    const ip = host.ip || host.ip_address
+    setAdding(prev => ({ ...prev, [ip]: true }))
     try {
       await onAddAsset(host)
+      setAccepted(prev => new Set([...prev, ip]))
+    } catch {
+      // error shown by onAddAsset
     } finally {
-      setAdding(prev => ({ ...prev, [host.ip]: false }))
+      setAdding(prev => ({ ...prev, [ip]: false }))
     }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/40 backdrop-blur-sm">
-      <div className="glass-card w-full sm:w-[480px] h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
+      <div className="glass-card w-full sm:w-[500px] h-full sm:h-auto sm:max-h-[88vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
         <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
           <div>
             <h3 className="font-semibold text-white">Discovered Hosts</h3>
-            <p className="text-xs text-dark-400 mt-0.5">{scan.subnet} — {hosts.length} hosts</p>
+            <p className="text-xs text-dark-400 mt-0.5">
+              {scan.subnet || '—'} · {hosts.length} host{hosts.length !== 1 ? 's' : ''} · <span className="capitalize">{scan.scanType || 'active'}</span> scan
+            </p>
           </div>
           <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="px-4 py-2.5 border-b border-dark-700/30 bg-dark-800/30">
+          <p className="text-xs text-dark-400 leading-relaxed">
+            Review the hosts discovered by this scan. Click <span className="text-white font-medium">Accept</span> to add a host to your managed asset inventory (My Assets).
+          </p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
           {hosts.length === 0 ? (
             <p className="text-dark-400 text-sm text-center py-8">No hosts in results</p>
           ) : (
-            hosts.map((host, i) => (
-              <div key={i} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-mono text-sm text-accent-cyan">{host.ip || host.ip_address}</p>
-                    {host.hostname && <p className="text-xs text-dark-300 mt-0.5">{host.hostname}</p>}
-                    {host.mac && <p className="text-xs text-dark-500 font-mono mt-0.5">{host.mac}</p>}
-                    {host.os && <p className="text-xs text-dark-400 mt-1">{host.os}</p>}
-                    {host.ports && host.ports.length > 0 && (
-                      <p className="text-xs text-dark-500 mt-1 truncate">
-                        Ports: {Array.isArray(host.ports) ? host.ports.join(', ') : host.ports}
-                      </p>
+            hosts.map((host, i) => {
+              const ip = host.ip || host.ip_address
+              const isAccepted = accepted.has(ip)
+              const isAdding = !!adding[ip]
+              const osLabel = formatOs(host.os)
+              const portsLabel = formatPorts(host.ports)
+
+              return (
+                <div
+                  key={i}
+                  className={`rounded-xl p-3 border transition-colors ${
+                    isAccepted
+                      ? 'bg-green-500/5 border-green-500/20'
+                      : 'bg-dark-800/60 border-dark-700/40'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-sm text-accent-cyan">{ip}</span>
+                        {isAccepted && (
+                          <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30 rounded-full">
+                            In My Assets
+                          </span>
+                        )}
+                      </div>
+                      {host.hostname && (
+                        <p className="text-xs text-dark-300">{host.hostname}</p>
+                      )}
+                      {host.mac && (
+                        <p className="text-xs text-dark-500 font-mono">{host.mac}</p>
+                      )}
+                      {osLabel && (
+                        <p className="text-xs text-dark-400">
+                          <span className="text-dark-500">OS:</span> {osLabel}
+                        </p>
+                      )}
+                      {portsLabel && (
+                        <p className="text-xs text-dark-500">
+                          <span>Ports:</span>{' '}
+                          <span className="font-mono text-dark-400">{portsLabel}</span>
+                        </p>
+                      )}
+                    </div>
+                    {!isAccepted && (
+                      <button
+                        onClick={() => handleAdd(host)}
+                        disabled={isAdding}
+                        className="btn-primary text-xs py-1.5 px-3 flex-shrink-0 flex items-center gap-1.5"
+                      >
+                        {isAdding
+                          ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
+                          : <Plus className="w-3 h-3" />
+                        }
+                        Accept
+                      </button>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleAdd(host)}
-                    disabled={adding[host.ip || host.ip_address]}
-                    className="btn-secondary text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1"
-                  >
-                    {adding[host.ip || host.ip_address]
-                      ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                      : <Plus className="w-3 h-3" />
-                    }
-                    Add
-                  </button>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       </div>
@@ -232,15 +299,37 @@ export default function DiscoveryPage() {
   }
 
   const handleAddAsset = async (host) => {
+    const ip = host.ip || host.ip_address
+    // Infer a basic device type from open ports
+    const portNums = (host.ports || []).map(p =>
+      typeof p === 'object' ? Number(p.port) : parseInt(p)
+    ).filter(Boolean)
+    let deviceType = 'unknown'
+    if (portNums.some(p => [3389, 445, 137, 138].includes(p))) deviceType = 'workstation'
+    else if (portNums.some(p => [22, 80, 443, 3306, 5432, 6379, 27017, 8080, 8443].includes(p))) deviceType = 'server'
+
+    const osInfo = host.os && typeof host.os === 'object' ? host.os : (host.os ? { name: String(host.os) } : {})
+
     try {
-      await client.post('/assets', {
-        ip_address: host.ip || host.ip_address,
-        hostname: host.hostname,
-        mac_address: host.mac,
-      })
-      alert(`Asset ${host.ip || host.ip_address} added to inventory.`)
+      // Check if this IP is already an asset; if so, just promote source to 'manual'
+      const search = await client.get('/assets', { params: { search: ip, limit: 5 } })
+      const existing = (search.data.items || []).find(a => a.ipAddress === ip)
+
+      if (existing) {
+        await client.patch(`/assets/${existing.assetId}`, { source: 'manual' })
+      } else {
+        await client.post('/assets', {
+          ip_address: ip,
+          hostname: host.hostname || undefined,
+          mac_address: host.mac || undefined,
+          device_type: deviceType,
+          os_info: osInfo,
+          source: 'manual',
+        })
+      }
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to add asset')
+      throw err
     }
   }
 

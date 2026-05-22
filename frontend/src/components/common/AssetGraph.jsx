@@ -9,8 +9,15 @@ const TYPE_COLORS = {
   iot:         '#ff9800',
   unknown:     '#7b7f87',
 }
-const EDGE_COLORS = {
-  same_subnet:      '#3e4047',
+const EDGE_GRAPH_COLORS = {
+  same_subnet:      '#ffffff',
+  connects_to:      '#3393ff',
+  depends_on:       '#00e676',
+  authenticates_to: '#ffc400',
+  exposes_service:  '#ff5252',
+}
+const EDGE_FILTER_COLORS = {
+  same_subnet:      '#9aa0a6',
   connects_to:      '#3393ff',
   depends_on:       '#00e676',
   authenticates_to: '#ffc400',
@@ -222,7 +229,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
         const isBlast = blastSet.size > 0 && blastSet.has(e.source) && blastSet.has(e.target)
         ctx.beginPath()
-        ctx.strokeStyle = isBlast ? '#ff5252' : (EDGE_COLORS[e.relationship_type] || '#3e4047')
+        ctx.strokeStyle = isBlast ? '#ff5252' : (EDGE_GRAPH_COLORS[e.relationship_type] || '#3e4047')
         ctx.lineWidth   = isBlast ? 2.5 : 1.2
         ctx.globalAlpha = isBlast ? 1 : (blastSet.size > 0 ? 0.15 : 0.6)
         if (e.relationship_type === 'same_subnet') ctx.setLineDash([4, 4])
@@ -295,7 +302,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
       ctx.font = '10px Inter,sans-serif'; ctx.fillStyle = '#7b7f87'; ctx.textAlign = 'left'
       ctx.fillText('RELATIONSHIP TYPES', lx + 8, ly + 14)
       let ly2 = ly + 28
-      Object.entries(EDGE_COLORS).forEach(([type, color]) => {
+      Object.entries(EDGE_GRAPH_COLORS).forEach(([type, color]) => {
         const active = activeRelTypesRef.current.has(type)
         ctx.globalAlpha = active ? 1 : 0.25
         ctx.fillStyle = color; ctx.fillRect(lx + 8, ly2 - 4, 12, 3)
@@ -485,7 +492,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
         {ALL_REL_TYPES.map(type => {
           const active = activeRelTypes.has(type)
           const count  = relTypeCounts[type]
-          const color  = EDGE_COLORS[type]
+          const color  = EDGE_FILTER_COLORS[type]
           return (
             <button
               key={type}

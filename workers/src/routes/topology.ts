@@ -133,7 +133,7 @@ function buildTree(rows: typeof topologyNodes.$inferSelect[]): TreeNode[] {
 }
 
 // ── Infer topology for a single tenant's assets ───────────────────
-async function inferForTenant(
+export async function inferForTenant(
   db: ReturnType<typeof getDb>,
   tenantAssets: (typeof assets.$inferSelect)[],
   tenantId: string | null,

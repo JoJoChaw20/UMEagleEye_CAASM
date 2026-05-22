@@ -80,6 +80,13 @@ export default function AssetsPage() {
   }
 
   const icon = (t) => ({ server: '🖥️', workstation: '💻', network: '🌐', iot: '📡' }[t] || '❓')
+  const getCriticalityMeta = (score) => {
+    const s = Number(score)
+    if (s >= 9) return { label: 'Critical', cls: 'bg-red-500/20 text-red-400 border-red-500/30' }
+    if (s >= 7) return { label: 'High', cls: 'bg-orange-500/20 text-orange-400 border-orange-500/30' }
+    if (s >= 4) return { label: 'Medium', cls: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' }
+    return { label: 'Low', cls: 'bg-green-500/20 text-green-400 border-green-500/30' }
+  }
 
   const activeTenantName = tenants.find(t => t.tenant_id === tenantFilter)?.name
 
@@ -158,7 +165,7 @@ export default function AssetsPage() {
               </div>
             ) : assets.length > 0 ? (
               <table className="data-table">
-                <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th>Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th className="criticality-col">Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
                 <tbody>
                   {assets.map((a) => (
                     <tr key={a.assetId}>
@@ -166,7 +173,16 @@ export default function AssetsPage() {
                       <td className="font-medium text-white">{a.hostname || '—'}</td>
                       <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
                       <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>
-                      <td><span className="text-xs">{a.criticalityScore}/10</span></td>
+                      <td className="criticality-col">
+                        {(() => {
+                          const { label, cls } = getCriticalityMeta(a.criticalityScore)
+                          return (
+                            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cls}`}>
+                              {a.criticalityScore}/10 <span className="opacity-70">{label}</span>
+                            </span>
+                          )
+                        })()}
+                      </td>
                       <td>{a.baselineState ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
                       <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
                       <td>

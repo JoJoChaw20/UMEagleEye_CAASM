@@ -124,6 +124,10 @@ html.light {
   .data-table tbody tr {
     @apply transition-colors hover:bg-dark-700/20;
   }
+  .data-table .criticality-col {
+    @apply whitespace-nowrap overflow-visible;
+    min-width: 220px;
+  }
 
   /* Sidebar navigation */
   .nav-link {
