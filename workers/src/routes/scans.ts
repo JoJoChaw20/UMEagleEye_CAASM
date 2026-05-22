@@ -129,7 +129,13 @@ app.post('/active', authMiddleware, zValidator('json', activeScanSchema), async 
     const { subnet, agent_id, tenant_id } = c.req.valid('json')
 
     const effectiveSubnet = subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24'
-    const effectiveTenantId = tenant_id !== undefined ? tenant_id : (user.tenantId ?? null)
+
+    // Derive tenant: explicit body > agent's tenant > user's tenant
+    let effectiveTenantId = tenant_id !== undefined ? tenant_id : (user.tenantId ?? null)
+    if (!effectiveTenantId && agent_id) {
+      const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
+      if (agent?.tenantId) effectiveTenantId = agent.tenantId
+    }
 
     const scanRows = await db
       .insert(scanResults)

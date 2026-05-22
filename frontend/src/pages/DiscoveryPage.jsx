@@ -114,9 +114,11 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
           </div>
 
           <div>
-            <label className="block text-xs text-dark-400 mb-1">Assign to Tenant</label>
+            <label className="block text-xs text-dark-400 mb-1">
+              Tenant <span className="text-dark-500">(auto-detected from agent)</span>
+            </label>
             <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className="input-field w-full text-sm">
-              <option value="">— No tenant —</option>
+              <option value="">— Auto from agent —</option>
               {tenants.map((t) => (
                 <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
               ))}
