@@ -119,21 +119,23 @@ app.get('/pending', async (c) => {
 const activeScanSchema = z.object({
   subnet: z.string().optional(),
   agent_id: z.string().uuid().optional(),
+  tenant_id: z.string().uuid().nullable().optional(),
 })
 
 app.post('/active', authMiddleware, zValidator('json', activeScanSchema), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
-    const { subnet, agent_id } = c.req.valid('json')
+    const { subnet, agent_id, tenant_id } = c.req.valid('json')
 
     const effectiveSubnet = subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24'
+    const effectiveTenantId = tenant_id !== undefined ? tenant_id : (user.tenantId ?? null)
 
     const scanRows = await db
       .insert(scanResults)
       .values({
         agentId: agent_id ?? null,
-        tenantId: user.tenantId ?? null,
+        tenantId: effectiveTenantId,
         scanType: 'active',
         subnet: effectiveSubnet,
         status: 'pending',

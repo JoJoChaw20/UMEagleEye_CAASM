@@ -53,10 +53,11 @@ function formatPorts(ports) {
 }
 
 // ── New Scan Modal ────────────────────────────────────────────────
-function NewScanModal({ onClose, onSubmit, agents }) {
+function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
   const [subnet, setSubnet] = useState(import.meta.env.VITE_SCAN_DEFAULT_SUBNET || '192.168.1.0/24')
   const [agentId, setAgentId] = useState('')
   const [scanType, setScanType] = useState('active')
+  const [tenantId, setTenantId] = useState(userTenantId || (tenants.length === 1 ? tenants[0].tenant_id : ''))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
@@ -78,7 +79,7 @@ function NewScanModal({ onClose, onSubmit, agents }) {
     }
 
     try {
-      await onSubmit({ subnet, agent_id: effectiveAgentId, scan_type: scanType })
+      await onSubmit({ subnet, agent_id: effectiveAgentId, scan_type: scanType, tenant_id: tenantId || undefined })
       onClose()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to start scan')
@@ -110,6 +111,16 @@ function NewScanModal({ onClose, onSubmit, agents }) {
               className="input-field w-full text-sm"
               required
             />
+          </div>
+
+          <div>
+            <label className="block text-xs text-dark-400 mb-1">Assign to Tenant</label>
+            <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className="input-field w-full text-sm">
+              <option value="">— No tenant —</option>
+              {tenants.map((t) => (
+                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -280,6 +291,7 @@ export default function DiscoveryPage() {
   const { user } = useAuth()
   const [scans, setScans] = useState([])
   const [agents, setAgents] = useState([])
+  const [tenants, setTenants] = useState([])
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
   const [selectedScan, setSelectedScan] = useState(null)
@@ -289,13 +301,15 @@ export default function DiscoveryPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [scansRes, agentsRes, assetsRes] = await Promise.all([
+      const [scansRes, agentsRes, assetsRes, tenantsRes] = await Promise.all([
         client.get('/scans'),
         client.get('/agents'),
         client.get('/assets', { params: { source: 'manual', limit: 200 } }),
+        client.get('/tenants').catch(() => ({ data: { tenants: [] } })),
       ])
       setScans(scansRes.data.scans || scansRes.data.items || [])
       setAgents(agentsRes.data.agents || [])
+      setTenants(tenantsRes.data.tenants || [])
       const ips = new Set((assetsRes.data.items || []).map(a => a.ipAddress))
       setInventoriedIps(ips)
     } catch (err) {
@@ -320,8 +334,8 @@ export default function DiscoveryPage() {
     return () => clearInterval(intervalRef.current)
   }, [scans, loadData])
 
-  const handleStartScan = async ({ subnet, agent_id, scan_type }) => {
-    await client.post('/scans/active', { subnet, agent_id, scan_type })
+  const handleStartScan = async ({ subnet, agent_id, scan_type, tenant_id }) => {
+    await client.post('/scans/active', { subnet, agent_id, scan_type, tenant_id })
     await loadData()
   }
 
@@ -451,6 +465,8 @@ export default function DiscoveryPage() {
           onClose={() => setShowNew(false)}
           onSubmit={handleStartScan}
           agents={agents}
+          tenants={tenants}
+          userTenantId={user?.tenantId}
         />
       )}
 
