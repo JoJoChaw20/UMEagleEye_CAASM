@@ -154,7 +154,10 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     }
     const [existing] = await db.select().from(assets).where(and(...ipConditions)).limit(1)
 
-    const deviceType = body.device_type ?? existing?.deviceType ?? 'unknown'
+    // Preserve scanned device type — only override if existing is unknown or absent
+    const deviceType = (existing?.deviceType && existing.deviceType !== 'unknown')
+      ? existing.deviceType
+      : (body.device_type ?? 'unknown')
     const isInternetFacing = body.is_internet_facing ?? existing?.isInternetFacing ?? false
     const osInfo = (body.os_info ?? existing?.osInfo ?? {}) as Record<string, unknown>
     const hostname = body.hostname ?? existing?.hostname
