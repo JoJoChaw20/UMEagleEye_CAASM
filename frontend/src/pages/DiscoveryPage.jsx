@@ -30,18 +30,26 @@ function relativeTime(ts) {
   return `${Math.floor(h / 24)}d ago`
 }
 
+// ── OS label helper ───────────────────────────────────────────────
+function formatOs(os) {
+  if (!os) return null
+  if (typeof os === 'string') return os
+  if (typeof os === 'object') {
+    const name = os.name || ''
+    const acc = os.accuracy ? ` (${os.accuracy}%)` : ''
+    return name ? name + acc : null
+  }
+  return null
+}
+
 // ── Port display helper ───────────────────────────────────────────
 function formatPorts(ports) {
-  if (!Array.isArray(ports) || ports.length === 0) return null
-  return ports
-    .map(p => {
-      if (typeof p === 'object' && p !== null) {
-        return p.port ? `${p.port}/${p.protocol || 'tcp'}` : null
-      }
-      return String(p)
-    })
-    .filter(Boolean)
-    .join(', ')
+  if (!ports || ports.length === 0) return null
+  const list = Array.isArray(ports)
+    ? ports.slice(0, 8).map(p => typeof p === 'object' ? `${p.port}/${p.protocol || 'tcp'}` : String(p))
+    : [String(ports)]
+  const extra = Array.isArray(ports) && ports.length > 8 ? ` +${ports.length - 8} more` : ''
+  return list.join('  ') + extra
 }
 
 // ── New Scan Modal ────────────────────────────────────────────────
@@ -150,14 +158,16 @@ function NewScanModal({ onClose, onSubmit, agents }) {
 function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
   const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
-  const [justAdded, setJustAdded] = useState(new Set())
+  const [accepted, setAccepted] = useState(new Set())
 
   const handleAdd = async (host) => {
     const ip = host.ip || host.ip_address
     setAdding(prev => ({ ...prev, [ip]: true }))
     try {
       await onAddAsset(host)
-      setJustAdded(prev => new Set([...prev, ip]))
+      setAccepted(prev => new Set([...prev, ip]))
+    } catch {
+      // error shown by onAddAsset
     } finally {
       setAdding(prev => ({ ...prev, [ip]: false }))
     }
@@ -165,55 +175,95 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/40 backdrop-blur-sm">
-      <div className="glass-card w-full sm:w-[480px] h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
+      <div className="glass-card w-full sm:w-[500px] h-full sm:h-auto sm:max-h-[88vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
         <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
           <div>
             <h3 className="font-semibold text-white">Discovered Hosts</h3>
-            <p className="text-xs text-dark-400 mt-0.5">{scan.subnet} — {hosts.length} hosts</p>
+            <p className="text-xs text-dark-400 mt-0.5">
+              {scan.subnet || '—'} · {hosts.length} host{hosts.length !== 1 ? 's' : ''} · <span className="capitalize">{scan.scanType || 'active'}</span> scan
+            </p>
           </div>
           <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="px-4 py-2.5 border-b border-dark-700/30 bg-dark-800/30">
+          <p className="text-xs text-dark-400 leading-relaxed">
+            Review discovered hosts. Click <span className="text-white font-medium">Accept</span> to add to inventory, or <span className="text-white font-medium">Update</span> to refresh an already-inventoried asset with new scan data.
+          </p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
           {hosts.length === 0 ? (
             <p className="text-dark-400 text-sm text-center py-8">No hosts in results</p>
           ) : (
             hosts.map((host, i) => {
               const ip = host.ip || host.ip_address
-              const portStr = formatPorts(host.ports)
-              const osLabel = host.os
-                ? (typeof host.os === 'string' ? host.os : host.os.name || null)
-                : null
-              const isInventoried = inventoriedIps.has(ip) || justAdded.has(ip)
+              const isAccepted = accepted.has(ip)
+              const isInventoried = inventoriedIps.has(ip)
+              const isAdding = !!adding[ip]
+              const osLabel = formatOs(host.os)
+              const portsLabel = formatPorts(host.ports)
 
               return (
-                <div key={i} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-mono text-sm text-accent-cyan">{ip}</p>
-                      {host.hostname && <p className="text-xs text-dark-300 mt-0.5">{host.hostname}</p>}
-                      {host.mac && <p className="text-xs text-dark-500 font-mono mt-0.5">{host.mac}</p>}
-                      {osLabel && <p className="text-xs text-dark-400 mt-1">{osLabel}</p>}
-                      {portStr && (
-                        <p className="text-xs text-dark-500 mt-1 truncate">Ports: {portStr}</p>
+                <div
+                  key={i}
+                  className={`rounded-xl p-3 border transition-colors ${
+                    isAccepted
+                      ? 'bg-green-500/5 border-green-500/20'
+                      : 'bg-dark-800/60 border-dark-700/40'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-sm text-accent-cyan">{ip}</span>
+                        {isAccepted && (
+                          <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30 rounded-full">
+                            In My Assets
+                          </span>
+                        )}
+                        {!isAccepted && isInventoried && (
+                          <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-full">
+                            Already inventoried
+                          </span>
+                        )}
+                      </div>
+                      {host.hostname && (
+                        <p className="text-xs text-dark-300">{host.hostname}</p>
+                      )}
+                      {host.mac && (
+                        <p className="text-xs text-dark-500 font-mono">{host.mac}</p>
+                      )}
+                      {osLabel && (
+                        <p className="text-xs text-dark-400">
+                          <span className="text-dark-500">OS:</span> {osLabel}
+                        </p>
+                      )}
+                      {portsLabel && (
+                        <p className="text-xs text-dark-500">
+                          <span>Ports:</span>{' '}
+                          <span className="font-mono text-dark-400">{portsLabel}</span>
+                        </p>
                       )}
                     </div>
-                    <button
-                      onClick={() => handleAdd(host)}
-                      disabled={adding[ip]}
-                      className={`text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1 ${isInventoried ? 'btn-secondary' : 'btn-primary'}`}
-                    >
-                      {adding[ip] ? (
-                        <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                      ) : isInventoried ? (
-                        <RefreshCw className="w-3 h-3" />
-                      ) : (
-                        <Plus className="w-3 h-3" />
-                      )}
-                      {isInventoried ? 'Update' : 'Add'}
-                    </button>
+
+                    {!isAccepted && (
+                      <button
+                        onClick={() => handleAdd(host)}
+                        disabled={isAdding}
+                        className={`text-xs py-1.5 px-3 flex-shrink-0 flex items-center gap-1.5 ${isInventoried ? 'btn-secondary' : 'btn-primary'}`}
+                      >
+                        {isAdding
+                          ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
+                          : isInventoried
+                            ? <RefreshCw className="w-3 h-3" />
+                            : <Plus className="w-3 h-3" />
+                        }
+                        {isInventoried ? 'Update' : 'Accept'}
+                      </button>
+                    )}
                   </div>
                 </div>
               )
@@ -277,11 +327,22 @@ export default function DiscoveryPage() {
 
   const handleAddAsset = async (host) => {
     const ip = host.ip || host.ip_address
+    const portNums = (host.ports || []).map(p =>
+      typeof p === 'object' ? Number(p.port) : parseInt(p)
+    ).filter(Boolean)
+    let deviceType = 'unknown'
+    if (portNums.some(p => [3389, 445, 137, 138].includes(p))) deviceType = 'workstation'
+    else if (portNums.some(p => [22, 80, 443, 3306, 5432, 6379, 27017, 8080, 8443].includes(p))) deviceType = 'server'
+
+    const osInfo = host.os && typeof host.os === 'object' ? host.os : (host.os ? { name: String(host.os) } : {})
+
     try {
       await client.post('/assets', {
         ip_address: ip,
         hostname: host.hostname || undefined,
         mac_address: host.mac || undefined,
+        device_type: deviceType,
+        os_info: Object.keys(osInfo).length > 0 ? osInfo : undefined,
         tenant_id: selectedScan?.tenantId || undefined,
       })
       setInventoriedIps(prev => new Set([...prev, ip]))

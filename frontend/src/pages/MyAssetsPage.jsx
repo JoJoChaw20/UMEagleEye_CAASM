@@ -1,19 +1,73 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Building2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Building2, Zap, Info } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
-// ── Criticality badge ─────────────────────────────────────────────
-function CriticalityBadge({ score }) {
+// ── Criticality badge with score-breakdown tooltip ────────────────
+function CriticalityBadge({ score, assetId }) {
   const s = Number(score)
+  const [tip, setTip] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const timerRef = useRef(null)
+
   let cls = 'bg-green-500/20 text-green-400 border-green-500/30'
   if (s >= 9) cls = 'bg-red-500/20 text-red-400 border-red-500/30'
   else if (s >= 7) cls = 'bg-orange-500/20 text-orange-400 border-orange-500/30'
   else if (s >= 4) cls = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+
+  const label = s >= 9 ? 'Critical' : s >= 7 ? 'High' : s >= 4 ? 'Medium' : 'Low'
+
+  const fetchBreakdown = async () => {
+    if (tip || !assetId) return
+    setLoading(true)
+    try {
+      const res = await client.get(`/assets/${assetId}/score`)
+      setTip(res.data)
+    } catch { /* silent */ } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleMouseEnter = () => {
+    timerRef.current = setTimeout(fetchBreakdown, 300)
+  }
+  const handleMouseLeave = () => {
+    clearTimeout(timerRef.current)
+  }
+
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cls}`}>
-      {s}/10
-    </span>
+    <div className="relative inline-block group" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium cursor-default select-none ${cls}`}>
+        {s}/10 <span className="opacity-70">{label}</span>
+      </span>
+      {/* Tooltip */}
+      <div className="absolute bottom-full left-0 mb-2 z-50 w-64 pointer-events-none
+                      opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+        <div className="bg-dark-900 border border-dark-600 rounded-xl p-3 shadow-2xl text-xs space-y-2">
+          <p className="font-semibold text-white">Criticality Breakdown</p>
+          {loading && <p className="text-dark-400">Loading…</p>}
+          {tip && (
+            <>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-dark-300">
+                <span>Base (device type)</span><span className="text-right text-white">+{tip.breakdown?.base}</span>
+                {tip.breakdown?.internetFacing > 0 && <><span>Internet facing</span><span className="text-right text-yellow-400">+{tip.breakdown.internetFacing}</span></>}
+                {tip.breakdown?.portRisk > 0 && <><span>Port risk</span><span className="text-right text-orange-400">+{tip.breakdown.portRisk}</span></>}
+                {tip.breakdown?.hostnameHints !== 0 && <><span>Hostname hints</span><span className={`text-right ${tip.breakdown.hostnameHints > 0 ? 'text-orange-400' : 'text-green-400'}`}>{tip.breakdown.hostnameHints > 0 ? '+' : ''}{tip.breakdown.hostnameHints}</span></>}
+                {tip.breakdown?.topologyLayer > 0 && <><span>Network position</span><span className="text-right text-purple-400">+{tip.breakdown.topologyLayer}</span></>}
+              </div>
+              {tip.factors?.length > 0 && (
+                <ul className="text-dark-400 space-y-0.5 border-t border-dark-700 pt-2">
+                  {tip.factors.map((f, i) => <li key={i}>· {f}</li>)}
+                </ul>
+              )}
+              <p className="text-dark-500 border-t border-dark-700 pt-1.5">
+                Hover score = computed value. Drag slider to override.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -205,16 +259,16 @@ function EditableCell({ value, type = 'text', onSave, readOnly }) {
 // ── CSV Import Modal ──────────────────────────────────────────────
 const TEMPLATE_HEADERS = [
   'ip_address', 'hostname', 'mac_address', 'owner',
-  'device_type', 'criticality_score', 'is_internet_facing',
+  'device_type', 'criticality_score', 'criticality_status', 'is_internet_facing',
   'hardware_vendor', 'os_name', 'os_version', 'open_ports',
 ]
 const TEMPLATE_SAMPLE = [
   ['192.168.1.1', 'router-01', 'AA:BB:CC:11:22:33', 'Network Team / netops@corp.com',
-   'network', '9', 'true', 'Cisco', 'IOS XE', '16.9', '22/tcp 23/tcp 443/tcp'],
+   'network', '9', 'Critical', 'true', 'Cisco', 'IOS XE', '16.9', '22/tcp 23/tcp 443/tcp'],
   ['192.168.1.10', 'server-01', 'AA:BB:CC:44:55:66', 'IT Dept / admin@corp.com',
-   'server', '8', 'false', 'Dell', 'Ubuntu', '22.04', '22/tcp 80/tcp 443/tcp 3306/tcp'],
+   'server', '8', 'High', 'false', 'Dell', 'Ubuntu', '22.04', '22/tcp 80/tcp 443/tcp 3306/tcp'],
   ['192.168.1.50', 'workstation-01', '', 'HR Dept / alice@corp.com',
-   'workstation', '4', 'false', 'HP', 'Windows', '11', '3389/tcp'],
+   'workstation', '4', 'Medium', 'false', 'HP', 'Windows', '11', '3389/tcp'],
 ]
 
 function parseCSVLine(line) {
@@ -294,7 +348,7 @@ function ImportModal({ onClose, onImport, tenantId }) {
     }
   }
 
-  const DISPLAY_COLS = ['ip_address', 'hostname', 'device_type', 'criticality_score', 'owner', 'os_name', 'open_ports']
+  const DISPLAY_COLS = ['ip_address', 'hostname', 'device_type', 'criticality_score', 'criticality_status', 'owner', 'os_name', 'open_ports']
   const visibleHeaders = headers.filter(h => DISPLAY_COLS.includes(h))
 
   return (
@@ -454,6 +508,7 @@ export default function MyAssetsPage() {
   const [showImport, setShowImport] = useState(false)
   const [error, setError] = useState(null)
 
+  const [rescoring, setRescoring] = useState(false)
   const isReadOnly = user?.role === 'business_owner'
   const canDelete = ['ops_lead', 'superadmin'].includes(user?.role)
 
@@ -492,6 +547,20 @@ export default function MyAssetsPage() {
 
   const handleImportDone = async () => {
     await loadAssets()
+  }
+
+  const handleRescore = async () => {
+    setRescoring(true)
+    try {
+      const params = tenantFilter ? `?tenant_id=${tenantFilter}` : ''
+      const res = await client.post(`/assets/rescore${params}`)
+      await loadAssets()
+      alert(res.data.message)
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Rescore failed')
+    } finally {
+      setRescoring(false)
+    }
   }
 
   const handleUpdate = async (assetId, field, value) => {
@@ -544,6 +613,18 @@ export default function MyAssetsPage() {
         </div>
         {!isReadOnly && (
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleRescore}
+              disabled={rescoring}
+              title="Auto-compute criticality score from device type, open ports, hostname, and network position"
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              {rescoring
+                ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                : <Zap className="w-4 h-4 text-yellow-400" />
+              }
+              Auto-Score
+            </button>
             <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-2">
               <Upload className="w-4 h-4" />
               Import CSV
@@ -594,7 +675,7 @@ export default function MyAssetsPage() {
       )}
 
       {/* Table */}
-      <div className="glass-card overflow-hidden">
+      <div className="glass-card overflow-visible">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
@@ -607,7 +688,7 @@ export default function MyAssetsPage() {
                 <th>Hostname</th>
                 <th>Device Type</th>
                 <th>Owner</th>
-                <th>Criticality</th>
+                <th className="criticality-col">Criticality</th>
                 <th>Internet Facing</th>
                 <th>Last Scanned</th>
                 <th>Actions</th>
@@ -618,7 +699,7 @@ export default function MyAssetsPage() {
                 <tr key={a.assetId}>
                   <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
                   <td className="font-medium text-white">{a.hostname || '—'}</td>
-                  <td>
+                  <td className="criticality-col">
                     <span className="text-xs text-dark-300 capitalize">{a.deviceType}</span>
                   </td>
                   <td>
@@ -630,10 +711,10 @@ export default function MyAssetsPage() {
                   </td>
                   <td>
                     {isReadOnly ? (
-                      <CriticalityBadge score={a.criticalityScore} />
+                      <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
                     ) : (
                       <div className="flex items-center gap-2">
-                        <CriticalityBadge score={a.criticalityScore} />
+                        <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
                         <input
                           type="range"
                           min="1"

@@ -5,7 +5,10 @@ import { eq, and } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { scanResults, agents, assets } from '../db/schema'
+import { scanResults, agents, assets, topologyNodes } from '../db/schema'
+import { inferForTenant } from './topology'
+import { inferRelationshipsForTenant } from './relationships'
+import { rescoreAssets } from '../lib/rescore'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -143,7 +146,8 @@ const hostSchema = z.object({
 
 const ingestSchema = z.object({
   agent_id: z.string().uuid(),
-  scan_id: z.string().uuid(),
+  scan_id:  z.string().uuid().optional(),   // omit for passive/self-initiated scans
+  scan_type: z.enum(['active', 'passive']).optional().default('active'),
   hosts: z.array(hostSchema),
 })
 
@@ -160,7 +164,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const incomingKey = authHeader.slice(7)
     const incomingKeyHash = await sha256Hex(incomingKey)
 
-    const { agent_id, scan_id, hosts } = c.req.valid('json')
+    const { agent_id, scan_id, scan_type = 'active', hosts } = c.req.valid('json')
 
     // Fetch agent and verify API key hash
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
@@ -180,13 +184,27 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
       .set({ status: 'online', lastHeartbeat: new Date() })
       .where(eq(agents.agentId, agent_id))
 
-    // Verify scan exists
-    const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
-    if (!scan) {
-      return c.json({ detail: 'Scan not found' }, 404)
-    }
-
     const tenantId = agent.tenantId
+
+    // Resolve scan record — for passive scans the agent omits scan_id so we
+    // create one automatically here instead of requiring a prior dispatch.
+    let resolvedScanId: string
+    if (scan_id) {
+      const [existing] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
+      if (!existing) return c.json({ detail: 'Scan not found' }, 404)
+      resolvedScanId = existing.scanId
+    } else {
+      const [created] = await db.insert(scanResults).values({
+        agentId:   agent_id,
+        tenantId:  tenantId ?? null,
+        scanType:  scan_type,
+        status:    'pending',
+        hostsDiscovered: 0,
+        rawResults: [],
+      }).returning()
+      if (!created) return c.json({ detail: 'Failed to create scan record' }, 500)
+      resolvedScanId = created.scanId
+    }
 
     // Upsert assets for each discovered host
     const upsertedAssetIds: string[] = []
@@ -203,14 +221,21 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
         .where(and(...conditions))
         .limit(1)
 
+      // Merge OS info and port list so scoring has full data
+      const mergedOsInfo = {
+        ...((existing?.osInfo ?? {}) as Record<string, unknown>),
+        ...(host.os ? (host.os as Record<string, unknown>) : {}),
+        ...(Array.isArray(host.ports) && host.ports.length > 0 ? { ports: host.ports } : {}),
+      }
+
       if (existing) {
-        // Update existing asset
+        // Update existing asset (never downgrade source from manual)
         const updatedRows = await db
           .update(assets)
           .set({
             hostname: host.hostname ?? existing.hostname,
             macAddress: host.mac ?? existing.macAddress,
-            osInfo: host.os ?? existing.osInfo ?? {},
+            osInfo: mergedOsInfo,
             lastScanned: new Date(),
             updatedAt: new Date(),
           })
@@ -227,9 +252,10 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
             ipAddress: host.ip,
             hostname: host.hostname,
             macAddress: host.mac,
-            osInfo: host.os ?? {},
+            osInfo: mergedOsInfo,
             tenantId: tenantId ?? null,
             deviceType: 'unknown',
+            source: scan_type === 'passive' ? 'scan_passive' : 'scan_active',
             lastScanned: new Date(),
           })
           .returning({ assetId: assets.assetId })
@@ -248,21 +274,36 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
         rawResults: hosts,
         completedAt: new Date(),
       })
-      .where(eq(scanResults.scanId, scan_id))
+      .where(eq(scanResults.scanId, resolvedScanId))
 
     // Trigger drift check advisory for each asset
     for (const assetId of upsertedAssetIds) {
       await c.env.ADVISORY_QUEUE.send({
         type: 'drift_check',
         assetId,
-        scanId: scan_id,
+        scanId: resolvedScanId,
         agentId: agent_id,
       })
     }
 
+    // Auto-rebuild topology and relationship graph, then rescore criticality.
+    if (tenantId && upsertedAssetIds.length > 0) {
+      try {
+        const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
+        await db.delete(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
+        await inferForTenant(db, tenantAssets, tenantId)
+        await inferRelationshipsForTenant(db, tenantId)
+        // Rescore only the assets touched by this scan — topology is now up to date
+        await rescoreAssets(db, tenantId, upsertedAssetIds)
+      } catch (inferErr) {
+        console.warn('Auto-infer/rescore after scan failed (non-fatal):', inferErr)
+      }
+    }
+
     return c.json({
       message: 'Scan results ingested',
-      scan_id,
+      scan_id: resolvedScanId,
+      scan_type,
       hosts_discovered: hosts.length,
       assets_upserted: upsertedAssetIds.length,
     })

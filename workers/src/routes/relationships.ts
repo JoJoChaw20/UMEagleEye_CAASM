@@ -209,10 +209,100 @@ app.get('/blast-radius/:assetId', authMiddleware, async (c) => {
   }
 })
 
+// ── Shared inference logic (also called from scan ingest) ────────
+type DbClient = ReturnType<typeof getDb>
+type AssetRow  = typeof assets.$inferSelect
+
+function pickHub(subnetAssets: AssetRow[]): AssetRow {
+  return [...subnetAssets].sort((a, b) => {
+    if (a.deviceType === 'network' && b.deviceType !== 'network') return -1
+    if (a.deviceType !== 'network' && b.deviceType === 'network') return 1
+    const lastA = parseInt(a.ipAddress.split('.').pop() ?? '0', 10)
+    const lastB = parseInt(b.ipAddress.split('.').pop() ?? '0', 10)
+    return lastA - lastB
+  })[0]!
+}
+
+export async function inferRelationshipsForTenant(db: DbClient, tenantId: string): Promise<number> {
+  const tenantAssetIds = await getTenantAssetIds(db, tenantId)
+  if (tenantAssetIds.length === 0) return 0
+
+  await db.delete(assetRelationships).where(
+    or(
+      anyOfUuids(assetRelationships.sourceAssetId, tenantAssetIds),
+      anyOfUuids(assetRelationships.targetAssetId, tenantAssetIds),
+    )
+  )
+
+  const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
+
+  const subnetGroups = new Map<string, AssetRow[]>()
+  for (const a of tenantAssets) {
+    const s = getSubnet(a.ipAddress)
+    if (!subnetGroups.has(s)) subnetGroups.set(s, [])
+    subnetGroups.get(s)!.push(a)
+  }
+
+  const newRels: (typeof assetRelationships.$inferInsert)[] = []
+
+  // same_subnet: star per subnet; hub must be a network device
+  for (const subnetAssets of subnetGroups.values()) {
+    if (subnetAssets.length < 2) continue
+    const hub = pickHub(subnetAssets)
+    if (hub.deviceType !== 'network') continue
+    for (const a of subnetAssets) {
+      if (a.assetId === hub.assetId) continue
+      newRels.push({ sourceAssetId: hub.assetId, targetAssetId: a.assetId, relationshipType: 'same_subnet', confidence: '1.00' })
+    }
+  }
+
+  // connects_to: use dedicated router in gateway subnet when present (correct L3 path)
+  const gateway = tenantAssets
+    .filter(a => a.isInternetFacing && a.deviceType === 'network')
+    .sort((a, b) => parseInt(a.ipAddress.split('.').pop() ?? '0', 10) - parseInt(b.ipAddress.split('.').pop() ?? '0', 10))[0]
+    ?? tenantAssets.filter(a => a.deviceType === 'network').sort((a, b) => a.ipAddress.localeCompare(b.ipAddress))[0]
+
+  const routingAnchor = gateway
+    ? (tenantAssets.find(a =>
+        a.deviceType === 'network'
+        && !a.isInternetFacing
+        && getSubnet(a.ipAddress) === getSubnet(gateway.ipAddress)
+        && /^(rtr[-_]|router[-_]|lab[-_]router)/i.test(a.hostname ?? '')
+      ) ?? gateway)
+    : gateway
+
+  if (routingAnchor) {
+    const anchorSubnet = getSubnet(routingAnchor.ipAddress)
+    for (const [subnet, subnetAssets] of subnetGroups.entries()) {
+      if (subnet === anchorSubnet) continue
+      const hub = pickHub(subnetAssets)
+      if (hub && hub.deviceType === 'network') {
+        newRels.push({ sourceAssetId: routingAnchor.assetId, targetAssetId: hub.assetId, relationshipType: 'connects_to', confidence: '0.90' })
+      }
+    }
+  }
+
+  // Orphan remediation: unconnected assets get a connects_to from the gateway
+  const edgedIds = new Set<string>()
+  for (const r of newRels) { edgedIds.add(r.sourceAssetId); edgedIds.add(r.targetAssetId) }
+  if (gateway) {
+    for (const a of tenantAssets) {
+      if (!edgedIds.has(a.assetId) && a.assetId !== gateway.assetId) {
+        newRels.push({ sourceAssetId: gateway.assetId, targetAssetId: a.assetId, relationshipType: 'connects_to', confidence: '0.70' })
+      }
+    }
+  }
+
+  if (newRels.length > 0) {
+    await db.insert(assetRelationships).values(newRels).onConflictDoNothing()
+  }
+  return newRels.length
+}
+
 // ── POST /infer ──────────────────────────────────────────────────
 // Rebuilds relationships from asset inventory:
 //   • same_subnet  (star topology per /24 subnet, hub = network device or lowest IP)
-//   • connects_to  (internet-facing gateway → hub of every other subnet)
+//   • connects_to  (router → hub of every other subnet)
 app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -229,75 +319,7 @@ app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     let totalCreated = 0
 
     for (const tenantId of tenantsToProcess) {
-      const tenantAssetIds = await getTenantAssetIds(db, tenantId)
-      if (tenantAssetIds.length === 0) continue
-
-      // Delete all existing relationships for this tenant's assets in one query
-      await db.delete(assetRelationships).where(
-        or(
-          anyOfUuids(assetRelationships.sourceAssetId, tenantAssetIds),
-          anyOfUuids(assetRelationships.targetAssetId, tenantAssetIds),
-        )
-      )
-
-      const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
-
-      // Group by /24 subnet
-      const subnetGroups = new Map<string, (typeof tenantAssets)>()
-      for (const a of tenantAssets) {
-        const s = getSubnet(a.ipAddress)
-        if (!subnetGroups.has(s)) subnetGroups.set(s, [])
-        subnetGroups.get(s)!.push(a)
-      }
-
-      // Pick hub of a subnet: prefer network device, then lowest IP
-      function pickHub(subnetAssets: typeof tenantAssets) {
-        return [...subnetAssets].sort((a, b) => {
-          if (a.deviceType === 'network' && b.deviceType !== 'network') return -1
-          if (a.deviceType !== 'network' && b.deviceType === 'network') return 1
-          // numeric IP sort by last octet
-          const lastA = parseInt(a.ipAddress.split('.').pop() ?? '0', 10)
-          const lastB = parseInt(b.ipAddress.split('.').pop() ?? '0', 10)
-          return lastA - lastB
-        })[0]
-      }
-
-      const newRels: (typeof assetRelationships.$inferInsert)[] = []
-
-      // same_subnet: star per subnet
-      for (const subnetAssets of subnetGroups.values()) {
-        if (subnetAssets.length < 2) continue
-        const hub = pickHub(subnetAssets)!
-        for (const a of subnetAssets) {
-          if (a.assetId === hub.assetId) continue
-          newRels.push({ sourceAssetId: hub.assetId, targetAssetId: a.assetId, relationshipType: 'same_subnet', confidence: '1.00' })
-        }
-      }
-
-      // connects_to: internet-facing gateway → each other subnet's hub
-      const gateway = tenantAssets
-        .filter(a => a.isInternetFacing && a.deviceType === 'network')
-        .sort((a, b) => {
-          const lastA = parseInt(a.ipAddress.split('.').pop() ?? '0', 10)
-          const lastB = parseInt(b.ipAddress.split('.').pop() ?? '0', 10)
-          return lastA - lastB
-        })[0]
-
-      if (gateway) {
-        const gwSubnet = getSubnet(gateway.ipAddress)
-        for (const [subnet, subnetAssets] of subnetGroups.entries()) {
-          if (subnet === gwSubnet) continue
-          const hub = pickHub(subnetAssets)
-          if (hub) {
-            newRels.push({ sourceAssetId: gateway.assetId, targetAssetId: hub.assetId, relationshipType: 'connects_to', confidence: '0.90' })
-          }
-        }
-      }
-
-      if (newRels.length > 0) {
-        await db.insert(assetRelationships).values(newRels).onConflictDoNothing()
-        totalCreated += newRels.length
-      }
+      totalCreated += await inferRelationshipsForTenant(db, tenantId)
     }
 
     return c.json({ relationships_created: totalCreated, message: `Inferred ${totalCreated} relationships across ${tenantsToProcess.length} tenant(s)` })

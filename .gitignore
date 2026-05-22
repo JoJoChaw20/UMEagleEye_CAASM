@@ -15,6 +15,7 @@ ENV/
 
 # Environment variables
 .env
+agent/bridge.env
 
 # IDE
 .vscode/

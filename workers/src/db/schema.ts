@@ -35,6 +35,7 @@ export const relationshipTypeEnum = pgEnum('relationship_type', [
 ])
 export const sbomFormatEnum = pgEnum('sbom_format', ['cyclonedx', 'spdx'])
 export const agentStatusEnum = pgEnum('agent_status', ['online', 'offline', 'degraded'])
+export const assetSourceEnum = pgEnum('asset_source', ['manual', 'scan_active', 'scan_passive'])
 export const topologyNodeTypeEnum = pgEnum('topology_node_type', [
   'gateway', 'router', 'switch', 'access_point', 'host'
 ])
@@ -82,6 +83,7 @@ export const assets = pgTable('assets', {
   criticalityScore: smallint('criticality_score').notNull().default(5),
   baselineState: jsonb('baseline_state'),
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
+  source: assetSourceEnum('source').notNull().default('manual'),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),

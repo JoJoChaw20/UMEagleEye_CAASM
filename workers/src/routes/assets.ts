@@ -6,12 +6,28 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets } from '../db/schema'
+import { rescoreAssets } from '../lib/rescore'
+import { computeCriticality } from '../lib/criticality'
 
 const app = new Hono<{ Bindings: Env }>()
 
 const READ_ROLES = ['ops_lead', 'security_engineer', 'mssp_analyst', 'business_owner', 'superadmin']
 const WRITE_ROLES = ['ops_lead', 'security_engineer', 'superadmin']
 const DELETE_ROLES = ['ops_lead', 'superadmin']
+
+function computeAssetCriticality(input: {
+  deviceType: string
+  isInternetFacing: boolean
+  hostname?: string | null
+  osInfo: Record<string, unknown>
+}): number {
+  return computeCriticality({
+    deviceType: input.deviceType,
+    isInternetFacing: input.isInternetFacing,
+    hostname: input.hostname ?? undefined,
+    osInfo: input.osInfo,
+  }).score
+}
 
 // ── GET / ────────────────────────────────────────────────────────
 app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
@@ -25,11 +41,11 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     const device_type = c.req.query('device_type')
     const hostname = c.req.query('hostname')
     const search = c.req.query('search')
+    const source = c.req.query('source')
     const tenant_id_param = c.req.query('tenant_id')
 
     const conditions = []
 
-    // Superadmin can query any tenant; others are scoped to their own tenantId
     if (user.role !== 'superadmin') {
       if (user.tenantId) {
         conditions.push(eq(assets.tenantId, user.tenantId))
@@ -56,10 +72,8 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       if (searchCondition) conditions.push(searchCondition)
     }
 
-    const source = c.req.query('source')
-    const validSources = ['manual', 'scan_active', 'scan_passive'] as const
-    if (source && (validSources as readonly string[]).includes(source)) {
-      conditions.push(eq(assets.source, source as typeof validSources[number]))
+    if (source && ['manual', 'scan_active', 'scan_passive'].includes(source)) {
+      conditions.push(eq(assets.source, source as 'manual' | 'scan_active' | 'scan_passive'))
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
@@ -117,6 +131,7 @@ const createAssetSchema = z.object({
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
+  source: z.enum(['manual', 'scan_active', 'scan_passive']).optional(),
   tenant_id: z.string().uuid().optional(),
 })
 
@@ -139,22 +154,31 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     }
     const [existing] = await db.select().from(assets).where(and(...ipConditions)).limit(1)
 
+    const deviceType = body.device_type ?? existing?.deviceType ?? 'unknown'
+    const isInternetFacing = body.is_internet_facing ?? existing?.isInternetFacing ?? false
+    const osInfo = (body.os_info ?? existing?.osInfo ?? {}) as Record<string, unknown>
+    const hostname = body.hostname ?? existing?.hostname
+    const computedScore = computeAssetCriticality({ deviceType, isInternetFacing, hostname, osInfo })
+
     if (existing) {
       // Promote to manual and update provided fields
-      const updateData: Record<string, unknown> = { source: 'manual', updatedAt: new Date() }
+      const updateData: Record<string, unknown> = {
+        source: body.source ?? 'manual',
+        criticalityScore: computedScore,
+        updatedAt: new Date(),
+      }
       if (body.hostname != null) updateData.hostname = body.hostname
       if (body.mac_address != null) updateData.macAddress = body.mac_address
       if (body.owner != null) updateData.owner = body.owner
       if (body.device_type !== undefined) updateData.deviceType = body.device_type
       if (body.hardware_vendor != null) updateData.hardwareVendor = body.hardware_vendor
       if (body.os_info !== undefined) updateData.osInfo = body.os_info
-      if (body.criticality_score !== undefined) updateData.criticalityScore = body.criticality_score
       if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
       const [updated] = await db.update(assets).set(updateData).where(eq(assets.assetId, existing.assetId)).returning()
       return c.json(updated, 200)
     }
 
-    // Create new with source='manual'
+    // Create new
     const [asset] = await db
       .insert(assets)
       .values({
@@ -162,13 +186,13 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         hostname: body.hostname ?? null,
         macAddress: body.mac_address ?? null,
         owner: body.owner,
-        deviceType: body.device_type ?? 'unknown',
+        deviceType,
         hardwareVendor: body.hardware_vendor,
-        osInfo: body.os_info ?? {},
-        criticalityScore: body.criticality_score ?? 5,
-        isInternetFacing: body.is_internet_facing ?? false,
+        osInfo,
+        criticalityScore: computedScore,
+        isInternetFacing,
+        source: body.source ?? 'manual',
         tenantId: targetTenantId,
-        source: 'manual',
       })
       .returning()
 
@@ -190,6 +214,7 @@ const updateAssetSchema = z.object({
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
+  source: z.enum(['manual', 'scan_active', 'scan_passive']).optional(),
 })
 
 app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', updateAssetSchema), async (c) => {
@@ -215,8 +240,24 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     if (body.device_type !== undefined) updateData.deviceType = body.device_type
     if (body.hardware_vendor !== undefined) updateData.hardwareVendor = body.hardware_vendor
     if (body.os_info !== undefined) updateData.osInfo = body.os_info
-    if (body.criticality_score !== undefined) updateData.criticalityScore = body.criticality_score
     if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
+    if (body.source !== undefined) updateData.source = body.source
+
+    // Recompute criticality unless caller explicitly sets it
+    if (body.criticality_score !== undefined) {
+      updateData.criticalityScore = body.criticality_score
+    } else {
+      const mergedDeviceType = body.device_type ?? existing.deviceType
+      const mergedHostname = body.hostname ?? existing.hostname
+      const mergedOsInfo = (body.os_info ?? existing.osInfo ?? {}) as Record<string, unknown>
+      const mergedInternetFacing = body.is_internet_facing ?? existing.isInternetFacing
+      updateData.criticalityScore = computeAssetCriticality({
+        deviceType: mergedDeviceType,
+        isInternetFacing: mergedInternetFacing,
+        hostname: mergedHostname,
+        osInfo: mergedOsInfo,
+      })
+    }
 
     const [updated] = await db
       .update(assets)
@@ -296,6 +337,55 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
   }
 })
 
+// ── POST /rescore ─── Bulk auto-score all tenant assets ──────────
+app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+
+    if (!user.tenantId && user.role !== 'superadmin') {
+      return c.json({ detail: 'User has no tenant assigned' }, 400)
+    }
+
+    const tenantId = user.role === 'superadmin'
+      ? (c.req.query('tenant_id') ?? user.tenantId ?? null)
+      : user.tenantId!
+
+    const updated = await rescoreAssets(db, tenantId)
+    return c.json({ updated, message: `Criticality rescored for ${updated} asset(s)` })
+  } catch (err) {
+    console.error('assets POST /rescore error:', err)
+    return c.json({ detail: 'Failed to rescore assets' }, 500)
+  }
+})
+
+// ── GET /:assetId/score ─── Score breakdown for one asset ─────────
+app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+
+    const [asset] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
+    if (!asset) return c.json({ detail: 'Asset not found' }, 404)
+    if (user.role !== 'superadmin' && user.tenantId && asset.tenantId !== user.tenantId) {
+      return c.json({ detail: 'Asset not found' }, 404)
+    }
+
+    const result = computeCriticality({
+      deviceType: asset.deviceType,
+      isInternetFacing: asset.isInternetFacing,
+      hostname: asset.hostname ?? undefined,
+      osInfo: (asset.osInfo ?? {}) as Record<string, unknown>,
+    })
+
+    return c.json({ asset_id: assetId, ...result })
+  } catch (err) {
+    console.error('assets GET /:assetId/score error:', err)
+    return c.json({ detail: 'Failed to compute score' }, 500)
+  }
+})
+
 // ── POST /import ─── CSV bulk import ─────────────────────────────
 function parseCSVRow(line: string): string[] {
   const result: string[] = []
@@ -324,7 +414,6 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
-    // Superadmin can target any tenant via ?tenant_id=; others use their own
     const targetTenantId = user.role === 'superadmin'
       ? (c.req.query('tenant_id') || user.tenantId || null)
       : (user.tenantId ?? null)
@@ -354,7 +443,6 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       return c.json({ detail: 'CSV must include an "ip_address" column' }, 400)
     }
 
-    // ── Phase 1: parse all rows (no DB calls) ─────────────────────
     type ParsedRow = {
       rowNum: number
       ipAddress: string
@@ -382,8 +470,6 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         continue
       }
 
-      const rawScore = parseInt(row['criticality_score'] ?? '5')
-      const criticalityScore = isNaN(rawScore) ? 5 : Math.min(10, Math.max(1, rawScore))
       const deviceTypeRaw = row['device_type']?.toLowerCase()
       const deviceType = (VALID_DEVICE_TYPES.has(deviceTypeRaw ?? '') ? deviceTypeRaw : 'unknown') as ParsedRow['deviceType']
       const isInternetFacing = row['is_internet_facing']?.toLowerCase() === 'true'
@@ -394,6 +480,13 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       if (row['open_ports']) {
         osInfo.ports = row['open_ports'].split(/[\s,]+/).map(p => p.trim()).filter(Boolean)
       }
+
+      const criticalityScore = computeAssetCriticality({
+        deviceType,
+        isInternetFacing,
+        hostname: row['hostname'] || undefined,
+        osInfo,
+      })
 
       parsed.push({
         rowNum: i + 1,
@@ -413,7 +506,6 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       return c.json({ imported: 0, updated: 0, errors })
     }
 
-    // ── Phase 2: find existing IPs in target tenant OR with null tenant ─
     const allIps = parsed.map(r => r.ipAddress)
     const ipInList = sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`
 
@@ -431,7 +523,6 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     const toInsert = parsed.filter(r => !existingMap.has(r.ipAddress))
     const toUpdate = parsed.filter(r => existingMap.has(r.ipAddress))
 
-    // ── Phase 3: batch INSERT all new rows (1 subrequest) ──────────
     if (toInsert.length > 0) {
       try {
         await db.insert(assets).values(
@@ -445,6 +536,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
             osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {},
             criticalityScore: r.criticalityScore,
             isInternetFacing: r.isInternetFacing,
+            source: 'manual' as const,
             tenantId: targetTenantId,
           }))
         )
@@ -454,7 +546,6 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       }
     }
 
-    // ── Phase 4: individual UPDATEs for existing assets (M subrequests) ─
     for (const r of toUpdate) {
       const assetId = existingMap.get(r.ipAddress)!
       try {
