@@ -79,7 +79,13 @@ export default function AssetsPage() {
     setGraphBlastId(prev => prev === assetId ? null : assetId)
   }
 
-  const icon = (t) => ({ server: '🖥️', workstation: '💻', network: '🌐', iot: '📡' }[t] || '❓')
+  const DEVICE_TYPE_META = {
+    server:      { icon: '🖥️', label: 'Server' },
+    workstation: { icon: '💻', label: 'Workstation' },
+    network:     { icon: '🌐', label: 'Network' },
+    iot:         { icon: '📡', label: 'IoT' },
+    unknown:     { icon: '❓', label: 'Unknown' },
+  }
   const getCriticalityMeta = (score) => {
     const s = Number(score)
     if (s >= 9) return { label: 'Critical', cls: 'bg-red-500/20 text-red-400 border-red-500/30' }
@@ -169,7 +175,17 @@ export default function AssetsPage() {
                 <tbody>
                   {assets.map((a) => (
                     <tr key={a.assetId}>
-                      <td>{icon(a.deviceType)}</td>
+                      <td>
+                        {(() => {
+                          const meta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
+                          return (
+                            <span className="flex items-center gap-1.5 whitespace-nowrap">
+                              <span className="text-base leading-none">{meta.icon}</span>
+                              <span className="text-xs text-dark-300">{meta.label}</span>
+                            </span>
+                          )
+                        })()}
+                      </td>
                       <td className="font-medium text-white">{a.hostname || '—'}</td>
                       <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
                       <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>

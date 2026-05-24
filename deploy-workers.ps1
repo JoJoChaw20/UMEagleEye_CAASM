@@ -24,6 +24,9 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
+# Explicitly set the Cloudflare Account ID for non-interactive deployments
+$env:CLOUDFLARE_ACCOUNT_ID = "6952d86b33a173095e02adcf78bc6fe1"
+
 function Write-Step { param([string]$msg) Write-Host "`n>>> $msg" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$msg) Write-Host "  [+] $msg" -ForegroundColor Green }
 function Write-Warn { param([string]$msg) Write-Host "  [!] $msg" -ForegroundColor Yellow }
@@ -134,7 +137,7 @@ Write-Host "  Workers   : $workersUrl" -ForegroundColor Cyan
 Write-Host "  API Docs  : $workersUrl/" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
-Write-Host "  1. Run database migrations: cd workers && npx drizzle-kit push" -ForegroundColor Yellow
+Write-Host "  1. Run database migrations: cd workers && npm run db:push" -ForegroundColor Yellow
 Write-Host "  2. Create your first superadmin: POST $workersUrl/api/v1/auth/register" -ForegroundColor Yellow
 Write-Host "  3. Register an EagleEye agent: POST $workersUrl/api/v1/agents" -ForegroundColor Yellow
 Write-Host ""

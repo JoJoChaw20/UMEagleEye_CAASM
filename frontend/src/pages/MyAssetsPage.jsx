@@ -700,7 +700,15 @@ export default function MyAssetsPage() {
                   <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
                   <td className="font-medium text-white">{a.hostname || '—'}</td>
                   <td className="criticality-col">
-                    <span className="text-xs text-dark-300 capitalize">{a.deviceType}</span>
+                    {(() => {
+                      const ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡', unknown: '❓' }
+                      return (
+                        <span className="flex items-center gap-1.5 whitespace-nowrap">
+                          <span className="text-base leading-none">{ICONS[a.deviceType] ?? '❓'}</span>
+                          <span className="text-xs text-dark-300 capitalize">{a.deviceType}</span>
+                        </span>
+                      )
+                    })()}
                   </td>
                   <td>
                     <EditableCell

@@ -350,7 +350,18 @@ export default function DiscoveryPage() {
     if (portNums.some(p => [3389, 445, 137, 138].includes(p))) deviceType = 'workstation'
     else if (portNums.some(p => [22, 80, 443, 3306, 5432, 6379, 27017, 8080, 8443].includes(p))) deviceType = 'server'
 
-    const osInfo = host.os && typeof host.os === 'object' ? host.os : (host.os ? { name: String(host.os) } : {})
+    // Build os_info — preserve OS object AND include ports so the backend
+    // criticality formula uses the same port risk that was shown on the discovery panel.
+    const osInfo = host.os && typeof host.os === 'object'
+      ? { ...host.os }
+      : (host.os ? { name: String(host.os) } : {})
+
+    // Normalise ports to "port/protocol" strings that computeCriticality can parse
+    if (host.ports && host.ports.length > 0) {
+      osInfo.ports = host.ports.map(p =>
+        typeof p === 'object' ? `${p.port}/${p.protocol || 'tcp'}` : String(p)
+      )
+    }
 
     try {
       await client.post('/assets', {

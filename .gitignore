@@ -33,6 +33,8 @@ workers/node_modules/
 frontend/dist/
 workers/dist/
 frontend/.env.production
+frontend/.env.local
+.env.local
 .tunnel-url
 .tunnel-pid
 
