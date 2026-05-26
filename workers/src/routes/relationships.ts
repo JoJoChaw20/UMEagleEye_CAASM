@@ -30,7 +30,9 @@ function getSubnet(ip: string): string {
 }
 
 async function getTenantAssetIds(db: ReturnType<typeof getDb>, tenantId: string): Promise<string[]> {
-  const rows = await db.select({ assetId: assets.assetId }).from(assets).where(eq(assets.tenantId, tenantId))
+  const rows = await db.select({ assetId: assets.assetId }).from(assets).where(
+    and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual'))
+  )
   return rows.map(r => r.assetId)
 }
 
@@ -64,8 +66,8 @@ app.get('/graph', authMiddleware, async (c) => {
     }
 
     const rawNodes = tenantScopeId
-      ? await db.select().from(assets).where(eq(assets.tenantId, tenantScopeId))
-      : await db.select().from(assets)
+      ? await db.select().from(assets).where(and(eq(assets.tenantId, tenantScopeId), eq(assets.source, 'manual')))
+      : await db.select().from(assets).where(eq(assets.source, 'manual'))
 
     const rawEdges = allowedAssetIds !== null
       ? await db.select().from(assetRelationships).where(
@@ -234,7 +236,9 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
     )
   )
 
-  const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
+  const tenantAssets = await db.select().from(assets).where(
+    and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual'))
+  )
 
   const subnetGroups = new Map<string, AssetRow[]>()
   for (const a of tenantAssets) {

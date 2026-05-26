@@ -1,5 +1,6 @@
 name = "umeagleeye-api"
 main = "src/index.ts"
+account_id = "6952d86b33a173095e02adcf78bc6fe1"
 compatibility_date = "2024-10-01"
 compatibility_flags = ["nodejs_compat"]
 

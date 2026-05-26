@@ -10,11 +10,38 @@ import { scanResults, agents, assets } from '../db/schema'
 // ── Ingest helpers ───────────────────────────────────────────────
 type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
 
-function inferDeviceType(ports: NmapPort[]): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
+// ── Real-time MAC vendor lookup (api.macvendors.com) ────────────────────────
+// Resolves the hardware vendor name from a MAC address at scan time.
+// Returns null on error, rate limit, or unknown MAC — non-fatal.
+async function fetchMacVendor(mac: string | null | undefined): Promise<string | null> {
+  if (!mac) return null
+  try {
+    // Normalise: strip extra chars, keep first 6 hex digits (OUI)
+    const clean = mac.replace(/[^0-9a-fA-F]/g, '').substring(0, 6)
+    if (clean.length < 6) return null
+    const res = await fetch(`https://api.macvendors.com/${encodeURIComponent(clean)}`, {
+      headers: { 'User-Agent': 'EagleEye-CAASM/2.0' },
+      signal: AbortSignal.timeout(4000),  // 4s timeout per lookup
+    })
+    if (!res.ok) return null  // 404 = unknown, 429 = rate limited
+    const vendor = (await res.text()).trim()
+    return vendor || null
+  } catch {
+    return null  // network error, timeout — always non-fatal
+  }
+}
+
+function inferDeviceType(ports: NmapPort[], ip?: string): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
+  // Gateway IPs (ending in .1 or .254) are always network devices
+  if (ip) {
+    const last = ip.split('.').pop()
+    if (last === '1' || last === '254') return 'network'
+  }
   const text = ports.map(p => `${p.product ?? ''} ${p.service ?? ''}`).join(' ').toLowerCase()
   if (/busybox|router|cisco|juniper|aruba|mikrotik|ubiquiti|fortigate|panos|snmp/.test(text)) return 'network'
   if (/rdp|remote.desktop/.test(text) || ports.some(p => p.port === 3389)) return 'workstation'
   if (ports.some(p => [22, 80, 443, 3306, 5432, 8080, 8443, 6379, 27017, 1433].includes(p.port))) return 'server'
+  // No port signal and no OUI table — LLM will use mac_vendor field for final classification
   return 'unknown'
 }
 
@@ -116,19 +143,49 @@ app.get('/pending', async (c) => {
 })
 
 // ── POST /active ─────────────────────────────────────────────────
+// Subnet validation helpers (mirrors frontend logic)
+function isValidIpv4(ip: string): boolean {
+  return /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/.test(ip)
+}
+
+function isValidSubnet(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  const [ip, prefix] = trimmed.split('/')
+  if (!isValidIpv4(ip)) return false
+  if (prefix !== undefined) {
+    const num = Number(prefix)
+    if (!Number.isInteger(num) || num < 0 || num > 32) return false
+  }
+  return true
+}
+
 const activeScanSchema = z.object({
-  subnet: z.string().optional(),
+  subnet: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === 'arp-discovery' || isValidSubnet(v), {
+      message: 'Invalid subnet — must be a valid IPv4 address or CIDR range (e.g. 192.168.1.0/24)',
+    }),
   agent_id: z.string().uuid().optional(),
   tenant_id: z.string().uuid().nullable().optional(),
+  scan_type: z.enum(['active', 'passive']).optional().default('active'),
 })
 
-app.post('/active', authMiddleware, zValidator('json', activeScanSchema), async (c) => {
+app.post('/active', authMiddleware, zValidator('json', activeScanSchema, (result, c) => {
+  if (!result.success) {
+    const firstIssue = result.error.issues[0]
+    const detail = firstIssue?.message ?? 'Invalid request body'
+    return c.json({ detail }, 400)
+  }
+}), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
-    const { subnet, agent_id, tenant_id } = c.req.valid('json')
+    const { subnet, agent_id, tenant_id, scan_type } = c.req.valid('json')
 
-    const effectiveSubnet = subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24'
+    const effectiveScanType = scan_type ?? 'active'
+    const effectiveSubnet = effectiveScanType === 'passive' ? 'arp-discovery' : (subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24')
 
     // Derive tenant: explicit body > agent's tenant > user's tenant
     let effectiveTenantId = tenant_id !== undefined ? tenant_id : (user.tenantId ?? null)
@@ -137,12 +194,15 @@ app.post('/active', authMiddleware, zValidator('json', activeScanSchema), async 
       if (agent?.tenantId) effectiveTenantId = agent.tenantId
     }
 
+    // Passive scans are ARP-driven on the agent side — they run continuously
+    // via the --passive flag. Triggering one from the UI just creates a record
+    // so the dashboard shows it; no nmap dispatch is needed.
     const scanRows = await db
       .insert(scanResults)
       .values({
         agentId: agent_id ?? null,
         tenantId: effectiveTenantId,
-        scanType: 'active',
+        scanType: effectiveScanType,
         subnet: effectiveSubnet,
         status: 'pending',
         hostsDiscovered: 0,
@@ -157,7 +217,8 @@ app.post('/active', authMiddleware, zValidator('json', activeScanSchema), async 
 
     // Notify agent via Telegram if agent_id is provided
     if (agent_id && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID) {
-      const message = `Scan Dispatched\nScan ID: ${scan.scanId}\nSubnet: ${effectiveSubnet}\nAgent: ${agent_id}\nTriggered by: ${user.username}`
+      const mode = effectiveScanType === 'passive' ? 'Passive (ARP)' : 'Active (Nmap)'
+      const message = `Scan Dispatched\nMode: ${mode}\nScan ID: ${scan.scanId}\nSubnet: ${effectiveSubnet}\nAgent: ${agent_id}\nTriggered by: ${user.username}`
       fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -169,7 +230,11 @@ app.post('/active', authMiddleware, zValidator('json', activeScanSchema), async 
       }).catch((err) => console.error('Telegram notify error:', err))
     }
 
-    return c.json({ scan_id: scan.scanId, status: 'pending', message: 'Scan dispatched to agent' }, 202)
+    const message = effectiveScanType === 'passive'
+      ? 'Passive scan registered — agent will flush ARP discoveries to this record'
+      : 'Scan dispatched to agent'
+
+    return c.json({ scan_id: scan.scanId, status: scan.status, scan_type: effectiveScanType, message }, 202)
   } catch (err) {
     console.error('scans POST /active error:', err)
     return c.json({ detail: 'Failed to initiate scan' }, 500)
@@ -187,7 +252,8 @@ const hostSchema = z.object({
 
 const ingestSchema = z.object({
   agent_id: z.string().uuid(),
-  scan_id: z.string().uuid(),
+  scan_id: z.string().uuid().optional(),   // optional for passive auto-ingest
+  scan_type: z.enum(['active', 'passive']).optional().default('active'),
   hosts: z.array(hostSchema),
 })
 
@@ -204,7 +270,8 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const incomingKey = authHeader.slice(7)
     const incomingKeyHash = await sha256Hex(incomingKey)
 
-    const { agent_id, scan_id, hosts } = c.req.valid('json')
+    const { agent_id, scan_id, scan_type, hosts } = c.req.valid('json')
+    const isPassive = scan_type === 'passive'
 
     // Fetch agent and verify API key hash
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
@@ -224,17 +291,186 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
       .set({ status: 'online', lastHeartbeat: new Date() })
       .where(eq(agents.agentId, agent_id))
 
-    // Verify scan exists
-    const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
-    if (!scan) {
-      return c.json({ detail: 'Scan not found' }, 404)
+    const tenantId = agent.tenantId
+
+    // ── Pre-fetch existing asset records to stabilise LLM context ──
+    // For each discovered host, look up its existing DB record (if any).
+    // We pass existing description/deviceType to the LLM so it doesn't
+    // flip-flop between scans when port data is sparse or missing.
+    const existingAssetMap: Map<string, { deviceType: string; description: string | null }> = new Map()
+    for (const host of hosts) {
+      try {
+        const conds = [eq(assets.ipAddress, host.ip)]
+        if (tenantId) conds.push(eq(assets.tenantId, tenantId))
+        const [found] = await getDb(c.env.DATABASE_URL)
+          .select({ deviceType: assets.deviceType, description: assets.description })
+          .from(assets)
+          .where(and(...conds))
+          .limit(1)
+        if (found) existingAssetMap.set(host.ip, found)
+      } catch { /* non-fatal */ }
     }
 
-    const tenantId = agent.tenantId
+    // ── Resolve MAC vendor names in real-time (parallel, non-blocking) ──
+    // Fetches the actual vendor string (e.g. "TP-Link Technologies Co. Ltd.")
+    // from api.macvendors.com for each host. This replaces any static OUI table
+    // and gives the LLM genuine, up-to-date manufacturer context.
+    const macVendorMap: Map<string, string | null> = new Map()
+    await Promise.all(
+      hosts.map(async (h) => {
+        const vendor = await fetchMacVendor(h.mac as string | null)
+        macVendorMap.set(h.ip, vendor)
+      })
+    )
+
+    // ── LLM Asset Suggestion (DeepSeek via OpenRouter) ──
+    let enhancedHosts = [...hosts]
+    if (hosts.length > 0 && c.env.OPENROUTER_API_KEY) {
+      try {
+        // Build enriched payload: real vendor name + existing DB context
+        const payload = hosts.map(h => {
+          const existing = existingAssetMap.get(h.ip)
+          return {
+            ip: h.ip,
+            mac: h.mac,
+            mac_vendor: macVendorMap.get(h.ip) ?? null,  // e.g. "TP-Link Technologies Co. Ltd."
+            os: h.os,
+            ports: h.ports,
+            existing_device_type: existing?.deviceType ?? null,   // from prior active scan
+            existing_description: existing?.description ?? null,  // previously AI-generated
+          }
+        })
+
+        const systemPrompt = `You are a CAASM security analyst. Analyze these discovered network hosts.
+You MUST return a JSON object with a single root key "hosts" containing an array of objects. Each object MUST have exactly these keys:
+"ip": the host's IP address
+"description": A concise, specific description of the device (e.g., "TP-Link Router", "Windows 10 Workstation", "Raspberry Pi IoT Device", "Ubuntu Server"). Use the mac_vendor field when available to name the brand.
+"suggestion": One of exactly: "Accept - Corporate Device", "Ignore - Personal Device", or "Investigate - Unknown"
+
+Rules for consistent output:
+- If "existing_description" is provided and non-null, PRESERVE it unless the new scan data clearly contradicts it.
+- If "existing_device_type" is "network", the suggestion should lean toward "Accept - Corporate Device".
+- "mac_vendor" is the real manufacturer name from a live lookup — use it as the primary device-type signal when no port data exists.
+- Gateway IPs (ending in .1 or .254) are ALWAYS network infrastructure — use "Accept - Corporate Device".
+- Only use "Investigate - Unknown" when there is genuinely NO identifying information (no vendor, no ports, no existing record).
+
+Example:
+{ "hosts": [ { "ip": "192.168.0.1", "description": "TP-Link Home Router", "suggestion": "Accept - Corporate Device" } ] }`
+
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${c.env.OPENROUTER_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: c.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: JSON.stringify(payload) }
+            ],
+            response_format: { type: 'json_object' }
+          })
+        })
+
+        if (res.ok) {
+          const data = await res.json() as any
+          let content = data.choices?.[0]?.message?.content || '[]'
+
+          // Robust JSON extraction: find first [ or { and last ] or }
+          const firstBrace = content.indexOf('{')
+          const firstBracket = content.indexOf('[')
+          const lastBrace = content.lastIndexOf('}')
+          const lastBracket = content.lastIndexOf(']')
+
+          let startIdx = -1
+          let endIdx = -1
+
+          if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+            startIdx = firstBracket
+            endIdx = lastBracket
+          } else if (firstBrace !== -1) {
+            startIdx = firstBrace
+            endIdx = lastBrace
+          }
+
+          if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+            content = content.substring(startIdx, endIdx + 1)
+          }
+
+          try {
+            const parsed = JSON.parse(content)
+            if (Array.isArray(parsed) && parsed.length > 0 && !Array.isArray(parsed[0])) {
+              const parsedArray = parsed
+              enhancedHosts = hosts.map(h => {
+                const match = parsedArray.find((p: any) => p.ip?.trim() === h.ip?.trim())
+                return match ? { ...h, description: match.description, suggestion: match.suggestion } : h
+              })
+            } else if (parsed && Array.isArray(parsed.hosts)) {
+              enhancedHosts = hosts.map(h => {
+                const match = parsed.hosts.find((p: any) => p.ip?.trim() === h.ip?.trim())
+                return match ? { ...h, description: match.description, suggestion: match.suggestion } : h
+              })
+            }
+          } catch (parseErr) {
+            console.error('Failed to parse LLM JSON:', parseErr, 'Raw content:', content)
+          }
+        } else {
+          console.error('OpenRouter API returned error:', res.status)
+        }
+      } catch (err) {
+        console.error('LLM asset suggestion failed:', err)
+      }
+
+      // Fallback: if LLM produced no description/suggestion, use a deterministic fallback
+      enhancedHosts = enhancedHosts.map(h => {
+        if (!h.description) {
+          const existing = existingAssetMap.get(h.ip)
+          const vendor = macVendorMap.get(h.ip)
+          h.description = existing?.description
+            ?? (vendor ? `${vendor} Device` : 'AI analysis could not be generated for this asset.')
+        }
+        if (!h.suggestion) {
+          const existing = existingAssetMap.get(h.ip)
+          const last = h.ip.split('.').pop()
+          const isGateway = last === '1' || last === '254'
+          h.suggestion = isGateway ? 'Accept - Corporate Device'
+            : (existing ? 'Accept - Corporate Device' : 'Investigate - Unknown')
+        }
+        return h
+      })
+    }
+
+    // Resolve scan record: use provided scan_id, or auto-create one for passive
+    let effectiveScanId: string
+    if (scan_id) {
+      const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
+      if (!scan) return c.json({ detail: 'Scan not found' }, 404)
+      effectiveScanId = scan_id
+    } else if (isPassive) {
+      // Auto-create a passive scan record so results appear in the dashboard
+      const [newScan] = await db
+        .insert(scanResults)
+        .values({
+          agentId: agent_id,
+          tenantId: tenantId ?? null,
+          scanType: 'passive',
+          subnet: 'arp-discovery',
+          status: 'completed',
+          hostsDiscovered: enhancedHosts.length,
+          rawResults: enhancedHosts,
+          completedAt: new Date(),
+        })
+        .returning()
+      if (!newScan) return c.json({ detail: 'Failed to create passive scan record' }, 500)
+      effectiveScanId = newScan.scanId
+    } else {
+      return c.json({ detail: 'scan_id is required for active scans' }, 400)
+    }
 
     // Upsert assets for each discovered host
     const upsertedAssetIds: string[] = []
-    for (const host of hosts) {
+    for (const host of enhancedHosts) {
       // Check if asset with this IP already exists in this tenant
       const conditions = [eq(assets.ipAddress, host.ip)]
       if (tenantId) {
@@ -248,7 +484,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
         .limit(1)
 
       const ports = (host.ports ?? []) as NmapPort[]
-      const deviceType = inferDeviceType(ports)
+      const deviceType = inferDeviceType(ports, host.ip)
       const osInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports)
       const internetFacing = isGatewayIp(host.ip)
 
@@ -277,58 +513,106 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
         const updatedId = updatedRows[0]?.assetId
         if (updatedId) upsertedAssetIds.push(updatedId)
       } else {
-        const critScore = computeCriticality(deviceType, internetFacing, ports, null)
-        const createdRows = await db
+        const critScore = computeCriticality(deviceType, internetFacing, ports)
+        const insertedRows = await db
           .insert(assets)
           .values({
+            tenantId: tenantId || null,
             ipAddress: host.ip,
             hostname: host.hostname ?? null,
             macAddress: host.mac ?? null,
-            osInfo,
-            tenantId: tenantId ?? null,
             deviceType,
+            osInfo,
             isInternetFacing: internetFacing,
             criticalityScore: critScore,
-            source: 'scan_active',
+            source: isPassive ? 'scan_passive' : 'scan_active',
             lastScanned: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
           })
           .returning({ assetId: assets.assetId })
-
-        const createdId = createdRows[0]?.assetId
-        if (createdId) upsertedAssetIds.push(createdId)
+        const insertedId = insertedRows[0]?.assetId
+        if (insertedId) upsertedAssetIds.push(insertedId)
       }
     }
 
-    // Update scan result
-    await db
-      .update(scanResults)
-      .set({
-        status: 'completed',
-        hostsDiscovered: hosts.length,
-        rawResults: hosts,
-        completedAt: new Date(),
-      })
-      .where(eq(scanResults.scanId, scan_id))
+    // Update active scan result (passive scan record was already written above)
+    if (!isPassive) {
+      await db
+        .update(scanResults)
+        .set({
+          status: 'completed',
+          hostsDiscovered: enhancedHosts.length,
+          rawResults: enhancedHosts,
+          completedAt: new Date(),
+        })
+        .where(eq(scanResults.scanId, effectiveScanId))
+    } else {
+      // Update host count in case it was pre-created with 0
+      await db
+        .update(scanResults)
+        .set({ hostsDiscovered: enhancedHosts.length })
+        .where(eq(scanResults.scanId, effectiveScanId))
+    }
 
     // Trigger drift check advisory for each asset
     for (const assetId of upsertedAssetIds) {
       await c.env.ADVISORY_QUEUE.send({
         type: 'drift_check',
         assetId,
-        scanId: scan_id,
+        scanId: effectiveScanId,
         agentId: agent_id,
       })
     }
 
     return c.json({
       message: 'Scan results ingested',
-      scan_id,
+      scan_id: effectiveScanId,
+      scan_type: isPassive ? 'passive' : 'active',
       hosts_discovered: hosts.length,
       assets_upserted: upsertedAssetIds.length,
     })
   } catch (err) {
     console.error('scans POST /ingest error:', err)
     return c.json({ detail: 'Failed to ingest scan results' }, 500)
+  }
+})
+
+// ── POST /fail ───────────────────────────────────────────────────
+app.post('/fail', async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ detail: 'Missing or invalid Authorization header' }, 401)
+    }
+
+    const incomingKey = authHeader.slice(7)
+    const incomingKeyHash = await sha256Hex(incomingKey)
+
+    const { agent_id, scan_id } = await c.req.json()
+
+    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
+
+    if (!agent) {
+      return c.json({ detail: 'Agent not found' }, 401)
+    }
+
+    if (incomingKeyHash !== agent.apiKeyHash) {
+      return c.json({ detail: 'Invalid API key' }, 401)
+    }
+
+    if (scan_id) {
+      await db
+        .update(scanResults)
+        .set({ status: 'failed', completedAt: new Date() })
+        .where(eq(scanResults.scanId, scan_id))
+    }
+
+    return c.json({ message: 'Scan marked as failed' })
+  } catch (err) {
+    console.error('scans POST /fail error:', err)
+    return c.json({ detail: 'Failed to mark scan as failed' }, 500)
   }
 })
 

@@ -172,11 +172,26 @@ class ArpSniffer:
     def drain(self) -> list[dict[str, Any]]:
         """Return all discovered hosts since last drain and clear the buffer."""
         with self._lock:
-            hosts = [
-                {"ip": ip, "mac": info["mac"], "hostname": None, "ports": [], "os": None}
-                for ip, info in self._seen.items()
-            ]
+            snapshot = dict(self._seen)
             self._seen.clear()
+
+        hosts = []
+        for ip, info in snapshot.items():
+            # Best-effort reverse DNS — gives the LLM/backend a hostname hint
+            hostname: Optional[str] = None
+            try:
+                result = socket.gethostbyaddr(ip)
+                hostname = result[0] if result[0] != ip else None
+            except (socket.herror, socket.gaierror, OSError):
+                pass  # non-fatal — leave hostname as None
+
+            hosts.append({
+                "ip":       ip,
+                "mac":      info["mac"],
+                "hostname": hostname,
+                "ports":    [],
+                "os":       None,
+            })
         return hosts
 
 
@@ -235,7 +250,7 @@ class AgentClient:
             "scan_type": "active",
             "hosts":     hosts,
         }
-        return self._post_ingest(payload, label=f"active scan {scan_id[:8]}…")
+        return self._post_ingest(payload, label=f"active scan {scan_id[:8]}…", scan_id=scan_id)
 
     def ingest_passive(self, hosts: list[dict]) -> bool:
         """Ingest passively discovered hosts — backend auto-creates the scan record."""
@@ -248,11 +263,11 @@ class AgentClient:
         }
         return self._post_ingest(payload, label=f"passive ({len(hosts)} host(s))")
 
-    def _post_ingest(self, payload: dict, label: str) -> bool:
+    def _post_ingest(self, payload: dict, label: str, scan_id: str = None) -> bool:
         try:
             resp = self.session.post(
                 f"{self.api_url}/scans/ingest",
-                data=json.dumps(payload), timeout=30,
+                data=json.dumps(payload), timeout=120,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -264,6 +279,15 @@ class AgentClient:
             return True
         except requests.RequestException as e:
             log.error(f"Failed to ingest {label}: {e}")
+            if scan_id:
+                try:
+                    self.session.post(
+                        f"{self.api_url}/scans/fail",
+                        data=json.dumps({"agent_id": self.agent_id, "scan_id": scan_id}),
+                        timeout=10,
+                    )
+                except Exception:
+                    pass
             return False
 
 
@@ -274,19 +298,6 @@ def _heartbeat_thread(client: AgentClient, interval: int) -> None:
     while True:
         time.sleep(interval)
         client.send_heartbeat()
-
-
-def _passive_flush_thread(client: AgentClient, sniffer: ArpSniffer, interval: int) -> None:
-    """Periodically drain the ARP sniffer buffer and ingest discovered hosts."""
-    log.info(f"Passive flush thread started (interval={interval}s)")
-    while True:
-        time.sleep(interval)
-        hosts = sniffer.drain()
-        if hosts:
-            log.info(f"Passive ARP: flushing {len(hosts)} host(s)")
-            client.ingest_passive(hosts)
-        else:
-            log.debug("Passive ARP: no new hosts this interval")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -348,13 +359,7 @@ def main():
     if args.passive:
         sniffer = ArpSniffer(interface=args.passive_interface or None)
         started = sniffer.start()
-        if started:
-            threading.Thread(
-                target=_passive_flush_thread,
-                args=(client, sniffer, args.passive_interval),
-                daemon=True, name="passive-flush",
-            ).start()
-        else:
+        if not started:
             log.warning("Passive ARP could not start — running in active-only mode")
 
     # Active scan poll loop
@@ -364,11 +369,33 @@ def main():
             if pending:
                 log.info(f"Found {len(pending)} pending scan(s)")
                 for scan in pending:
-                    scan_id = scan.get("scan_id") or scan.get("scanId")
-                    subnet  = scan.get("subnet", "192.168.1.0/24")
-                    log.info(f"Processing scan {scan_id[:8]}… subnet={subnet}")
-                    hosts = run_nmap(subnet)
-                    client.ingest_results(scan_id, hosts)
+                    scan_id   = scan.get("scan_id") or scan.get("scanId")
+                    subnet    = scan.get("subnet", "192.168.1.0/24")
+                    scan_type = scan.get("scan_type") or scan.get("scanType") or "active"
+
+                    if scan_type == "passive":
+                        # Passive scan: flush whatever ARP has seen so far
+                        log.info(f"Processing PASSIVE scan {scan_id[:8]}… draining ARP sniffer")
+                        if args.passive and 'sniffer' in dir():
+                            hosts = sniffer.drain()
+                            if hosts:
+                                log.info(f"Flushed {len(hosts)} ARP host(s) for passive scan")
+                                client.ingest_results(scan_id, hosts)
+                            else:
+                                log.warning(
+                                    f"Passive scan {scan_id[:8]}: ARP sniffer has no hosts yet — "
+                                    "wait for devices to broadcast ARP or try again later"
+                                )
+                        else:
+                            log.warning(
+                                f"Passive scan {scan_id[:8]} requested but agent is not running "
+                                "in passive mode. Restart the agent with --passive to enable ARP sniffing."
+                            )
+                    else:
+                        # Active scan: run nmap
+                        log.info(f"Processing ACTIVE scan {scan_id[:8]}… subnet={subnet}")
+                        hosts = run_nmap(subnet)
+                        client.ingest_results(scan_id, hosts)
             else:
                 log.debug("No pending scans")
         except KeyboardInterrupt:

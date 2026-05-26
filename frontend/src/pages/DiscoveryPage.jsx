@@ -53,6 +53,25 @@ function formatPorts(ports) {
 }
 
 // ── New Scan Modal ────────────────────────────────────────────────
+// Validates a single IPv4 address (e.g. 192.168.0.1)
+function isValidIpv4(ip) {
+  return /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/.test(ip)
+}
+
+// Validates a subnet: either a plain IPv4 or an IPv4 CIDR (e.g. 192.168.1.0/24)
+function validateSubnet(value) {
+  const trimmed = value.trim()
+  if (!trimmed) return 'Target subnet is required'
+  const [ip, prefix] = trimmed.split('/')
+  if (!isValidIpv4(ip)) return 'Invalid IP address format (e.g. 192.168.1.0 or 192.168.1.0/24)'
+  if (prefix !== undefined) {
+    const num = Number(prefix)
+    if (!Number.isInteger(num) || num < 0 || num > 32)
+      return 'CIDR prefix must be between 0 and 32 (e.g. /24)'
+  }
+  return null // valid
+}
+
 function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
   const [subnet, setSubnet] = useState(import.meta.env.VITE_SCAN_DEFAULT_SUBNET || '192.168.1.0/24')
   const [agentId, setAgentId] = useState('')
@@ -60,6 +79,13 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
   const [tenantId, setTenantId] = useState(userTenantId || (tenants.length === 1 ? tenants[0].tenant_id : ''))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const [subnetError, setSubnetError] = useState(null)
+
+  const handleSubnetChange = (e) => {
+    const val = e.target.value
+    setSubnet(val)
+    setSubnetError(validateSubnet(val))
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -79,10 +105,18 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
     }
 
     try {
-      await onSubmit({ subnet, agent_id: effectiveAgentId, scan_type: scanType, tenant_id: tenantId || undefined })
+      const finalSubnet = scanType === 'passive' ? 'arp-discovery' : subnet
+      await onSubmit({ subnet: finalSubnet, agent_id: effectiveAgentId, scan_type: scanType, tenant_id: tenantId || undefined })
       onClose()
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to start scan')
+      const data = err?.response?.data
+      // Extract the most useful message: detail → first Zod issue → raw message → fallback
+      const reason =
+        data?.detail ||
+        data?.error?.issues?.[0]?.message ||
+        err?.message ||
+        'Failed to start scan. Please check your input and try again.'
+      setError(reason)
     } finally {
       setSubmitting(false)
     }
@@ -101,17 +135,24 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
         {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">Target Subnet</label>
-            <input
-              type="text"
-              value={subnet}
-              onChange={(e) => setSubnet(e.target.value)}
-              placeholder="192.168.1.0/24"
-              className="input-field w-full text-sm"
-              required
-            />
-          </div>
+          {scanType === 'active' && (
+            <div>
+              <label className="block text-xs text-dark-400 mb-1">Target Subnet</label>
+              <input
+                type="text"
+                value={subnet}
+                onChange={handleSubnetChange}
+                placeholder="192.168.1.0/24"
+                className={`input-field w-full text-sm ${subnetError ? 'border-red-500/60 focus:border-red-500' : ''}`}
+                required
+              />
+              {subnetError && (
+                <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                  <span>⚠</span> {subnetError}
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="block text-xs text-dark-400 mb-1">
@@ -156,7 +197,11 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
 
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
-            <button type="submit" disabled={submitting} className="btn-primary flex-1 text-sm flex items-center justify-center gap-2">
+            <button
+              type="submit"
+              disabled={submitting || (scanType === 'active' && !!subnetError)}
+              className="btn-primary flex-1 text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               {submitting ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Wifi className="w-4 h-4" />}
               Start Scan
             </button>
@@ -201,9 +246,16 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
           </button>
         </div>
 
-        <div className="px-4 py-2.5 border-b border-dark-700/30 bg-dark-800/30">
-          <p className="text-xs text-dark-400 leading-relaxed">
-            Review discovered hosts. Click <span className="text-white font-medium">Accept</span> to add to inventory, or <span className="text-white font-medium">Update</span> to refresh an already-inventoried asset with new scan data.
+        <div className="px-4 py-3 border-b border-dark-700/30 bg-dark-800/50 space-y-3">
+          <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
+            <span className="text-base leading-none">💡</span>
+            <p className="text-xs leading-relaxed">
+              <span className="font-semibold block mb-0.5">Selective Inventory Recommended</span>
+              Avoid adding every discovered host blindly. Only <strong>Accept</strong> devices that are relevant to your organization (e.g., servers, company workstations, infrastructure). Ignore personal phones, smart TVs, or guest devices.
+            </p>
+          </div>
+          <p className="text-xs text-dark-400 px-1">
+            Click <span className="text-white font-medium">Accept</span> to track an asset, or <span className="text-white font-medium">Update</span> to refresh an already-inventoried asset with new scan data.
           </p>
         </div>
 
@@ -259,6 +311,19 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
                           <span>Ports:</span>{' '}
                           <span className="font-mono text-dark-400">{portsLabel}</span>
                         </p>
+                      )}
+
+                      {host.description && (
+                        <div className="pt-1.5 mt-1.5 border-t border-dark-700/50">
+                          <p className="text-xs text-dark-300">
+                            <span className="text-accent-cyan/80 font-medium">AI Analysis:</span> {host.description}
+                          </p>
+                          {host.suggestion && (
+                            <p className={`text-xs mt-0.5 ${host.suggestion.toLowerCase().includes('accept') ? 'text-green-400' : host.suggestion.toLowerCase().includes('ignore') ? 'text-yellow-500' : 'text-blue-400'}`}>
+                              <span className="font-medium">Recommendation:</span> {host.suggestion}
+                            </p>
+                          )}
+                        </div>
                       )}
                     </div>
 
@@ -362,6 +427,9 @@ export default function DiscoveryPage() {
         typeof p === 'object' ? `${p.port}/${p.protocol || 'tcp'}` : String(p)
       )
     }
+
+    if (host.description) osInfo.ai_description = host.description
+    if (host.suggestion) osInfo.ai_suggestion = host.suggestion
 
     try {
       await client.post('/assets', {

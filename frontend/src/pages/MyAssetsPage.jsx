@@ -698,7 +698,15 @@ export default function MyAssetsPage() {
               {filtered.map((a) => (
                 <tr key={a.assetId}>
                   <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
-                  <td className="font-medium text-white">{a.hostname || '—'}</td>
+                  <td>
+                    <div className="font-medium text-white">{a.hostname || '—'}</div>
+                    {a.osInfo?.ai_description && (
+                      <div className="text-xs text-dark-300 mt-1 max-w-[200px] sm:max-w-[300px]" title={a.osInfo.ai_description}>
+                        <span className="text-eagle-400/80 font-medium mr-1">AI:</span> 
+                        {a.osInfo.ai_description}
+                      </div>
+                    )}
+                  </td>
                   <td className="criticality-col">
                     {(() => {
                       const ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡', unknown: '❓' }

@@ -106,10 +106,6 @@ export default function AssetsPage() {
             {activeTenantName && <span className="ml-2 text-eagle-400">· {activeTenantName}</span>}
           </p>
         </div>
-        <button onClick={triggerScan} disabled={scanning} className="btn-primary flex items-center gap-2" id="scan-btn">
-          {scanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Wifi className="w-4 h-4" />}
-          {scanning ? 'Scanning...' : 'Active Scan'}
-        </button>
       </div>
 
       {/* Tab Toggle + shared Tenant Filter */}

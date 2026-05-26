@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -321,7 +321,12 @@ router.post(
 
       const allTenants = await db.select().from(tenants)
       for (const tenant of allTenants) {
-        const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenant.tenantId))
+        const tenantAssets = await db.select().from(assets).where(
+          and(
+            eq(assets.tenantId, tenant.tenantId),
+            eq(assets.source, 'manual')
+          )
+        )
         const count = await inferForTenant(db, tenantAssets, tenant.tenantId)
         if (count > 0) tenantsProcessed++
         totalNodes += count
@@ -329,7 +334,12 @@ router.post(
     } else {
       // Clear and re-infer for this tenant only
       await db.delete(topologyNodes).where(eq(topologyNodes.tenantId, user.tenantId!))
-      const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, user.tenantId!))
+      const tenantAssets = await db.select().from(assets).where(
+        and(
+          eq(assets.tenantId, user.tenantId!),
+          eq(assets.source, 'manual')
+        )
+      )
       totalNodes = await inferForTenant(db, tenantAssets, user.tenantId!)
       tenantsProcessed = 1
     }
