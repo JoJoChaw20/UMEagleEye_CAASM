@@ -1,35 +1,43 @@
 #!/usr/bin/env python3
 """
-EagleEye Agent — active + passive network scanner for UMEagleEye CAASM platform.
+EagleEye Agent v1.3.0 — active + passive network scanner for UMEagleEye CAASM platform.
 
-Active mode  : polls the backend for pending scans, runs Nmap, and POSTs results.
-Passive mode : sniffs ARP broadcasts continuously; discovered hosts are ingested
-               every --passive-interval seconds without requiring a prior scan dispatch.
+Active mode  : polls the backend for pending scans, runs Nmap (with NSE scripts for
+               richer OS/service identification), and POSTs results.
 
-A background thread sends heartbeats every --heartbeat-interval seconds so the
-dashboard shows the agent as online even between scans.
+Passive mode : runs three parallel sniffers — ARP (host discovery), mDNS/NetBIOS-NS
+               (hostname resolution), DHCP (device fingerprinting) — all non-blocking
+               daemon threads with separate BPF filters.  Discovered hosts are enriched
+               and ingested every --passive-interval seconds.
+
+Merge priority (never downgrades existing data):
+  hostname : mDNS/NetBIOS > DHCP option-12 > reverse-DNS
+  os hint  : Fingerbank device > DHCP vendor class hint (merged additive, never replace)
 
 Usage:
-    python eagleeye_agent.py \
-        --api-url https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
-        --api-key <key-from-dashboard> \
+    python eagleeye_agent.py \\
+        --api-url https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \\
+        --api-key <key-from-dashboard> \\
         --agent-id <uuid-from-dashboard>
 
-    # With passive ARP sniffing enabled:
-    python eagleeye_agent.py \
-        --api-url ... --api-key ... --agent-id ... \
-        --passive [--passive-interface eth0] [--passive-interval 60]
+    # With full passive suite enabled:
+    python eagleeye_agent.py \\
+        --api-url ... --api-key ... --agent-id ... \\
+        --passive [--passive-interface eth0] [--passive-interval 60] \\
+        [--fingerbank-key <free-key-from-fingerbank.org>]
 
 Or via environment variables:
     EAGLEEYE_API_URL, EAGLEEYE_API_KEY, EAGLEEYE_AGENT_ID,
     EAGLEEYE_POLL_INTERVAL, EAGLEEYE_HEARTBEAT_INTERVAL,
-    EAGLEEYE_PASSIVE, EAGLEEYE_PASSIVE_INTERFACE, EAGLEEYE_PASSIVE_INTERVAL
+    EAGLEEYE_PASSIVE, EAGLEEYE_PASSIVE_INTERFACE, EAGLEEYE_PASSIVE_INTERVAL,
+    EAGLEEYE_FINGERBANK_KEY
 """
 
 import argparse
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -46,48 +54,108 @@ logging.basicConfig(
 )
 log = logging.getLogger("eagleeye")
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 
-# ── Active scanning: Nmap ─────────────────────────────────────────────────────
+# ── Active scanning: Nmap + NSE scripts ──────────────────────────────────────
+
+def _parse_smb_os_discovery(script_output: str) -> dict:
+    """Extract OS/hostname fields from the smb-os-discovery NSE script output."""
+    result: dict[str, str] = {}
+    if not script_output:
+        return result
+    for line in script_output.splitlines():
+        line = line.strip()
+        if line.startswith("OS:"):
+            result["name"] = line[3:].strip()
+        elif line.startswith("Computer name:"):
+            result["smb_computer_name"] = line[14:].strip()
+        elif line.startswith("Domain name:"):
+            result["smb_domain"] = line[12:].strip()
+        elif line.startswith("FQDN:"):
+            result["smb_fqdn"] = line[5:].strip()
+    return result
+
 
 def run_nmap(subnet: str) -> list[dict[str, Any]]:
-    """Run nmap -sV on subnet, return list of host dicts."""
+    """
+    Run nmap -sV + NSE scripts on subnet; return list of host dicts.
+
+    Enhancements over previous version:
+    - Port 139/445 added → enables smb-os-discovery (Windows exact version)
+    - --script smb-os-discovery → most accurate Windows OS name via SMB
+    - --script banner → raw service banner for any open port
+    - --script-timeout 10s → scripts never block the whole scan
+    - SMB computer name promoted to hostname when nmap DNS has nothing
+    """
     log.info(f"Running nmap on {subnet}")
     try:
         import nmap  # type: ignore
         nm = nmap.PortScanner()
-        nm.scan(hosts=subnet, arguments="-sV -T4 --open -p 22,23,80,161,443,3389,8080,8443,3306,5432,6379,27017")
+        nm.scan(
+            hosts=subnet,
+            arguments=(
+                "-sV -T4 --open "
+                "-p 22,23,80,139,161,443,445,3389,8080,8443,3306,5432,6379,27017 "
+                "--script smb-os-discovery,banner "
+                "--script-timeout 10s"
+            ),
+        )
         hosts = []
         for ip in nm.all_hosts():
             host = nm[ip]
             if host.state() != "up":
                 continue
+
             ports = []
             for proto in host.all_protocols():
                 for port_num, port_info in host[proto].items():
                     if port_info.get("state") == "open":
-                        ports.append({
-                            "port": port_num,
+                        port_entry: dict[str, Any] = {
+                            "port":     port_num,
                             "protocol": proto,
-                            "service": port_info.get("name", ""),
-                            "version": port_info.get("version", ""),
-                            "product": port_info.get("product", ""),
-                        })
-            os_info = {}
-            if "osmatch" in host and host["osmatch"]:
+                            "service":  port_info.get("name", ""),
+                            "version":  port_info.get("version", ""),
+                            "product":  port_info.get("product", ""),
+                        }
+                        # Attach raw banner (truncated) when available
+                        script_out = port_info.get("script", {})
+                        if "banner" in script_out:
+                            port_entry["banner"] = script_out["banner"][:200]
+                        ports.append(port_entry)
+
+            # OS info: smb-os-discovery (most accurate) → nmap osmatch fallback
+            os_info: dict[str, Any] = {}
+            smb_script = (
+                host.get("tcp", {}).get(445, {}).get("script", {}).get("smb-os-discovery")
+                or host.get("tcp", {}).get(139, {}).get("script", {}).get("smb-os-discovery")
+            )
+            if smb_script:
+                os_info = _parse_smb_os_discovery(smb_script)
+                log.debug(f"SMB OS for {ip}: {os_info.get('name', '?')}")
+            elif "osmatch" in host and host["osmatch"]:
                 best = host["osmatch"][0]
-                os_info = {"name": best.get("name", ""), "accuracy": best.get("accuracy", "")}
+                os_info = {
+                    "name":     best.get("name", ""),
+                    "accuracy": best.get("accuracy", ""),
+                }
+
+            # Hostname: nmap DNS → SMB computer name
             hostname = host.hostname() or None
+            if not hostname and os_info.get("smb_computer_name"):
+                hostname = os_info["smb_computer_name"]
+
             hosts.append({
-                "ip": ip,
+                "ip":       ip,
                 "hostname": hostname,
-                "mac": host.get("addresses", {}).get("mac") or None,
-                "ports": ports,
-                "os": os_info or None,
+                "mac":      host.get("addresses", {}).get("mac") or None,
+                "ports":    ports,
+                "os":       os_info or None,
             })
+
         log.info(f"Nmap found {len(hosts)} hosts on {subnet}")
         return hosts
+
     except ImportError:
         log.warning("python-nmap not installed — falling back to ping sweep")
         return _ping_sweep(subnet)
@@ -101,7 +169,6 @@ def _ping_sweep(subnet: str) -> list[dict[str, Any]]:
             capture_output=True, text=True, timeout=120,
         )
         hosts = []
-        import re
         for ip_match in re.finditer(r'addr="([\d.]+)"', result.stdout):
             ip = ip_match.group(1)
             if not ip.startswith("0."):
@@ -113,35 +180,32 @@ def _ping_sweep(subnet: str) -> list[dict[str, Any]]:
         return []
 
 
-# ── Passive scanning: ARP sniffer ─────────────────────────────────────────────
+# ── Passive scanning: ARP (primary host discovery) ────────────────────────────
 
 class ArpSniffer:
     """
-    Listens for ARP requests/replies on the local network and records the
-    source IP + MAC of every active host — no probes sent.
+    Listens for ARP requests/replies — primary host discovery mechanism.
+    Records ip → {mac, last_seen} for every host seen on the segment.
 
-    Requires scapy and root/Administrator privileges.
+    BPF filter: "arp"
+    Thread:     arp-sniffer (daemon)
+    Requires:   scapy + root/Administrator
     """
 
     def __init__(self, interface: Optional[str] = None) -> None:
         self.interface = interface
         self._lock = threading.Lock()
-        self._seen: dict[str, dict[str, Any]] = {}   # ip -> {mac, last_seen}
-        self._running = False
+        self._seen: dict[str, dict[str, Any]] = {}  # ip → {mac, last_seen}
 
     def start(self) -> bool:
-        """Start sniffing in a background daemon thread. Returns False if scapy unavailable."""
         try:
             from scapy.all import sniff, ARP  # type: ignore  # noqa: F401
         except ImportError:
             log.warning("scapy not installed — passive ARP disabled. Run: pip install scapy")
             return False
-
-        self._running = True
         t = threading.Thread(target=self._sniff_loop, daemon=True, name="arp-sniffer")
         t.start()
-        iface_label = self.interface or "default"
-        log.info(f"Passive ARP sniffer started on interface={iface_label}")
+        log.info(f"ARP sniffer started on interface={self.interface or 'default'}")
         return True
 
     def _sniff_loop(self) -> None:
@@ -149,7 +213,6 @@ class ArpSniffer:
             from scapy.all import sniff, ARP  # type: ignore
 
             def handle(pkt: Any) -> None:
-                # Capture both ARP requests (op=1) and replies (op=2)
                 if not pkt.haslayer(ARP):
                     return
                 ip  = pkt[ARP].psrc
@@ -162,29 +225,26 @@ class ArpSniffer:
             kwargs: dict[str, Any] = {"filter": "arp", "prn": handle, "store": False}
             if self.interface:
                 kwargs["iface"] = self.interface
-
-            sniff(**kwargs)  # blocks until process exits
+            sniff(**kwargs)
         except PermissionError:
-            log.error("Passive ARP requires root/Administrator privileges — sniffer stopped")
+            log.error("ARP sniffer requires root/Administrator — stopped")
         except Exception as exc:
             log.error(f"ARP sniffer error: {exc}")
 
     def drain(self) -> list[dict[str, Any]]:
-        """Return all discovered hosts since last drain and clear the buffer."""
+        """Return snapshot of discovered hosts (with best-effort reverse DNS) and clear buffer."""
         with self._lock:
             snapshot = dict(self._seen)
             self._seen.clear()
 
         hosts = []
         for ip, info in snapshot.items():
-            # Best-effort reverse DNS — gives the LLM/backend a hostname hint
             hostname: Optional[str] = None
             try:
                 result = socket.gethostbyaddr(ip)
                 hostname = result[0] if result[0] != ip else None
             except (socket.herror, socket.gaierror, OSError):
-                pass  # non-fatal — leave hostname as None
-
+                pass
             hosts.append({
                 "ip":       ip,
                 "mac":      info["mac"],
@@ -193,6 +253,344 @@ class ArpSniffer:
                 "os":       None,
             })
         return hosts
+
+
+# ── Passive scanning: mDNS + NetBIOS-NS (hostname enrichment) ────────────────
+
+class MdnsNetbiosSniffer:
+    """
+    Listens for mDNS (UDP 5353) and NetBIOS Name Service (UDP 137) announcements
+    to build a continuous ip → hostname map.
+
+    mDNS  : parses DNS A-record answers from multicast packets.
+             Devices announce themselves as "<name>.local" when joining the network.
+    NetBIOS: parses NBNS registration/query packets and decodes the nibble-encoded name.
+             Windows machines announce as "DESKTOP-XXXXX" or their NetBIOS name.
+
+    This sniffer ACCUMULATES — it never fully clears.  Use get_hostname() to peek.
+    BPF filter: "udp port 5353 or udp port 137"
+    Thread:     mdns-sniffer (daemon)
+    Requires:   scapy + root/Administrator
+    """
+
+    def __init__(self, interface: Optional[str] = None) -> None:
+        self.interface = interface
+        self._lock = threading.Lock()
+        self._hostnames: dict[str, str] = {}  # ip → hostname
+
+    def start(self) -> bool:
+        try:
+            from scapy.all import sniff, DNS  # type: ignore  # noqa: F401
+        except ImportError:
+            log.warning("scapy not available — mDNS/NetBIOS sniffer disabled")
+            return False
+        t = threading.Thread(target=self._sniff_loop, daemon=True, name="mdns-sniffer")
+        t.start()
+        log.info(f"mDNS/NetBIOS sniffer started on interface={self.interface or 'default'}")
+        return True
+
+    def _sniff_loop(self) -> None:
+        try:
+            from scapy.all import sniff, DNS, DNSRR, IP  # type: ignore
+
+            def handle(pkt: Any) -> None:
+                try:
+                    if not pkt.haslayer(IP):
+                        return
+                    src_ip = pkt[IP].src
+                    if not src_ip or src_ip.startswith("0.") or src_ip == "0.0.0.0":
+                        return
+
+                    # ── mDNS: parse DNS A-record answers (dst port 5353) ──
+                    if pkt.haslayer(DNS):
+                        dns = pkt[DNS]
+                        if dns.ancount and dns.an:
+                            rr = dns.an
+                            while rr:
+                                if hasattr(rr, "type") and rr.type == 1:  # A record
+                                    try:
+                                        raw_name = rr.rrname
+                                        name = (raw_name.decode() if isinstance(raw_name, bytes) else raw_name).rstrip(".")
+                                        rdata = rr.rdata
+                                        ip = rdata if isinstance(rdata, str) else str(rdata)
+                                        if name and ip and not ip.startswith("0.") and ip != "0.0.0.0":
+                                            # Strip .local, keep first label as clean hostname
+                                            clean = name.replace(".local", "").split(".")[0]
+                                            if clean and 2 <= len(clean) <= 63:
+                                                with self._lock:
+                                                    self._hostnames[ip] = clean
+                                    except Exception:
+                                        pass
+                                rr = rr.payload if hasattr(rr, "payload") and isinstance(rr.payload, DNSRR) else None
+
+                    # ── NetBIOS-NS: decode nibble-encoded name from UDP 137 ──
+                    else:
+                        try:
+                            raw = bytes(pkt[IP].payload)  # includes UDP header (8 bytes)
+                            udp_payload = raw[8:] if len(raw) > 8 else b""
+                            # NBNS encoded name starts at offset 12 in NBNS payload
+                            # Each character encoded as two nibble bytes + 0x41 bias
+                            if len(udp_payload) >= 34:
+                                encoded = udp_payload[12:42]
+                                decoded = ""
+                                for i in range(0, min(len(encoded) - 1, 30), 2):
+                                    hi = encoded[i] - 0x41
+                                    lo = encoded[i + 1] - 0x41
+                                    c = chr((hi << 4) | lo)
+                                    if c == " ":  # padding — stop here
+                                        break
+                                    if c.isprintable():
+                                        decoded += c
+                                decoded = decoded.strip()
+                                if decoded and 2 <= len(decoded) <= 20:
+                                    with self._lock:
+                                        # Only record if we don't already have a better mDNS name
+                                        if src_ip not in self._hostnames:
+                                            self._hostnames[src_ip] = decoded
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            kwargs: dict[str, Any] = {
+                "filter": "udp port 5353 or udp port 137",
+                "prn":    handle,
+                "store":  False,
+            }
+            if self.interface:
+                kwargs["iface"] = self.interface
+            sniff(**kwargs)
+        except PermissionError:
+            log.error("mDNS/NetBIOS sniffer requires root/Administrator — stopped")
+        except Exception as exc:
+            log.error(f"mDNS/NetBIOS sniffer error: {exc}")
+
+    def get_hostname(self, ip: str) -> Optional[str]:
+        """Return best known hostname for ip (non-destructive peek)."""
+        with self._lock:
+            return self._hostnames.get(ip)
+
+
+# ── Passive scanning: DHCP fingerprinting ─────────────────────────────────────
+
+class DhcpSniffer:
+    """
+    Listens for DHCP Discover/Request packets (UDP 67/68) to fingerprint devices.
+
+    Per-IP data collected:
+    - dhcp_hostname     : DHCP option 12 (client-supplied hostname — very reliable)
+    - dhcp_vendor_class : DHCP option 60 (e.g. "MSFT 5.0"=Windows, "android-dhcp-13"=Android)
+    - dhcp_device_hint  : Human-readable label derived from vendor class prefix
+    - dhcp_param_list   : DHCP option 55 as CSV string (used for Fingerbank)
+    - fingerbank_device : Device name from Fingerbank API (only if key is configured)
+    - fingerbank_score  : Confidence score from Fingerbank (0-100)
+
+    Fingerbank is OPTIONAL — if no key is set, hostname + vendor class alone add
+    significant classification signal.  Free key at: https://fingerbank.org
+
+    This sniffer ACCUMULATES — it never fully clears.  Use get_info() to peek.
+    BPF filter: "udp port 67 or udp port 68"
+    Thread:     dhcp-sniffer (daemon)
+    Requires:   scapy + root/Administrator
+    """
+
+    # Known vendor class prefixes → human-readable label
+    _VENDOR_HINTS: dict[str, str] = {
+        "MSFT":          "Windows",
+        "android":       "Android",
+        "dhcpcd":        "Linux",
+        "udhcp":         "Linux/Embedded",
+        "OpenBSD":       "OpenBSD",
+        "FreeBSD":       "FreeBSD",
+        "Cisco":         "Cisco Network Device",
+        "Aruba":         "Aruba Network Device",
+        "Ubiquiti":      "Ubiquiti Device",
+        "ArubaOS":       "Aruba AP",
+        "Apple":         "Apple Device",
+        "iPhone":        "Apple iPhone",
+        "iPad":          "Apple iPad",
+    }
+
+    def __init__(
+        self,
+        interface: Optional[str] = None,
+        fingerbank_key: Optional[str] = None,
+    ) -> None:
+        self.interface      = interface
+        self.fingerbank_key = fingerbank_key
+        self._lock          = threading.Lock()
+        self._info: dict[str, dict[str, Any]] = {}  # ip → fingerprint info
+
+    def start(self) -> bool:
+        try:
+            from scapy.all import sniff, BOOTP, DHCP  # type: ignore  # noqa: F401
+        except ImportError:
+            log.warning("scapy not available — DHCP fingerprint sniffer disabled")
+            return False
+        t = threading.Thread(target=self._sniff_loop, daemon=True, name="dhcp-sniffer")
+        t.start()
+        log.info(f"DHCP fingerprint sniffer started on interface={self.interface or 'default'}")
+        return True
+
+    def _sniff_loop(self) -> None:
+        try:
+            from scapy.all import sniff, BOOTP, DHCP, IP  # type: ignore
+
+            def handle(pkt: Any) -> None:
+                try:
+                    if not pkt.haslayer(BOOTP) or not pkt.haslayer(DHCP):
+                        return
+
+                    dhcp = pkt[DHCP]
+
+                    # Parse DHCP options into a dict
+                    options: dict[int, Any] = {}
+                    for opt in dhcp.options:
+                        if opt == "end":
+                            break
+                        if isinstance(opt, tuple) and len(opt) == 2:
+                            options[int(opt[0]) if not isinstance(opt[0], int) else opt[0]] = opt[1]
+
+                    # Only process DHCP Discover (1) and Request (3) — client-side only
+                    msg_type = options.get(53)
+                    if msg_type not in (1, 3):
+                        return
+
+                    # Client IP from IP layer
+                    ip: Optional[str] = None
+                    if pkt.haslayer(IP):
+                        ip = pkt[IP].src
+                    if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+                        return
+
+                    # Extract option values, decode bytes → str
+                    def _decode(v: Any) -> str:
+                        if isinstance(v, (bytes, bytearray)):
+                            return v.decode("ascii", errors="ignore").strip()
+                        return str(v).strip() if v else ""
+
+                    hostname     = _decode(options.get(12, b""))
+                    vendor_class = _decode(options.get(60, b""))
+                    param_bytes  = options.get(55, b"")
+                    param_list   = ",".join(str(b) for b in (param_bytes if isinstance(param_bytes, (bytes, bytearray)) else b""))
+
+                    # Map vendor class prefix to a human-readable label
+                    vendor_hint: Optional[str] = None
+                    for prefix, label in self._VENDOR_HINTS.items():
+                        if vendor_class.startswith(prefix):
+                            vendor_hint = label
+                            break
+
+                    entry: dict[str, Any] = {}
+                    if hostname:
+                        entry["dhcp_hostname"]     = hostname
+                    if vendor_class:
+                        entry["dhcp_vendor_class"] = vendor_class
+                    if vendor_hint:
+                        entry["dhcp_device_hint"]  = vendor_hint
+                    if param_list:
+                        entry["dhcp_param_list"]   = param_list
+
+                    if entry:
+                        with self._lock:
+                            existing = self._info.get(ip, {})
+                            existing.update(entry)
+                            self._info[ip] = existing
+
+                        # Fingerbank lookup in a separate daemon thread (non-blocking)
+                        already_looked_up = self._info.get(ip, {}).get("fingerbank_device")
+                        if self.fingerbank_key and param_list and not already_looked_up:
+                            threading.Thread(
+                                target=self._fingerbank_lookup,
+                                args=(ip, param_list, vendor_class),
+                                daemon=True,
+                            ).start()
+
+                except Exception:
+                    pass  # always non-fatal
+
+            kwargs: dict[str, Any] = {
+                "filter": "udp port 67 or udp port 68",
+                "prn":    handle,
+                "store":  False,
+            }
+            if self.interface:
+                kwargs["iface"] = self.interface
+            sniff(**kwargs)
+
+        except PermissionError:
+            log.error("DHCP sniffer requires root/Administrator — stopped")
+        except Exception as exc:
+            log.error(f"DHCP sniffer error: {exc}")
+
+    def _fingerbank_lookup(self, ip: str, param_list: str, vendor_class: str) -> None:
+        """POST to Fingerbank API; store device type result when confident."""
+        try:
+            resp = requests.post(
+                "https://api.fingerbank.org/api/v2/combinations/interrogate",
+                params={"key": self.fingerbank_key},
+                json={"dhcp_fingerprint": param_list, "vendor_class_identifier": vendor_class},
+                timeout=8,
+            )
+            if resp.ok:
+                data   = resp.json()
+                device = data.get("device", {})
+                name   = device.get("name")
+                score  = data.get("score", 0)
+                if name and score >= 30:  # only trust reasonably confident matches
+                    with self._lock:
+                        info = self._info.get(ip, {})
+                        info["fingerbank_device"] = name
+                        info["fingerbank_score"]  = score
+                        self._info[ip] = info
+                    log.debug(f"Fingerbank: {ip} → '{name}' (score={score})")
+        except Exception as e:
+            log.debug(f"Fingerbank lookup failed for {ip}: {e}")  # non-fatal
+
+    def get_info(self, ip: str) -> dict[str, Any]:
+        """Return DHCP fingerprint info for ip (non-destructive peek)."""
+        with self._lock:
+            return dict(self._info.get(ip, {}))
+
+
+# ── Host enrichment ───────────────────────────────────────────────────────────
+
+def enrich_passive_hosts(
+    hosts: list[dict[str, Any]],
+    mdns_sniffer:  Optional[MdnsNetbiosSniffer],
+    dhcp_sniffer:  Optional[DhcpSniffer],
+) -> list[dict[str, Any]]:
+    """
+    Enrich ARP-discovered hosts with mDNS/NetBIOS hostname and DHCP fingerprint.
+
+    Priority rules — can only ADD or IMPROVE, never downgrade:
+      hostname : mDNS/NetBIOS > DHCP option-12 > existing reverse-DNS (already in host)
+      os dict  : DHCP fingerprint fields merged additively; active-scan nmap fields win
+    """
+    for host in hosts:
+        ip = host["ip"]
+
+        # ── Hostname: best available source ──
+        mdns_name = mdns_sniffer.get_hostname(ip) if mdns_sniffer else None
+        dhcp_info = dhcp_sniffer.get_info(ip)      if dhcp_sniffer else {}
+        dhcp_name = dhcp_info.get("dhcp_hostname")
+
+        # mDNS/NetBIOS is most accurate (device self-announces),
+        # then DHCP option-12, then keep the reverse-DNS already in host
+        best_hostname = mdns_name or dhcp_name or host.get("hostname")
+        host["hostname"] = best_hostname
+
+        # ── OS / device hint: merge DHCP data additively ──
+        if dhcp_info:
+            existing_os = host.get("os") or {}
+            merged_os   = dict(existing_os) if isinstance(existing_os, dict) else {}
+            # Active-scan (nmap) fields take priority — only fill keys that are absent
+            for k, v in dhcp_info.items():
+                if k not in merged_os and k != "dhcp_hostname":
+                    merged_os[k] = v
+            host["os"] = merged_os if merged_os else None
+
+    return hosts
 
 
 # ── Local IP helper ───────────────────────────────────────────────────────────
@@ -263,7 +661,7 @@ class AgentClient:
         }
         return self._post_ingest(payload, label=f"passive ({len(hosts)} host(s))")
 
-    def _post_ingest(self, payload: dict, label: str, scan_id: str = None) -> bool:
+    def _post_ingest(self, payload: dict, label: str, scan_id: Optional[str] = None) -> bool:
         try:
             resp = self.session.post(
                 f"{self.api_url}/scans/ingest",
@@ -303,11 +701,12 @@ def _heartbeat_thread(client: AgentClient, interval: int) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="EagleEye network scanning agent")
+    parser = argparse.ArgumentParser(
+        description=f"EagleEye network scanning agent v{VERSION}"
+    )
 
-    # ── Existing args (unchanged) ──
     parser.add_argument("--api-url",            default=os.getenv("EAGLEEYE_API_URL", ""),
-                        help="Backend or bridge API base URL")
+                        help="Backend API base URL")
     parser.add_argument("--api-key",            default=os.getenv("EAGLEEYE_API_KEY", ""),
                         help="Agent API key (from dashboard)")
     parser.add_argument("--agent-id",           default=os.getenv("EAGLEEYE_AGENT_ID", ""),
@@ -319,20 +718,24 @@ def main():
                         default=int(os.getenv("EAGLEEYE_HEARTBEAT_INTERVAL", "30")),
                         help="Heartbeat interval in seconds (default: 30)")
 
-    # ── Passive scanning args (new, all optional) ──
+    # Passive sniffing
     parser.add_argument("--passive",            action="store_true",
                         default=os.getenv("EAGLEEYE_PASSIVE", "").lower() in ("1", "true", "yes"),
-                        help="Enable passive ARP sniffing (requires root/Administrator + scapy)")
+                        help="Enable passive sniffing suite: ARP + mDNS/NetBIOS + DHCP")
     parser.add_argument("--passive-interface",  default=os.getenv("EAGLEEYE_PASSIVE_INTERFACE", ""),
-                        help="Network interface for ARP sniffing (default: auto-detect)")
+                        help="Network interface for all passive sniffers (default: auto)")
     parser.add_argument("--passive-interval",   type=int,
                         default=int(os.getenv("EAGLEEYE_PASSIVE_INTERVAL", "60")),
-                        help="Seconds between passive discovery flushes (default: 60)")
+                        help="Seconds between passive flush cycles (default: 60)")
+    parser.add_argument("--fingerbank-key",     default=os.getenv("EAGLEEYE_FINGERBANK_KEY", ""),
+                        help="Fingerbank API key for DHCP device fingerprinting (optional, free at fingerbank.org)")
 
     args = parser.parse_args()
 
     if not args.api_url or not args.api_key or not args.agent_id:
         parser.error("--api-url, --api-key, and --agent-id are required (or set env vars)")
+
+    iface = args.passive_interface or None
 
     log.info(f"EagleEye Agent v{VERSION} starting")
     log.info(f"API URL      : {args.api_url}")
@@ -341,11 +744,13 @@ def main():
     log.info(f"Gateway IP   : {_local_ip()}")
     log.info(f"Active poll  : {args.interval}s")
     log.info(f"Heartbeat    : {args.heartbeat_interval}s")
-    log.info(f"Passive ARP  : {'enabled' if args.passive else 'disabled'}")
+    log.info(f"Passive mode : {'enabled' if args.passive else 'disabled'}")
+    if args.passive:
+        log.info(f"  Interface  : {iface or 'auto'}")
+        log.info(f"  Interval   : {args.passive_interval}s")
+        log.info(f"  Fingerbank : {'enabled' if args.fingerbank_key else 'disabled (set --fingerbank-key to enable)'}")
 
     client = AgentClient(args.api_url, args.api_key, args.agent_id)
-
-    # Initial heartbeat so agent appears online immediately
     client.send_heartbeat()
 
     # Heartbeat background thread
@@ -355,14 +760,33 @@ def main():
         daemon=True, name="heartbeat",
     ).start()
 
-    # Passive ARP thread (only if --passive is set)
-    if args.passive:
-        sniffer = ArpSniffer(interface=args.passive_interface or None)
-        started = sniffer.start()
-        if not started:
-            log.warning("Passive ARP could not start — running in active-only mode")
+    # Passive sniffers — all optional, all non-fatal if unavailable
+    arp_sniffer:  Optional[ArpSniffer]          = None
+    mdns_sniffer: Optional[MdnsNetbiosSniffer]  = None
+    dhcp_sniffer: Optional[DhcpSniffer]         = None
 
-    # Active scan poll loop
+    if args.passive:
+        arp_sniffer = ArpSniffer(interface=iface)
+        if not arp_sniffer.start():
+            log.warning("ARP sniffer could not start — passive host discovery disabled")
+            arp_sniffer = None
+
+        mdns_sniffer = MdnsNetbiosSniffer(interface=iface)
+        if not mdns_sniffer.start():
+            log.warning("mDNS/NetBIOS sniffer could not start — hostname enrichment disabled")
+            mdns_sniffer = None
+
+        dhcp_sniffer = DhcpSniffer(
+            interface=iface,
+            fingerbank_key=args.fingerbank_key or None,
+        )
+        if not dhcp_sniffer.start():
+            log.warning("DHCP sniffer could not start — DHCP fingerprinting disabled")
+            dhcp_sniffer = None
+
+    last_passive_flush = time.time()
+
+    # ── Main loop ──
     while True:
         try:
             pending = client.get_pending_scans()
@@ -374,30 +798,40 @@ def main():
                     scan_type = scan.get("scan_type") or scan.get("scanType") or "active"
 
                     if scan_type == "passive":
-                        # Passive scan: flush whatever ARP has seen so far
-                        log.info(f"Processing PASSIVE scan {scan_id[:8]}… draining ARP sniffer")
-                        if args.passive and 'sniffer' in dir():
-                            hosts = sniffer.drain()
+                        log.info(f"Processing PASSIVE scan {scan_id[:8]}… draining sniffers")
+                        if arp_sniffer:
+                            hosts = arp_sniffer.drain()
+                            hosts = enrich_passive_hosts(hosts, mdns_sniffer, dhcp_sniffer)
                             if hosts:
-                                log.info(f"Flushed {len(hosts)} ARP host(s) for passive scan")
+                                log.info(f"Flushed {len(hosts)} enriched host(s) for passive scan")
                                 client.ingest_results(scan_id, hosts)
                             else:
                                 log.warning(
-                                    f"Passive scan {scan_id[:8]}: ARP sniffer has no hosts yet — "
+                                    f"Passive scan {scan_id[:8]}: ARP buffer empty — "
                                     "wait for devices to broadcast ARP or try again later"
                                 )
                         else:
                             log.warning(
-                                f"Passive scan {scan_id[:8]} requested but agent is not running "
-                                "in passive mode. Restart the agent with --passive to enable ARP sniffing."
+                                f"Passive scan {scan_id[:8]} requested but agent is not in "
+                                "passive mode. Restart with --passive to enable sniffing."
                             )
                     else:
-                        # Active scan: run nmap
+                        # Active scan: run nmap with enhanced NSE scripts
                         log.info(f"Processing ACTIVE scan {scan_id[:8]}… subnet={subnet}")
                         hosts = run_nmap(subnet)
                         client.ingest_results(scan_id, hosts)
             else:
                 log.debug("No pending scans")
+
+            # Autonomous periodic passive flush (runs independently of scan requests)
+            if arp_sniffer and (time.time() - last_passive_flush) >= args.passive_interval:
+                hosts = arp_sniffer.drain()
+                hosts = enrich_passive_hosts(hosts, mdns_sniffer, dhcp_sniffer)
+                if hosts:
+                    log.info(f"Periodic passive flush: {len(hosts)} enriched host(s)")
+                    client.ingest_passive(hosts)
+                last_passive_flush = time.time()
+
         except KeyboardInterrupt:
             log.info("Shutting down")
             sys.exit(0)

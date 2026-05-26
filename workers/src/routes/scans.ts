@@ -344,15 +344,20 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
         const systemPrompt = `You are a CAASM security analyst. Analyze these discovered network hosts.
 You MUST return a JSON object with a single root key "hosts" containing an array of objects. Each object MUST have exactly these keys:
 "ip": the host's IP address
-"description": A concise, specific description of the device (e.g., "TP-Link Router", "Windows 10 Workstation", "Raspberry Pi IoT Device", "Ubuntu Server"). Use the mac_vendor field when available to name the brand.
+"description": A concise, specific description of the device (e.g., "TP-Link Router", "Windows 10 Workstation", "Raspberry Pi IoT Device", "Ubuntu Server"). Use brand names when available. Be specific.
 "suggestion": One of exactly: "Accept - Corporate Device", "Ignore - Personal Device", or "Investigate - Unknown"
 
-Rules for consistent output:
-- If "existing_description" is provided and non-null, PRESERVE it unless the new scan data clearly contradicts it.
-- If "existing_device_type" is "network", the suggestion should lean toward "Accept - Corporate Device".
-- "mac_vendor" is the real manufacturer name from a live lookup — use it as the primary device-type signal when no port data exists.
+Rules for consistent, accurate output:
+- If "existing_description" is non-null, PRESERVE it unless new scan data clearly contradicts it.
+- If "os.fingerbank_device" is present, use it as the definitive device name (highest confidence).
+- If "os.dhcp_device_hint" is present (e.g., "Windows", "Android"), use it as the primary device-type signal.
+- If "os.dhcp_vendor_class" starts with "MSFT" → Windows device; "android-dhcp" → Android phone; "dhcpcd" → Linux device.
+- If "os.name" is present (from nmap smb-os-discovery), use it for the exact Windows/Linux version.
+- If "mac_vendor" is present and no other signals exist, use it to identify the manufacturer.
+- If "hostname" contains words like "router", "switch", "ap", "printer", "cam" → strong device-type signal.
+- If "existing_device_type" is "network", lean toward "Accept - Corporate Device".
 - Gateway IPs (ending in .1 or .254) are ALWAYS network infrastructure — use "Accept - Corporate Device".
-- Only use "Investigate - Unknown" when there is genuinely NO identifying information (no vendor, no ports, no existing record).
+- Only use "Investigate - Unknown" when there is genuinely NO identifying information (no vendor, no ports, no DHCP, no hostname, no existing record).
 
 Example:
 { "hosts": [ { "ip": "192.168.0.1", "description": "TP-Link Home Router", "suggestion": "Accept - Corporate Device" } ] }`
