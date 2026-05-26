@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -468,80 +468,66 @@ Example:
       return c.json({ detail: 'scan_id is required for active scans' }, 400)
     }
 
-    // Upsert assets for each discovered host
+    // Upsert assets — atomic ON CONFLICT so concurrent agents never create duplicates
     const upsertedAssetIds: string[] = []
     for (const host of enhancedHosts) {
-      // Check if asset with this IP already exists in this tenant
-      const conditions = [eq(assets.ipAddress, host.ip)]
-      if (tenantId) {
-        conditions.push(eq(assets.tenantId, tenantId))
-      }
-
-      const [existing] = await db
-        .select()
-        .from(assets)
-        .where(and(...conditions))
-        .limit(1)
-
       const ports = (host.ports ?? []) as NmapPort[]
       const deviceType = inferDeviceType(ports, host.ip)
       const osInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports)
       const internetFacing = isGatewayIp(host.ip)
 
-      if (existing) {
-        const critScore = computeCriticality({
-          deviceType: existing.deviceType === 'unknown' ? deviceType : existing.deviceType,
-          isInternetFacing: internetFacing,
-          hostname: host.hostname ?? existing.hostname,
-          owner: existing.owner,
-          osInfo,
-        }).score
+      // Fetch existing record to preserve owner + stable device type
+      const conditions = [eq(assets.ipAddress, host.ip)]
+      if (tenantId) conditions.push(eq(assets.tenantId, tenantId))
+      const [existing] = await db.select().from(assets).where(and(...conditions)).limit(1)
 
-        const updatedRows = await db
-          .update(assets)
-          .set({
-            hostname: host.hostname ?? existing.hostname,
-            macAddress: host.mac ?? existing.macAddress,
-            osInfo,
-            deviceType: existing.deviceType === 'unknown' ? deviceType : existing.deviceType,
-            isInternetFacing: internetFacing,
-            criticalityScore: critScore,
-            lastScanned: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(assets.assetId, existing.assetId))
-          .returning({ assetId: assets.assetId })
+      const resolvedDeviceType = (existing?.deviceType && existing.deviceType !== 'unknown')
+        ? existing.deviceType : deviceType
+      const resolvedOwner = existing?.owner ?? null
 
-        const updatedId = updatedRows[0]?.assetId
-        if (updatedId) upsertedAssetIds.push(updatedId)
-      } else {
-        const critScore = computeCriticality({
-          deviceType,
-          isInternetFacing: internetFacing,
-          hostname: host.hostname ?? null,
-          owner: null,
+      const critScore = computeCriticality({
+        deviceType: resolvedDeviceType,
+        isInternetFacing: internetFacing,
+        hostname: host.hostname ?? existing?.hostname,
+        owner: resolvedOwner,
+        osInfo,
+      }).score
+
+      // Insert or update — conflict on (ip_address, tenant_id) → update in place
+      const [upserted] = await db
+        .insert(assets)
+        .values({
+          tenantId: tenantId || null,
+          ipAddress: host.ip,
+          hostname: host.hostname ?? existing?.hostname ?? null,
+          macAddress: host.mac ?? existing?.macAddress ?? null,
+          deviceType: resolvedDeviceType,
           osInfo,
-        }).score
-        const insertedRows = await db
-          .insert(assets)
-          .values({
-            tenantId: tenantId || null,
-            ipAddress: host.ip,
-            hostname: host.hostname ?? null,
-            macAddress: host.mac ?? null,
-            deviceType,
-            osInfo,
-            isInternetFacing: internetFacing,
-            criticalityScore: critScore,
-            source: isPassive ? 'scan_passive' : 'scan_active',
-            lastScanned: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .returning({ assetId: assets.assetId })
-        const insertedId = insertedRows[0]?.assetId
-        if (insertedId) upsertedAssetIds.push(insertedId)
-      }
+          isInternetFacing: internetFacing,
+          criticalityScore: critScore,
+          source: isPassive ? 'scan_passive' : 'scan_active',
+          lastScanned: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: tenantId
+            ? [assets.ipAddress, assets.tenantId]
+            : [assets.ipAddress],
+          set: {
+            hostname: sql`COALESCE(EXCLUDED.hostname, assets.hostname)`,
+            macAddress: sql`COALESCE(EXCLUDED.mac_address, assets.mac_address)`,
+            osInfo: sql`EXCLUDED.os_info`,
+            deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
+            isInternetFacing: sql`EXCLUDED.is_internet_facing`,
+            criticalityScore: sql`EXCLUDED.criticality_score`,
+            lastScanned: sql`EXCLUDED.last_scanned`,
+            updatedAt: sql`now()`,
+          },
+        })
+        .returning({ assetId: assets.assetId })
+
+      if (upserted?.assetId) upsertedAssetIds.push(upserted.assetId)
     }
 
     // Update active scan result (passive scan record was already written above)

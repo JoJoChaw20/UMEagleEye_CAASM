@@ -88,7 +88,7 @@ export const assets = pgTable('assets', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [
-  index('idx_assets_ip').on(t.ipAddress),
+  uniqueIndex('idx_assets_ip_tenant').on(t.ipAddress, t.tenantId),
   index('idx_assets_tenant').on(t.tenantId),
 ])
 
