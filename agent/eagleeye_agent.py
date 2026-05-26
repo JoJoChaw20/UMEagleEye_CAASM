@@ -784,8 +784,6 @@ def main():
             log.warning("DHCP sniffer could not start — DHCP fingerprinting disabled")
             dhcp_sniffer = None
 
-    last_passive_flush = time.time()
-
     # ── Main loop ──
     while True:
         try:
@@ -822,15 +820,6 @@ def main():
                         client.ingest_results(scan_id, hosts)
             else:
                 log.debug("No pending scans")
-
-            # Autonomous periodic passive flush (runs independently of scan requests)
-            if arp_sniffer and (time.time() - last_passive_flush) >= args.passive_interval:
-                hosts = arp_sniffer.drain()
-                hosts = enrich_passive_hosts(hosts, mdns_sniffer, dhcp_sniffer)
-                if hosts:
-                    log.info(f"Periodic passive flush: {len(hosts)} enriched host(s)")
-                    client.ingest_passive(hosts)
-                last_passive_flush = time.time()
 
         except KeyboardInterrupt:
             log.info("Shutting down")
