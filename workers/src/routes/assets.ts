@@ -19,12 +19,14 @@ function computeAssetCriticality(input: {
   deviceType: string
   isInternetFacing: boolean
   hostname?: string | null
+  owner?: string | null
   osInfo: Record<string, unknown>
 }): number {
   return computeCriticality({
     deviceType: input.deviceType,
     isInternetFacing: input.isInternetFacing,
     hostname: input.hostname ?? undefined,
+    owner: input.owner ?? undefined,
     osInfo: input.osInfo,
   }).score
 }
@@ -164,7 +166,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     // Preserve criticality from scan when device type is unchanged; recompute only when type improves
     const computedScore = (existing?.criticalityScore && deviceType === existing.deviceType)
       ? existing.criticalityScore
-      : computeAssetCriticality({ deviceType, isInternetFacing, hostname, osInfo })
+      : computeAssetCriticality({ deviceType, isInternetFacing, hostname, owner: body.owner ?? existing?.owner, osInfo })
 
     if (existing) {
       // Promote to manual and update provided fields
@@ -262,6 +264,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
         deviceType: mergedDeviceType,
         isInternetFacing: mergedInternetFacing,
         hostname: mergedHostname,
+        owner: body.owner !== undefined ? body.owner : existing.owner,
         osInfo: mergedOsInfo,
       })
     }
@@ -383,6 +386,7 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
       deviceType: asset.deviceType,
       isInternetFacing: asset.isInternetFacing,
       hostname: asset.hostname ?? undefined,
+      owner: asset.owner ?? undefined,
       osInfo: (asset.osInfo ?? {}) as Record<string, unknown>,
     })
 
@@ -492,6 +496,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         deviceType,
         isInternetFacing,
         hostname: row['hostname'] || undefined,
+        owner: row['owner'] || undefined,
         osInfo,
       })
 

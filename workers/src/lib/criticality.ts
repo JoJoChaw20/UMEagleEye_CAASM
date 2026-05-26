@@ -51,6 +51,8 @@ export interface ScoringInput {
   osInfo: Record<string, unknown>
   /** Layer from topology_nodes (1 = internet-facing gateway … 6 = IoT leaf) */
   topologyLayer?: number | null
+  /** The assigned owner of the asset. Empty means unowned (adds risk). */
+  owner?: string | null
 }
 
 export interface ScoringBreakdown {
@@ -59,6 +61,7 @@ export interface ScoringBreakdown {
   portRisk: number
   hostnameHints: number
   topologyLayer: number
+  ownerPenalty: number
 }
 
 export interface ScoringResult {
@@ -68,7 +71,7 @@ export interface ScoringResult {
 }
 
 export function computeCriticality(input: ScoringInput): ScoringResult {
-  const { deviceType, isInternetFacing, hostname, osInfo, topologyLayer } = input
+  const { deviceType, isInternetFacing, hostname, osInfo, topologyLayer, owner } = input
   const factors: string[] = []
 
   // ── 1. Base score ────────────────────────────────────────────────
@@ -138,13 +141,20 @@ export function computeCriticality(input: ScoringInput): ScoringResult {
     topologyBonus = 1; factors.push('topology L3 distribution (+1)')
   }
 
+  // ── 6. Unowned asset penalty ─────────────────────────────────────
+  let ownerPenalty = 0
+  if (!owner || owner.trim() === '') {
+    ownerPenalty = 1
+    factors.push('unowned asset (+1)')
+  }
+
   // ── Final score ──────────────────────────────────────────────────
-  const raw = base + internetFacing + portRisk + hostnameHints + topologyBonus
+  const raw = base + internetFacing + portRisk + hostnameHints + topologyBonus + ownerPenalty
   const score = Math.max(1, Math.min(10, raw))
 
   return {
     score,
-    breakdown: { base, internetFacing, portRisk, hostnameHints, topologyLayer: topologyBonus },
+    breakdown: { base, internetFacing, portRisk, hostnameHints, topologyLayer: topologyBonus, ownerPenalty },
     factors,
   }
 }

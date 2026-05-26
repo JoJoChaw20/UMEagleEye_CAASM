@@ -6,6 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets } from '../db/schema'
+import { computeCriticality } from '../lib/criticality'
 
 // ── Ingest helpers ───────────────────────────────────────────────
 type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
@@ -58,16 +59,6 @@ function buildOsInfo(os: Record<string, unknown> | null | undefined, ports: Nmap
 function isGatewayIp(ip: string): boolean {
   const last = ip.split('.').pop()
   return last === '1' || last === '254'
-}
-
-function computeCriticality(deviceType: string, internetFacing: boolean, ports: NmapPort[], owner: string | null): number {
-  const base: Record<string, number> = { network: 7, server: 6, iot: 5, workstation: 4, unknown: 3 }
-  let score = base[deviceType] ?? 3
-  if (internetFacing) score += 3
-  const sensitivePorts = [22, 23, 3389, 1433, 3306, 5432]
-  score += Math.min(ports.filter(p => sensitivePorts.includes(p.port)).length, 2)
-  if (!owner) score += 1
-  return Math.min(score, 10)
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -152,7 +143,7 @@ function isValidSubnet(value: string): boolean {
   const trimmed = value.trim()
   if (!trimmed) return false
   const [ip, prefix] = trimmed.split('/')
-  if (!isValidIpv4(ip)) return false
+  if (!ip || !isValidIpv4(ip)) return false
   if (prefix !== undefined) {
     const num = Number(prefix)
     if (!Number.isInteger(num) || num < 0 || num > 32) return false
@@ -297,13 +288,13 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     // For each discovered host, look up its existing DB record (if any).
     // We pass existing description/deviceType to the LLM so it doesn't
     // flip-flop between scans when port data is sparse or missing.
-    const existingAssetMap: Map<string, { deviceType: string; description: string | null }> = new Map()
+    const existingAssetMap: Map<string, { deviceType: string; hostname: string | null; owner: string | null }> = new Map()
     for (const host of hosts) {
       try {
         const conds = [eq(assets.ipAddress, host.ip)]
         if (tenantId) conds.push(eq(assets.tenantId, tenantId))
         const [found] = await getDb(c.env.DATABASE_URL)
-          .select({ deviceType: assets.deviceType, description: assets.description })
+          .select({ deviceType: assets.deviceType, hostname: assets.hostname, owner: assets.owner })
           .from(assets)
           .where(and(...conds))
           .limit(1)
@@ -336,8 +327,9 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
             mac_vendor: macVendorMap.get(h.ip) ?? null,  // e.g. "TP-Link Technologies Co. Ltd."
             os: h.os,
             ports: h.ports,
-            existing_device_type: existing?.deviceType ?? null,   // from prior active scan
-            existing_description: existing?.description ?? null,  // previously AI-generated
+            existing_device_type: existing?.deviceType ?? null,
+            existing_hostname: existing?.hostname ?? null,
+            existing_owner: existing?.owner ?? null,
           }
         })
 
@@ -348,7 +340,7 @@ You MUST return a JSON object with a single root key "hosts" containing an array
 "suggestion": One of exactly: "Accept - Corporate Device", "Ignore - Personal Device", or "Investigate - Unknown"
 
 Rules for consistent, accurate output:
-- If "existing_description" is non-null, PRESERVE it unless new scan data clearly contradicts it.
+- If existing_hostname or existing_device_type is present for an IP, PRESERVE the prior classification unless new scan data clearly contradicts it.
 - If "os.fingerbank_device" is present, use it as the definitive device name (highest confidence).
 - If "os.dhcp_device_hint" is present (e.g., "Windows", "Android"), use it as the primary device-type signal.
 - If "os.dhcp_vendor_class" starts with "MSFT" → Windows device; "android-dhcp" → Android phone; "dhcpcd" → Linux device.
@@ -405,16 +397,17 @@ Example:
 
           try {
             const parsed = JSON.parse(content)
+            type LlmHost = { ip: string; description: string; suggestion: string }
             if (Array.isArray(parsed) && parsed.length > 0 && !Array.isArray(parsed[0])) {
-              const parsedArray = parsed
+              const parsedArray = parsed as LlmHost[]
               enhancedHosts = hosts.map(h => {
-                const match = parsedArray.find((p: any) => p.ip?.trim() === h.ip?.trim())
+                const match = parsedArray.find((p) => p.ip?.trim() === h.ip?.trim())
                 return match ? { ...h, description: match.description, suggestion: match.suggestion } : h
               })
             } else if (parsed && Array.isArray(parsed.hosts)) {
-              enhancedHosts = hosts.map(h => {
-                const match = parsed.hosts.find((p: any) => p.ip?.trim() === h.ip?.trim())
-                return match ? { ...h, description: match.description, suggestion: match.suggestion } : h
+              enhancedHosts = (hosts as typeof enhancedHosts).map(h => {
+                const match = (parsed.hosts as LlmHost[]).find((p) => p.ip?.trim() === h.ip?.trim())
+                return match ? { ...h, description: match.description, suggestion: match.suggestion } : { ...h }
               })
             }
           } catch (parseErr) {
@@ -429,17 +422,19 @@ Example:
 
       // Fallback: if LLM produced no description/suggestion, use a deterministic fallback
       enhancedHosts = enhancedHosts.map(h => {
-        if (!h.description) {
+        const hAny = h as Record<string, unknown>
+        if (!hAny['description']) {
           const existing = existingAssetMap.get(h.ip)
           const vendor = macVendorMap.get(h.ip)
-          h.description = existing?.description
-            ?? (vendor ? `${vendor} Device` : 'AI analysis could not be generated for this asset.')
+          hAny['description'] = existing?.hostname
+            ? `${vendor ?? 'Unknown'} Device (${existing.hostname})`
+            : (vendor ? `${vendor} Device` : 'AI analysis could not be generated for this asset.')
         }
-        if (!h.suggestion) {
+        if (!hAny['suggestion']) {
           const existing = existingAssetMap.get(h.ip)
           const last = h.ip.split('.').pop()
           const isGateway = last === '1' || last === '254'
-          h.suggestion = isGateway ? 'Accept - Corporate Device'
+          hAny['suggestion'] = isGateway ? 'Accept - Corporate Device'
             : (existing ? 'Accept - Corporate Device' : 'Investigate - Unknown')
         }
         return h
@@ -494,12 +489,14 @@ Example:
       const internetFacing = isGatewayIp(host.ip)
 
       if (existing) {
-        const critScore = computeCriticality(
-          existing.deviceType === 'unknown' ? deviceType : existing.deviceType,
-          internetFacing,
-          ports,
-          existing.owner,
-        )
+        const critScore = computeCriticality({
+          deviceType: existing.deviceType === 'unknown' ? deviceType : existing.deviceType,
+          isInternetFacing: internetFacing,
+          hostname: host.hostname ?? existing.hostname,
+          owner: existing.owner,
+          osInfo,
+        }).score
+
         const updatedRows = await db
           .update(assets)
           .set({
@@ -518,7 +515,13 @@ Example:
         const updatedId = updatedRows[0]?.assetId
         if (updatedId) upsertedAssetIds.push(updatedId)
       } else {
-        const critScore = computeCriticality(deviceType, internetFacing, ports)
+        const critScore = computeCriticality({
+          deviceType,
+          isInternetFacing: internetFacing,
+          hostname: host.hostname ?? null,
+          owner: null,
+          osInfo,
+        }).score
         const insertedRows = await db
           .insert(assets)
           .values({
