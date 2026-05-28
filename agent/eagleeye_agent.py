@@ -738,6 +738,7 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
         target = "dir:C:\\FYP\\UMEagleEye2.0" if platform.system() == "Windows" else "dir:/usr"
 
     log.info(f"Starting SBOM scan (scan_id={scan_id}) — target={target}")
+    success = False
     try:
         result = subprocess.run(
             ["syft", target, "-o", "cyclonedx-json"],
@@ -745,9 +746,9 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
         )
         if result.returncode != 0:
             log.error(f"Syft exited {result.returncode}: {result.stderr[:500]}")
-            return
-        sbom_json = json.loads(result.stdout)
-        client.ingest_sbom(scan_id, sbom_json)
+        else:
+            sbom_json = json.loads(result.stdout)
+            success = client.ingest_sbom(scan_id, sbom_json)
     except FileNotFoundError:
         log.error("syft not found — install with: winget install Anchore.Syft  (Windows) "
                   "or: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh  (Linux/macOS)")
@@ -757,6 +758,17 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
         log.error(f"Failed to parse Syft output as JSON: {e}")
     except Exception as e:
         log.error(f"SBOM scan error: {e}", exc_info=True)
+    finally:
+        if not success and scan_id:
+            try:
+                client.session.post(
+                    f"{client.api_url}/scans/fail",
+                    data=json.dumps({"agent_id": client.agent_id, "scan_id": scan_id}),
+                    timeout=10,
+                )
+                log.info(f"SBOM scan {scan_id[:8]}… marked as failed")
+            except Exception:
+                pass
 
 
 # ── Background threads ────────────────────────────────────────────────────────

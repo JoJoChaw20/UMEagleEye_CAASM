@@ -138,8 +138,7 @@ app.get('/pending', async (c) => {
       .set({ status: 'online', lastHeartbeat: new Date() })
       .where(eq(agents.agentId, agentId))
 
-    // Auto-expire passive scans pending > 10 min — they loop forever when agent
-    // isn't in --passive mode and the agent already marks them failed anyway.
+    // Auto-expire passive scans pending > 10 min
     await db.update(scanResults)
       .set({ status: 'failed', completedAt: new Date() })
       .where(and(
@@ -147,6 +146,17 @@ app.get('/pending', async (c) => {
         eq(scanResults.status, 'pending'),
         eq(scanResults.scanType, 'passive'),
         sql`${scanResults.startedAt} < now() - interval '10 minutes'`,
+      ))
+
+    // Auto-expire SBOM scans pending > 20 min — Syft has a 10 min hard timeout;
+    // if the agent died or timed out without calling /fail, clean up here.
+    await db.update(scanResults)
+      .set({ status: 'failed', completedAt: new Date() })
+      .where(and(
+        eq(scanResults.agentId, agentId),
+        eq(scanResults.status, 'pending'),
+        eq(scanResults.scanType, 'sbom'),
+        sql`${scanResults.startedAt} < now() - interval '20 minutes'`,
       ))
 
     const pending = await db
