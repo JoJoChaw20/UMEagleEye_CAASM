@@ -9,6 +9,7 @@ import DiscoveryPage from './pages/DiscoveryPage'
 import AlertsPage from './pages/AlertsPage'
 import AdvisoriesPage from './pages/AdvisoriesPage'
 import ThreatIntelPage from './pages/ThreatIntelPage'
+import SBOMPage from './pages/SBOMPage'
 import ReportsPage from './pages/ReportsPage'
 import SettingsPage from './pages/SettingsPage'
 import TopologyPage from './pages/TopologyPage'
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="alerts" element={<AlertsPage />} />
         <Route path="advisories" element={<AdvisoriesPage />} />
         <Route path="threat-intel" element={<ThreatIntelPage />} />
+        <Route path="sbom" element={<SBOMPage />} />
         {/* Reports */}
         <Route path="reports" element={<ReportsPage />} />
         {/* System */}

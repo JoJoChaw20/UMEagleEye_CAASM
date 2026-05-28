@@ -12,22 +12,47 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 
 ## Core Features
 
+### Asset Management
 - **Asset Inventory (My Assets)** — Manual asset registry with criticality scoring, baseline snapshots, and drift detection
 - **CSV Bulk Import** — Import assets from CSV with OS, port, and criticality data; upserts by IP per tenant
-- **Network Discovery** — EagleEye scanning agents push Nmap scan results to the platform; discovered hosts can be promoted to the asset registry
-- **Network Topology** — Interactive collapsible tree view with subnet-aware inference: classifies assets by device type and hostname pattern into gateway → router → switch → access_point → host hierarchy; per-tenant tree sections for superadmin; DMZ badge, criticality dot, IP inline display
+- **All Assets** — Combined view of all discovered and manually added assets across the tenant
+
+### Network Discovery
+- **Active Scanning** — EagleEye agent dispatches Nmap (`-sV -T4` + NSE scripts: `smb-os-discovery`, `banner`) on demand; discovered hosts are AI-enriched and upserted as assets
+- **Passive Scanning (ARP + mDNS/NetBIOS + DHCP)** — Three parallel daemon sniffers on the agent: ARP for host discovery, mDNS/NetBIOS for hostname resolution, DHCP fingerprinting for OS/device classification; no active probing required
+- **Autonomous Passive Flush** — Agent drains the ARP buffer every `--passive-interval` seconds (default 60 s) and auto-creates scan records without dashboard interaction; dashboard-triggered passive scans flush the buffer on demand
+- **MAC Vendor Live Lookup** — Real-time OUI resolution via `api.macvendors.com` at ingest time; feeds the AI classification prompt
+- **DHCP Fingerprinting** — Captures option 12 (hostname), option 60 (vendor class), and option 55 (parameter list); optional Fingerbank API integration for confident device-type identification
+- **AI Asset Classification** — DeepSeek (via OpenRouter) analyses port, OS, MAC vendor, DHCP, and existing context to produce a human-readable description and `Accept / Ignore / Investigate` suggestion for each discovered host
+
+### Topology & Relationships
+- **Network Topology** — Interactive collapsible tree view with subnet-aware inference: classifies assets by device type and hostname pattern into gateway → router → switch → access_point → host hierarchy; per-tenant sections for superadmin; DMZ badge, criticality dot, IP inline display
 - **Asset Relationship Graph** — Force-directed canvas graph showing asset connectivity; device type and relationship type filter pills; tenant-scoped view; BFS blast-radius highlighting; drag, zoom, and pan controls
-- **Continuous Posture Management** — Automated drift detection and ongoing posture scoring tracked over time
-- **Threat Intelligence Integration** — Ingests live feeds (AlienVault OTX, ThreatFox, NVD) to identify vulnerable assets proactively
-- **AI-Driven Advisory Pipeline** — DeepSeek (via OpenRouter) generates actionable remediation instructions for security events
+
+### Security Operations
+- **Continuous Posture Management** — Automated drift detection, ongoing posture scoring tracked over time with daily snapshots
+- **Threat Intelligence Integration** — Ingests live feeds (AlienVault OTX, ThreatFox, NVD) every morning (MYT) to identify vulnerable assets proactively
+- **AI-Driven Advisory Pipeline** — DeepSeek generates actionable remediation instructions for security events; queued asynchronously via Cloudflare Queues
+- **SLA Monitoring** — Alerts on advisories open longer than 72 hours; checked every 30 minutes
+
+### SBOM
+- **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOM generation via [Syft](https://github.com/anchore/syft); the EagleEye agent runs Syft locally and POSTs the result to the platform
+- **Dependency Inventory** — Expandable per-SBOM dependency table with package manager filter and search; counts by manager visualised as a bar chart
+- **Superadmin Delete** — Superadmins can delete all SBOM records for an asset directly from the SBOM page
+
+> **Note on SBOM scope:** Syft always runs on the machine where the agent is deployed. The scan target (directory or Docker image) is specified at trigger time via a prompt in the dashboard. To generate SBOMs for multiple assets, deploy an agent on each target machine.
+
+### Reporting & Notifications
 - **Automated Reporting** — Queued PDF report generation stored in Cloudflare R2; secure blob download (no token in URL)
 - **ChatOps Integration** — Telegram bot with role-based filtering and real-time security alerts
 - **Notification Centre** — In-app notification bell with unread count badge; aggregates recent advisories, SLA breaches (>72 h), and agent offline/degraded alerts; last-seen timestamp persisted in localStorage
-- **Global Search** — Live asset search in the top header bar (hostname + IP); debounced 300 ms; results dropdown with device type; navigates to Asset Inventory
+
+### Platform
 - **Multi-Tenant Support** — SuperAdmin role manages multiple tenant organisations; all data scoped by tenant; tenant filter shared between inventory and graph tabs
 - **Agent Management** — Register and monitor EagleEye scanning agents; SHA-256 hashed API keys; read-only config view for non-admin roles
 - **MFA / TOTP** — Per-user two-factor authentication via authenticator apps
 - **Google OAuth** — Sign in with Google; auto-links to existing account by email
+- **Global Search** — Live asset search in the top header bar (hostname + IP); debounced 300 ms; results dropdown with device type; navigates to Asset Inventory
 - **Collapsible Sidebar** — Sidebar collapses to icon-only mode (64 px) or expands to full labels (256 px); logo click navigates to Dashboard; state persists via localStorage
 - **Customisable Theme** — Dark, Light, and System theme modes; colours driven by CSS custom properties so the entire UI switches without touching component code; preference persists via localStorage
 - **Profile Dropdown** — Header avatar opens a dropdown with username, role, tenant name, email; links to Profile & Settings; logout
@@ -65,9 +90,11 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Component | Technology |
 |-----------|------------|
 | Runtime | Python 3.10+ |
-| Scanner | python-nmap (falls back to nmap CLI) |
+| Active Scanner | python-nmap + nmap CLI (NSE: smb-os-discovery, banner) |
+| Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68) |
 | Transport | requests (HTTPS to Workers API) |
 | Auth | Bearer API key + X-Agent-ID header (SHA-256 verified) |
+| Optional | Fingerbank API (DHCP-based device fingerprinting) |
 
 ## Architecture
 
@@ -76,52 +103,60 @@ Browser ──HTTPS──► Cloudflare Pages  (React SPA)
                           │
                           ▼ HTTPS /api/v1
                    Cloudflare Workers  (Hono API)
-                    ├── Neon PostgreSQL  (13 tables)
+                    ├── Neon PostgreSQL  (14 tables)
                     ├── Cloudflare KV    (cache / locks)
                     ├── Cloudflare R2    (PDF reports)
                     └── Cloudflare Queues (async jobs)
 
 Local Network ──► EagleEye Agent (Python)
-                    ├── GET  /scans/pending  (poll every 30s)
-                    └── POST /scans/ingest   (push nmap results)
+                    ├── Active mode
+                    │     ├── GET  /scans/pending  (poll every 30s)
+                    │     └── POST /scans/ingest   (nmap results)
+                    └── Passive mode
+                          ├── ARP sniffer thread       (host discovery)
+                          ├── mDNS/NetBIOS thread      (hostname enrichment)
+                          ├── DHCP fingerprint thread  (device classification)
+                          └── POST /scans/ingest       (flush every --passive-interval)
 ```
 
 ## Project Structure
 
 ```
 UMEagleEye2.0/
-├── workers/                     # Cloudflare Workers backend (primary)
+├── workers/                     # Cloudflare Workers backend
 │   ├── src/
 │   │   ├── db/
-│   │   │   ├── schema.ts        # Drizzle schema (13 tables)
+│   │   │   ├── schema.ts        # Drizzle schema (14 tables)
 │   │   │   └── client.ts        # Neon + Drizzle client
 │   │   ├── lib/
-│   │   │   └── auth.ts          # PBKDF2, JWT, TOTP, Google OAuth
+│   │   │   ├── auth.ts          # PBKDF2, JWT, TOTP, Google OAuth
+│   │   │   └── criticality.ts   # Criticality scoring (device type, owner, internet-facing)
 │   │   ├── middleware/
 │   │   │   └── auth.ts          # JWT middleware + role guard
-│   │   ├── routes/              # API route handlers
-│   │   │   ├── auth.ts          # register, login, MFA, Google, change-password, /me (with tenant name)
-│   │   │   ├── assets.ts        # Asset CRUD + baseline + CSV import + search (hostname + IP)
-│   │   │   ├── scans.ts         # Trigger scan, agent poll, agent ingest, status
+│   │   ├── routes/
+│   │   │   ├── auth.ts          # register, login, MFA, Google, change-password, /me
+│   │   │   ├── assets.ts        # Asset CRUD, baseline, CSV import, SBOM trigger, search
+│   │   │   ├── scans.ts         # Scan dispatch, agent poll, agent ingest (active + passive), auto-expire
+│   │   │   ├── sbom.ts          # SBOM ingest, list, dependencies, stats, delete by asset
 │   │   │   ├── events.ts        # Security events
 │   │   │   ├── advisories.ts    # AI advisory management
 │   │   │   ├── posture.ts       # Posture score + history
 │   │   │   ├── cti.ts           # Threat indicators, MITRE
-│   │   │   ├── reports.ts       # PDF report queue + download
-│   │   │   ├── relationships.ts # Asset graph (tenant_id filter) + subnet inference + BFS blast-radius
+│   │   │   ├── reports.ts       # PDF report queue + secure blob download
+│   │   │   ├── relationships.ts # Asset graph (tenant filter) + subnet inference + BFS blast-radius
 │   │   │   ├── notifications.ts # Aggregated notification feed (advisories, SLA, agents)
 │   │   │   ├── agents.ts        # EagleEye agent registry
 │   │   │   ├── topology.ts      # Network topology tree with subnet-aware inference
-│   │   │   └── tenants.ts       # Multi-tenant management (superadmin)
-│   │   ├── services/            # Business logic
+│   │   │   └── tenants.ts       # Multi-tenant management (superadmin only)
+│   │   ├── services/            # Business logic (drift, posture, CTI)
 │   │   ├── queues/
-│   │   │   └── consumer.ts      # Queue handler (advisory + report jobs)
+│   │   │   └── consumer.ts      # Queue handler (advisory + PDF report jobs)
 │   │   ├── cron/
 │   │   │   └── triggers.ts      # Cron handler (5 scheduled tasks)
 │   │   └── index.ts             # Entry point, CORS, route mounting
 │   ├── drizzle/                 # Generated migration snapshots
 │   ├── wrangler.toml            # Worker config (KV, R2, Queues, Crons)
-│   ├── drizzle.config.ts        # Drizzle Kit config (reads ../.env)
+│   ├── drizzle.config.ts        # Drizzle Kit config
 │   └── package.json
 ├── frontend/                    # React SPA
 │   ├── src/
@@ -133,30 +168,32 @@ UMEagleEye2.0/
 │   │   │   └── common/
 │   │   │       ├── AssetGraph.jsx   # Canvas force-graph with device/rel-type filter pills
 │   │   │       └── BlastRadiusModal.jsx
-│   │   ├── context/             # AuthContext (login, Google login, logout), ThemeContext (dark/light/system)
+│   │   ├── context/             # AuthContext, ThemeContext (dark/light/system)
 │   │   ├── pages/
 │   │   │   ├── LoginPage.jsx
 │   │   │   ├── DashboardPage.jsx
-│   │   │   ├── AssetsPage.jsx       # Inventory + graph; tenant filter shared between tabs
+│   │   │   ├── AssetsPage.jsx       # All assets + relationship graph; tenant filter
 │   │   │   ├── MyAssetsPage.jsx     # Manual assets — add, import CSV, baseline
-│   │   │   ├── DiscoveryPage.jsx    # Scan dispatch + discovered host panel
+│   │   │   ├── DiscoveryPage.jsx    # Scan dispatch (active + passive) + scan history
+│   │   │   ├── SBOMPage.jsx         # SBOM inventory, dependency explorer, charts
 │   │   │   ├── AlertsPage.jsx       # Security events with severity/type filters
 │   │   │   ├── AdvisoriesPage.jsx   # AI advisories with status filter
 │   │   │   ├── ThreatIntelPage.jsx  # CTI indicators + MITRE heatmap
 │   │   │   ├── ReportsPage.jsx      # Report generation + secure blob download
-│   │   │   ├── SettingsPage.jsx     # Profile (with tenant name), password change, integrations
+│   │   │   ├── SettingsPage.jsx     # Profile, password change, integrations
 │   │   │   ├── TopologyPage.jsx     # Collapsible tree; per-tenant sections; DMZ + criticality badges
 │   │   │   ├── AgentsPage.jsx       # Agent registry + RBAC config modal
-│   │   │   └── TenantsPage.jsx      # SuperAdmin only
+│   │   │   └── TenantsPage.jsx      # SuperAdmin only — tenant + user management
 │   │   └── App.jsx
 │   ├── .env.production          # VITE_API_URL + VITE_GOOGLE_CLIENT_ID (git-ignored)
 │   └── package.json
 ├── agent/                       # EagleEye network scanning agent
-│   ├── eagleeye_agent.py        # Poll → Nmap → ingest loop
-│   ├── requirements.txt         # requests, python-nmap
+│   ├── eagleeye_agent.py        # Main agent: active + passive scanning loop
+│   ├── requirements.txt         # requests, python-nmap, scapy
 │   └── README.md
-├── cyberforce_corporation_assets.csv  # Sample dataset — 33 assets (CyberForce)
+├── cyberforce_corporation_assets.csv  # Sample dataset — 33 assets (CyberForce Corp)
 ├── vanilla_corporation_assets.csv     # Sample dataset — 30 assets (Vanilla Corp)
+├── AGENT_SETUP_GUIDE.md         # Step-by-step agent deployment guide
 ├── deploy-workers.ps1           # One-shot full deployment script
 ├── .env                         # All secrets (git-ignored)
 └── .env.example                 # Template for required variables
@@ -166,15 +203,27 @@ UMEagleEye2.0/
 
 | Role | Description |
 |------|-------------|
-| `superadmin` | Full platform access + tenant management; sees all tenants in topology, graph, and inventory |
-| `ops_lead` | Full operational access — scans, assets, reports, advisories, agent config |
-| `security_engineer` | Discovery, threat intel, drift management, advisory pipeline; read-only agent config |
+| `superadmin` | Full platform access + tenant management; sees all tenants in topology, graph, inventory, and SBOM |
+| `ops_lead` | Full operational access — scans, assets, SBOM, reports, advisories, agent config |
+| `security_engineer` | Discovery, SBOM, threat intel, drift management, advisory pipeline; read-only agent config |
 | `mssp_analyst` | Read-only operational modules, advisories, posture reports |
 | `business_owner` | Executive overview — posture metrics and executive reports only; read-only assets |
 
+## Scheduled Tasks (Cron Triggers)
+
+| Schedule (UTC) | MYT Equivalent | Task |
+|---|---|---|
+| `*/15 * * * *` | Every 15 min | Drift audit — compares asset state to baseline snapshots |
+| `*/30 * * * *` | Every 30 min | SLA monitor — Telegram alert for advisories open >72 h |
+| `0 22 * * *` | 6:00 AM | CTI ingestion — pulls AlienVault OTX + ThreatFox feeds |
+| `0 23 * * *` | 7:00 AM | NVD update — fetches recent CVEs from NIST NVD API |
+| `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history |
+
+> There is no scheduled active scan. Active scans (Nmap) are triggered manually from the Discovery page. Passive scanning runs autonomously on the agent at a configurable interval.
+
 ## Network Topology Inference
 
-The `POST /topology/infer` endpoint rebuilds the topology tree from the asset inventory using device classification and subnet-aware parent assignment:
+The `POST /topology/infer` endpoint rebuilds the topology tree from the asset inventory using device classification and subnet-aware parent assignment.
 
 ### Classification rules (priority order)
 
@@ -207,6 +256,151 @@ The `POST /relationships/infer` endpoint builds a star-topology relationship gra
 
 Runs per tenant; clears existing relationships before reinferring.
 
+## Criticality Scoring
+
+Criticality scores (1–10) are computed automatically at ingest time:
+
+| Factor | Effect |
+|--------|--------|
+| Device type: `server` | Higher base score |
+| `is_internet_facing: true` | +2 |
+| No `owner` set | +1 penalty (unowned assets are higher risk) |
+| Device type: `iot` | Moderate base |
+| Device type: `workstation` | Lower base |
+| Device type: `network` | Gateway = high; switch/AP = moderate |
+
+Existing device types are never downgraded on re-scan; only `unknown` can be improved.
+
+## EagleEye Agent
+
+The agent is a Python script deployed on a host inside the target network. It supports two complementary scan modes.
+
+### Prerequisites
+
+```bash
+# Install Python dependencies
+cd agent
+pip install -r requirements.txt
+
+# Active scanning requires nmap
+# Windows:  winget install nmap
+# Linux:    sudo apt install nmap
+
+# Passive scanning requires scapy (Windows: run as Administrator; Linux: run as root)
+# Already included in requirements.txt
+```
+
+### Command-line flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--api-url` | — | Backend API base URL (required) |
+| `--api-key` | — | Agent API key from dashboard (required) |
+| `--agent-id` | — | Agent UUID from dashboard (required) |
+| `--interval` | `30` | Active scan poll interval in seconds |
+| `--heartbeat-interval` | `30` | Heartbeat interval in seconds |
+| `--passive` | off | Enable passive sniffing suite (ARP + mDNS/NetBIOS + DHCP) |
+| `--passive-interface` | auto | Network interface for passive sniffers |
+| `--passive-interval` | `60` | Seconds between autonomous ARP buffer flushes |
+| `--fingerbank-key` | — | Fingerbank API key for DHCP device fingerprinting (optional) |
+
+All flags can alternatively be set via environment variables: `EAGLEEYE_API_URL`, `EAGLEEYE_API_KEY`, `EAGLEEYE_AGENT_ID`, `EAGLEEYE_POLL_INTERVAL`, `EAGLEEYE_HEARTBEAT_INTERVAL`, `EAGLEEYE_PASSIVE`, `EAGLEEYE_PASSIVE_INTERFACE`, `EAGLEEYE_PASSIVE_INTERVAL`, `EAGLEEYE_FINGERBANK_KEY`.
+
+### Active-only mode (default)
+
+```bash
+python eagleeye_agent.py \
+  --api-url  https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
+  --api-key  <key-from-dashboard> \
+  --agent-id <uuid-from-dashboard>
+```
+
+Polls `GET /scans/pending` every 30 s. For each pending active scan: runs Nmap on the target subnet and POSTs results to `POST /scans/ingest`.
+
+### Full passive mode (recommended)
+
+```bash
+# Windows — run as Administrator
+python eagleeye_agent.py \
+  --api-url  https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
+  --api-key  <key-from-dashboard> \
+  --agent-id <uuid-from-dashboard> \
+  --passive \
+  --passive-interval 60
+
+# Linux — run as root
+sudo python eagleeye_agent.py \
+  --api-url  ... \
+  --api-key  ... \
+  --agent-id ... \
+  --passive \
+  --passive-interface eth0 \
+  --passive-interval 60
+```
+
+Passive mode starts three background sniffer threads:
+
+| Thread | BPF filter | Purpose |
+|--------|-----------|---------|
+| `arp-sniffer` | `arp` | Discovers hosts from ARP broadcasts; drainable buffer |
+| `mdns-sniffer` | `udp port 5353 or udp port 137` | Resolves hostnames from mDNS A-records and NetBIOS-NS packets |
+| `dhcp-sniffer` | `udp port 67 or udp port 68` | Captures DHCP option 12 (hostname), 60 (vendor class), 55 (param list) |
+
+Every `--passive-interval` seconds the ARP buffer is drained, hosts enriched with mDNS/DHCP data, and results POSTed to the backend which auto-creates a `passive` scan record (visible in Discovery). When the dashboard triggers a manual passive scan, the buffer is flushed immediately and the pre-created scan record is closed — even if the buffer is empty (shows as Completed / 0 hosts instead of Failed).
+
+### Passive scan hostname priority
+
+```
+mDNS/NetBIOS announcement  (most accurate — device self-announces)
+        ↓ if absent
+DHCP option-12             (client-supplied at DHCP request time)
+        ↓ if absent
+Reverse DNS                (fallback — often unreliable)
+```
+
+### SBOM scan
+
+Triggered from **SBOM page → Re-scan button** (ops_lead or security_engineer) or **My Assets → SBOM icon**. The agent runs:
+
+```bash
+syft <target> -o cyclonedx-json
+```
+
+Where `<target>` is the directory or Docker image entered in the dashboard prompt. If no target is given, the agent falls back to its own installation directory. Syft must be installed separately:
+
+```
+# Windows
+winget install Anchore.Syft
+
+# Linux / macOS
+curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
+```
+
+### Main loop flow
+
+```
+every --interval seconds:
+  1. GET /scans/pending
+     ├── passive scan  → drain ARP buffer → enrich → POST /scans/ingest (even if empty)
+     ├── active scan   → run nmap → POST /scans/ingest
+     └── sbom scan     → run syft → POST /sboms/ingest
+
+  2. Autonomous passive flush (if --passive and interval elapsed):
+     → drain ARP buffer → enrich → POST /scans/ingest (skip if empty)
+```
+
+## Asset Source Hierarchy
+
+Assets have a `source` field that controls upsert precedence:
+
+| Source | Set by | Description |
+|--------|--------|-------------|
+| `manual` | My Assets page or CSV import | User-managed; shown in My Assets count |
+| `scan_active` | Active Nmap scan | Discovered by active scanning |
+| `scan_passive` | Passive ARP/mDNS/DHCP scan | Discovered by passive sniffing |
+
+The `source` field is never downgraded (a `manual` asset ingested by a passive scan remains `manual`). The Tenants page asset count shows only `source = 'manual'` assets.
+
 ## UI / UX
 
 ### Top Header Bar
@@ -219,19 +413,6 @@ Runs per tenant; clears existing relationships before reinferring.
 | Notification bell | Fetches `/notifications`; shows unread count badge; dropdown lists advisories, SLA breaches, agent alerts |
 | Profile avatar | Dropdown: username, role, tenant name, email; links to Settings; Logout |
 
-### Sidebar Logo
-
-Clicking the UMEagleEye logo at the top of the sidebar always navigates to the **Dashboard** (`/`).
-
-### Collapsible Sidebar
-
-The sidebar toggles between expanded (256 px) and collapsed (64 px, icons only):
-
-- **PanelLeft** in the header bar toggles from outside
-- **ChevronLeft** inside the sidebar collapses it
-- Collapsed state persists via `localStorage('sidebar-collapsed')`
-- All nav items show a tooltip (route label) when collapsed
-
 ### Theme System
 
 | Mode | Behaviour |
@@ -240,64 +421,26 @@ The sidebar toggles between expanded (256 px) and collapsed (64 px, icons only):
 | `light` | Inverted light palette (white surfaces, near-black text) |
 | `system` | Follows OS `prefers-color-scheme`; updates automatically |
 
-All `dark-XXX` Tailwind colours are backed by CSS custom properties in `index.css`. Adding `html.light` swaps every variable — no JSX needs conditional class logic.
-
-### Asset Relationship Graph Filters
-
-The graph tab includes two rows of toggle pills above the canvas:
-
-- **Device type pills** — Server / Workstation / Network / IoT; each colored to match the node; click to show/hide that node type (edges to hidden nodes are also hidden)
-- **Relationship type pills** — Subnet / Connects / Depends / Auth / Exposes; click to show/hide that edge type
-
-Filters apply instantly without re-running the force simulation. Both pill rows also reflect the count of each type from the loaded data.
+All `dark-XXX` Tailwind colours are backed by CSS custom properties in `index.css`. Adding `html.light` swaps every variable — no JSX needs conditional class logic. Chart tooltips use `--dark-700` background (one step above card surface) so they are visible and elevated in both modes.
 
 ### Network Topology View
 
 - Superadmin sees one collapsible card per tenant; each shows node count and collapses independently
-- Per-node: colored icon by type, hostname, IP, layer badge, type badge
+- Per-node: coloured icon by type, hostname, IP, layer badge, type badge
 - **DMZ** badge for `is_internet_facing` assets
 - Criticality dot (red ≥10, orange ≥9, yellow ≥8) for high-risk nodes
 - Tenant filter dropdown (superadmin) also filters the topology tree
 
-## EagleEye Agent
+### Asset Relationship Graph Filters
 
-The agent is a lightweight Python script deployed on a host inside the target network.
+- **Device type pills** — Server / Workstation / Network / IoT; click to show/hide that node type
+- **Relationship type pills** — Subnet / Connects / Depends / Auth / Exposes; click to show/hide that edge type
 
-### Setup
-
-```bash
-cd agent
-pip install -r requirements.txt
-```
-
-### Usage
-
-```bash
-python eagleeye_agent.py \
-  --api-url https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
-  --api-key <key-from-dashboard> \
-  --agent-id <uuid-from-dashboard>
-```
-
-Or via environment variables:
-
-```bash
-export EAGLEEYE_API_URL=https://umeagleeye-api.syntaxch404.workers.dev/api/v1
-export EAGLEEYE_API_KEY=<key>
-export EAGLEEYE_AGENT_ID=<uuid>
-python eagleeye_agent.py
-```
-
-### Workflow
-
-1. Agent polls `GET /scans/pending` every 30 seconds (sends heartbeat on each poll)
-2. For each pending scan: runs `nmap -sV -T4` on the configured subnet
-3. POSTs discovered hosts to `POST /scans/ingest`
-4. Backend upserts assets and queues AI advisory generation for each discovered host
+Filters apply instantly without re-running the force simulation.
 
 ## Asset Import (CSV)
 
-Tenants can bulk-import assets from a CSV file via **My Assets → Import CSV**.
+Tenants can bulk-import assets via **My Assets → Import CSV**.
 
 ### Supported columns
 
@@ -316,10 +459,9 @@ Tenants can bulk-import assets from a CSV file via **My Assets → Import CSV**.
 | `open_ports` | No | Space or comma-separated ports (e.g. `22/tcp 80/tcp 443/tcp`) |
 
 - Existing assets (matched by IP + tenant) are **updated**; new IPs are **inserted**
-- Port data is stored in `osInfo.ports` and included in baseline snapshots
-- Download the template from within the Import modal
+- Upserts use `ON CONFLICT (ip_address, tenant_id) DO UPDATE` — concurrent agents never create duplicates
 
-Sample datasets are included in the repository root:
+Sample datasets included in the repository root:
 
 | File | Tenant | Assets |
 |------|--------|--------|
@@ -328,7 +470,7 @@ Sample datasets are included in the repository root:
 
 ## Baseline Snapshots
 
-Setting a baseline via **My Assets → Bookmark icon** captures a point-in-time snapshot of:
+Setting a baseline via **My Assets → Bookmark icon** captures a point-in-time snapshot:
 
 ```json
 {
@@ -340,7 +482,7 @@ Setting a baseline via **My Assets → Bookmark icon** captures a point-in-time 
 }
 ```
 
-The advisory worker (`drift_check` queue messages) compares incoming scan results against this snapshot to detect configuration drift.
+The advisory worker (`drift_check` queue messages) compares incoming scan results against this snapshot to detect configuration drift and generate AI remediation advisories.
 
 ## Deployment
 
@@ -349,7 +491,7 @@ The advisory worker (`drift_check` queue messages) compares incoming scan result
 - [Cloudflare account](https://cloudflare.com) (free tier sufficient)
 - [Neon account](https://neon.tech) (free tier sufficient)
 - Cloudflare Queues `advisory-queue` and `report-queue` created
-- Cloudflare R2 enabled and bucket `umeagleeye-reports` created
+- Cloudflare R2 bucket `umeagleeye-reports` created
 - Cloudflare KV namespace created
 
 ### First-time full deployment
@@ -372,7 +514,7 @@ The `deploy-workers.ps1` script:
 1. Pushes all secrets from `.env` to Cloudflare Workers via `wrangler secret put`
 2. Deploys the Worker to `https://umeagleeye-api.<subdomain>.workers.dev`
 3. Updates `frontend/.env.production` with the Workers URL
-4. Builds and deploys the frontend to Cloudflare Pages
+4. Builds and deploys the frontend to Cloudflare Pages (`umeagleeye-caasm`)
 
 ### Redeploy after code changes
 
@@ -405,6 +547,7 @@ See `.env.example` for the full list. Key variables:
 | `JWT_SECRET_KEY` | HS256 signing secret (min 32 chars) |
 | `GOOGLE_CLIENT_ID` | Google OAuth Client ID |
 | `OPENROUTER_API_KEY` | DeepSeek AI via OpenRouter |
+| `OPENROUTER_MODEL` | Model ID (default: `deepseek/deepseek-chat`) |
 | `TELEGRAM_BOT_TOKEN` | Telegram ChatOps bot token |
 | `TELEGRAM_CHAT_ID` | Telegram chat/user ID for notifications |
 | `OTX_API_KEY` | AlienVault OTX threat intelligence |
@@ -431,5 +574,5 @@ npm run dev
 
 ---
 
-*Final Year Project — University of Malaya, Faculty of Computer Science & Information Technology*  
+*Final Year Project — University of Malaya, Faculty of Computer Science & Information Technology*
 *Supervisor: Dr. Badrul Hisham*

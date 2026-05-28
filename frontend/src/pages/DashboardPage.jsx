@@ -137,7 +137,7 @@ export default function DashboardPage() {
               <XAxis dataKey="day" tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
               <YAxis domain={[0, 100]} tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
               <Tooltip
-                contentStyle={{ background: '#1e2028', border: '1px solid #3e4047', borderRadius: '8px', color: '#e2e3e5' }}
+                contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
               />
               <Area type="monotone" dataKey="score" stroke="#3393ff" fill="url(#scoreGradient)" strokeWidth={2} />
             </AreaChart>
@@ -166,7 +166,7 @@ export default function DashboardPage() {
                 ))}
               </Pie>
               <Tooltip
-                contentStyle={{ background: '#1e2028', border: '1px solid #3e4047', borderRadius: '8px', color: '#e2e3e5' }}
+                contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
               />
             </PieChart>
           </ResponsiveContainer>

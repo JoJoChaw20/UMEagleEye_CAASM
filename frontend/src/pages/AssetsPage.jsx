@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Server, Search, RefreshCw, Wifi, Shield, Bookmark, GitBranch, Target, Building2 } from 'lucide-react'
+import { Server, Search, Shield, Bookmark, GitBranch, Target, Building2, CheckCircle } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import AssetGraph from '../components/common/AssetGraph'
@@ -43,19 +43,35 @@ export default function AssetsPage() {
     finally { setLoading(false) }
   }
 
-  const triggerScan = async () => {
-    setScanning(true)
+  const promoteToMyAssets = async (asset) => {
     try {
-      await client.post('/scans/active', { scan_type: 'nmap' })
-      setTimeout(() => { loadAssets(); setScanning(false) }, 5000)
-    } catch (err) { setScanning(false) }
+      await client.post('/assets', {
+        ip_address: asset.ipAddress,
+        hostname: asset.hostname || undefined,
+        mac_address: asset.macAddress || undefined,
+        device_type: asset.deviceType,
+        os_info: asset.osInfo || undefined,
+        is_internet_facing: asset.isInternetFacing,
+        source: 'manual',
+        tenant_id: asset.tenantId || undefined,
+      })
+      loadAssets()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to accept asset')
+    }
   }
 
   const triggerSbomScan = async (assetId) => {
-    const target = prompt("Enter scan target (e.g. image:ubuntu:22.04, image:nginx:alpine, dir:/app):", "image:nginx:alpine");
-    if (!target) return;
+    const target = prompt(
+      "Enter Syft scan target (leave blank to scan the agent machine's filesystem):\n" +
+      "  • Blank / dir:C:\\Program Files  — agent machine (Windows default)\n" +
+      "  • dir:/home             — agent machine (Linux default)\n" +
+      "  • image:nginx:alpine    — Docker image on agent machine",
+      ""
+    );
+    if (target === null) return;  // user pressed Cancel
     try {
-      await client.post(`/assets/${assetId}/scan-sbom`, { target })
+      await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
       alert('SBOM Scan queued. Check Alerts page in a few minutes.')
     } catch (err) {
       console.error(err)
@@ -77,6 +93,12 @@ export default function AssetsPage() {
 
   const handleGraphAssetSelect = (assetId) => {
     setGraphBlastId(prev => prev === assetId ? null : assetId)
+  }
+
+  const SOURCE_META = {
+    manual:       { label: 'My Assets', cls: 'bg-green-500/20 text-green-400 border-green-500/30' },
+    scan_active:  { label: 'Active scan', cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+    scan_passive: { label: 'Passive scan', cls: 'bg-dark-600/40 text-dark-400 border-dark-500/30' },
   }
 
   const DEVICE_TYPE_META = {
@@ -167,63 +189,75 @@ export default function AssetsPage() {
               </div>
             ) : assets.length > 0 ? (
               <table className="data-table">
-                <thead><tr><th>Type</th><th>Hostname</th><th>IP Address</th><th>Vendor</th><th className="criticality-col">Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Type</th><th>Hostname / IP</th><th>Source</th><th>Vendor</th><th className="criticality-col">Criticality</th><th>Baseline</th><th>Last Scanned</th><th>Actions</th></tr></thead>
                 <tbody>
-                  {assets.map((a) => (
-                    <tr key={a.assetId}>
-                      <td>
-                        {(() => {
-                          const meta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
-                          return (
-                            <span className="flex items-center gap-1.5 whitespace-nowrap">
-                              <span className="text-base leading-none">{meta.icon}</span>
-                              <span className="text-xs text-dark-300">{meta.label}</span>
-                            </span>
-                          )
-                        })()}
-                      </td>
-                      <td className="font-medium text-white">{a.hostname || '—'}</td>
-                      <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
-                      <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>
-                      <td className="criticality-col">
-                        {(() => {
-                          const { label, cls } = getCriticalityMeta(a.criticalityScore)
-                          return (
-                            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cls}`}>
-                              {a.criticalityScore}/10 <span className="opacity-70">{label}</span>
-                            </span>
-                          )
-                        })()}
-                      </td>
-                      <td>{a.baselineState ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
-                      <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
-                      <td>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => triggerSbomScan(a.assetId)}
-                            className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
-                            title="Scan SBOM"
-                          >
-                            <Shield className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => triggerSetBaseline(a.assetId)}
-                            className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
-                            title="Set Baseline"
-                          >
-                            <Bookmark className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => setBlastRadiusAssetId(a.assetId)}
-                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                            title="Blast Radius"
-                          >
-                            <Target className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {assets.map((a) => {
+                    const srcMeta = SOURCE_META[a.source] ?? SOURCE_META.scan_passive
+                    const isManual = a.source === 'manual'
+                    const deviceMeta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
+                    const { label: critLabel, cls: critCls } = getCriticalityMeta(a.criticalityScore)
+                    return (
+                      <tr key={a.assetId}>
+                        <td>
+                          <span className="flex items-center gap-1.5 whitespace-nowrap">
+                            <span className="text-base leading-none">{deviceMeta.icon}</span>
+                            <span className="text-xs text-dark-300">{deviceMeta.label}</span>
+                          </span>
+                        </td>
+                        <td>
+                          <div className="font-medium text-white">{a.hostname || '—'}</div>
+                          <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
+                        </td>
+                        <td>
+                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>
+                            {srcMeta.label}
+                          </span>
+                        </td>
+                        <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>
+                        <td className="criticality-col">
+                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${critCls}`}>
+                            {a.criticalityScore}/10 <span className="opacity-70">{critLabel}</span>
+                          </span>
+                        </td>
+                        <td>{a.baselineState ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
+                        <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
+                        <td>
+                          <div className="flex items-center gap-1">
+                            {!isManual && (
+                              <button
+                                onClick={() => promoteToMyAssets(a)}
+                                className="p-1.5 hover:bg-green-500/10 rounded text-dark-400 hover:text-green-400 transition-colors"
+                                title="Accept to My Assets"
+                              >
+                                <CheckCircle className="w-4 h-4" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => triggerSbomScan(a.assetId)}
+                              className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
+                              title="Scan SBOM"
+                            >
+                              <Shield className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => triggerSetBaseline(a.assetId)}
+                              className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
+                              title="Set Baseline"
+                            >
+                              <Bookmark className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => setBlastRadiusAssetId(a.assetId)}
+                              className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                              title="Blast Radius"
+                            >
+                              <Target className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             ) : (

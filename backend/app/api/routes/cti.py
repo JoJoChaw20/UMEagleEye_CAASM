@@ -77,6 +77,67 @@ async def trigger_cti_ingestion(
     return {"task_id": task.id, "status": "QUEUED"}
 
 
+@router.get("/lookup")
+async def lookup_indicator(
+    value: str = Query(..., description="IP, domain, URL, or hash to look up"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Look up a specific IOC value in the threat intelligence database.
+
+    Returns the indicator record if found, plus a cross-reference
+    against internal assets for immediate triage context.
+    """
+    from app.db.models import Asset
+
+    # Find the indicator
+    result = await db.execute(
+        select(CTIIndicator).where(CTIIndicator.value == value.strip())
+    )
+    indicator = result.scalar_one_or_none()
+
+    # Cross-reference against assets (IP only)
+    matched_asset = None
+    try:
+        asset_result = await db.execute(
+            select(Asset).where(Asset.ip_address == value.strip()).limit(1)
+        )
+        asset = asset_result.scalar_one_or_none()
+        if asset:
+            matched_asset = {
+                "asset_id": str(asset.asset_id),
+                "hostname": asset.hostname,
+                "ip_address": str(asset.ip_address),
+                "criticality_score": asset.criticality_score,
+                "is_internet_facing": asset.is_internet_facing,
+            }
+    except Exception:
+        pass  # Non-IP lookups will fail the INET cast — expected
+
+    if indicator:
+        return {
+            "found": True,
+            "indicator": {
+                "indicator_id": str(indicator.indicator_id),
+                "source": indicator.source,
+                "indicator_type": indicator.indicator_type.value,
+                "value": indicator.value,
+                "confidence_score": float(indicator.confidence_score) if indicator.confidence_score else None,
+                "attack_tactic": indicator.attack_tactic,
+                "attack_technique": indicator.attack_technique,
+                "first_seen": indicator.first_seen.isoformat(),
+                "last_seen": indicator.last_seen.isoformat(),
+            },
+            "matched_internal_asset": matched_asset,
+        }
+
+    return {
+        "found": False,
+        "value": value,
+        "matched_internal_asset": matched_asset,
+    }
+
+
 @router.get("/stats")
 async def get_cti_stats(
     db: AsyncSession = Depends(get_db),

@@ -37,6 +37,7 @@ import argparse
 import json
 import logging
 import os
+import platform
 import re
 import socket
 import subprocess
@@ -140,10 +141,13 @@ def run_nmap(subnet: str) -> list[dict[str, Any]]:
                     "accuracy": best.get("accuracy", ""),
                 }
 
-            # Hostname: nmap DNS → SMB computer name
-            hostname = host.hostname() or None
-            if not hostname and os_info.get("smb_computer_name"):
-                hostname = os_info["smb_computer_name"]
+            # Hostname: SMB computer name (most reliable) → nmap reverse-DNS
+            # DNS is skipped when it returns Docker-internal artefacts
+            smb_computer_name = os_info.get("smb_computer_name") or None
+            dns_hostname = host.hostname() or None
+            if dns_hostname and ("docker.internal" in dns_hostname or dns_hostname.startswith("docker")):
+                dns_hostname = None
+            hostname = smb_computer_name or dns_hostname
 
             hosts.append({
                 "ip":       ip,
@@ -650,16 +654,44 @@ class AgentClient:
         }
         return self._post_ingest(payload, label=f"active scan {scan_id[:8]}…", scan_id=scan_id)
 
-    def ingest_passive(self, hosts: list[dict]) -> bool:
-        """Ingest passively discovered hosts — backend auto-creates the scan record."""
-        if not hosts:
-            return True
-        payload = {
+    def ingest_passive(self, hosts: list[dict], scan_id: Optional[str] = None) -> bool:
+        """Ingest passively discovered hosts.
+        If scan_id is given (dashboard-triggered), links results to that record.
+        If scan_id is None (autonomous flush), backend auto-creates the scan record.
+        Empty hosts with a scan_id still POSTs so the dashboard record is closed as Completed(0).
+        """
+        if not hosts and not scan_id:
+            return True  # autonomous flush: nothing new — skip silently
+        payload: dict = {
             "agent_id":  self.agent_id,
             "scan_type": "passive",
             "hosts":     hosts,
         }
-        return self._post_ingest(payload, label=f"passive ({len(hosts)} host(s))")
+        if scan_id:
+            payload["scan_id"] = scan_id
+        label = f"passive scan {scan_id[:8]}…" if scan_id else f"passive ({len(hosts)} host(s))"
+        return self._post_ingest(payload, label=label)
+
+    def ingest_sbom(self, scan_id: str, sbom_json: dict) -> bool:
+        """POST a CycloneDX SBOM JSON to the /sboms/ingest endpoint."""
+        payload = {
+            "agent_id": self.agent_id,
+            "scan_id":  scan_id,
+            "sbom":     sbom_json,
+        }
+        try:
+            resp = self.session.post(
+                f"{self.api_url}/sboms/ingest",
+                data=json.dumps(payload), timeout=300,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            log.info(f"SBOM ingested — sbom_id={data.get('sbom_id', '?')}, "
+                     f"{data.get('dependencies_inserted', 0)} dependencies")
+            return True
+        except requests.RequestException as e:
+            log.error(f"Failed to ingest SBOM: {e}")
+            return False
 
     def _post_ingest(self, payload: dict, label: str, scan_id: Optional[str] = None) -> bool:
         try:
@@ -687,6 +719,44 @@ class AgentClient:
                 except Exception:
                     pass
             return False
+
+
+
+# ── SBOM scanning via Syft ────────────────────────────────────────────────────
+
+def run_sbom_scan(scan: dict, client: AgentClient) -> None:
+    """Run Syft on this machine to generate a CycloneDX SBOM, then POST it."""
+    scan_id  = scan.get("scan_id") or scan.get("scanId")
+    raw      = scan.get("raw_results") or scan.get("rawResults") or []
+
+    # Optional Syft target hint embedded in the scan record
+    target: Optional[str] = None
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+        target = raw[0].get("target")
+
+    if not target:
+        target = "dir:C:\\FYP\\UMEagleEye2.0" if platform.system() == "Windows" else "dir:/usr"
+
+    log.info(f"Starting SBOM scan (scan_id={scan_id}) — target={target}")
+    try:
+        result = subprocess.run(
+            ["syft", target, "-o", "cyclonedx-json"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            log.error(f"Syft exited {result.returncode}: {result.stderr[:500]}")
+            return
+        sbom_json = json.loads(result.stdout)
+        client.ingest_sbom(scan_id, sbom_json)
+    except FileNotFoundError:
+        log.error("syft not found — install with: winget install Anchore.Syft  (Windows) "
+                  "or: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh  (Linux/macOS)")
+    except subprocess.TimeoutExpired:
+        log.error("Syft scan timed out (>600 s)")
+    except json.JSONDecodeError as e:
+        log.error(f"Failed to parse Syft output as JSON: {e}")
+    except Exception as e:
+        log.error(f"SBOM scan error: {e}", exc_info=True)
 
 
 # ── Background threads ────────────────────────────────────────────────────────
@@ -785,6 +855,9 @@ def main():
             dhcp_sniffer = None
 
     # ── Main loop ──
+    # Initialise flush timer so the first autonomous flush fires after one full interval
+    last_passive_flush = time.time()
+
     while True:
         try:
             pending = client.get_pending_scans()
@@ -794,6 +867,10 @@ def main():
                     scan_id   = scan.get("scan_id") or scan.get("scanId")
                     subnet    = scan.get("subnet", "192.168.1.0/24")
                     scan_type = scan.get("scan_type") or scan.get("scanType") or "active"
+                    status    = scan.get("status", "pending")
+                    if status == "cancelled":
+                        log.info(f"Skipping cancelled scan {scan_id[:8] if scan_id else '?'}…")
+                        continue
 
                     if scan_type == "passive":
                         log.info(f"Processing PASSIVE scan {scan_id[:8]}… draining sniffers")
@@ -802,17 +879,32 @@ def main():
                             hosts = enrich_passive_hosts(hosts, mdns_sniffer, dhcp_sniffer)
                             if hosts:
                                 log.info(f"Flushed {len(hosts)} enriched host(s) for passive scan")
-                                client.ingest_results(scan_id, hosts)
                             else:
-                                log.warning(
-                                    f"Passive scan {scan_id[:8]}: ARP buffer empty — "
-                                    "wait for devices to broadcast ARP or try again later"
+                                log.info(
+                                    f"Passive scan {scan_id[:8]}: ARP buffer empty "
+                                    "(autonomous flush ran recently) — completing with 0 hosts"
                                 )
+                            # Always POST so the dashboard record closes as Completed, not Failed.
+                            # ingest_passive handles empty hosts gracefully when scan_id is set.
+                            client.ingest_passive(hosts, scan_id=scan_id)
+                            if hosts:
+                                last_passive_flush = time.time()  # reset autonomous timer only when data flushed
                         else:
                             log.warning(
-                                f"Passive scan {scan_id[:8]} requested but agent is not in "
-                                "passive mode. Restart with --passive to enable sniffing."
+                                f"Passive scan {scan_id[:8]}: agent not in passive mode — "
+                                "marking as failed. Restart with --passive to enable sniffing."
                             )
+                            try:
+                                client.session.post(
+                                    f"{client.api_url}/scans/fail",
+                                    data=json.dumps({"agent_id": client.agent_id, "scan_id": scan_id}),
+                                    timeout=10,
+                                )
+                            except Exception:
+                                pass
+                    elif scan_type == "sbom":
+                        log.info(f"Processing SBOM scan {scan_id[:8]}…")
+                        run_sbom_scan(scan, client)
                     else:
                         # Active scan: run nmap with enhanced NSE scripts
                         log.info(f"Processing ACTIVE scan {scan_id[:8]}… subnet={subnet}")
@@ -820,6 +912,24 @@ def main():
                         client.ingest_results(scan_id, hosts)
             else:
                 log.debug("No pending scans")
+
+            # ── Autonomous periodic passive flush ──────────────────────────────
+            # Runs every --passive-interval seconds regardless of dashboard triggers.
+            # Backend auto-creates a scan record for each flush (no scan_id needed).
+            if args.passive and arp_sniffer:
+                elapsed = time.time() - last_passive_flush
+                if elapsed >= args.passive_interval:
+                    hosts = arp_sniffer.drain()
+                    if hosts:
+                        hosts = enrich_passive_hosts(hosts, mdns_sniffer, dhcp_sniffer)
+                        log.info(
+                            f"[AUTO] Flushing {len(hosts)} passive host(s) "
+                            f"(interval={args.passive_interval}s)"
+                        )
+                        client.ingest_passive(hosts)
+                    else:
+                        log.debug("[AUTO] Passive flush: ARP buffer empty, nothing to ingest")
+                    last_passive_flush = time.time()
 
         except KeyboardInterrupt:
             log.info("Shutting down")

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, desc, ne } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -32,8 +32,11 @@ async function fetchMacVendor(mac: string | null | undefined): Promise<string | 
   }
 }
 
-function inferDeviceType(ports: NmapPort[], ip?: string): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
-  // Gateway IPs (ending in .1 or .254) are always network devices
+function inferDeviceType(
+  ports: NmapPort[],
+  ip?: string,
+  os?: Record<string, unknown> | null,
+): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
   if (ip) {
     const last = ip.split('.').pop()
     if (last === '1' || last === '254') return 'network'
@@ -42,7 +45,16 @@ function inferDeviceType(ports: NmapPort[], ip?: string): 'server' | 'workstatio
   if (/busybox|router|cisco|juniper|aruba|mikrotik|ubiquiti|fortigate|panos|snmp/.test(text)) return 'network'
   if (/rdp|remote.desktop/.test(text) || ports.some(p => p.port === 3389)) return 'workstation'
   if (ports.some(p => [22, 80, 443, 3306, 5432, 8080, 8443, 6379, 27017, 1433].includes(p.port))) return 'server'
-  // No port signal and no OUI table — LLM will use mac_vendor field for final classification
+
+  // OS-based fallback when no port signal is available
+  if (os) {
+    const hint = String(os.dhcp_device_hint ?? os.name ?? os.fingerbank_device ?? '').toLowerCase()
+    if (/windows|macos|darwin|desktop|workstation|laptop/.test(hint)) return 'workstation'
+    if (/android|iphone|ipad|mobile/.test(hint)) return 'iot'
+    if (/server/.test(hint) || (/linux|ubuntu|debian|centos|rhel/.test(hint) && !/desktop/.test(hint))) return 'server'
+    if (/cisco|router|switch|ap |access.point|aruba|ubiquiti/.test(hint)) return 'network'
+  }
+
   return 'unknown'
 }
 
@@ -78,14 +90,20 @@ app.get('/', authMiddleware, async (c) => {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
-    let rows = await db
+    const tenantCondition = (user.role !== 'superadmin' && user.tenantId)
+      ? eq(scanResults.tenantId, user.tenantId)
+      : undefined
+
+    const whereClause = tenantCondition
+      ? and(ne(scanResults.scanType, 'sbom'), tenantCondition)
+      : ne(scanResults.scanType, 'sbom')
+
+    const rows = await db
       .select()
       .from(scanResults)
+      .where(whereClause)
+      .orderBy(desc(scanResults.startedAt))
       .limit(100)
-
-    if (user.role !== 'superadmin' && user.tenantId) {
-      rows = rows.filter(r => r.tenantId === user.tenantId)
-    }
 
     return c.json({ scans: rows, total: rows.length })
   } catch (err) {
@@ -120,10 +138,28 @@ app.get('/pending', async (c) => {
       .set({ status: 'online', lastHeartbeat: new Date() })
       .where(eq(agents.agentId, agentId))
 
+    // Auto-expire passive scans pending > 10 min — they loop forever when agent
+    // isn't in --passive mode and the agent already marks them failed anyway.
+    await db.update(scanResults)
+      .set({ status: 'failed', completedAt: new Date() })
+      .where(and(
+        eq(scanResults.agentId, agentId),
+        eq(scanResults.status, 'pending'),
+        eq(scanResults.scanType, 'passive'),
+        sql`${scanResults.startedAt} < now() - interval '10 minutes'`,
+      ))
+
     const pending = await db
       .select()
       .from(scanResults)
-      .where(and(eq(scanResults.agentId, agentId), eq(scanResults.status, 'pending')))
+      .where(and(
+        eq(scanResults.agentId, agentId),
+        eq(scanResults.status, 'pending'),
+        // Skip SBOM scans whose asset (stored in subnet) no longer exists
+        sql`(${scanResults.scanType} != 'sbom' OR EXISTS (
+          SELECT 1 FROM assets WHERE asset_id::text = ${scanResults.subnet}
+        ))`,
+      ))
       .limit(5)
 
     return c.json({ scans: pending })
@@ -472,7 +508,7 @@ Example:
     const upsertedAssetIds: string[] = []
     for (const host of enhancedHosts) {
       const ports = (host.ports ?? []) as NmapPort[]
-      const deviceType = inferDeviceType(ports, host.ip)
+      const deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null)
       const osInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports)
       const internetFacing = isGatewayIp(host.ip)
 
@@ -515,7 +551,7 @@ Example:
             ? [assets.ipAddress, assets.tenantId]
             : [assets.ipAddress],
           set: {
-            hostname: sql`COALESCE(EXCLUDED.hostname, assets.hostname)`,
+            hostname: sql`COALESCE(assets.hostname, EXCLUDED.hostname)`,
             macAddress: sql`COALESCE(EXCLUDED.mac_address, assets.mac_address)`,
             osInfo: sql`EXCLUDED.os_info`,
             deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
@@ -530,24 +566,17 @@ Example:
       if (upserted?.assetId) upsertedAssetIds.push(upserted.assetId)
     }
 
-    // Update active scan result (passive scan record was already written above)
-    if (!isPassive) {
-      await db
-        .update(scanResults)
-        .set({
-          status: 'completed',
-          hostsDiscovered: enhancedHosts.length,
-          rawResults: enhancedHosts,
-          completedAt: new Date(),
-        })
-        .where(eq(scanResults.scanId, effectiveScanId))
-    } else {
-      // Update host count in case it was pre-created with 0
-      await db
-        .update(scanResults)
-        .set({ hostsDiscovered: enhancedHosts.length })
-        .where(eq(scanResults.scanId, effectiveScanId))
-    }
+    // Mark scan completed — unified for active, dashboard-triggered passive, and
+    // auto-created passive records (auto-created are already 'completed' but this is idempotent)
+    await db
+      .update(scanResults)
+      .set({
+        status: 'completed',
+        hostsDiscovered: enhancedHosts.length,
+        rawResults: enhancedHosts,
+        completedAt: new Date(),
+      })
+      .where(eq(scanResults.scanId, effectiveScanId))
 
     // Trigger drift check advisory for each asset
     for (const assetId of upsertedAssetIds) {

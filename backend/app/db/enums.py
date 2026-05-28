@@ -59,6 +59,7 @@ class UserRole(str, enum.Enum):
     SECURITY_ENGINEER = "security_engineer"
     BUSINESS_OWNER = "business_owner"
     MSSP_ANALYST = "mssp_analyst"
+    SUPERADMIN = "superadmin"   # Platform super-admin (bypasses all RBAC guards)
 
 
 class RelationshipType(str, enum.Enum):

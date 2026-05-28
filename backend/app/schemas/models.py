@@ -96,6 +96,8 @@ class ScanStatusResponse(BaseModel):
 class EventResponse(BaseModel):
     event_id: UUID
     asset_id: UUID
+    asset_hostname: Optional[str] = None
+    asset_ip: Optional[str] = None
     event_type: EventType
     severity: Severity
     details: Dict[str, Any]
@@ -157,7 +159,14 @@ class SBOMResponse(BaseModel):
 
 
 class SBOMDetailResponse(SBOMResponse):
-    raw_data: Dict[str, Any]
+    raw_data: Optional[Dict[str, Any]] = None
+
+
+class SBOMListResponse(BaseModel):
+    items: List[SBOMResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class SBOMScanRequest(BaseModel):

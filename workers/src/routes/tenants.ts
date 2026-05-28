@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, count } from 'drizzle-orm'
+import { eq, count, and } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -73,7 +73,7 @@ router.get('/:tenantId', ...superadminOnly, async (c) => {
   const [assetCountRow] = await db
     .select({ value: count() })
     .from(assets)
-    .where(eq(assets.tenantId, tenantId))
+    .where(and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual')))
 
   return c.json({
     tenant_id: tenant.tenantId,

@@ -1,0 +1,523 @@
+import { useState, useEffect, useCallback } from 'react'
+import {
+  Package, Shield, Search, ChevronDown, ChevronUp,
+  RefreshCw, FileCode2, Database, Cpu, CheckCircle2, Trash2,
+} from 'lucide-react'
+import {
+  BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
+} from 'recharts'
+import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
+
+// ── Package-manager icon/label map ────────────────────────────
+const PM_META = {
+  pip:    { icon: '🐍', label: 'pip (Python)',  color: '#3b82f6' },
+  npm:    { icon: '📦', label: 'npm (Node)',    color: '#f59e0b' },
+  maven:  { icon: '☕', label: 'Maven (Java)',  color: '#ef4444' },
+  apk:    { icon: '🐧', label: 'apk (Alpine)',  color: '#10b981' },
+  deb:    { icon: '📋', label: 'deb (Debian)',  color: '#8b5cf6' },
+  rpm:    { icon: '🎩', label: 'rpm (RHEL)',    color: '#ec4899' },
+  go:     { icon: '🐹', label: 'go (Golang)',   color: '#06b6d4' },
+  system: { icon: '⚙️', label: 'System',        color: '#6b7280' },
+}
+const pmColor  = (pm) => PM_META[pm]?.color  ?? '#6b7280'
+const pmIcon   = (pm) => PM_META[pm]?.icon   ?? '📦'
+const pmLabel  = (pm) => PM_META[pm]?.label  ?? pm
+
+export default function SBOMPage() {
+  const { user } = useAuth()
+  const canScan = ['ops_lead', 'security_engineer'].includes(user?.role)
+  const isSuperAdmin = user?.role === 'superadmin'
+
+  // ── State ────────────────────────────────────────────────────
+  const [sboms,       setSboms]       = useState([])
+  const [stats,       setStats]       = useState(null)
+  const [total,       setTotal]       = useState(0)
+  const [page,        setPage]        = useState(1)
+  const [loading,     setLoading]     = useState(true)
+
+  // Expanded SBOM → dependency panel
+  const [expandedId,  setExpandedId]  = useState(null)
+  const [deps,        setDeps]        = useState([])
+  const [depsLoading, setDepsLoading] = useState(false)
+  const [depSearch,   setDepSearch]   = useState('')
+  const [pmFilter,    setPmFilter]    = useState('')
+
+  // Per-asset SBOM scan trigger
+  const [scanning,    setScanning]    = useState({})
+
+  // Superadmin: delete all SBOMs for an asset
+  const deleteSbomsByAsset = async (assetId) => {
+    if (!confirm(`Delete all SBOM records for asset ${assetId.slice(0, 8)}…? This cannot be undone.`)) return
+    try {
+      await client.delete(`/sboms/by-asset/${assetId}`)
+      loadData()
+    } catch {
+      alert('Failed to delete SBOM records.')
+    }
+  }
+
+  const PAGE_SIZE = 15
+
+  // ── Data fetching ────────────────────────────────────────────
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [sbomsRes, statsRes] = await Promise.all([
+        client.get('/sboms', { params: { page, page_size: PAGE_SIZE } }),
+        client.get('/sboms/stats/summary'),
+      ])
+      setSboms(sbomsRes.data.items || [])
+      setTotal(sbomsRes.data.total || 0)
+      setStats(statsRes.data)
+    } catch (err) {
+      console.error('SBOM load error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [page])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  // ── Dependency expansion ─────────────────────────────────────
+  const toggleDeps = async (sbomId) => {
+    if (expandedId === sbomId) {
+      setExpandedId(null)
+      setDeps([])
+      setDepSearch('')
+      setPmFilter('')
+      return
+    }
+    setExpandedId(sbomId)
+    setDepsLoading(true)
+    setDepSearch('')
+    setPmFilter('')
+    try {
+      const res = await client.get(`/sboms/${sbomId}/dependencies`, {
+        params: { limit: 500 },
+      })
+      setDeps(res.data.items || [])
+    } catch (err) {
+      console.error('Deps load error:', err)
+    } finally {
+      setDepsLoading(false)
+    }
+  }
+
+  // ── Per-asset SBOM scan ──────────────────────────────────────
+  const triggerScan = async (assetId) => {
+    const target = prompt(
+      'Enter Syft scan target (leave blank to scan the agent machine\'s filesystem)\n' +
+      '  • Blank / dir:C:\\Program Files  — agent machine (Windows default)\n' +
+      '  • dir:/home             — agent machine (Linux default)\n' +
+      '  • image:nginx:alpine    — Docker image on agent machine',
+      '',
+    )
+    if (target === null) return  // user pressed Cancel
+    setScanning(s => ({ ...s, [assetId]: true }))
+    try {
+      await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
+      alert('✅ SBOM scan queued — results will appear in ~1 min.')
+      setTimeout(loadData, 8000)
+    } catch {
+      alert('❌ Failed to queue SBOM scan.')
+    } finally {
+      setScanning(s => ({ ...s, [assetId]: false }))
+    }
+  }
+
+  // ── Derived chart + filter data ──────────────────────────────
+  const pmChartData = stats
+    ? Object.entries(stats.by_package_manager || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([pm, count]) => ({ name: pm, count, fill: pmColor(pm) }))
+    : []
+
+  const filteredDeps = deps.filter(d => {
+    const matchSearch = !depSearch || d.name.toLowerCase().includes(depSearch.toLowerCase())
+    const matchPm    = !pmFilter  || d.package_manager === pmFilter
+    return matchSearch && matchPm
+  })
+
+  const depPmOptions = [...new Set(deps.map(d => d.package_manager || 'system'))]
+
+  const totalPages = Math.ceil(total / PAGE_SIZE)
+
+  // ── Render ───────────────────────────────────────────────────
+  return (
+    <div className="space-y-6">
+
+      {/* ── Page header ── */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            <Package className="w-6 h-6 text-eagle-400" />
+            Software Bill of Materials
+          </h1>
+          <p className="text-dark-400 text-sm mt-1">
+            CycloneDX SBOM inventory — powered by Syft
+          </p>
+        </div>
+        <button
+          onClick={loadData}
+          className="btn-secondary flex items-center gap-2 text-sm"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Refresh
+        </button>
+      </div>
+
+      {/* ── Stats cards ── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="stat-card">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-dark-400 text-xs">Total SBOMs</span>
+            <FileCode2 className="w-4 h-4 text-eagle-400" />
+          </div>
+          <p className="text-3xl font-bold text-white">{stats?.total_sboms ?? 0}</p>
+          <p className="text-xs text-dark-500 mt-1">scans completed</p>
+        </div>
+
+        <div className="stat-card">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-dark-400 text-xs">Total Packages</span>
+            <Package className="w-4 h-4 text-eagle-400" />
+          </div>
+          <p className="text-3xl font-bold text-eagle-400">{stats?.total_dependencies ?? 0}</p>
+          <p className="text-xs text-dark-500 mt-1">across all assets</p>
+        </div>
+
+        <div className="stat-card">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-dark-400 text-xs">Assets Scanned</span>
+            <Cpu className="w-4 h-4 text-accent-cyan" />
+          </div>
+          <p className="text-3xl font-bold text-accent-cyan">{stats?.assets_scanned ?? 0}</p>
+          <p className="text-xs text-dark-500 mt-1">unique assets</p>
+        </div>
+
+        <div className="stat-card">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-dark-400 text-xs">Last Scan</span>
+            <CheckCircle2 className="w-4 h-4 text-accent-green" />
+          </div>
+          <p className="text-sm font-semibold text-accent-green mt-1">
+            {stats?.latest_scan
+              ? new Date(stats.latest_scan).toLocaleDateString()
+              : '—'}
+          </p>
+          <p className="text-xs text-dark-500 mt-1">
+            {stats?.latest_scan
+              ? new Date(stats.latest_scan).toLocaleTimeString()
+              : 'no scans yet'}
+          </p>
+        </div>
+      </div>
+
+      {/* ── Package manager chart ── */}
+      {pmChartData.length > 0 && (
+        <div className="glass-card p-5">
+          <h3 className="text-sm font-semibold text-dark-200 mb-4 flex items-center gap-2">
+            <Database className="w-4 h-4 text-eagle-400" />
+            Package Manager Distribution
+          </h3>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Bar chart */}
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={pmChartData} margin={{ left: 0, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fill: '#7b7f87', fontSize: 11 }}
+                  angle={-30}
+                  textAnchor="end"
+                  height={60}
+                />
+                <YAxis tick={{ fill: '#7b7f87', fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
+                  formatter={(v, name) => [v, 'packages']}
+                />
+                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                  {pmChartData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+
+            {/* Legend / breakdown */}
+            <div className="space-y-2 my-auto">
+              {pmChartData.map(({ name, count }) => (
+                <div key={name} className="flex items-center gap-3">
+                  <span className="text-base w-6 text-center">{pmIcon(name)}</span>
+                  <span className="text-sm text-dark-300 w-32">{pmLabel(name)}</span>
+                  <div className="flex-1 h-2 bg-dark-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${(count / (pmChartData[0]?.count || 1)) * 100}%`,
+                        background: pmColor(name),
+                      }}
+                    />
+                  </div>
+                  <span className="text-sm font-mono text-dark-400 w-10 text-right">{count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── SBOM table ── */}
+      <div className="glass-card overflow-hidden">
+        <div className="p-4 border-b border-dark-700/50">
+          <h3 className="text-sm font-semibold text-dark-200">SBOM Records</h3>
+          <p className="text-xs text-dark-500 mt-0.5">
+            Click any row to expand its dependency list
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="flex justify-center py-20">
+            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+          </div>
+        ) : sboms.length === 0 ? (
+          <div className="text-center py-20 text-dark-400">
+            <Package className="w-16 h-16 mx-auto mb-4 opacity-20" />
+            <p className="text-lg font-medium mb-2">No SBOMs generated yet</p>
+            <p className="text-sm">
+              Go to <strong className="text-eagle-400">Assets</strong> and click the{' '}
+              <Shield className="w-3.5 h-3.5 inline text-eagle-400" /> icon to trigger a scan.
+            </p>
+          </div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Asset</th>
+                <th>Format</th>
+                <th>Components</th>
+                <th>Tool</th>
+                <th>GCS Storage</th>
+                <th>Generated</th>
+                {canScan && <th>Re-scan</th>}
+                {isSuperAdmin && <th>Delete</th>}
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {sboms.map(sbom => (
+                <>
+                  {/* ── Main SBOM row ── */}
+                  <tr
+                    key={sbom.sbom_id}
+                    className="cursor-pointer hover:bg-dark-700/30 transition-colors"
+                    onClick={() => toggleDeps(sbom.sbom_id)}
+                  >
+                    <td>
+                      <span className="font-mono text-xs text-accent-cyan">
+                        {sbom.asset_id.slice(0, 8)}…
+                      </span>
+                    </td>
+                    <td>
+                      <span className="text-xs px-2 py-0.5 rounded bg-eagle-600/20 text-eagle-300 border border-eagle-500/30 uppercase tracking-wide">
+                        {sbom.format}
+                      </span>
+                      <span className="text-dark-500 text-xs ml-1.5">v{sbom.format_version}</span>
+                    </td>
+                    <td>
+                      <span className="text-lg font-bold text-eagle-400">
+                        {sbom.component_count ?? '—'}
+                      </span>
+                    </td>
+                    <td className="text-dark-300 text-xs">{sbom.tool_used}</td>
+                    <td>
+                      {sbom.gcs_path ? (
+                        <span className="flex items-center gap-1 text-xs text-accent-green">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Stored
+                        </span>
+                      ) : (
+                        <span className="text-dark-500 text-xs">Local only</span>
+                      )}
+                    </td>
+                    <td className="text-dark-400 text-xs">
+                      {new Date(sbom.generated_at).toLocaleString()}
+                    </td>
+                    {canScan && (
+                      <td onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => triggerScan(sbom.asset_id)}
+                          disabled={scanning[sbom.asset_id]}
+                          className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
+                          title="Re-trigger SBOM scan for this asset"
+                        >
+                          {scanning[sbom.asset_id]
+                            ? <RefreshCw className="w-4 h-4 animate-spin" />
+                            : <Shield className="w-4 h-4" />}
+                        </button>
+                      </td>
+                    )}
+                    {isSuperAdmin && (
+                      <td onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => deleteSbomsByAsset(sbom.asset_id)}
+                          className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                          title="Delete SBOM records for this asset"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    )}
+                    <td>
+                      {expandedId === sbom.sbom_id
+                        ? <ChevronUp className="w-4 h-4 text-dark-400" />
+                        : <ChevronDown className="w-4 h-4 text-dark-400" />}
+                    </td>
+                  </tr>
+
+                  {/* ── Expanded dependency panel ── */}
+                  {expandedId === sbom.sbom_id && (
+                    <tr key={`${sbom.sbom_id}-deps`}>
+                      <td
+                        colSpan={(canScan ? 8 : 7) + (isSuperAdmin ? 1 : 0)}
+                        className="p-0 bg-dark-900/60"
+                      >
+                        <div className="border-t border-dark-700/50 p-4">
+                          {depsLoading ? (
+                            <div className="flex justify-center py-6">
+                              <div className="w-6 h-6 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+                            </div>
+                          ) : (
+                            <>
+                              {/* Dependency filter bar */}
+                              <div className="flex items-center gap-3 mb-3 flex-wrap">
+                                <h4 className="text-sm font-semibold text-dark-200">
+                                  {deps.length} dependencies
+                                </h4>
+
+                                {/* Search */}
+                                <div className="relative">
+                                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-dark-400" />
+                                  <input
+                                    type="text"
+                                    placeholder="Filter packages…"
+                                    value={depSearch}
+                                    onChange={e => setDepSearch(e.target.value)}
+                                    onClick={e => e.stopPropagation()}
+                                    className="input-field text-xs pl-7 py-1 w-48"
+                                  />
+                                </div>
+
+                                {/* PM filter */}
+                                {depPmOptions.length > 1 && (
+                                  <select
+                                    value={pmFilter}
+                                    onChange={e => setPmFilter(e.target.value)}
+                                    onClick={e => e.stopPropagation()}
+                                    className="input-field text-xs py-1 w-36"
+                                  >
+                                    <option value="">All managers</option>
+                                    {depPmOptions.map(pm => (
+                                      <option key={pm} value={pm}>
+                                        {pmIcon(pm)} {pm}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+
+                                <span className="text-xs text-dark-500 ml-auto">
+                                  showing {filteredDeps.length}
+                                  {filteredDeps.length !== deps.length && ` / ${deps.length}`}
+                                </span>
+                              </div>
+
+                              {/* Dependency table */}
+                              <div className="max-h-72 overflow-y-auto rounded border border-dark-700/50">
+                                <table className="w-full text-xs">
+                                  <thead className="sticky top-0 bg-dark-800">
+                                    <tr className="text-dark-400 border-b border-dark-700">
+                                      <th className="text-left py-2 px-3 font-medium">Package</th>
+                                      <th className="text-left py-2 px-3 font-medium">Version</th>
+                                      <th className="text-left py-2 px-3 font-medium">Manager</th>
+                                      <th className="text-left py-2 px-3 font-medium">License</th>
+                                      <th className="text-left py-2 px-3 font-medium">PURL</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {filteredDeps.length === 0 ? (
+                                      <tr>
+                                        <td colSpan="5" className="text-center py-6 text-dark-500">
+                                          No matching packages
+                                        </td>
+                                      </tr>
+                                    ) : filteredDeps.map(dep => (
+                                      <tr
+                                        key={dep.dependency_id}
+                                        className="border-b border-dark-700/30 hover:bg-dark-700/20"
+                                      >
+                                        <td className="py-1.5 px-3 font-medium text-dark-100">
+                                          {dep.name}
+                                        </td>
+                                        <td className="py-1.5 px-3 font-mono text-dark-400">
+                                          {dep.version || '—'}
+                                        </td>
+                                        <td className="py-1.5 px-3">
+                                          <span
+                                            className="flex items-center gap-1"
+                                            style={{ color: pmColor(dep.package_manager || 'system') }}
+                                          >
+                                            <span>{pmIcon(dep.package_manager || 'system')}</span>
+                                            <span>{dep.package_manager || 'system'}</span>
+                                          </span>
+                                        </td>
+                                        <td className="py-1.5 px-3 text-dark-500">
+                                          {Array.isArray(dep.licenses) && dep.licenses.length > 0
+                                            ? dep.licenses.join(', ')
+                                            : '—'}
+                                        </td>
+                                        <td className="py-1.5 px-3 font-mono text-dark-600 max-w-xs truncate">
+                                          {dep.purl || '—'}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* ── Pagination ── */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+          >
+            Previous
+          </button>
+          <span className="text-dark-400 text-sm">
+            Page {page} of {totalPages}
+          </span>
+          <button
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}

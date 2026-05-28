@@ -5,7 +5,7 @@ import { eq, and, or, isNull, desc, ilike, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets } from '../db/schema'
+import { assets, scanResults, agents } from '../db/schema'
 import { rescoreAssets } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
 
@@ -615,5 +615,72 @@ app.get('/:assetId/baseline', authMiddleware, requireRoles(...READ_ROLES), async
     return c.json({ detail: 'Failed to fetch baseline' }, 500)
   }
 })
+
+// ── POST /:assetId/scan-sbom ────────────────────────────────────
+// Queues a real SBOM scan job — picked up by the EagleEye agent via
+// GET /scans/pending, which runs Syft locally and POSTs back to POST /sboms/ingest.
+const scanSbomSchema = z.object({
+  target: z.string().min(1).optional(),  // hint for the agent (e.g. "dir:C:\", "dir:/")
+})
+
+app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
+  zValidator('json', scanSbomSchema), async (c) => {
+    try {
+      const user = c.get('user')
+      const db   = getDb(c.env.DATABASE_URL)
+      const { assetId } = c.req.param()
+      const { target }  = c.req.valid('json')
+
+      // Verify asset exists and belongs to user's tenant
+      const [asset] = await db
+        .select({ assetId: assets.assetId, tenantId: assets.tenantId })
+        .from(assets).where(eq(assets.assetId, assetId)).limit(1)
+      if (!asset) return c.json({ detail: 'Asset not found' }, 404)
+      if (user.role !== 'superadmin' && user.tenantId && asset.tenantId !== user.tenantId) {
+        return c.json({ detail: 'Asset not found' }, 404)
+      }
+
+      // Find an online agent for this tenant
+      const [agent] = await db
+        .select({ agentId: agents.agentId })
+        .from(agents)
+        .where(and(eq(agents.tenantId, asset.tenantId!), eq(agents.status, 'online')))
+        .limit(1)
+      if (!agent) return c.json({ detail: 'No online agent available — start the EagleEye agent on the target machine' }, 503)
+
+      // Cancel any existing pending SBOM scans for this asset to avoid duplicates.
+      await db.update(scanResults)
+        .set({ status: 'cancelled' })
+        .where(and(
+          eq(scanResults.subnet, assetId),
+          eq(scanResults.scanType, 'sbom'),
+          eq(scanResults.status, 'pending'),
+        ))
+
+      // Create a pending SBOM scan record.
+      // subnet field carries assetId so the agent knows which asset to attach results to.
+      // rawResults carries the optional Syft target hint.
+      const [scan] = await db.insert(scanResults).values({
+        agentId:   agent.agentId,
+        tenantId:  asset.tenantId,
+        scanType:  'sbom',
+        subnet:    assetId,
+        status:    'pending',
+        rawResults: target ? [{ target }] : [],
+      }).returning({ scanId: scanResults.scanId })
+
+      if (!scan) return c.json({ detail: 'Failed to create scan record' }, 500)
+
+      return c.json({
+        scan_id:  scan.scanId,
+        status:   'pending',
+        message:  'SBOM scan queued — agent will pick it up within 30 seconds',
+      }, 202)
+    } catch (err) {
+      console.error('scan-sbom error:', err)
+      return c.json({ detail: 'Failed to queue SBOM scan' }, 500)
+    }
+  }
+)
 
 export default app

@@ -18,6 +18,7 @@ import topologyRoutes from './routes/topology'
 import tenantRoutes from './routes/tenants'
 import notificationRoutes from './routes/notifications'
 import chatbotRoutes from './routes/chatbot'
+import sbomRoutes from './routes/sbom'
 
 import { handleQueue } from './queues/consumer'
 import { handleCron } from './cron/triggers'
@@ -65,6 +66,7 @@ api.route('/topology', topologyRoutes)
 api.route('/tenants', tenantRoutes)
 api.route('/notifications', notificationRoutes)
 api.route('/chatbot', chatbotRoutes)
+api.route('/sboms', sbomRoutes)
 
 app.route('/api/v1', api)
 

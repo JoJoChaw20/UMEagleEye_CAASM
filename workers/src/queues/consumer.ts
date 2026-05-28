@@ -2,6 +2,7 @@ import type { Env } from '../types'
 import { getDb } from '../db/client'
 import { generateAdvisory } from '../services/advisory'
 import { savePostureSnapshot } from '../services/posture'
+import { ingestAllFeeds } from '../services/cti'
 import { postureMetrics } from '../db/schema'
 import { desc, eq } from 'drizzle-orm'
 
@@ -18,7 +19,12 @@ interface ReportJob {
   tenantId?: string
 }
 
-type Job = AdvisoryJob | ReportJob
+interface CtiIngestJob {
+  type: 'cti_ingest'
+  triggeredBy?: string
+}
+
+type Job = AdvisoryJob | ReportJob | CtiIngestJob
 
 async function sendTelegramMessage(botToken: string, chatId: string, text: string): Promise<void> {
   if (!botToken || !chatId) return
@@ -72,6 +78,12 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         const meta = { filename, report_type: job.reportType, created_at: new Date().toISOString(), r2_key: filename }
         await env.KV_CACHE.put(`report:${filename}`, JSON.stringify(meta), { expirationTtl: 90 * 24 * 3600 })
 
+        message.ack()
+      } else if (job.type === 'cti_ingest') {
+        await ingestAllFeeds(db, env.OTX_API_KEY, env.THREATFOX_API_KEY)
+        console.log(`[cti_ingest] Feeds ingested (triggered by: ${job.triggeredBy ?? 'system'})`)
+        // Release the lock so re-ingestion can be triggered again
+        await env.KV_CACHE.delete('cti_ingest_lock')
         message.ack()
       } else {
         message.ack()

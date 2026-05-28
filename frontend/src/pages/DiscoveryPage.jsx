@@ -6,10 +6,11 @@ import { useAuth } from '../context/AuthContext'
 // ── Status badge ──────────────────────────────────────────────────
 function StatusBadge({ status }) {
   const map = {
-    pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-    running: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+    pending:   'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    running:   'bg-blue-500/20 text-blue-400 border-blue-500/30',
     completed: 'bg-green-500/20 text-green-400 border-green-500/30',
-    failed: 'bg-red-500/20 text-red-400 border-red-500/30',
+    failed:    'bg-red-500/20 text-red-400 border-red-500/30',
+    cancelled: 'bg-dark-600/40 text-dark-400 border-dark-500/30',
   }
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full border font-medium capitalize ${map[status] || 'bg-dark-600/40 text-dark-400 border-dark-500/30'}`}>
@@ -213,7 +214,7 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
 }
 
 // ── Discovered hosts side panel ────────────────────────────────────
-function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
+function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
   const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
   const [accepted, setAccepted] = useState(new Set())
@@ -266,7 +267,8 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
             hosts.map((host, i) => {
               const ip = host.ip || host.ip_address
               const isAccepted = accepted.has(ip)
-              const isInventoried = inventoriedIps.has(ip)
+              const isInMyAssets = myAssetIps?.has(ip)
+              const isKnown = inventoriedIps.has(ip) && !isInMyAssets
               const isAdding = !!adding[ip]
               const osLabel = formatOs(host.os)
               const portsLabel = formatPorts(host.ports)
@@ -275,23 +277,25 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
                 <div
                   key={i}
                   className={`rounded-xl p-3 border transition-colors ${
-                    isAccepted
+                    isAccepted || isInMyAssets
                       ? 'bg-green-500/5 border-green-500/20'
-                      : 'bg-dark-800/60 border-dark-700/40'
+                      : isKnown
+                        ? 'bg-blue-500/5 border-blue-500/20'
+                        : 'bg-dark-800/60 border-dark-700/40'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1 space-y-0.5">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-sm text-accent-cyan">{ip}</span>
-                        {isAccepted && (
+                        {(isAccepted || isInMyAssets) && (
                           <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30 rounded-full">
                             In My Assets
                           </span>
                         )}
-                        {!isAccepted && isInventoried && (
+                        {!isAccepted && !isInMyAssets && isKnown && (
                           <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-full">
-                            Already inventoried
+                            Auto-discovered
                           </span>
                         )}
                       </div>
@@ -327,19 +331,19 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps }) {
                       )}
                     </div>
 
-                    {!isAccepted && (
+                    {!isAccepted && !isInMyAssets && (
                       <button
                         onClick={() => handleAdd(host)}
                         disabled={isAdding}
-                        className={`text-xs py-1.5 px-3 flex-shrink-0 flex items-center gap-1.5 ${isInventoried ? 'btn-secondary' : 'btn-primary'}`}
+                        className={`text-xs py-1.5 px-3 flex-shrink-0 flex items-center gap-1.5 ${isKnown ? 'btn-secondary' : 'btn-primary'}`}
                       >
                         {isAdding
                           ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                          : isInventoried
+                          : isKnown
                             ? <RefreshCw className="w-3 h-3" />
                             : <Plus className="w-3 h-3" />
                         }
-                        {isInventoried ? 'Update' : 'Accept'}
+                        {isKnown ? 'Accept' : 'Accept'}
                       </button>
                     )}
                   </div>
@@ -363,22 +367,24 @@ export default function DiscoveryPage() {
   const [showNew, setShowNew] = useState(false)
   const [selectedScan, setSelectedScan] = useState(null)
   const [error, setError] = useState(null)
-  const [inventoriedIps, setInventoriedIps] = useState(new Set())
+  const [inventoriedIps, setInventoriedIps] = useState(new Set())   // all known assets
+  const [myAssetIps, setMyAssetIps] = useState(new Set())           // manually accepted only
   const intervalRef = useRef(null)
 
   const loadData = useCallback(async () => {
     try {
-      const [scansRes, agentsRes, assetsRes, tenantsRes] = await Promise.all([
+      const [scansRes, agentsRes, allAssetsRes, myAssetsRes, tenantsRes] = await Promise.all([
         client.get('/scans'),
         client.get('/agents'),
+        client.get('/assets', { params: { limit: 200 } }),
         client.get('/assets', { params: { source: 'manual', limit: 200 } }),
         client.get('/tenants').catch(() => ({ data: { tenants: [] } })),
       ])
       setScans(scansRes.data.scans || scansRes.data.items || [])
       setAgents(agentsRes.data.agents || [])
       setTenants(tenantsRes.data.tenants || [])
-      const ips = new Set((assetsRes.data.items || []).map(a => a.ipAddress))
-      setInventoriedIps(ips)
+      setInventoriedIps(new Set((allAssetsRes.data.items || []).map(a => a.ipAddress)))
+      setMyAssetIps(new Set((myAssetsRes.data.items || []).map(a => a.ipAddress)))
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load data')
     } finally {
@@ -441,6 +447,7 @@ export default function DiscoveryPage() {
         tenant_id: selectedScan?.tenantId || undefined,
       })
       setInventoriedIps(prev => new Set([...prev, ip]))
+      setMyAssetIps(prev => new Set([...prev, ip]))
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to add asset')
       throw err
@@ -494,7 +501,7 @@ export default function DiscoveryPage() {
               <tr>
                 <th>Scan ID</th>
                 <th>Agent</th>
-                <th>Subnet</th>
+                <th>Target</th>
                 <th>Type</th>
                 <th>Status</th>
                 <th>Hosts Found</th>
@@ -504,27 +511,32 @@ export default function DiscoveryPage() {
               </tr>
             </thead>
             <tbody>
-              {scans.map((scan) => (
-                <tr
-                  key={scan.scanId}
-                  className={scan.status === 'completed' ? 'cursor-pointer hover:bg-dark-700/30' : ''}
-                  onClick={() => scan.status === 'completed' && setSelectedScan(scan)}
-                >
-                  <td className="font-mono text-xs text-dark-400">{scan.scanId?.slice(0, 12)}...</td>
-                  <td className="text-dark-300 text-sm">{scan.agentId?.slice(0, 8) || '—'}</td>
-                  <td className="font-mono text-sm text-accent-cyan">{scan.subnet || '—'}</td>
-                  <td className="text-xs text-dark-300 capitalize">{scan.scanType || 'active'}</td>
-                  <td><StatusBadge status={scan.status} /></td>
-                  <td className="font-medium text-white">{scan.hostsDiscovered ?? 0}</td>
-                  <td className="text-dark-400 text-xs">{relativeTime(scan.startedAt)}</td>
-                  <td className="text-dark-400 text-xs">{relativeTime(scan.completedAt)}</td>
-                  <td>
-                    {scan.status === 'completed' && (
-                      <ChevronRight className="w-4 h-4 text-dark-400" />
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {scans.map((scan) => {
+                const agentName = agents.find(a => a.agent_id === scan.agentId)?.name || scan.agentId?.slice(0, 8) || '—'
+                const subnetLabel = scan.subnet === 'arp-discovery' ? 'ARP Passive' : (scan.subnet || '—')
+                const isClickable = scan.status === 'completed' && Array.isArray(scan.rawResults) && scan.rawResults.length > 0
+                return (
+                  <tr
+                    key={scan.scanId}
+                    className={isClickable ? 'cursor-pointer hover:bg-dark-700/30' : ''}
+                    onClick={() => isClickable && setSelectedScan(scan)}
+                  >
+                    <td className="font-mono text-xs text-dark-400">{scan.scanId?.slice(0, 12)}...</td>
+                    <td className="text-dark-300 text-sm">{agentName}</td>
+                    <td className={`font-mono text-sm ${scan.subnet === 'arp-discovery' ? 'text-dark-400 italic' : 'text-accent-cyan'}`}>{subnetLabel}</td>
+                    <td className="text-xs text-dark-300 capitalize">{scan.scanType || 'active'}</td>
+                    <td><StatusBadge status={scan.status} /></td>
+                    <td className="font-medium text-white">{scan.hostsDiscovered ?? 0}</td>
+                    <td className="text-dark-400 text-xs">{relativeTime(scan.startedAt)}</td>
+                    <td className="text-dark-400 text-xs">{relativeTime(scan.completedAt)}</td>
+                    <td>
+                      {isClickable && (
+                        <ChevronRight className="w-4 h-4 text-dark-400" />
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         ) : (
@@ -557,6 +569,7 @@ export default function DiscoveryPage() {
           onClose={() => setSelectedScan(null)}
           onAddAsset={handleAddAsset}
           inventoriedIps={inventoriedIps}
+          myAssetIps={myAssetIps}
         />
       )}
     </div>

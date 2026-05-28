@@ -7,9 +7,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
 from app.core.dependencies import get_db, get_current_user
-from app.db.models import Event, User
+from app.db.models import Event, Asset, User
 from app.db.enums import Severity, EventType
 from app.schemas.models import EventResponse, EventListResponse
 
@@ -45,13 +46,33 @@ async def list_events(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar()
 
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    query = query.order_by(Event.timestamp.desc())
+    query = (
+        query
+        .options(selectinload(Event.asset))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .order_by(Event.timestamp.desc())
+    )
     result = await db.execute(query)
     events = result.scalars().all()
 
+    items = []
+    for evt in events:
+        resp = EventResponse(
+            event_id=evt.event_id,
+            asset_id=evt.asset_id,
+            asset_hostname=evt.asset.hostname if evt.asset else None,
+            asset_ip=str(evt.asset.ip_address) if (evt.asset and evt.asset.ip_address) else None,
+            event_type=evt.event_type,
+            severity=evt.severity,
+            details=evt.details,
+            composite_risk_score=float(evt.composite_risk_score) if evt.composite_risk_score is not None else None,
+            timestamp=evt.timestamp,
+        )
+        items.append(resp)
+
     return EventListResponse(
-        items=[EventResponse.model_validate(e) for e in events],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
@@ -65,11 +86,23 @@ async def get_event(
     current_user: User = Depends(get_current_user),
 ):
     """Get a single event by ID."""
-    result = await db.execute(select(Event).where(Event.event_id == event_id))
-    event = result.scalar_one_or_none()
-    if not event:
+    result = await db.execute(
+        select(Event).options(selectinload(Event.asset)).where(Event.event_id == event_id)
+    )
+    evt = result.scalar_one_or_none()
+    if not evt:
         raise HTTPException(status_code=404, detail="Event not found")
-    return event
+    return EventResponse(
+        event_id=evt.event_id,
+        asset_id=evt.asset_id,
+        asset_hostname=evt.asset.hostname if evt.asset else None,
+        asset_ip=str(evt.asset.ip_address) if (evt.asset and evt.asset.ip_address) else None,
+        event_type=evt.event_type,
+        severity=evt.severity,
+        details=evt.details,
+        composite_risk_score=float(evt.composite_risk_score) if evt.composite_risk_score is not None else None,
+        timestamp=evt.timestamp,
+    )
 
 
 @router.post("/{event_id}/advisory", status_code=202)

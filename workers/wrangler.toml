@@ -62,5 +62,5 @@ crons = [
 APP_ENV = "production"
 OPENROUTER_MODEL = "deepseek/deepseek-chat"
 SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
-JWT_EXPIRE_MINUTES = "60"
+JWT_EXPIRE_MINUTES = "1440"
 FRONTEND_URL = "https://umeagleeye.csnet.my"

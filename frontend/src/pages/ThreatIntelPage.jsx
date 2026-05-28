@@ -1,28 +1,67 @@
 import { useState, useEffect } from 'react'
-import { Globe, RefreshCw, Shield } from 'lucide-react'
-import { BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import {
+  Globe, RefreshCw, Shield, Search, X, AlertTriangle,
+  CheckCircle2, Clock, ExternalLink, Info,
+} from 'lucide-react'
+
+// ── Inline toast hook ─────────────────────────────────────────
+function useToast() {
+  const [toast, setToast] = useState(null)
+  const show = (msg, type = 'success') => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 4000)
+  }
+  return { toast, show }
+}
+import {
+  BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
+} from 'recharts'
 import client from '../api/client'
 
+// ── Constants ─────────────────────────────────────────────────
 const MITRE_TACTICS = [
-  "Reconnaissance", "Resource Development", "Initial Access", "Execution",
-  "Persistence", "Privilege Escalation", "Defense Evasion", "Credential Access",
-  "Discovery", "Lateral Movement", "Collection", "Command and Control",
-  "Exfiltration", "Impact"
+  'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution',
+  'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access',
+  'Discovery', 'Lateral Movement', 'Collection', 'Command and Control',
+  'Exfiltration', 'Impact',
 ]
 
 const TACTIC_COLORS = [
-  '#ff5252', '#ff6e40', '#ff9800', '#ffc400', '#ffea00', '#c6ff00',
-  '#69f0ae', '#00e5ff', '#448aff', '#7c4dff', '#e040fb', '#ff4081',
-  '#ff5252', '#ff6e40'
+  '#ff5252','#ff6e40','#ff9800','#ffc400','#ffea00','#c6ff00',
+  '#69f0ae','#00e5ff','#448aff','#7c4dff','#e040fb','#ff4081',
+  '#ff5252','#ff6e40',
 ]
+
+const TYPE_ICONS = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧' }
+
+// ── Confidence bar ────────────────────────────────────────────
+function ConfBar({ score }) {
+  const pct = ((score ?? 0) * 100).toFixed(0)
+  const color = score >= 0.8 ? '#ff5252' : score >= 0.6 ? '#ff9800' : '#ffc400'
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="w-14 h-1.5 bg-dark-700 rounded-full overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="text-xs text-dark-400">{pct}%</span>
+    </div>
+  )
+}
 
 export default function ThreatIntelPage() {
   const [indicators, setIndicators] = useState([])
-  const [matrix, setMatrix] = useState({})
-  const [stats, setStats] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [ingesting, setIngesting] = useState(false)
-  const [tab, setTab] = useState('indicators') // indicators | matrix
+  const [matrix,     setMatrix]     = useState({})
+  const [stats,      setStats]      = useState(null)
+  const [loading,    setLoading]    = useState(true)
+  const [ingesting,  setIngesting]  = useState(false)
+  const { toast, show: showToast }  = useToast()
+  const [tab,        setTab]        = useState('indicators') // indicators | matrix | lookup
+
+  // IOC Lookup
+  const [lookupValue,  setLookupValue]  = useState('')
+  const [lookupResult, setLookupResult] = useState(null)
+  const [lookupLoading,setLookupLoading]= useState(false)
+  const [lookupError,  setLookupError]  = useState('')
 
   useEffect(() => { loadData() }, [])
 
@@ -30,7 +69,7 @@ export default function ThreatIntelPage() {
     setLoading(true)
     try {
       const [indRes, matrixRes, statsRes] = await Promise.all([
-        client.get('/cti/indicators', { params: { limit: 100 } }),
+        client.get('/cti/indicators', { params: { limit: 200 } }),
         client.get('/cti/matrix'),
         client.get('/cti/stats'),
       ])
@@ -44,89 +83,162 @@ export default function ThreatIntelPage() {
   const triggerIngestion = async () => {
     setIngesting(true)
     try {
-      await client.post('/cti/ingest')
-      setTimeout(() => { loadData(); setIngesting(false) }, 10000)
-    } catch { setIngesting(false) }
+      const res = await client.post('/cti/ingest')
+      const data = res.data
+      if (data?.queued === false) {
+        showToast('Ingestion already running — try again in a few minutes.', 'info')
+        setIngesting(false)
+      } else {
+        showToast('Feed ingestion queued! Refreshing in ~15 seconds…', 'success')
+        setTimeout(() => { loadData(); setIngesting(false) }, 15000)
+      }
+    } catch (err) {
+      const msg = err?.response?.data?.detail ?? 'Failed to queue ingestion'
+      showToast(msg, 'error')
+      setIngesting(false)
+    }
   }
 
-  // Build chart data from matrix
+  const doLookup = async () => {
+    if (!lookupValue.trim()) return
+    setLookupLoading(true)
+    setLookupResult(null)
+    setLookupError('')
+    try {
+      const res = await client.get('/cti/lookup', { params: { value: lookupValue.trim() } })
+      setLookupResult(res.data)
+    } catch (err) {
+      setLookupError(err.response?.data?.detail || 'Lookup failed.')
+    } finally {
+      setLookupLoading(false)
+    }
+  }
+
+  // Chart data
   const matrixChartData = MITRE_TACTICS.map((tactic, i) => ({
     tactic: tactic.split(' ').slice(0, 2).join(' '),
-    count: (matrix[tactic] || []).reduce((sum, t) => sum + t.count, 0),
+    count: (matrix[tactic] || []).reduce((s, t) => s + t.count, 0),
     fill: TACTIC_COLORS[i],
   })).filter(d => d.count > 0)
 
-  const typeIcons = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧' }
-
+  // ── Render ───────────────────────────────────────────────────
   return (
     <div className="space-y-6">
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium
+          ${toast.type === 'success' ? 'bg-green-900/90 text-green-200 border border-green-700'
+          : toast.type === 'info'    ? 'bg-blue-900/90  text-blue-200  border border-blue-700'
+          :                            'bg-red-900/90   text-red-200   border border-red-700'}`}>
+          {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+          : toast.type === 'info'   ? <Info         className="w-4 h-4 flex-shrink-0" />
+          :                           <AlertTriangle className="w-4 h-4 flex-shrink-0" />}
+          {toast.msg}
+        </div>
+      )}
+
+      {/* ── Header ── */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Threat Intelligence</h1>
           <p className="text-dark-400 text-sm mt-1">
-            {stats?.total_indicators || 0} indicators from {Object.keys(stats?.by_source || {}).length} sources
+            {stats?.total_indicators ?? 0} indicators ·{' '}
+            {Object.keys(stats?.by_source ?? {}).length} sources
           </p>
         </div>
-        <button onClick={triggerIngestion} disabled={ingesting} className="btn-primary flex items-center gap-2">
-          {ingesting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
-          {ingesting ? 'Ingesting...' : 'Ingest Feeds'}
+        <button
+          onClick={triggerIngestion}
+          disabled={ingesting}
+          className="btn-primary flex items-center gap-2"
+        >
+          {ingesting
+            ? <RefreshCw className="w-4 h-4 animate-spin" />
+            : <Globe className="w-4 h-4" />}
+          {ingesting ? 'Ingesting…' : 'Ingest Feeds'}
         </button>
       </div>
 
-      {/* Source stats cards */}
+      {/* ── Source & type stat cards ── */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {Object.entries(stats.by_source || {}).map(([source, count]) => (
             <div key={source} className="stat-card">
-              <p className="text-dark-400 text-xs mb-1">{source}</p>
+              <p className="text-dark-400 text-xs mb-1 truncate">{source}</p>
               <p className="text-2xl font-bold text-white">{count}</p>
             </div>
           ))}
           {Object.entries(stats.by_type || {}).map(([type, count]) => (
             <div key={type} className="stat-card">
-              <p className="text-dark-400 text-xs mb-1">{typeIcons[type] || '❓'} {type}</p>
+              <p className="text-dark-400 text-xs mb-1">
+                {TYPE_ICONS[type] || '❓'} {type}
+              </p>
               <p className="text-2xl font-bold text-white">{count}</p>
             </div>
           ))}
         </div>
       )}
 
-      {/* Tabs */}
+      {/* ── Tabs ── */}
       <div className="flex gap-1 bg-dark-800 rounded-lg p-1 w-fit">
-        {['indicators', 'matrix'].map(t => (
-          <button key={t} onClick={() => setTab(t)}
+        {[
+          { id: 'indicators', label: 'IoC Feed' },
+          { id: 'matrix',     label: 'MITRE ATT&CK' },
+          { id: 'lookup',     label: '🔍 IOC Lookup' },
+        ].map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              tab === t ? 'bg-eagle-600 text-white' : 'text-dark-400 hover:text-white'
-            }`}>
-            {t === 'indicators' ? 'IoC Feed' : 'MITRE ATT&CK'}
+              tab === t.id
+                ? 'bg-eagle-600 text-white'
+                : 'text-dark-400 hover:text-white'
+            }`}
+          >
+            {t.label}
           </button>
         ))}
       </div>
 
+      {/* ── Loading spinner ── */}
       {loading ? (
-        <div className="flex justify-center py-20"><div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" /></div>
+        <div className="flex justify-center py-20">
+          <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+        </div>
       ) : tab === 'indicators' ? (
+
+        // ── IoC Feed tab ─────────────────────────────────────────
         <div className="glass-card overflow-hidden">
           {indicators.length > 0 ? (
             <table className="data-table">
-              <thead><tr><th>Type</th><th>Value</th><th>Source</th><th>Confidence</th><th>ATT&CK Tactic</th><th>Technique</th><th>Last Seen</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Value</th>
+                  <th>Source</th>
+                  <th>Confidence</th>
+                  <th>ATT&CK Tactic</th>
+                  <th>Technique</th>
+                  <th>Last Seen</th>
+                </tr>
+              </thead>
               <tbody>
                 {indicators.map(ind => (
                   <tr key={ind.indicator_id}>
-                    <td>{typeIcons[ind.indicator_type] || '❓'} <span className="text-xs">{ind.indicator_type}</span></td>
-                    <td className="font-mono text-xs text-accent-cyan max-w-xs truncate">{ind.value}</td>
-                    <td className="text-dark-300 text-xs">{ind.source}</td>
                     <td>
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-12 h-1.5 bg-dark-700 rounded-full overflow-hidden">
-                          <div className="h-full rounded-full bg-eagle-500" style={{ width: `${(ind.confidence_score || 0) * 100}%` }} />
-                        </div>
-                        <span className="text-xs text-dark-400">{((ind.confidence_score || 0) * 100).toFixed(0)}%</span>
-                      </div>
+                      {TYPE_ICONS[ind.indicator_type] || '❓'}{' '}
+                      <span className="text-xs text-dark-400">{ind.indicator_type}</span>
                     </td>
+                    <td className="font-mono text-xs text-accent-cyan max-w-xs truncate">
+                      {ind.value}
+                    </td>
+                    <td className="text-dark-300 text-xs">{ind.source}</td>
+                    <td><ConfBar score={ind.confidence_score} /></td>
                     <td className="text-dark-300 text-xs">{ind.attack_tactic || '—'}</td>
                     <td className="font-mono text-xs text-accent-purple">{ind.attack_technique || '—'}</td>
-                    <td className="text-dark-400 text-xs">{new Date(ind.last_seen).toLocaleDateString()}</td>
+                    <td className="text-dark-400 text-xs">
+                      {new Date(ind.last_seen).toLocaleDateString()}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -134,26 +246,36 @@ export default function ThreatIntelPage() {
           ) : (
             <div className="text-center py-20 text-dark-400">
               <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
-              <p>No threat indicators yet. Click "Ingest Feeds" to pull from OTX & ThreatFox.</p>
+              <p>No threat indicators yet. Click <strong>Ingest Feeds</strong> to pull from OTX &amp; ThreatFox.</p>
             </div>
           )}
         </div>
-      ) : (
-        /* MITRE ATT&CK Matrix View */
+
+      ) : tab === 'matrix' ? (
+
+        // ── MITRE ATT&CK tab ─────────────────────────────────────
         <div className="space-y-4">
           {matrixChartData.length > 0 && (
             <div className="glass-card p-5">
-              <h3 className="text-sm font-semibold text-dark-200 mb-4">Technique Coverage by Tactic</h3>
+              <h3 className="text-sm font-semibold text-dark-200 mb-4">
+                Technique Coverage by Tactic
+              </h3>
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={matrixChartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-                  <XAxis dataKey="tactic" tick={{ fill: '#7b7f87', fontSize: 10 }} angle={-30} textAnchor="end" height={80} />
+                  <XAxis
+                    dataKey="tactic"
+                    tick={{ fill: '#7b7f87', fontSize: 10 }}
+                    angle={-30}
+                    textAnchor="end"
+                    height={80}
+                  />
                   <YAxis tick={{ fill: '#7b7f87', fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: '#1e2028', border: '1px solid #3e4047', borderRadius: '8px', color: '#e2e3e5' }} />
+                  <Tooltip
+                    contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
+                  />
                   <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                    {matrixChartData.map((entry, idx) => (
-                      <Cell key={idx} fill={entry.fill} />
-                    ))}
+                    {matrixChartData.map((e, i) => <Cell key={i} fill={e.fill} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
@@ -162,24 +284,178 @@ export default function ThreatIntelPage() {
 
           <div className="glass-card p-5">
             <h3 className="text-sm font-semibold text-dark-200 mb-4">ATT&CK Tactic Matrix</h3>
-            <div className="grid grid-cols-7 gap-2">
+            <div className="grid grid-cols-7 gap-2 overflow-x-auto">
               {MITRE_TACTICS.map((tactic, i) => {
                 const techniques = matrix[tactic] || []
                 return (
-                  <div key={tactic} className="text-center">
-                    <div className="text-[9px] font-semibold text-dark-300 mb-1 h-8 flex items-center justify-center">{tactic}</div>
-                    {techniques.length > 0 ? techniques.map(t => (
-                      <div key={t.technique_id} className="mb-1 px-1 py-1 rounded text-[10px] font-mono" style={{ background: TACTIC_COLORS[i] + '30', color: TACTIC_COLORS[i], border: `1px solid ${TACTIC_COLORS[i]}40` }}>
-                        {t.technique_id} ({t.count})
-                      </div>
-                    )) : (
-                      <div className="text-[10px] text-dark-600 py-1">—</div>
-                    )}
+                  <div key={tactic} className="text-center min-w-[80px]">
+                    <div className="text-[9px] font-semibold text-dark-300 mb-1 h-8 flex items-center justify-center leading-tight">
+                      {tactic}
+                    </div>
+                    {techniques.length > 0
+                      ? techniques.map(t => (
+                          <div
+                            key={t.technique_id}
+                            className="mb-1 px-1 py-1 rounded text-[10px] font-mono"
+                            style={{
+                              background: TACTIC_COLORS[i] + '30',
+                              color: TACTIC_COLORS[i],
+                              border: `1px solid ${TACTIC_COLORS[i]}40`,
+                            }}
+                          >
+                            {t.technique_id} ({t.count})
+                          </div>
+                        ))
+                      : <div className="text-[10px] text-dark-600 py-1">—</div>}
                   </div>
                 )
               })}
             </div>
           </div>
+        </div>
+
+      ) : (
+
+        // ── IOC Lookup tab ───────────────────────────────────────
+        <div className="glass-card p-6 space-y-6">
+          <div>
+            <h3 className="text-sm font-semibold text-dark-200 mb-1">IOC Lookup</h3>
+            <p className="text-xs text-dark-500">
+              Check an IP address, domain, URL, or file hash against the threat intelligence database.
+            </p>
+          </div>
+
+          {/* Lookup input */}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+              <input
+                type="text"
+                placeholder="e.g. 185.220.101.5 · malware.example.com · abc123hash…"
+                value={lookupValue}
+                onChange={e => { setLookupValue(e.target.value); setLookupResult(null); setLookupError('') }}
+                onKeyDown={e => e.key === 'Enter' && doLookup()}
+                className="input-field w-full pl-10"
+              />
+            </div>
+            <button
+              onClick={doLookup}
+              disabled={lookupLoading || !lookupValue.trim()}
+              className="btn-primary flex items-center gap-2 disabled:opacity-50"
+            >
+              {lookupLoading
+                ? <RefreshCw className="w-4 h-4 animate-spin" />
+                : <Search className="w-4 h-4" />}
+              Lookup
+            </button>
+            {(lookupResult || lookupError) && (
+              <button
+                onClick={() => { setLookupResult(null); setLookupError(''); setLookupValue('') }}
+                className="p-2 text-dark-400 hover:text-dark-200 transition-colors"
+                title="Clear"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Error */}
+          {lookupError && (
+            <div className="flex items-center gap-2 text-sm text-red-400 bg-red-900/20 border border-red-700/30 rounded-lg p-3">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              {lookupError}
+            </div>
+          )}
+
+          {/* Lookup result */}
+          {lookupResult && (
+            <div className="space-y-4">
+              {/* Verdict banner */}
+              <div className={`flex items-center gap-3 p-4 rounded-lg border ${
+                lookupResult.found
+                  ? 'bg-red-900/20 border-red-700/40 text-red-300'
+                  : 'bg-green-900/20 border-green-700/40 text-green-300'
+              }`}>
+                {lookupResult.found
+                  ? <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-400" />
+                  : <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-green-400" />}
+                <div>
+                  <p className="font-semibold text-sm">
+                    {lookupResult.found
+                      ? '⚠️ KNOWN THREAT INDICATOR — found in threat intelligence database'
+                      : '✅ Not found in threat intelligence database'}
+                  </p>
+                  {!lookupResult.found && (
+                    <p className="text-xs opacity-70 mt-0.5">
+                      This does not mean the indicator is safe — it may not yet be tracked.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Indicator details */}
+              {lookupResult.found && lookupResult.indicator && (
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {[
+                    { label: 'Source',     value: lookupResult.indicator.source },
+                    { label: 'Type',       value: `${TYPE_ICONS[lookupResult.indicator.indicator_type] || '❓'} ${lookupResult.indicator.indicator_type}` },
+                    { label: 'Confidence', value: `${((lookupResult.indicator.confidence_score ?? 0) * 100).toFixed(0)}%` },
+                    { label: 'ATT&CK Tactic',    value: lookupResult.indicator.attack_tactic || '—' },
+                    { label: 'ATT&CK Technique',  value: lookupResult.indicator.attack_technique || '—' },
+                    { label: 'First Seen', value: new Date(lookupResult.indicator.first_seen).toLocaleString() },
+                    { label: 'Last Seen',  value: new Date(lookupResult.indicator.last_seen).toLocaleString() },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="bg-dark-800/60 rounded-lg p-3">
+                      <p className="text-xs text-dark-400 mb-0.5">{label}</p>
+                      <p className="text-sm font-medium text-dark-100">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Internal asset match */}
+              {lookupResult.matched_internal_asset ? (
+                <div className="bg-red-900/20 border border-red-700/30 rounded-lg p-4">
+                  <p className="text-sm font-semibold text-red-300 mb-2 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    ⚡ Matched Internal Asset — Immediate Triage Required
+                  </p>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                    {[
+                      { label: 'Hostname',          value: lookupResult.matched_internal_asset.hostname || '—' },
+                      { label: 'IP Address',         value: lookupResult.matched_internal_asset.ip_address },
+                      { label: 'Criticality',        value: `${lookupResult.matched_internal_asset.criticality_score}/10` },
+                      { label: 'Internet Facing',    value: lookupResult.matched_internal_asset.is_internet_facing ? '⚠️ Yes' : 'No' },
+                    ].map(({ label, value }) => (
+                      <div key={label}>
+                        <p className="text-dark-400">{label}</p>
+                        <p className="text-dark-100 font-medium">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-dark-800/40 border border-dark-700/40 rounded-lg p-3 text-xs text-dark-400">
+                  <CheckCircle2 className="w-4 h-4 inline mr-1.5 text-green-500" />
+                  No internal assets matched this indicator.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Quick reference */}
+          {!lookupResult && !lookupError && (
+            <div className="text-xs text-dark-500 space-y-1 border-t border-dark-700/40 pt-4">
+              <p className="font-medium text-dark-400">Example lookups:</p>
+              {[
+                '185.220.101.5  — Known Tor exit node / C2',
+                'malware.example.com  — Suspicious domain',
+                'CVE-2021-44228  — Log4Shell CVE (cross-referenced in CTI feed)',
+              ].map(ex => (
+                <p key={ex} className="font-mono">{ex}</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
