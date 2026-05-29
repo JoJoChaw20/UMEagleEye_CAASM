@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Server, Search, Shield, Bookmark, GitBranch, Target, Building2, CheckCircle } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import AssetGraph from '../components/common/AssetGraph'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
+
+const PAGE_SIZE = 25
 
 export default function AssetsPage() {
   const { user } = useAuth()
@@ -11,10 +13,10 @@ export default function AssetsPage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
+  const [deviceTypeFilter, setDeviceTypeFilter] = useState('')
   const [tenantFilter, setTenantFilter] = useState('')
   const [tenants, setTenants] = useState([])
   const [loading, setLoading] = useState(true)
-  const [scanning, setScanning] = useState(false)
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
   const [graphBlastId, setGraphBlastId] = useState(null)
@@ -28,20 +30,21 @@ export default function AssetsPage() {
     }
   }, [user?.role])
 
-  useEffect(() => { loadAssets() }, [page, search, tenantFilter])
-
-  const loadAssets = async () => {
+  const loadAssets = useCallback(async () => {
     setLoading(true)
     try {
-      const params = { page, limit: 25 }
+      const params = { page, page_size: PAGE_SIZE }
       if (search) params.search = search
+      if (deviceTypeFilter) params.device_type = deviceTypeFilter
       if (tenantFilter) params.tenant_id = tenantFilter
       const res = await client.get('/assets', { params })
       setAssets(res.data.items || [])
       setTotal(res.data.total || 0)
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
-  }
+  }, [page, search, deviceTypeFilter, tenantFilter])
+
+  useEffect(() => { loadAssets() }, [loadAssets])
 
   const promoteToMyAssets = async (asset) => {
     try {
@@ -116,6 +119,7 @@ export default function AssetsPage() {
     return { label: 'Low', cls: 'bg-green-500/20 text-green-400 border-green-500/30' }
   }
 
+  const totalPages = Math.ceil(total / PAGE_SIZE)
   const activeTenantName = tenants.find(t => t.tenant_id === tenantFilter)?.name
 
   return (
@@ -173,13 +177,31 @@ export default function AssetsPage() {
       {activeTab === 'inventory' && (
         <>
           <div className="flex items-center gap-3 flex-wrap">
-            {/* Search */}
-            <div className="relative flex-1 min-w-[200px] max-w-md">
+            <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
               <input type="text" placeholder="Search by hostname or IP..." value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                className="input-field w-full pl-10" id="asset-search" />
+                className="input-field pl-10 text-sm" id="asset-search" />
             </div>
+            <select
+              value={deviceTypeFilter}
+              onChange={e => { setDeviceTypeFilter(e.target.value); setPage(1) }}
+              className="input-field text-sm py-1.5 w-44"
+            >
+              <option value="">All Types</option>
+              <option value="server">Server</option>
+              <option value="workstation">Workstation</option>
+              <option value="network">Network</option>
+              <option value="iot">IoT</option>
+              <option value="unknown">Unknown</option>
+            </select>
+            <button
+              onClick={() => { setSearch(''); setDeviceTypeFilter(''); setPage(1) }}
+              className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
+            >
+              Clear filters
+            </button>
+            <span className="text-dark-400 text-sm ml-auto">{total} assets</span>
           </div>
 
           <div className="glass-card overflow-hidden">
@@ -263,11 +285,30 @@ export default function AssetsPage() {
             ) : (
               <div className="text-center py-20 text-dark-400">
                 <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                <p>No assets yet. Run a scan to start.</p>
-                <button onClick={triggerScan} className="btn-primary mt-4">Start Scan</button>
+                <p>No assets found. Run a scan or adjust your filters.</p>
               </div>
             )}
           </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+              >
+                Previous
+              </button>
+              <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+              >
+                Next
+              </button>
+            </div>
+          )}
         </>
       )}
 

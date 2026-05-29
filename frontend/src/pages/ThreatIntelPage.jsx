@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Globe, RefreshCw, Shield, Search, X, AlertTriangle,
-  CheckCircle2, Clock, ExternalLink, Info,
+  CheckCircle2, Clock, ExternalLink, Info, Filter,
 } from 'lucide-react'
 
 // ── Inline toast hook ─────────────────────────────────────────
@@ -34,6 +34,8 @@ const TACTIC_COLORS = [
 
 const TYPE_ICONS = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧' }
 
+const PAGE_SIZE = 15
+
 // ── Confidence bar ────────────────────────────────────────────
 function ConfBar({ score }) {
   const pct = ((score ?? 0) * 100).toFixed(0)
@@ -57,28 +59,46 @@ export default function ThreatIntelPage() {
   const { toast, show: showToast }  = useToast()
   const [tab,        setTab]        = useState('indicators') // indicators | matrix | lookup
 
+  // IoC Feed filters + server-side pagination
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [typeFilter,   setTypeFilter]   = useState('')
+  const [page,         setPage]         = useState(1)
+  const [total,        setTotal]        = useState(0)
+
   // IOC Lookup
-  const [lookupValue,  setLookupValue]  = useState('')
-  const [lookupResult, setLookupResult] = useState(null)
-  const [lookupLoading,setLookupLoading]= useState(false)
-  const [lookupError,  setLookupError]  = useState('')
+  const [lookupValue,   setLookupValue]   = useState('')
+  const [lookupResult,  setLookupResult]  = useState(null)
+  const [lookupLoading, setLookupLoading] = useState(false)
+  const [lookupError,   setLookupError]   = useState('')
 
-  useEffect(() => { loadData() }, [])
-
-  const loadData = async () => {
-    setLoading(true)
+  // Load matrix + stats once (not filter-dependent)
+  const loadStaticData = useCallback(async () => {
     try {
-      const [indRes, matrixRes, statsRes] = await Promise.all([
-        client.get('/cti/indicators', { params: { limit: 200 } }),
+      const [matrixRes, statsRes] = await Promise.all([
         client.get('/cti/matrix'),
         client.get('/cti/stats'),
       ])
-      setIndicators(indRes.data.items || [])
       setMatrix(matrixRes.data.matrix || {})
       setStats(statsRes.data)
     } catch (err) { console.error(err) }
+  }, [])
+
+  // Load indicators with server-side filters + pagination
+  const loadIndicators = useCallback(async () => {
+    setLoading(true)
+    try {
+      const params = { page, limit: PAGE_SIZE }
+      if (sourceFilter) params.source = sourceFilter
+      if (typeFilter)   params.indicator_type = typeFilter
+      const res = await client.get('/cti/indicators', { params })
+      setIndicators(res.data.items || [])
+      setTotal(res.data.total || 0)
+    } catch (err) { console.error(err) }
     finally { setLoading(false) }
-  }
+  }, [page, sourceFilter, typeFilter])
+
+  useEffect(() => { loadStaticData() }, [loadStaticData])
+  useEffect(() => { loadIndicators() }, [loadIndicators])
 
   const triggerIngestion = async () => {
     setIngesting(true)
@@ -90,7 +110,7 @@ export default function ThreatIntelPage() {
         setIngesting(false)
       } else {
         showToast('Feed ingestion queued! Refreshing in ~15 seconds…', 'success')
-        setTimeout(() => { loadData(); setIngesting(false) }, 15000)
+        setTimeout(() => { loadStaticData(); loadIndicators(); setIngesting(false) }, 15000)
       }
     } catch (err) {
       const msg = err?.response?.data?.detail ?? 'Failed to queue ingestion'
@@ -113,6 +133,16 @@ export default function ThreatIntelPage() {
       setLookupLoading(false)
     }
   }
+
+  // ── Derived values ────────────────────────────────────────────
+  // Source/type dropdown options from stats (full-table, no limit)
+  const uniqueSources = Object.keys(stats?.by_source ?? {})
+  const uniqueTypes   = Object.keys(stats?.by_type   ?? {})
+
+  // Pagination driven by server-returned total
+  const totalPages = Math.ceil(total / PAGE_SIZE)
+
+  const clearFilters = () => { setSourceFilter(''); setTypeFilter(''); setPage(1) }
 
   // Chart data
   const matrixChartData = MITRE_TACTICS.map((tactic, i) => ({
@@ -192,7 +222,7 @@ export default function ThreatIntelPage() {
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               tab === t.id
                 ? 'bg-eagle-600 text-white'
-                : 'text-dark-400 hover:text-white'
+                : 'text-dark-400 hover:text-dark-100 hover:bg-dark-700/40'
             }`}
           >
             {t.label}
@@ -208,48 +238,105 @@ export default function ThreatIntelPage() {
       ) : tab === 'indicators' ? (
 
         // ── IoC Feed tab ─────────────────────────────────────────
-        <div className="glass-card overflow-hidden">
-          {indicators.length > 0 ? (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>Value</th>
-                  <th>Source</th>
-                  <th>Confidence</th>
-                  <th>ATT&CK Tactic</th>
-                  <th>Technique</th>
-                  <th>Last Seen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {indicators.map(ind => (
-                  <tr key={ind.indicator_id}>
-                    <td>
-                      {TYPE_ICONS[ind.indicator_type] || '❓'}{' '}
-                      <span className="text-xs text-dark-400">{ind.indicator_type}</span>
-                    </td>
-                    <td className="font-mono text-xs text-accent-cyan max-w-xs truncate">
-                      {ind.value}
-                    </td>
-                    <td className="text-dark-300 text-xs">{ind.source}</td>
-                    <td><ConfBar score={ind.confidence_score} /></td>
-                    <td className="text-dark-300 text-xs">{ind.attack_tactic || '—'}</td>
-                    <td className="font-mono text-xs text-accent-purple">{ind.attack_technique || '—'}</td>
-                    <td className="text-dark-400 text-xs">
-                      {new Date(ind.last_seen).toLocaleDateString()}
-                    </td>
+        <>
+          {/* Filters */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <select
+              value={sourceFilter}
+              onChange={e => { setSourceFilter(e.target.value); setPage(1) }}
+              className="input-field text-sm py-1.5 w-48"
+            >
+              <option value="">All Sources</option>
+              {uniqueSources.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+
+            <select
+              value={typeFilter}
+              onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+              className="input-field text-sm py-1.5 w-36"
+            >
+              <option value="">All Types</option>
+              {uniqueTypes.map(t => (
+                <option key={t} value={t}>{TYPE_ICONS[t] || '❓'} {t}</option>
+              ))}
+            </select>
+
+            <button
+              onClick={clearFilters}
+              className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
+            >
+              Clear filters
+            </button>
+
+            <span className="text-dark-400 text-sm ml-auto">
+              {total} indicators
+            </span>
+          </div>
+
+          <div className="glass-card overflow-hidden">
+            {indicators.length > 0 ? (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Value</th>
+                    <th>Source</th>
+                    <th>Confidence</th>
+                    <th>ATT&CK Tactic</th>
+                    <th>Technique</th>
+                    <th>Last Seen</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="text-center py-20 text-dark-400">
-              <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
-              <p>No threat indicators yet. Click <strong>Ingest Feeds</strong> to pull from OTX &amp; ThreatFox.</p>
+                </thead>
+                <tbody>
+                  {indicators.map(ind => (
+                    <tr key={ind.indicator_id}>
+                      <td>
+                        {TYPE_ICONS[ind.indicator_type] || '❓'}{' '}
+                        <span className="text-xs text-dark-400">{ind.indicator_type}</span>
+                      </td>
+                      <td className="font-mono text-xs text-accent-cyan max-w-xs truncate">
+                        {ind.value}
+                      </td>
+                      <td className="text-dark-300 text-xs">{ind.source}</td>
+                      <td><ConfBar score={ind.confidence_score} /></td>
+                      <td className="text-dark-300 text-xs">{ind.attack_tactic || '—'}</td>
+                      <td className="font-mono text-xs text-accent-purple">{ind.attack_technique || '—'}</td>
+                      <td className="text-dark-400 text-xs">
+                        {new Date(ind.last_seen).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="text-center py-20 text-dark-400">
+                <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p>No threat indicators yet. Click <strong>Ingest Feeds</strong> to pull from OTX &amp; ThreatFox.</p>
+              </div>
+            )}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+              >
+                Previous
+              </button>
+              <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+              >
+                Next
+              </button>
             </div>
           )}
-        </div>
+        </>
 
       ) : tab === 'matrix' ? (
 
@@ -361,7 +448,7 @@ export default function ThreatIntelPage() {
 
           {/* Error */}
           {lookupError && (
-            <div className="flex items-center gap-2 text-sm text-red-400 bg-red-900/20 border border-red-700/30 rounded-lg p-3">
+            <div className="flex items-center gap-2 text-sm text-red-500 bg-red-500/10 border border-red-500/40 rounded-lg p-3">
               <AlertTriangle className="w-4 h-4 flex-shrink-0" />
               {lookupError}
             </div>
@@ -373,12 +460,12 @@ export default function ThreatIntelPage() {
               {/* Verdict banner */}
               <div className={`flex items-center gap-3 p-4 rounded-lg border ${
                 lookupResult.found
-                  ? 'bg-red-900/20 border-red-700/40 text-red-300'
-                  : 'bg-green-900/20 border-green-700/40 text-green-300'
+                  ? 'bg-red-500/10 border-red-500/40 text-red-500'
+                  : 'bg-green-500/10 border-green-500/40 text-green-600'
               }`}>
                 {lookupResult.found
-                  ? <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-400" />
-                  : <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-green-400" />}
+                  ? <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-500" />
+                  : <CheckCircle2  className="w-5 h-5 flex-shrink-0 text-green-500" />}
                 <div>
                   <p className="font-semibold text-sm">
                     {lookupResult.found
@@ -397,13 +484,13 @@ export default function ThreatIntelPage() {
               {lookupResult.found && lookupResult.indicator && (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {[
-                    { label: 'Source',     value: lookupResult.indicator.source },
-                    { label: 'Type',       value: `${TYPE_ICONS[lookupResult.indicator.indicator_type] || '❓'} ${lookupResult.indicator.indicator_type}` },
-                    { label: 'Confidence', value: `${((lookupResult.indicator.confidence_score ?? 0) * 100).toFixed(0)}%` },
+                    { label: 'Source',           value: lookupResult.indicator.source },
+                    { label: 'Type',             value: `${TYPE_ICONS[lookupResult.indicator.indicator_type] || '❓'} ${lookupResult.indicator.indicator_type}` },
+                    { label: 'Confidence',       value: `${((lookupResult.indicator.confidence_score ?? 0) * 100).toFixed(0)}%` },
                     { label: 'ATT&CK Tactic',    value: lookupResult.indicator.attack_tactic || '—' },
-                    { label: 'ATT&CK Technique',  value: lookupResult.indicator.attack_technique || '—' },
-                    { label: 'First Seen', value: new Date(lookupResult.indicator.first_seen).toLocaleString() },
-                    { label: 'Last Seen',  value: new Date(lookupResult.indicator.last_seen).toLocaleString() },
+                    { label: 'ATT&CK Technique', value: lookupResult.indicator.attack_technique || '—' },
+                    { label: 'First Seen',       value: new Date(lookupResult.indicator.first_seen).toLocaleString() },
+                    { label: 'Last Seen',        value: new Date(lookupResult.indicator.last_seen).toLocaleString() },
                   ].map(({ label, value }) => (
                     <div key={label} className="bg-dark-800/60 rounded-lg p-3">
                       <p className="text-xs text-dark-400 mb-0.5">{label}</p>
@@ -415,17 +502,17 @@ export default function ThreatIntelPage() {
 
               {/* Internal asset match */}
               {lookupResult.matched_internal_asset ? (
-                <div className="bg-red-900/20 border border-red-700/30 rounded-lg p-4">
-                  <p className="text-sm font-semibold text-red-300 mb-2 flex items-center gap-2">
+                <div className="bg-red-500/10 border border-red-500/40 rounded-lg p-4">
+                  <p className="text-sm font-semibold text-red-500 mb-2 flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4" />
                     ⚡ Matched Internal Asset — Immediate Triage Required
                   </p>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                     {[
-                      { label: 'Hostname',          value: lookupResult.matched_internal_asset.hostname || '—' },
-                      { label: 'IP Address',         value: lookupResult.matched_internal_asset.ip_address },
-                      { label: 'Criticality',        value: `${lookupResult.matched_internal_asset.criticality_score}/10` },
-                      { label: 'Internet Facing',    value: lookupResult.matched_internal_asset.is_internet_facing ? '⚠️ Yes' : 'No' },
+                      { label: 'Hostname',       value: lookupResult.matched_internal_asset.hostname || '—' },
+                      { label: 'IP Address',     value: lookupResult.matched_internal_asset.ip_address },
+                      { label: 'Criticality',    value: `${lookupResult.matched_internal_asset.criticality_score}/10` },
+                      { label: 'Internet Facing',value: lookupResult.matched_internal_asset.is_internet_facing ? '⚠️ Yes' : 'No' },
                     ].map(({ label, value }) => (
                       <div key={label}>
                         <p className="text-dark-400">{label}</p>

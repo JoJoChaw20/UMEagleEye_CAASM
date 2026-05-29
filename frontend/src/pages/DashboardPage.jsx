@@ -24,7 +24,7 @@ export default function DashboardPage() {
     try {
       const [postureRes, historyRes, eventsRes] = await Promise.all([
         client.get('/posture/current'),
-        client.get('/posture/history?limit=30'),
+        client.get('/posture/history?limit=14'),
         client.get('/events?page_size=10'),
       ])
       setPosture(postureRes.data)
@@ -40,8 +40,8 @@ export default function DashboardPage() {
   const score = posture?.overall_score ?? 100
   const scoreColor = score >= 80 ? '#00e676' : score >= 50 ? '#ffc400' : '#ff5252'
 
-  const trendData = history.map((h, i) => ({
-    day: `Day ${i + 1}`,
+  const trendData = history.map((h) => ({
+    day: new Date(h.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
     score: h.overall_score,
     assets: h.total_assets,
   }))

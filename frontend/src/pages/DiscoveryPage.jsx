@@ -357,6 +357,8 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
   )
 }
 
+const SCAN_PAGE_SIZE = 15
+
 // ── Main page ─────────────────────────────────────────────────────
 export default function DiscoveryPage() {
   const { user } = useAuth()
@@ -370,6 +372,9 @@ export default function DiscoveryPage() {
   const [inventoriedIps, setInventoriedIps] = useState(new Set())   // all known assets
   const [myAssetIps, setMyAssetIps] = useState(new Set())           // manually accepted only
   const intervalRef = useRef(null)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [scanTypeFilter, setScanTypeFilter] = useState('')
+  const [scanPage, setScanPage] = useState(1)
 
   const loadData = useCallback(async () => {
     try {
@@ -454,6 +459,14 @@ export default function DiscoveryPage() {
     }
   }
 
+  const filteredScans = scans.filter(s => {
+    if (statusFilter && s.status !== statusFilter) return false
+    if (scanTypeFilter && (s.scanType || 'active') !== scanTypeFilter) return false
+    return true
+  })
+  const scanTotalPages = Math.ceil(filteredScans.length / SCAN_PAGE_SIZE)
+  const pagedScans = filteredScans.slice((scanPage - 1) * SCAN_PAGE_SIZE, scanPage * SCAN_PAGE_SIZE)
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -489,13 +502,44 @@ export default function DiscoveryPage() {
         </div>
       )}
 
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          value={statusFilter}
+          onChange={e => { setStatusFilter(e.target.value); setScanPage(1) }}
+          className="input-field text-sm py-1.5 w-40"
+        >
+          <option value="">All Statuses</option>
+          <option value="pending">Pending</option>
+          <option value="running">Running</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select
+          value={scanTypeFilter}
+          onChange={e => { setScanTypeFilter(e.target.value); setScanPage(1) }}
+          className="input-field text-sm py-1.5 w-36"
+        >
+          <option value="">All Types</option>
+          <option value="active">Active</option>
+          <option value="passive">Passive</option>
+        </select>
+        <button
+          onClick={() => { setStatusFilter(''); setScanTypeFilter(''); setScanPage(1) }}
+          className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
+        >
+          Clear filters
+        </button>
+        <span className="text-dark-400 text-sm ml-auto">{filteredScans.length} scans</span>
+      </div>
+
       {/* Scans table */}
       <div className="glass-card overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-        ) : scans.length > 0 ? (
+        ) : filteredScans.length > 0 ? (
           <table className="data-table">
             <thead>
               <tr>
@@ -511,7 +555,7 @@ export default function DiscoveryPage() {
               </tr>
             </thead>
             <tbody>
-              {scans.map((scan) => {
+              {pagedScans.map((scan) => {
                 const agentName = agents.find(a => a.agent_id === scan.agentId)?.name || scan.agentId?.slice(0, 8) || '—'
                 const subnetLabel = scan.subnet === 'arp-discovery' ? 'ARP Passive' : (scan.subnet || '—')
                 const isClickable = scan.status === 'completed' && Array.isArray(scan.rawResults) && scan.rawResults.length > 0
@@ -542,15 +586,42 @@ export default function DiscoveryPage() {
         ) : (
           <div className="text-center py-20 text-dark-400">
             <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p className="text-lg font-medium mb-2">No scans yet</p>
-            <p className="text-sm mb-4">Run your first scan to discover network assets.</p>
-            <button onClick={() => setShowNew(true)} className="btn-primary">
-              <Plus className="w-4 h-4 mr-2" />
-              Start First Scan
-            </button>
+            <p className="text-lg font-medium mb-2">
+              {statusFilter || scanTypeFilter ? 'No scans match your filters.' : 'No scans yet'}
+            </p>
+            {!statusFilter && !scanTypeFilter && (
+              <>
+                <p className="text-sm mb-4">Run your first scan to discover network assets.</p>
+                <button onClick={() => setShowNew(true)} className="btn-primary">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Start First Scan
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
+
+      {/* Pagination */}
+      {scanTotalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button
+            onClick={() => setScanPage(p => Math.max(1, p - 1))}
+            disabled={scanPage === 1}
+            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+          >
+            Previous
+          </button>
+          <span className="text-dark-400 text-sm">Page {scanPage} of {scanTotalPages}</span>
+          <button
+            onClick={() => setScanPage(p => Math.min(scanTotalPages, p + 1))}
+            disabled={scanPage === scanTotalPages}
+            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+          >
+            Next
+          </button>
+        </div>
+      )}
 
       {/* Modals */}
       {showNew && (

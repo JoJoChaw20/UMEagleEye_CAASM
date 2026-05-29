@@ -496,12 +496,17 @@ function ImportModal({ onClose, onImport, tenantId }) {
   )
 }
 
+const PAGE_SIZE = 15
+
 // ── Main page ─────────────────────────────────────────────────────
 export default function MyAssetsPage() {
   const { user } = useAuth()
   const [assets, setAssets] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [deviceTypeFilter, setDeviceTypeFilter] = useState('')
   const [tenantFilter, setTenantFilter] = useState('')
   const [tenants, setTenants] = useState([])
   const [showAdd, setShowAdd] = useState(false)
@@ -525,17 +530,19 @@ export default function MyAssetsPage() {
     setLoading(true)
     setError(null)
     try {
-      const params = { source: 'manual' }
+      const params = { source: 'manual', page, page_size: PAGE_SIZE }
       if (search) params.search = search
+      if (deviceTypeFilter) params.device_type = deviceTypeFilter
       if (tenantFilter) params.tenant_id = tenantFilter
       const res = await client.get('/assets', { params })
       setAssets(res.data.items || [])
+      setTotal(res.data.total || 0)
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load assets')
     } finally {
       setLoading(false)
     }
-  }, [search, tenantFilter])
+  }, [page, search, deviceTypeFilter, tenantFilter])
 
   useEffect(() => { loadAssets() }, [loadAssets])
 
@@ -595,13 +602,7 @@ export default function MyAssetsPage() {
     }
   }
 
-  // Filter by search
-  const filtered = search
-    ? assets.filter(a =>
-        a.ipAddress?.includes(search) ||
-        a.hostname?.toLowerCase().includes(search.toLowerCase())
-      )
-    : assets
+  const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
     <div className="space-y-6">
@@ -637,14 +638,14 @@ export default function MyAssetsPage() {
         )}
       </div>
 
-      {/* Search + Tenant filter */}
+      {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         {user?.role === 'superadmin' && tenants.length > 0 && (
           <div className="relative">
             <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
             <select
               value={tenantFilter}
-              onChange={(e) => setTenantFilter(e.target.value)}
+              onChange={(e) => { setTenantFilter(e.target.value); setPage(1) }}
               className="input-field pl-9 pr-8 text-sm appearance-none min-w-[180px]"
             >
               <option value="">All Tenants</option>
@@ -654,16 +655,35 @@ export default function MyAssetsPage() {
             </select>
           </div>
         )}
-        <div className="relative flex-1 min-w-[200px] max-w-md">
+        <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
           <input
             type="text"
             placeholder="Search by IP or hostname..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input-field w-full pl-10 text-sm"
+            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+            className="input-field pl-10 text-sm"
           />
         </div>
+        <select
+          value={deviceTypeFilter}
+          onChange={e => { setDeviceTypeFilter(e.target.value); setPage(1) }}
+          className="input-field text-sm py-1.5 w-44"
+        >
+          <option value="">All Types</option>
+          <option value="server">Server</option>
+          <option value="workstation">Workstation</option>
+          <option value="network">Network</option>
+          <option value="iot">IoT</option>
+          <option value="unknown">Unknown</option>
+        </select>
+        <button
+          onClick={() => { setSearch(''); setDeviceTypeFilter(''); setPage(1) }}
+          className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
+        >
+          Clear filters
+        </button>
+        <span className="text-dark-400 text-sm ml-auto">{total} assets</span>
       </div>
 
       {/* Error */}
@@ -680,7 +700,7 @@ export default function MyAssetsPage() {
           <div className="flex items-center justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-        ) : filtered.length > 0 ? (
+        ) : assets.length > 0 ? (
           <table className="data-table">
             <thead>
               <tr>
@@ -695,7 +715,7 @@ export default function MyAssetsPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((a) => (
+              {assets.map((a) => (
                 <tr key={a.assetId}>
                   <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
                   <td>
@@ -782,9 +802,9 @@ export default function MyAssetsPage() {
             <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
             <p className="text-lg font-medium mb-2">No manual assets found</p>
             <p className="text-sm mb-4">
-              {search ? 'No assets match your search.' : 'Add assets manually to track them here.'}
+              {search || deviceTypeFilter ? 'No assets match your filters.' : 'Add assets manually to track them here.'}
             </p>
-            {!isReadOnly && !search && (
+            {!isReadOnly && !search && !deviceTypeFilter && (
               <button onClick={() => setShowAdd(true)} className="btn-primary">
                 <Plus className="w-4 h-4 mr-2" />
                 Add First Asset
@@ -793,6 +813,27 @@ export default function MyAssetsPage() {
           </div>
         )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+          >
+            Previous
+          </button>
+          <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
+          <button
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+          >
+            Next
+          </button>
+        </div>
+      )}
 
       {/* Add Modal */}
       {showAdd && (
