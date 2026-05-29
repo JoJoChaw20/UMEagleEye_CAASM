@@ -6,11 +6,11 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, desc, ilike, sql, count } from 'drizzle-orm'
+import { eq, and, desc, ilike, sql, count, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { sboms, dependencies, assets, scanResults, agents } from '../db/schema'
+import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -303,6 +303,231 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
   } catch (err) {
     console.error('sbom ingest error:', err)
     return c.json({ detail: 'Failed to ingest SBOM' }, 500)
+  }
+})
+
+// ── POST /ingest-cve ── agent submits Grype findings after SBOM scan ──────────
+
+const cveIngestSchema = z.object({
+  agent_id: z.string().uuid(),
+  scan_id:  z.string().uuid(),
+  findings: z.array(z.object({
+    cve_id:          z.string(),
+    severity:        z.string().default('Unknown'),
+    description:     z.string().default(''),
+    cvss_base_score: z.number().default(0),
+    package_name:    z.string(),
+    package_version: z.string().default(''),
+    fix_versions:    z.array(z.string()).default([]),
+    cwe_ids:         z.array(z.string()).default([]),
+  })),
+})
+
+function mapSeverity(cvss: number, grypeSev: string): 'critical' | 'high' | 'medium' | 'low' {
+  if (cvss >= 9.0) return 'critical'
+  if (cvss >= 7.0) return 'high'
+  if (cvss >= 4.0) return 'medium'
+  if (cvss === 0) {
+    const s = grypeSev.toLowerCase()
+    if (s === 'critical') return 'critical'
+    if (s === 'high') return 'high'
+    if (s === 'medium') return 'medium'
+  }
+  return 'low'
+}
+
+function computeRiskScore(cvss: number, epss: number, criticality: number, ctiMatch: boolean): number {
+  // Normalise all components to 0-100 scale before weighting:
+  // CVSS (0-10) → *10 → 0-100, weight 40%
+  // EPSS (0-1)  → *100 → 0-100, weight 35%
+  // Criticality (1-10) → *10 → 0-100, weight 15%
+  // CTI match flat 10 pts
+  const score = (cvss * 10 * 0.40) + (epss * 100 * 0.35) + (Math.max(criticality, 1) * 10 * 0.15) + (ctiMatch ? 10 : 0)
+  return Math.round(Math.min(score, 100) * 100) / 100
+}
+
+async function fetchEpssScores(cveIds: string[]): Promise<Map<string, number>> {
+  const scores = new Map<string, number>()
+  const filtered = cveIds.filter(id => id.startsWith('CVE-'))
+  if (filtered.length === 0) return scores
+
+  const chunkSize = 30
+  for (let i = 0; i < filtered.length; i += chunkSize) {
+    const chunk = filtered.slice(i, i + chunkSize)
+    try {
+      const resp = await fetch(`https://api.first.org/data/v1/epss?cve=${chunk.join(',')}`)
+      if (resp.ok) {
+        const data = await resp.json() as { data?: Array<{ cve: string; epss: string }> }
+        for (const entry of data.data ?? []) {
+          scores.set(entry.cve, parseFloat(entry.epss) || 0)
+        }
+      }
+    } catch {
+      // EPSS is best-effort — non-fatal
+    }
+  }
+  return scores
+}
+
+app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
+  try {
+    // Agent auth — same Bearer + X-Agent-ID pattern as /ingest
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return c.json({ detail: 'Missing or invalid Authorization header' }, 401)
+    }
+    const incomingKey = authHeader.slice(7)
+    const enc = new TextEncoder()
+    const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(incomingKey))
+    const incomingKeyHash = Array.from(new Uint8Array(hashBuf))
+      .map(b => b.toString(16).padStart(2, '0')).join('')
+
+    const agentId = c.req.header('X-Agent-ID')
+    if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
+
+    const db = getDb(c.env.DATABASE_URL)
+    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+    if (!agent || incomingKeyHash !== agent.apiKeyHash) {
+      return c.json({ detail: 'Invalid agent credentials' }, 401)
+    }
+
+    const { scan_id, findings } = c.req.valid('json')
+    if (findings.length === 0) {
+      return c.json({ events_created: 0, events_updated: 0 }, 200)
+    }
+
+    // Resolve asset from scan record (subnet field carries assetId for SBOM scans)
+    const [scanRow] = await db
+      .select({ subnet: scanResults.subnet })
+      .from(scanResults)
+      .where(eq(scanResults.scanId, scan_id))
+      .limit(1)
+    if (!scanRow?.subnet) return c.json({ detail: 'Scan not found or has no asset' }, 404)
+    const assetId = scanRow.subnet
+
+    // Fetch asset for criticality score
+    const [asset] = await db
+      .select({ criticalityScore: assets.criticalityScore })
+      .from(assets)
+      .where(eq(assets.assetId, assetId))
+      .limit(1)
+    const criticality = asset?.criticalityScore ?? 5
+
+    // Batch-fetch EPSS scores
+    const cveIds = findings.map(f => f.cve_id).filter(Boolean)
+    const epssMap = await fetchEpssScores(cveIds)
+
+    // CTI match: check if any CVE ID is explicitly stored as a CTI indicator value.
+    // CTI indicators currently store IPs/domains/hashes — CVE IDs are added when
+    // threat intel feeds tag specific CVEs. Query is a no-op until that data exists.
+    const ctiMatches = new Set<string>()
+    const cvePrefixedIds = cveIds.filter(id => id.startsWith('CVE-'))
+    if (cvePrefixedIds.length > 0) {
+      try {
+        const ctiRows = await db
+          .select({ value: ctiIndicators.value })
+          .from(ctiIndicators)
+          .where(inArray(ctiIndicators.value, cvePrefixedIds))
+        for (const row of ctiRows) ctiMatches.add(row.value)
+      } catch {
+        // Non-fatal — CTI enrichment is best-effort
+      }
+    }
+
+    // Fetch all existing cve_detected events for this asset in ONE query for dedup
+    const existingRows = await db
+      .select({ eventId: events.eventId, details: events.details })
+      .from(events)
+      .where(and(
+        eq(events.assetId, assetId),
+        eq(events.eventType, 'cve_detected'),
+      ))
+
+    // Build dedup map: "cve_id::package_name" → { eventId, details }
+    type ExistingEvent = { eventId: string; details: Record<string, unknown> }
+    const existingMap = new Map<string, ExistingEvent>()
+    for (const row of existingRows) {
+      const d = (row.details ?? {}) as Record<string, unknown>
+      const key = `${d.cve_id}::${d.package_name}`
+      existingMap.set(key, { eventId: row.eventId, details: d })
+    }
+
+    let eventsCreated = 0
+    let eventsUpdated = 0
+    const toInsert: (typeof events.$inferInsert)[] = []
+
+    for (const finding of findings) {
+      const { cve_id, cvss_base_score, severity: grypeSev, package_name,
+              package_version, fix_versions, description, cwe_ids } = finding
+      if (!cve_id || !package_name) continue
+
+      const epss      = epssMap.get(cve_id) ?? 0
+      const ctiMatch  = ctiMatches.has(cve_id)
+      const severity  = mapSeverity(cvss_base_score, grypeSev)
+      const riskScore = computeRiskScore(cvss_base_score, epss, criticality, ctiMatch)
+      const dedupKey  = `${cve_id}::${package_name}`
+      const existing  = existingMap.get(dedupKey)
+
+      if (existing) {
+        // Refresh all scored fields plus the freshest data from this scan
+        const mergedDetails = {
+          ...existing.details,
+          cvss_base_score: cvss_base_score,
+          epss_score:      epss,
+          has_cti_match:   ctiMatch,
+          fix_versions,
+          description:     description.slice(0, 500),
+          cwe_ids,
+        }
+        try {
+          await db.update(events)
+            .set({
+              timestamp:          new Date(),
+              severity,
+              compositeRiskScore: String(riskScore),
+              details:            mergedDetails,
+            })
+            .where(eq(events.eventId, existing.eventId))
+          eventsUpdated++
+        } catch (e) {
+          console.error(`Failed to update event for ${cve_id}:`, e)
+        }
+      } else {
+        toInsert.push({
+          assetId,
+          eventType:          'cve_detected',
+          severity,
+          compositeRiskScore: String(riskScore),
+          details: {
+            cve_id,
+            cvss_base_score,
+            epss_score:     epss,
+            package_name,
+            package_version,
+            fix_versions,
+            description:    description.slice(0, 500),
+            cwe_ids,
+            has_cti_match:  ctiMatch,
+          },
+        })
+      }
+    }
+
+    // Batch insert new events (50 per statement)
+    const BATCH = 50
+    for (let i = 0; i < toInsert.length; i += BATCH) {
+      try {
+        await db.insert(events).values(toInsert.slice(i, i + BATCH))
+        eventsCreated += toInsert.slice(i, i + BATCH).length
+      } catch (e) {
+        console.error(`Batch insert failed at offset ${i}:`, e)
+      }
+    }
+
+    return c.json({ events_created: eventsCreated, events_updated: eventsUpdated }, 201)
+  } catch (err) {
+    console.error('cve ingest error:', err)
+    return c.json({ detail: 'Failed to ingest CVE findings' }, 500)
   }
 })
 

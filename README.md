@@ -35,12 +35,18 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **AI-Driven Advisory Pipeline** — DeepSeek generates actionable remediation instructions for security events; queued asynchronously via Cloudflare Queues
 - **SLA Monitoring** — Alerts on advisories open longer than 72 hours; checked every 30 minutes
 
-### SBOM
+### SBOM & CVE Detection
 - **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOM generation via [Syft](https://github.com/anchore/syft); the EagleEye agent runs Syft locally and POSTs the result to the platform
+- **Automatic CVE Correlation** — Immediately after every SBOM scan, the agent runs [Grype](https://github.com/anchore/grype) against the generated SBOM to match packages against known vulnerabilities (NVD, GitHub Advisory, OSS Index, and more)
+- **Alert Filtering** — Only Medium/High/Critical findings are ingested; Unknown and Negligible severity (and CVSS < 4.0 without a vendor-assigned High/Critical label) are discarded before sending to the platform
+- **Composite Risk Scoring** — Each CVE finding is scored using a weighted formula: `(CVSS × 10 × 0.40) + (EPSS × 100 × 0.35) + (Criticality × 10 × 0.15) + (CTI match ? 10 : 0)`, capped at 100
+- **EPSS Enrichment** — Exploit Prediction Scoring System scores fetched in batch from FIRST.org API and incorporated into the risk formula at ingest time
+- **CTI Enrichment** — CVE IDs cross-referenced against the platform's CTI indicator table; confirmed threat-intel matches add 10 points to the risk score
+- **Deduplication** — Re-scanning the same asset updates existing alerts (refreshing CVSS, EPSS, fix versions, description) rather than creating duplicates; dedup key is `cve_id + package_name`
 - **Dependency Inventory** — Expandable per-SBOM dependency table with package manager filter and search; counts by manager visualised as a bar chart
 - **Superadmin Delete** — Superadmins can delete all SBOM records for an asset directly from the SBOM page
 
-> **Note on SBOM scope:** Syft always runs on the machine where the agent is deployed. The scan target (directory or Docker image) is specified at trigger time via a prompt in the dashboard. To generate SBOMs for multiple assets, deploy an agent on each target machine.
+> **Note on SBOM scope:** Syft and Grype always run on the machine where the agent is deployed. The scan target (directory or Docker image) is specified at trigger time via a prompt in the dashboard. To generate SBOMs for multiple assets, deploy an agent on each target machine.
 
 ### Reporting & Notifications
 - **Automated Reporting** — Queued PDF report generation stored in Cloudflare R2; secure blob download (no token in URL)
@@ -92,6 +98,8 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Runtime | Python 3.10+ |
 | Active Scanner | python-nmap + nmap CLI (NSE: smb-os-discovery, banner) |
 | Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68) |
+| SBOM Generation | Syft (CycloneDX JSON output) |
+| CVE Scanning | Grype (matches SBOM packages against NVD, GitHub Advisory, OSS Index) |
 | Transport | requests (HTTPS to Workers API) |
 | Auth | Bearer API key + X-Agent-ID header (SHA-256 verified) |
 | Optional | Fingerbank API (DHCP-based device fingerprinting) |
@@ -112,11 +120,16 @@ Local Network ──► EagleEye Agent (Python)
                     ├── Active mode
                     │     ├── GET  /scans/pending  (poll every 30s)
                     │     └── POST /scans/ingest   (nmap results)
-                    └── Passive mode
-                          ├── ARP sniffer thread       (host discovery)
-                          ├── mDNS/NetBIOS thread      (hostname enrichment)
-                          ├── DHCP fingerprint thread  (device classification)
-                          └── POST /scans/ingest       (flush every --passive-interval)
+                    ├── Passive mode
+                    │     ├── ARP sniffer thread       (host discovery)
+                    │     ├── mDNS/NetBIOS thread      (hostname enrichment)
+                    │     ├── DHCP fingerprint thread  (device classification)
+                    │     └── POST /scans/ingest       (flush every --passive-interval)
+                    └── SBOM mode
+                          ├── syft <target> -o cyclonedx-json
+                          ├── POST /sboms/ingest        (dependency inventory)
+                          ├── grype sbom:<file> -o json
+                          └── POST /sboms/ingest-cve    (CVE alerts + risk scores)
 ```
 
 ## Project Structure
@@ -137,7 +150,7 @@ UMEagleEye2.0/
 │   │   │   ├── auth.ts          # register, login, MFA, Google, change-password, /me
 │   │   │   ├── assets.ts        # Asset CRUD, baseline, CSV import, SBOM trigger, search
 │   │   │   ├── scans.ts         # Scan dispatch, agent poll, agent ingest (active + passive), auto-expire
-│   │   │   ├── sbom.ts          # SBOM ingest, list, dependencies, stats, delete by asset
+│   │   │   ├── sbom.ts          # SBOM ingest, list, dependencies, stats; CVE ingest + risk scoring
 │   │   │   ├── events.ts        # Security events
 │   │   │   ├── advisories.ts    # AI advisory management
 │   │   │   ├── posture.ts       # Posture score + history
@@ -288,6 +301,14 @@ pip install -r requirements.txt
 
 # Passive scanning requires scapy (Windows: run as Administrator; Linux: run as root)
 # Already included in requirements.txt
+
+# SBOM generation requires Syft
+# Windows:  winget install Anchore.Syft
+# Linux:    curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
+
+# CVE scanning requires Grype (runs automatically after every SBOM scan)
+# Windows:  winget install Anchore.Grype
+# Linux:    curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh
 ```
 
 ### Command-line flags
@@ -360,21 +381,21 @@ Reverse DNS                (fallback — often unreliable)
 
 ### SBOM scan
 
-Triggered from **SBOM page → Re-scan button** (ops_lead or security_engineer) or **My Assets → SBOM icon**. The agent runs:
-
-```bash
-syft <target> -o cyclonedx-json
-```
-
-Where `<target>` is the directory or Docker image entered in the dashboard prompt. If no target is given, the agent falls back to its own installation directory. Syft must be installed separately:
+Triggered from **SBOM page → Re-scan button** (ops_lead or security_engineer) or **My Assets → SBOM icon**. The agent runs the full pipeline automatically:
 
 ```
-# Windows
-winget install Anchore.Syft
-
-# Linux / macOS
-curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
+1. syft <target> -o cyclonedx-json   → CycloneDX SBOM (package inventory)
+        ↓
+2. POST /sboms/ingest                 → stores SBOM + dependency records
+        ↓
+3. grype sbom:<file> -o json          → CVE matches from NVD / GitHub Advisory / OSS Index
+        ↓  filter: drop Unknown, Negligible, CVSS < 4.0 (unless vendor-rated High/Critical)
+4. POST /sboms/ingest-cve             → creates/updates cve_detected events with risk scores
 ```
+
+Where `<target>` is the directory or Docker image entered in the dashboard prompt. If no target is given, the agent defaults to `dir:C:\FYP\UMEagleEye2.0` on Windows or `dir:/usr` on Linux.
+
+Both Syft and Grype must be installed on the agent host (see Prerequisites above). If Grype is not found, the SBOM ingest still succeeds — CVE scanning is skipped with a warning logged.
 
 ### Main loop flow
 
@@ -384,10 +405,56 @@ every --interval seconds:
      ├── passive scan  → drain ARP buffer → enrich → POST /scans/ingest (even if empty)
      ├── active scan   → run nmap → POST /scans/ingest
      └── sbom scan     → run syft → POST /sboms/ingest
+                          └── (on success) run grype → filter findings → POST /sboms/ingest-cve
 
   2. Autonomous passive flush (if --passive and interval elapsed):
      → drain ARP buffer → enrich → POST /scans/ingest (skip if empty)
 ```
+
+## CVE Detection & Risk Scoring
+
+Every SBOM scan automatically triggers a CVE scan (Grype) on the agent. Findings are sent to `POST /sboms/ingest-cve` on the Workers API where they are enriched, scored, and stored as `cve_detected` events.
+
+### Ingest pipeline (Workers API)
+
+1. **Resolve asset** — scan record's `subnet` field carries the `assetId` for SBOM scans
+2. **EPSS batch fetch** — exploit probability scores fetched from FIRST.org in chunks of 30 CVE IDs
+3. **CTI cross-reference** — CVE IDs looked up against the `cti_indicators` table; matches add 10 pts to risk score
+4. **Deduplication** — all existing `cve_detected` events for the asset fetched in one query; dedup key is `cve_id::package_name`
+5. **Upsert** — existing events are updated (refreshed CVSS, EPSS, fix versions, description); new findings batch-inserted in groups of 50
+
+### Composite Risk Score formula
+
+```
+score = (CVSS × 10 × 0.40)          // CVSS 0–10 normalised to 0–100, 40% weight
+      + (EPSS × 100 × 0.35)          // EPSS 0–1 probability, 35% weight
+      + (Criticality × 10 × 0.15)    // asset criticality 1–10, 15% weight
+      + (CTI match ? 10 : 0)         // flat 10 pts if CVE is in threat intel feed
+
+score = min(score, 100)
+```
+
+### Severity mapping
+
+| CVSS score | Grype label | Stored severity |
+|---|---|---|
+| ≥ 9.0 | any | `critical` |
+| ≥ 7.0 | any | `high` |
+| ≥ 4.0 | any | `medium` |
+| 0 (no score) | Critical | `critical` |
+| 0 (no score) | High | `high` |
+| 0 (no score) | Medium | `medium` |
+| anything else | any | `low` |
+
+### Alert filtering (agent-side, before ingest)
+
+Findings are filtered in `run_cve_scan()` before being sent to the API:
+
+| Condition | Action |
+|---|---|
+| Severity = `Unknown` or `Negligible` | Dropped |
+| CVSS < 4.0 AND not vendor-rated High/Critical | Dropped |
+| CVSS ≥ 4.0 OR vendor-rated High/Critical | Ingested |
 
 ## Asset Source Hierarchy
 

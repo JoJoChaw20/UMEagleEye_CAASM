@@ -693,6 +693,27 @@ class AgentClient:
             log.error(f"Failed to ingest SBOM: {e}")
             return False
 
+    def ingest_cve_findings(self, scan_id: str, findings: list[dict]) -> bool:
+        """POST Grype CVE findings to /sboms/ingest-cve for alert generation."""
+        payload = {
+            "agent_id": self.agent_id,
+            "scan_id":  scan_id,
+            "findings": findings,
+        }
+        try:
+            resp = self.session.post(
+                f"{self.api_url}/sboms/ingest-cve",
+                data=json.dumps(payload), timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            log.info(f"CVE findings ingested — {data.get('events_created', 0)} new alerts, "
+                     f"{data.get('events_updated', 0)} updated")
+            return True
+        except requests.RequestException as e:
+            log.error(f"Failed to ingest CVE findings: {e}")
+            return False
+
     def _post_ingest(self, payload: dict, label: str, scan_id: Optional[str] = None) -> bool:
         try:
             resp = self.session.post(
@@ -724,6 +745,95 @@ class AgentClient:
 
 # ── SBOM scanning via Syft ────────────────────────────────────────────────────
 
+def run_cve_scan(scan_id: str, sbom_json: dict, client: AgentClient) -> None:
+    """Run Grype against the SBOM JSON and POST findings for alert generation."""
+    import tempfile
+    log.info(f"Starting CVE scan (scan_id={scan_id})")
+    sbom_tmp: Optional[str] = None
+    out_tmp:  Optional[str] = None
+    try:
+        # Write SBOM as UTF-8 bytes — avoids Windows pipe encoding issues
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
+            f.write(json.dumps(sbom_json).encode("utf-8"))
+            sbom_tmp = f.name
+
+        # Pre-create output file so we can open it as a binary write handle
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            out_tmp = f.name
+
+        # Redirect stdout directly to a binary file — bypasses Windows cp1252 pipe encoding
+        with open(out_tmp, "wb") as out_fh:
+            result = subprocess.run(
+                ["grype", f"sbom:{sbom_tmp}", "-o", "json", "--quiet"],
+                stdout=out_fh,
+                stderr=subprocess.PIPE,
+                timeout=300,
+            )
+
+        # Grype exits 1 when vulnerabilities are found — that is normal
+        if result.returncode not in (0, 1):
+            log.warning(f"Grype exited {result.returncode}: {result.stderr.decode('utf-8', errors='replace')[:500]}")
+            return
+
+        with open(out_tmp, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+        matches = data.get("matches", [])
+
+        findings = []
+        for match in matches:
+            vuln     = match.get("vulnerability", {})
+            artifact = match.get("artifact", {})
+
+            cvss_score = 0.0
+            for cvss in vuln.get("cvss", []):
+                score = cvss.get("metrics", {}).get("baseScore", 0)
+                if score > cvss_score:
+                    cvss_score = score
+
+            findings.append({
+                "cve_id":          vuln.get("id", ""),
+                "severity":        vuln.get("severity", "Unknown"),
+                "description":     vuln.get("description", "")[:500],
+                "cvss_base_score": cvss_score,
+                "package_name":    artifact.get("name", ""),
+                "package_version": artifact.get("version", ""),
+                "fix_versions":    vuln.get("fix", {}).get("versions", []),
+                "cwe_ids":         [],
+            })
+
+        log.info(f"Grype found {len(findings)} vulnerabilities")
+
+        # Filter: skip Unknown/Negligible severity and anything below Medium CVSS
+        # unless Grype itself rates it High or Critical (vendor-assigned severity)
+        SKIP_SEVERITIES = {"negligible", "unknown"}
+        findings = [
+            f for f in findings
+            if f["severity"].lower() not in SKIP_SEVERITIES
+            and (f["cvss_base_score"] >= 4.0 or f["severity"].lower() in ("high", "critical"))
+        ]
+        log.info(f"After filtering: {len(findings)} actionable findings (Medium/High/Critical)")
+
+        if findings:
+            client.ingest_cve_findings(scan_id, findings)
+        else:
+            log.info("No actionable vulnerabilities — no alerts generated")
+
+    except FileNotFoundError:
+        log.warning("grype not found — CVE scanning skipped. "
+                    "Install: winget install Anchore.Grype  (Windows) "
+                    "or: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh")
+    except subprocess.TimeoutExpired:
+        log.error("Grype scan timed out (>300 s)")
+    except json.JSONDecodeError as e:
+        log.error(f"Failed to parse Grype output: {e}")
+    except Exception as e:
+        log.error(f"CVE scan error: {e}", exc_info=True)
+    finally:
+        for path in (sbom_tmp, out_tmp):
+            if path and os.path.exists(path):
+                os.unlink(path)
+
+
 def run_sbom_scan(scan: dict, client: AgentClient) -> None:
     """Run Syft on this machine to generate a CycloneDX SBOM, then POST it."""
     scan_id  = scan.get("scan_id") or scan.get("scanId")
@@ -739,15 +849,26 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
 
     log.info(f"Starting SBOM scan (scan_id={scan_id}) — target={target}")
     success = False
+    sbom_json: Optional[dict] = None
+    syft_out_tmp: Optional[str] = None
     try:
-        result = subprocess.run(
-            ["syft", target, "-o", "cyclonedx-json"],
-            capture_output=True, text=True, timeout=600,
-        )
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            syft_out_tmp = f.name
+
+        # Redirect stdout to a binary file — avoids Windows cp1252 pipe encoding crash
+        with open(syft_out_tmp, "wb") as out_fh:
+            result = subprocess.run(
+                ["syft", target, "-o", "cyclonedx-json"],
+                stdout=out_fh,
+                stderr=subprocess.PIPE,
+                timeout=600,
+            )
         if result.returncode != 0:
-            log.error(f"Syft exited {result.returncode}: {result.stderr[:500]}")
+            log.error(f"Syft exited {result.returncode}: {result.stderr.decode('utf-8', errors='replace')[:500]}")
         else:
-            sbom_json = json.loads(result.stdout)
+            with open(syft_out_tmp, "r", encoding="utf-8", errors="replace") as f:
+                sbom_json = json.load(f)
             success = client.ingest_sbom(scan_id, sbom_json)
     except FileNotFoundError:
         log.error("syft not found — install with: winget install Anchore.Syft  (Windows) "
@@ -759,6 +880,8 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
     except Exception as e:
         log.error(f"SBOM scan error: {e}", exc_info=True)
     finally:
+        if syft_out_tmp and os.path.exists(syft_out_tmp):
+            os.unlink(syft_out_tmp)
         if not success and scan_id:
             try:
                 client.session.post(
@@ -769,6 +892,10 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
                 log.info(f"SBOM scan {scan_id[:8]}… marked as failed")
             except Exception:
                 pass
+
+    # Run CVE correlation immediately after successful SBOM ingest
+    if success and sbom_json and scan_id:
+        run_cve_scan(scan_id, sbom_json, client)
 
 
 # ── Background threads ────────────────────────────────────────────────────────
