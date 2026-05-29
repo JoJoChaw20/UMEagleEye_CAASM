@@ -38,7 +38,6 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 ### SBOM & CVE Detection
 - **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOM generation via [Syft](https://github.com/anchore/syft); the EagleEye agent runs Syft locally and POSTs the result to the platform
 - **Automatic CVE Correlation** — Immediately after every SBOM scan, the agent runs [Grype](https://github.com/anchore/grype) against the generated SBOM to match packages against known vulnerabilities (NVD, GitHub Advisory, OSS Index, and more)
-- **Alert Filtering** — Only Medium/High/Critical findings are ingested; Unknown and Negligible severity (and CVSS < 4.0 without a vendor-assigned High/Critical label) are discarded before sending to the platform
 - **Composite Risk Scoring** — Each CVE finding is scored using a weighted formula: `(CVSS × 10 × 0.40) + (EPSS × 100 × 0.35) + (Criticality × 10 × 0.15) + (CTI match ? 10 : 0)`, capped at 100
 - **EPSS Enrichment** — Exploit Prediction Scoring System scores fetched in batch from FIRST.org API and incorporated into the risk formula at ingest time
 - **CTI Enrichment** — CVE IDs cross-referenced against the platform's CTI indicator table; confirmed threat-intel matches add 10 points to the risk score
@@ -445,16 +444,6 @@ score = min(score, 100)
 | 0 (no score) | High | `high` |
 | 0 (no score) | Medium | `medium` |
 | anything else | any | `low` |
-
-### Alert filtering (agent-side, before ingest)
-
-Findings are filtered in `run_cve_scan()` before being sent to the API:
-
-| Condition | Action |
-|---|---|
-| Severity = `Unknown` or `Negligible` | Dropped |
-| CVSS < 4.0 AND not vendor-rated High/Critical | Dropped |
-| CVSS ≥ 4.0 OR vendor-rated High/Critical | Ingested |
 
 ## Asset Source Hierarchy
 

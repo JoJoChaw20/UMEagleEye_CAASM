@@ -802,21 +802,10 @@ def run_cve_scan(scan_id: str, sbom_json: dict, client: AgentClient) -> None:
             })
 
         log.info(f"Grype found {len(findings)} vulnerabilities")
-
-        # Filter: skip Unknown/Negligible severity and anything below Medium CVSS
-        # unless Grype itself rates it High or Critical (vendor-assigned severity)
-        SKIP_SEVERITIES = {"negligible", "unknown"}
-        findings = [
-            f for f in findings
-            if f["severity"].lower() not in SKIP_SEVERITIES
-            and (f["cvss_base_score"] >= 4.0 or f["severity"].lower() in ("high", "critical"))
-        ]
-        log.info(f"After filtering: {len(findings)} actionable findings (Medium/High/Critical)")
-
         if findings:
             client.ingest_cve_findings(scan_id, findings)
         else:
-            log.info("No actionable vulnerabilities — no alerts generated")
+            log.info("No vulnerabilities found — no alerts generated")
 
     except FileNotFoundError:
         log.warning("grype not found — CVE scanning skipped. "
