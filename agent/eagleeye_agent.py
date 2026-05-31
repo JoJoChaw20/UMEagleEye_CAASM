@@ -624,16 +624,20 @@ class AgentClient:
 
     def send_heartbeat(self) -> bool:
         payload = {"version": VERSION, "gateway_ip": _local_ip()}
-        try:
-            resp = self.session.post(
-                f"{self.api_url}/agents/{self.agent_id}/heartbeat",
-                data=json.dumps(payload), timeout=10,
-            )
-            resp.raise_for_status()
-            return True
-        except requests.RequestException as e:
-            log.warning(f"Heartbeat failed: {e}")
-            return False
+        for attempt in range(2):
+            try:
+                resp = self.session.post(
+                    f"{self.api_url}/agents/{self.agent_id}/heartbeat",
+                    data=json.dumps(payload), timeout=15,
+                )
+                resp.raise_for_status()
+                return True
+            except requests.RequestException as e:
+                if attempt == 0:
+                    time.sleep(5)  # brief pause before retry
+                else:
+                    log.warning(f"Heartbeat failed: {e}")
+        return False
 
     def get_pending_scans(self) -> list[dict]:
         try:

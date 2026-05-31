@@ -31,7 +31,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 
 ### Security Operations
 - **Continuous Posture Management** — Automated drift detection, ongoing posture scoring tracked over time with daily snapshots
-- **Threat Intelligence Integration** — Ingests live feeds (AlienVault OTX, ThreatFox, NVD) every morning (MYT) to identify vulnerable assets proactively
+- **Threat Intelligence Integration** — Ingests live IoC feeds (AlienVault OTX, ThreatFox) every morning (MYT); each indicator is correlated to a MITRE ATT&CK tactic via a three-level derivation cascade; IoC Lookup cross-references any IP/domain/hash against the internal asset table in real time; MITRE ATT&CK heatmap visualises tactic coverage across all ingested indicators
 - **AI-Driven Advisory Pipeline** — DeepSeek generates actionable remediation instructions for security events; queued asynchronously via Cloudflare Queues
 - **SLA Monitoring** — Alerts on advisories open longer than 72 hours; checked every 30 minutes
 
@@ -318,7 +318,7 @@ pip install -r requirements.txt
 | `--api-key` | — | Agent API key from dashboard (required) |
 | `--agent-id` | — | Agent UUID from dashboard (required) |
 | `--interval` | `30` | Active scan poll interval in seconds |
-| `--heartbeat-interval` | `30` | Heartbeat interval in seconds |
+| `--heartbeat-interval` | `30` | Heartbeat interval in seconds; each attempt uses a 15 s timeout with one silent retry before logging a warning |
 | `--passive` | off | Enable passive sniffing suite (ARP + mDNS/NetBIOS + DHCP) |
 | `--passive-interface` | auto | Network interface for passive sniffers |
 | `--passive-interval` | `60` | Seconds between autonomous ARP buffer flushes |
@@ -444,6 +444,73 @@ score = min(score, 100)
 | 0 (no score) | High | `high` |
 | 0 (no score) | Medium | `medium` |
 | anything else | any | `low` |
+
+## Threat Intelligence (CTI)
+
+Two live IoC feeds are ingested daily at 6:00 AM MYT via a Cloudflare Cron Trigger. All rows are upserted — re-ingesting the same indicator value refreshes `last_seen`, `attack_tactic`, `confidence_score`, and `attack_technique` without creating duplicates.
+
+### Data sources
+
+| Source | API | Fetch scope | Confidence |
+|--------|-----|-------------|------------|
+| AlienVault OTX | `/pulses/activity?limit=50&page=1` | 50 latest community pulses | Hardcoded `0.70` (OTX provides no per-indicator score) |
+| ThreatFox (abuse.ch) | `get_iocs` | Last 7 days of IoCs | From `confidence_level` field, normalised: `confidence_level / 100` |
+
+### MITRE ATT&CK tactic derivation
+
+Every indicator is assigned an `attack_tactic` at ingest time. Neither source provides a ready-to-use tactic name, so the code derives one through source-specific logic.
+
+**AlienVault OTX — three-level fallback cascade (per pulse → applied to all indicators in that pulse)**
+
+| Level | Input | Mechanism | Notes |
+|-------|-------|-----------|-------|
+| 1 — Authoritative | `pulse.attack_ids[0].name` | Technique code (e.g. `T1566`) → `TECHNIQUE_TO_TACTIC` lookup (~150 entries, all 14 MITRE tactics) | Fires only when the pulse submitter explicitly tagged a technique; rare on community pulses |
+| 2 — Tag-based | `pulse.tags[]` | Free-text tag (e.g. `"ransomware"`, `"botnet"`) → `OTX_TAG_TO_TACTIC` lookup (~30 entries) | Fires when Level 1 is absent; uses first matching tag |
+| 3 — Type default | `indicator.type` | Indicator type → statistically most probable tactic for that type | Last resort; guarantees every indicator receives a tactic |
+
+Type defaults (Level 3):
+
+| Indicator type | Default tactic | Rationale |
+|---|---|---|
+| `ip` | Command and Control | Majority of malicious IPs in OTX are C2 hosts |
+| `domain` | Command and Control | Most malicious domains are C2/phishing infrastructure |
+| `url` | Initial Access | URLs are typically delivery/phishing vectors |
+| `hash` | Execution | File hashes identify malware samples |
+| `email` | Initial Access | Email addresses appear in phishing campaigns |
+
+**ThreatFox — single lookup**
+
+`ioc.threat_type` → `THREATFOX_TYPE_TO_TACTIC` lookup (12 entries). If `threat_type` is absent or outside the mapped vocabulary, `attack_tactic` is stored as `null`. `attack_technique` is never set for ThreatFox (no technique-level data provided).
+
+### Indicator type normalisation
+
+Raw type strings from both APIs are mapped to the platform's internal enum:
+
+| Internal type | OTX raw types | ThreatFox raw types |
+|---|---|---|
+| `ip` | `IPv4`, `IPv6` | `ip:port` (port stripped), `ip` |
+| `domain` | `domain`, `hostname` | `domain`, `domain_regex` |
+| `hash` | `FileHash-MD5`, `FileHash-SHA256`, `FileHash-SHA1` | `*md5_hash`, `*sha256_hash` |
+| `url` | `URL` | `url` |
+| `email` | `email` | — |
+
+For ThreatFox `ip:port` indicators, the port is stripped so the stored IP can be cross-referenced against internal asset IPs.
+
+### IoC Feed UI
+
+The Threat Intelligence page IoC Feed tab uses server-side pagination and filtering:
+
+- **Page size:** 15 rows per page (consistent with Alerts page)
+- **Filters:** Source (AlienVault OTX / ThreatFox), Indicator Type (ip / domain / hash / url / email), free-text search on indicator value
+- **Filter option population:** Derived from the `/cti/stats` full-table aggregation, so all source and type options are always visible regardless of current filter state
+
+### IoC Lookup
+
+The Lookup tab accepts any IP, domain, hash, URL, or email and queries `GET /cti/lookup?value=`. If the value matches a stored indicator, full details are returned. Simultaneously, if the value is an IP address, it is cross-referenced against the internal `assets` table — a match surfaces the internal asset's hostname, criticality score, and internet-facing status, flagging confirmed threat-intel overlap with the internal environment.
+
+### MITRE ATT&CK Matrix
+
+The Matrix tab aggregates all indicators with a non-null `attack_tactic` and renders a heatmap grouped by tactic. Each tactic card shows the technique IDs (or `Unknown` for ThreatFox indicators, which carry no technique codes) and their indicator counts.
 
 ## Asset Source Hierarchy
 
