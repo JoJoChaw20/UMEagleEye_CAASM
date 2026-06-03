@@ -3,6 +3,7 @@ import { getDb } from '../db/client'
 import { runDriftAudit } from '../services/drift'
 import { savePostureSnapshot } from '../services/posture'
 import { ingestAllFeeds } from '../services/cti'
+import { enrichMissingCwe } from '../services/nvd'
 import { advisories } from '../db/schema'
 import { eq, and, lt } from 'drizzle-orm'
 
@@ -70,14 +71,8 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
       }
 
       case 'nvd-update': {
-        // NVD update: fetch recent CVEs from NVD API and store (lightweight version)
-        if (!env.NVD_API_KEY) break
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-        await fetch(
-          `https://services.nvd.nist.gov/rest/json/cves/2.0?pubStartDate=${since}&resultsPerPage=100`,
-          { headers: { 'apiKey': env.NVD_API_KEY } }
-        ).catch(() => undefined)
-        // Results are used in vulnerability matching (stored via future vuln table)
+        const enriched = await enrichMissingCwe(db, env.NVD_API_KEY)
+        console.log(`[nvd-update] Enriched ${enriched} CVE events with CWE data`)
         break
       }
     }
