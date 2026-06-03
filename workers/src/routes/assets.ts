@@ -8,6 +8,7 @@ import { getDb } from '../db/client'
 import { assets, scanResults, agents } from '../db/schema'
 import { rescoreAssets } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
+import { buildBaseline, extractPorts } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -325,14 +326,16 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
-    const snapshot = {
-      os: existing.osInfo ?? {},
-      ports: (existing.osInfo as Record<string, unknown> | null)?.ports ?? [],
-      criticality_score: existing.criticalityScore,
-      is_internet_facing: existing.isInternetFacing,
-      hostname: existing.hostname,
-      captured_at: new Date().toISOString(),
-    }
+    const osInfo = existing.osInfo as Record<string, unknown> | null
+    const snapshot = buildBaseline({
+      ports:            extractPorts(osInfo),
+      osInfo,
+      hostname:         existing.hostname,
+      macAddress:       existing.macAddress,
+      isInternetFacing: existing.isInternetFacing,
+      deviceType:       existing.deviceType,
+      autoSet:          false,
+    })
 
     const [updated] = await db
       .update(assets)

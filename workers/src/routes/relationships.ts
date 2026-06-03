@@ -5,7 +5,8 @@ import { eq, and, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, assetRelationships, tenants } from '../db/schema'
+import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema'
+import { inferForTenant } from './topology'
 
 const app = new Hono<{ Bindings: Env }>()
 const WRITE_ROLES = ['ops_lead', 'security_engineer', 'superadmin'] as const
@@ -213,22 +214,25 @@ app.get('/blast-radius/:assetId', authMiddleware, async (c) => {
 
 // ── Shared inference logic (also called from scan ingest) ────────
 type DbClient = ReturnType<typeof getDb>
-type AssetRow  = typeof assets.$inferSelect
 
-function pickHub(subnetAssets: AssetRow[]): AssetRow {
-  return [...subnetAssets].sort((a, b) => {
-    if (a.deviceType === 'network' && b.deviceType !== 'network') return -1
-    if (a.deviceType !== 'network' && b.deviceType === 'network') return 1
-    const lastA = parseInt(a.ipAddress.split('.').pop() ?? '0', 10)
-    const lastB = parseInt(b.ipAddress.split('.').pop() ?? '0', 10)
-    return lastA - lastB
-  })[0]!
-}
-
+// Derives relationship edges from the topology tree's parent→child links so that
+// the relationship graph always matches the topology view exactly.
+// If topology hasn't been built yet it is auto-inferred first.
 export async function inferRelationshipsForTenant(db: DbClient, tenantId: string): Promise<number> {
   const tenantAssetIds = await getTenantAssetIds(db, tenantId)
   if (tenantAssetIds.length === 0) return 0
 
+  // Auto-build topology if missing
+  let topoNodes = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
+  if (topoNodes.length === 0) {
+    const tenantAssets = await db.select().from(assets).where(
+      and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual'))
+    )
+    await inferForTenant(db, tenantAssets, tenantId)
+    topoNodes = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
+  }
+
+  // Clear old relationships for this tenant
   await db.delete(assetRelationships).where(
     or(
       anyOfUuids(assetRelationships.sourceAssetId, tenantAssetIds),
@@ -236,65 +240,48 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
     )
   )
 
-  const tenantAssets = await db.select().from(assets).where(
-    and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual'))
-  )
+  if (topoNodes.length === 0) return 0
 
-  const subnetGroups = new Map<string, AssetRow[]>()
-  for (const a of tenantAssets) {
-    const s = getSubnet(a.ipAddress)
-    if (!subnetGroups.has(s)) subnetGroups.set(s, [])
-    subnetGroups.get(s)!.push(a)
+  // nodeId → { assetId, nodeType } lookup
+  const nodeToInfo = new Map<string, { assetId: string; nodeType: string }>()
+  for (const n of topoNodes) {
+    if (n.assetId) nodeToInfo.set(n.nodeId, { assetId: n.assetId, nodeType: n.nodeType })
+  }
+
+  // assetId → IP for subnet classification
+  const assetRows = await db
+    .select({ assetId: assets.assetId, ipAddress: assets.ipAddress })
+    .from(assets)
+    .where(and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual')))
+  const assetIp = new Map(assetRows.map(a => [a.assetId, a.ipAddress]))
+
+  const INFRA_TYPES = new Set(['gateway', 'router', 'switch', 'access_point'])
+
+  function classifyRelType(parentType: string, childType: string, sameSubnet: boolean): string {
+    const parentInfra = INFRA_TYPES.has(parentType)
+    const childInfra  = INFRA_TYPES.has(childType)
+    if (parentInfra && childInfra) return 'connects_to'   // network infrastructure uplink/trunk
+    if (parentInfra && !childInfra) return sameSubnet ? 'same_subnet' : 'connects_to'  // access layer
+    return 'depends_on'  // host-to-host
   }
 
   const newRels: (typeof assetRelationships.$inferInsert)[] = []
 
-  // same_subnet: star per subnet; hub must be a network device
-  for (const subnetAssets of subnetGroups.values()) {
-    if (subnetAssets.length < 2) continue
-    const hub = pickHub(subnetAssets)
-    if (hub.deviceType !== 'network') continue
-    for (const a of subnetAssets) {
-      if (a.assetId === hub.assetId) continue
-      newRels.push({ sourceAssetId: hub.assetId, targetAssetId: a.assetId, relationshipType: 'same_subnet', confidence: '1.00' })
-    }
-  }
+  for (const node of topoNodes) {
+    if (!node.parentNodeId || !node.assetId) continue
+    const parentInfo = nodeToInfo.get(node.parentNodeId)
+    if (!parentInfo) continue
 
-  // connects_to: use dedicated router in gateway subnet when present (correct L3 path)
-  const gateway = tenantAssets
-    .filter(a => a.isInternetFacing && a.deviceType === 'network')
-    .sort((a, b) => parseInt(a.ipAddress.split('.').pop() ?? '0', 10) - parseInt(b.ipAddress.split('.').pop() ?? '0', 10))[0]
-    ?? tenantAssets.filter(a => a.deviceType === 'network').sort((a, b) => a.ipAddress.localeCompare(b.ipAddress))[0]
+    const nodeIp   = assetIp.get(node.assetId)      ?? ''
+    const parentIp = assetIp.get(parentInfo.assetId) ?? ''
+    const sameSubnet = !!(nodeIp && parentIp && getSubnet(nodeIp) === getSubnet(parentIp))
 
-  const routingAnchor = gateway
-    ? (tenantAssets.find(a =>
-        a.deviceType === 'network'
-        && !a.isInternetFacing
-        && getSubnet(a.ipAddress) === getSubnet(gateway.ipAddress)
-        && /^(rtr[-_]|router[-_]|lab[-_]router)/i.test(a.hostname ?? '')
-      ) ?? gateway)
-    : gateway
-
-  if (routingAnchor) {
-    const anchorSubnet = getSubnet(routingAnchor.ipAddress)
-    for (const [subnet, subnetAssets] of subnetGroups.entries()) {
-      if (subnet === anchorSubnet) continue
-      const hub = pickHub(subnetAssets)
-      if (hub && hub.deviceType === 'network') {
-        newRels.push({ sourceAssetId: routingAnchor.assetId, targetAssetId: hub.assetId, relationshipType: 'connects_to', confidence: '0.90' })
-      }
-    }
-  }
-
-  // Orphan remediation: unconnected assets get a connects_to from the gateway
-  const edgedIds = new Set<string>()
-  for (const r of newRels) { edgedIds.add(r.sourceAssetId); edgedIds.add(r.targetAssetId) }
-  if (gateway) {
-    for (const a of tenantAssets) {
-      if (!edgedIds.has(a.assetId) && a.assetId !== gateway.assetId) {
-        newRels.push({ sourceAssetId: gateway.assetId, targetAssetId: a.assetId, relationshipType: 'connects_to', confidence: '0.70' })
-      }
-    }
+    newRels.push({
+      sourceAssetId:    parentInfo.assetId,
+      targetAssetId:    node.assetId,
+      relationshipType: classifyRelType(parentInfo.nodeType, node.nodeType, sameSubnet),
+      confidence:       '1.00',
+    })
   }
 
   if (newRels.length > 0) {

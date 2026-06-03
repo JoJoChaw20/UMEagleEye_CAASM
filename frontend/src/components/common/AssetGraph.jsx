@@ -34,63 +34,120 @@ const EDGE_LABELS = {
 const ALL_TYPES    = ['server', 'workstation', 'network', 'iot']
 const ALL_REL_TYPES = ['same_subnet', 'connects_to', 'depends_on', 'authenticates_to', 'exposes_service']
 
-/* ── Force simulation ──────────────────────────────────────────── */
+/* ── Reingold-Tilford tree layout ──────────────────────────────────
+ * Guarantees zero node overlap. Handles disconnected components by
+ * placing each component side-by-side. Deterministic — same data
+ * always produces identical positions.
+ * ---------------------------------------------------------------- */
 function forceSimulation(nodes, edges, W, H) {
-  nodes.forEach(n => {
-    n.x = W / 2 + (Math.random() - 0.5) * W * 0.6
-    n.y = H / 2 + (Math.random() - 0.5) * H * 0.6
-    n.vx = 0; n.vy = 0
-  })
+  if (nodes.length === 0) return nodes
+
+  const NODE_SEP  = 100   // min horizontal gap between leaf nodes
+  const LAYER_SEP = 110   // vertical gap between depth levels
+  const PAD       = 50    // canvas padding
 
   const nodeMap = {}
   nodes.forEach(n => { nodeMap[n.asset_id] = n })
 
-  const seenPairs = new Set()
-  const uniqueEdges = []
+  // ── Build undirected adjacency (deduplicated) ──
+  const adj = {}
+  nodes.forEach(n => { adj[n.asset_id] = [] })
+  const edgeSeen = new Set()
   edges.forEach(e => {
-    const key = e.source < e.target ? `${e.source}-${e.target}` : `${e.target}-${e.source}`
-    if (!seenPairs.has(key)) { seenPairs.add(key); uniqueEdges.push(e) }
+    const k = e.source < e.target ? `${e.source}-${e.target}` : `${e.target}-${e.source}`
+    if (edgeSeen.has(k)) return
+    edgeSeen.add(k)
+    adj[e.source]?.push(e.target)
+    adj[e.target]?.push(e.source)
   })
 
-  const repulsion = 12000, attraction = 0.015, damping = 0.85
-  const centerGravity = 0.005, idealLength = 180, collisionRadius = 40
-
-  for (let iter = 0; iter < 200; iter++) {
-    const temp = 1 - iter / 200
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j]
-        const dx = b.x - a.x, dy = b.y - a.y
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        const force = (repulsion * temp) / (dist * dist)
-        const fx = (dx / dist) * force, fy = (dy / dist) * force
-        a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy
-        if (dist < collisionRadius * 2) {
-          const overlap = (collisionRadius * 2 - dist) * 0.5
-          a.x += (dx / dist) * overlap; a.y += (dy / dist) * overlap
-          b.x -= (dx / dist) * overlap; b.y -= (dy / dist) * overlap
-        }
+  // ── Find connected components; gateway-containing component first ──
+  const globalVisited = new Set()
+  const components = []
+  const ordered = [...nodes].sort((a, b) => {
+    if (a.is_internet_facing !== b.is_internet_facing) return a.is_internet_facing ? -1 : 1
+    return (b.edge_count ?? 0) - (a.edge_count ?? 0)
+  })
+  for (const start of ordered) {
+    if (globalVisited.has(start.asset_id)) continue
+    const comp = []
+    const q = [start.asset_id]
+    globalVisited.add(start.asset_id)
+    while (q.length > 0) {
+      const id = q.shift()
+      comp.push(id)
+      for (const nid of adj[id] ?? []) {
+        if (!globalVisited.has(nid)) { globalVisited.add(nid); q.push(nid) }
       }
     }
-    uniqueEdges.forEach(e => {
-      const a = nodeMap[e.source], b = nodeMap[e.target]
-      if (!a || !b) return
-      const dx = b.x - a.x, dy = b.y - a.y
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1
-      if (dist > idealLength) {
-        const force = (dist - idealLength) * attraction * temp
-        const fx = (dx / dist) * force, fy = (dy / dist) * force
-        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy
-      }
-    })
-    nodes.forEach(n => {
-      n.vx += (W / 2 - n.x) * centerGravity; n.vy += (H / 2 - n.y) * centerGravity
-      n.vx *= damping; n.vy *= damping
-      n.x += n.vx * temp; n.y += n.vy * temp
-      n.x = Math.max(40, Math.min(W - 40, n.x))
-      n.y = Math.max(40, Math.min(H - 40, n.y))
-    })
+    components.push({ root: start.asset_id, ids: comp })
   }
+
+  // ── Per-component: build spanning tree via BFS, assign positions ──
+  function layoutComponent(root, ids) {
+    const idSet  = new Set(ids)
+    const ch     = {}      // children map
+    const depth  = {}      // BFS depth
+    ids.forEach(id => { ch[id] = [] })
+    depth[root] = 0
+    const q = [root]
+    const vis = new Set([root])
+    while (q.length > 0) {
+      const id = q.shift()
+      // Sort neighbours by IP for a deterministic, IP-ascending child order
+      const nbrs = (adj[id] ?? [])
+        .filter(nid => idSet.has(nid) && !vis.has(nid))
+        .sort((a, b) => {
+          const ipA = nodeMap[a]?.ip_address ?? ''
+          const ipB = nodeMap[b]?.ip_address ?? ''
+          return ipA.localeCompare(ipB, undefined, { numeric: true })
+        })
+      for (const nid of nbrs) {
+        vis.add(nid); ch[id].push(nid); depth[nid] = depth[id] + 1; q.push(nid)
+      }
+    }
+
+    // Reingold-Tilford: count leaves to determine subtree width
+    function leaves(id) {
+      return ch[id].length === 0 ? 1 : ch[id].reduce((s, c) => s + leaves(c), 0)
+    }
+
+    // Assign preliminary x (relative to component origin = 0)
+    const px = {}
+    function assignX(id, left) {
+      if (ch[id].length === 0) { px[id] = left + NODE_SEP / 2; return left + NODE_SEP }
+      let x = left
+      for (const c of ch[id]) x = assignX(c, x)
+      px[id] = (px[ch[id][0]] + px[ch[id][ch[id].length - 1]]) / 2
+      return x
+    }
+    assignX(root, 0)
+
+    const treeW    = leaves(root) * NODE_SEP
+    const maxDepth = Math.max(...ids.map(id => depth[id] ?? 0))
+    const treeH    = maxDepth * LAYER_SEP
+
+    return { ch, depth, px, treeW, treeH }
+  }
+
+  const layouts = components.map(({ root, ids }) => ({
+    root, ids, ...layoutComponent(root, ids)
+  }))
+
+  // ── Arrange components side-by-side, centred in canvas ──
+  const totalW   = layouts.reduce((s, l) => s + l.treeW, 0) + (layouts.length - 1) * NODE_SEP
+  const maxTreeH = Math.max(...layouts.map(l => l.treeH))
+  let ox = Math.max(PAD, (W - totalW) / 2)
+
+  layouts.forEach(({ root, ids, ch, depth, px, treeW, treeH }) => {
+    const oy = Math.max(PAD, (H - treeH) / 2)
+    ids.forEach(id => {
+      nodeMap[id].x = Math.max(PAD, Math.min(W - PAD, (px[id] ?? 0) + ox))
+      nodeMap[id].y = Math.max(PAD, Math.min(H - PAD, (depth[id] ?? 0) * LAYER_SEP + oy))
+    })
+    ox += treeW + NODE_SEP
+  })
+
   return nodes
 }
 
@@ -173,7 +230,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
     const ctx = canvas.getContext('2d')
     const rect = canvas.parentElement?.getBoundingClientRect()
     const W = (rect?.width || 800)
-    const H = 500
+    const H = 580
     canvas.width  = W * window.devicePixelRatio
     canvas.height = H * window.devicePixelRatio
     canvas.style.width  = W + 'px'
@@ -514,11 +571,11 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
       {/* Canvas area */}
       <div className="graph-container relative">
         {loading ? (
-          <div className="flex items-center justify-center" style={{ height: 500 }}>
+          <div className="flex items-center justify-center" style={{ height: 580 }}>
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
         ) : !graphData.nodes?.length ? (
-          <div className="flex flex-col items-center justify-center text-dark-400" style={{ height: 500 }}>
+          <div className="flex flex-col items-center justify-center text-dark-400" style={{ height: 580 }}>
             <svg className="w-16 h-16 mb-4 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="12" cy="18" r="3" />
               <line x1="8.5" y1="7.5" x2="10.5" y2="16" /><line x1="15.5" y1="7.5" x2="13.5" y2="16" />

@@ -254,8 +254,8 @@ export default function AssetsPage() {
                           <div className="font-medium text-white">{a.hostname || '—'}</div>
                           <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
                         </td>
-                        <td>
-                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${srcMeta.cls}`}>
+                        <td className="whitespace-nowrap">
+                          <span style={{ whiteSpace: 'nowrap' }} className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>
                             {srcMeta.label}
                           </span>
                         </td>

@@ -45,7 +45,7 @@ function classifyAsset(asset: typeof assets.$inferSelect): { nodeType: NodeType;
     if (/(core[-_])(sw|switch|router|rtr)/.test(h))         return { nodeType: 'switch',       layer: 2 }
     if (/(^router[-_]|^rtr[-_]|lab[-_]router)/.test(h))    return { nodeType: 'router',       layer: 2 }
     if (/(dist[-_])(sw|switch|router)/.test(h))             return { nodeType: 'switch',       layer: 3 }
-    if (/(wifi|^ap[-_]|wap[-_]|access[-_]?point)/.test(h)) return { nodeType: 'access_point', layer: 3 }
+    if (/(wifi|^ap[-_]|wap[-_]|access[-_]?point)/.test(h)) return { nodeType: 'access_point', layer: 4 }
     return { nodeType: 'switch', layer: 3 }
   }
 
@@ -76,7 +76,7 @@ function resolveParent(node: FlatNode, others: FlatNode[]): string | null {
   const subnetCandidates = others
     .filter(n => n.subnet === node.subnet && n.layer < node.layer)
     .sort((a, b) =>
-      b.layer - a.layer || (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0)
+      (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0) || b.layer - a.layer
     )
   if (subnetCandidates.length > 0) return subnetCandidates[0]?.nodeId ?? null
 
@@ -123,9 +123,18 @@ function buildTree(rows: typeof topologyNodes.$inferSelect[]): TreeNode[] {
       else roots.push(node)
     }
   }
-  // Sort children by layer then label for consistent display
+  function ipToNum(ip: string): number {
+    return ip.split('.').reduce((acc, oct) => acc * 256 + parseInt(oct, 10), 0)
+  }
+
+  // Sort children by layer then IP address ascending
   function sortTree(nodes: TreeNode[]): void {
-    nodes.sort((a, b) => a.layer - b.layer || (a.label ?? '').localeCompare(b.label ?? ''))
+    nodes.sort((a, b) => {
+      if (a.layer !== b.layer) return a.layer - b.layer
+      const aIp = (a.metadata as { ip_address?: string })?.ip_address ?? ''
+      const bIp = (b.metadata as { ip_address?: string })?.ip_address ?? ''
+      return ipToNum(aIp) - ipToNum(bIp)
+    })
     for (const n of nodes) sortTree(n.children)
   }
   sortTree(roots)

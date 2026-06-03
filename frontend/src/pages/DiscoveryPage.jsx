@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, RefreshCw, X, ChevronRight, Wifi, Globe } from 'lucide-react'
+import { Plus, RefreshCw, X, ChevronRight, Wifi, Globe, GitCompare } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -233,22 +233,22 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/40 backdrop-blur-sm">
-      <div className="glass-card w-full sm:w-[500px] h-full sm:h-auto sm:max-h-[88vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
-        <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/60 backdrop-blur-sm">
+      <div className="w-full sm:w-[500px] h-full sm:h-auto sm:max-h-[88vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4 bg-dark-900 border border-dark-700 shadow-2xl">
+        <div className="flex items-center justify-between p-4 border-b border-dark-700">
           <div>
-            <h3 className="font-semibold text-white">Discovered Hosts</h3>
+            <h3 className="font-semibold text-dark-100">Discovered Hosts</h3>
             <p className="text-xs text-dark-400 mt-0.5">
               {scan.subnet || '—'} · {hosts.length} host{hosts.length !== 1 ? 's' : ''} · <span className="capitalize">{scan.scanType || 'active'}</span> scan
             </p>
           </div>
-          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-100 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="px-4 py-3 border-b border-dark-700/30 bg-dark-800/50 space-y-3">
-          <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
+        <div className="px-4 py-3 border-b border-dark-700 bg-dark-850 space-y-3">
+          <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-500/15 border border-blue-500/30 text-blue-500">
             <span className="text-base leading-none">💡</span>
             <p className="text-xs leading-relaxed">
               <span className="font-semibold block mb-0.5">Selective Inventory Recommended</span>
@@ -256,7 +256,7 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
             </p>
           </div>
           <p className="text-xs text-dark-400 px-1">
-            Click <span className="text-white font-medium">Accept</span> to track an asset, or <span className="text-white font-medium">Update</span> to refresh an already-inventoried asset with new scan data.
+            Click <span className="text-dark-100 font-medium">Accept</span> to track an asset, or <span className="text-dark-100 font-medium">Update</span> to refresh an already-inventoried asset with new scan data.
           </p>
         </div>
 
@@ -278,10 +278,10 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
                   key={i}
                   className={`rounded-xl p-3 border transition-colors ${
                     isAccepted || isInMyAssets
-                      ? 'bg-green-500/5 border-green-500/20'
+                      ? 'bg-green-500/10 border-green-500/30'
                       : isKnown
-                        ? 'bg-blue-500/5 border-blue-500/20'
-                        : 'bg-dark-800/60 border-dark-700/40'
+                        ? 'bg-blue-500/10 border-blue-500/30'
+                        : 'bg-dark-850 border-dark-700'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -289,41 +289,41 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-sm text-accent-cyan">{ip}</span>
                         {(isAccepted || isInMyAssets) && (
-                          <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30 rounded-full">
+                          <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-500 border border-green-500/40 rounded-full">
                             In My Assets
                           </span>
                         )}
                         {!isAccepted && !isInMyAssets && isKnown && (
-                          <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-full">
+                          <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-500 border border-blue-500/40 rounded-full">
                             Auto-discovered
                           </span>
                         )}
                       </div>
                       {host.hostname && (
-                        <p className="text-xs text-dark-300">{host.hostname}</p>
+                        <p className="text-xs text-dark-200">{host.hostname}</p>
                       )}
                       {host.mac && (
-                        <p className="text-xs text-dark-500 font-mono">{host.mac}</p>
+                        <p className="text-xs text-dark-300 font-mono">{host.mac}</p>
                       )}
                       {osLabel && (
-                        <p className="text-xs text-dark-400">
-                          <span className="text-dark-500">OS:</span> {osLabel}
+                        <p className="text-xs text-dark-300">
+                          <span className="text-dark-400">OS:</span> {osLabel}
                         </p>
                       )}
                       {portsLabel && (
-                        <p className="text-xs text-dark-500">
+                        <p className="text-xs text-dark-400">
                           <span>Ports:</span>{' '}
-                          <span className="font-mono text-dark-400">{portsLabel}</span>
+                          <span className="font-mono text-dark-300">{portsLabel}</span>
                         </p>
                       )}
 
                       {host.description && (
-                        <div className="pt-1.5 mt-1.5 border-t border-dark-700/50">
-                          <p className="text-xs text-dark-300">
-                            <span className="text-accent-cyan/80 font-medium">AI Analysis:</span> {host.description}
+                        <div className="pt-1.5 mt-1.5 border-t border-dark-700">
+                          <p className="text-xs text-dark-200">
+                            <span className="text-accent-cyan font-medium">AI Analysis:</span> {host.description}
                           </p>
                           {host.suggestion && (
-                            <p className={`text-xs mt-0.5 ${host.suggestion.toLowerCase().includes('accept') ? 'text-green-400' : host.suggestion.toLowerCase().includes('ignore') ? 'text-yellow-500' : 'text-blue-400'}`}>
+                            <p className={`text-xs mt-0.5 ${host.suggestion.toLowerCase().includes('accept') ? 'text-green-500' : host.suggestion.toLowerCase().includes('ignore') ? 'text-amber-500' : 'text-blue-500'}`}>
                               <span className="font-medium">Recommendation:</span> {host.suggestion}
                             </p>
                           )}
@@ -357,6 +357,228 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
   )
 }
 
+// ── Scan Compare Panel ────────────────────────────────────────────
+function ScanComparePanel({ onClose }) {
+  const [data, setData]       = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    client.get('/scans/compare')
+      .then(r => setData(r.data))
+      .catch(e => setError(e?.response?.data?.detail || 'Failed to load comparison'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const richBar = (score, max = 4) => (
+    <div className="flex gap-0.5">
+      {Array.from({ length: max }).map((_, i) => (
+        <div key={i} className={`h-1.5 w-4 rounded-sm ${i < score ? 'bg-eagle-500' : 'bg-dark-700'}`} />
+      ))}
+    </div>
+  )
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 backdrop-blur-sm p-4 pt-10 overflow-y-auto">
+      <div className="w-full max-w-5xl p-6 space-y-5 mb-10 bg-dark-900 border border-dark-700 rounded-2xl shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-dark-100">Active vs Passive Scan Comparison</h2>
+            <p className="text-xs text-dark-400 mt-0.5">Assets discovered by both scan methods — side-by-side data comparison</p>
+          </div>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-100 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {loading && (
+          <div className="flex items-center justify-center py-16">
+            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+          </div>
+        )}
+
+        {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
+
+        {data && (
+          <>
+            {/* Summary stats */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: 'Both Scans',   value: data.total_overlap,     color: 'text-eagle-500' },
+                { label: 'Active Total', value: data.total_active_ips,  color: 'text-blue-500'  },
+                { label: 'Passive Total',value: data.total_passive_ips, color: 'text-cyan-500'  },
+                { label: 'Active Only',  value: data.active_only_count, color: 'text-amber-500' },
+              ].map(s => (
+                <div key={s.label} className="bg-dark-850 rounded-xl border border-dark-700 p-3 text-center">
+                  <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+                  <p className="text-xs text-dark-300 mt-0.5">{s.label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Legend */}
+            <div className="flex flex-wrap gap-4 text-xs text-dark-300 border border-dark-700 rounded-lg p-3 bg-dark-850">
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" /> Active scan data</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-cyan-500 inline-block" /> Passive scan data</span>
+              <span className="flex items-center gap-1.5"><span className="text-green-500 font-bold">✓</span> Match between scans</span>
+              <span className="flex items-center gap-1.5"><span className="text-amber-500 font-bold">≠</span> Mismatch between scans</span>
+              <span className="flex items-center gap-1.5"><span className="text-dark-400">—</span> Not captured</span>
+            </div>
+
+            {data.overlap.length === 0 ? (
+              <div className="text-center py-10 text-dark-400">
+                <p className="text-sm">No assets found in both active and passive scan results yet.</p>
+                <p className="text-xs mt-1">Run at least one active and one passive scan targeting the same subnet.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {/* Column headers */}
+                <div className="grid grid-cols-12 gap-2 text-[10px] text-dark-400 uppercase tracking-wide px-3">
+                  <div className="col-span-2">IP Address</div>
+                  <div className="col-span-2">Hostname</div>
+                  <div className="col-span-2">MAC Address</div>
+                  <div className="col-span-2">Open Ports (Active)</div>
+                  <div className="col-span-2">OS (Active)</div>
+                  <div className="col-span-1 text-center">Active Rich.</div>
+                  <div className="col-span-1 text-center">Passive Rich.</div>
+                </div>
+
+                {data.overlap.map((row) => {
+                  const isExpanded = expanded === row.ip
+                  const osName = row.active.os
+                    ? (row.active.os.name || row.active.os.fingerbank_device || row.active.os.dhcp_device_hint || null)
+                    : null
+                  const portStr = row.delta.ports_found > 0
+                    ? row.active.ports.slice(0, 4).map(p => `${p.port}/${p.protocol}`).join('  ') +
+                      (row.active.ports.length > 4 ? ` +${row.active.ports.length - 4}` : '')
+                    : null
+
+                  return (
+                    <div key={row.ip} className="rounded-xl border border-dark-700 overflow-hidden bg-dark-850">
+                      {/* Row */}
+                      <button
+                        className="w-full grid grid-cols-12 gap-2 items-center px-3 py-2.5 hover:bg-dark-700/40 transition-colors text-left"
+                        onClick={() => setExpanded(isExpanded ? null : row.ip)}
+                      >
+                        {/* IP */}
+                        <div className="col-span-2 font-mono text-sm text-accent-cyan">{row.ip}</div>
+
+                        {/* Hostname */}
+                        <div className="col-span-2 text-xs space-y-0.5">
+                          {row.active.hostname
+                            ? <p className="text-blue-500">{row.active.hostname}</p>
+                            : <p className="text-dark-400">—</p>}
+                          {row.passive.hostname
+                            ? <p className={`${row.delta.hostname_match ? 'text-green-500' : 'text-amber-500'}`}>
+                                {row.delta.hostname_match ? '✓ ' : '≠ '}{row.passive.hostname}
+                              </p>
+                            : <p className="text-dark-400">— passive</p>}
+                        </div>
+
+                        {/* MAC */}
+                        <div className="col-span-2 text-xs space-y-0.5 font-mono">
+                          {row.active.mac
+                            ? <p className="text-blue-500">{row.active.mac}</p>
+                            : <p className="text-dark-400">—</p>}
+                          {row.passive.mac
+                            ? <p className={`${row.delta.mac_match ? 'text-green-500' : 'text-amber-500'}`}>
+                                {row.delta.mac_match ? '✓ ' : '≠ '}{row.passive.mac}
+                              </p>
+                            : <p className="text-dark-400">— passive</p>}
+                        </div>
+
+                        {/* Ports */}
+                        <div className="col-span-2 text-xs font-mono">
+                          {portStr
+                            ? <span className="text-blue-500">{portStr}</span>
+                            : <span className="text-dark-400">none detected</span>}
+                          <span className="block text-dark-400 text-[10px]">— passive</span>
+                        </div>
+
+                        {/* OS */}
+                        <div className="col-span-2 text-xs">
+                          {osName
+                            ? <span className="text-blue-500">{String(osName).slice(0, 30)}</span>
+                            : <span className="text-dark-400">not identified</span>}
+                          <span className="block text-dark-400 text-[10px]">— passive</span>
+                        </div>
+
+                        {/* Active richness */}
+                        <div className="col-span-1 flex justify-center">{richBar(row.delta.active_richness)}</div>
+
+                        {/* Passive richness */}
+                        <div className="col-span-1 flex justify-center">{richBar(row.delta.passive_richness)}</div>
+                      </button>
+
+                      {/* Expanded detail */}
+                      {isExpanded && (
+                        <div className="grid grid-cols-2 gap-4 px-4 py-4 border-t border-dark-700 bg-dark-900 text-xs">
+                          {/* Active detail */}
+                          <div className="space-y-2">
+                            <p className="text-blue-500 font-semibold uppercase tracking-wide text-[10px]">Active Scan Detail</p>
+                            <div className="space-y-1 text-dark-200">
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] truncate">{row.active.scan_id}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Subnet</span><span>{row.active.subnet || '—'}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scanned</span><span>{new Date(row.active.scanned_at).toLocaleString()}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Hostname</span><span>{row.active.hostname || '—'}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">MAC</span><span className="font-mono">{row.active.mac || '—'}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">OS</span><span>{osName ? String(osName) : '—'}</span></div>
+                              {row.active.ports.length > 0 && (
+                                <div>
+                                  <span className="text-dark-400">Ports</span>
+                                  <div className="flex flex-wrap gap-1 mt-1">
+                                    {row.active.ports.map((p, i) => (
+                                      <span key={i} className="bg-blue-500/15 text-blue-500 border border-blue-500/40 px-1.5 py-0.5 rounded font-mono text-[10px]">
+                                        {p.port}/{p.protocol}{p.service ? ` (${p.service})` : ''}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {row.active.description && (
+                                <div className="flex gap-2 pt-1 border-t border-dark-700">
+                                  <span className="text-dark-400 w-20 shrink-0">AI Analysis</span>
+                                  <span className="text-dark-200">{row.active.description}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Passive detail */}
+                          <div className="space-y-2">
+                            <p className="text-cyan-500 font-semibold uppercase tracking-wide text-[10px]">Passive Scan Detail</p>
+                            <div className="space-y-1 text-dark-200">
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] truncate">{row.passive.scan_id}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Source</span><span>{row.passive.subnet || 'ARP Discovery'}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Seen at</span><span>{new Date(row.passive.scanned_at).toLocaleString()}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Hostname</span><span>{row.passive.hostname || '—'}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">MAC</span><span className="font-mono">{row.passive.mac || '—'}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Ports</span><span className="text-dark-400 italic">not available (ARP only)</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">OS</span><span className="text-dark-400 italic">not available (ARP only)</span></div>
+                              {row.passive.description && (
+                                <div className="flex gap-2 pt-1 border-t border-dark-700">
+                                  <span className="text-dark-400 w-20 shrink-0">AI Analysis</span>
+                                  <span className="text-dark-200">{row.passive.description}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const SCAN_PAGE_SIZE = 15
 
 // ── Main page ─────────────────────────────────────────────────────
@@ -375,6 +597,7 @@ export default function DiscoveryPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [scanTypeFilter, setScanTypeFilter] = useState('')
   const [scanPage, setScanPage] = useState(1)
+  const [showCompare, setShowCompare] = useState(false)
 
   const loadData = useCallback(async () => {
     try {
@@ -483,6 +706,13 @@ export default function DiscoveryPage() {
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
+          </button>
+          <button
+            onClick={() => setShowCompare(true)}
+            className="btn-secondary flex items-center gap-2 text-sm"
+          >
+            <GitCompare className="w-4 h-4" />
+            Compare Scans
           </button>
           <button
             onClick={() => setShowNew(true)}
@@ -642,6 +872,10 @@ export default function DiscoveryPage() {
           inventoriedIps={inventoriedIps}
           myAssetIps={myAssetIps}
         />
+      )}
+
+      {showCompare && (
+        <ScanComparePanel onClose={() => setShowCompare(false)} />
       )}
     </div>
   )
