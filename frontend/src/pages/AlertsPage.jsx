@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter,
-  RefreshCw, Activity, CheckCircle2, Server, ExternalLink,
+  RefreshCw, Activity, CheckCircle2, Server, ExternalLink, Check,
 } from 'lucide-react'
 import {
   PieChart, Pie, Cell, AreaChart, Area, BarChart, Bar,
@@ -18,17 +18,63 @@ const SEVERITY_COLORS = {
 }
 
 const EVENT_TYPE_LABELS = {
-  cve_detected:    'CVE Detected',
-  cti_match:       'Threat Intel Match',
-  port_opened:     'Port Opened',
-  port_closed:     'Port Closed',
+  cve_detected:      'CVE Detected',
+  cti_match:         'Threat Intel Match',
+  port_opened:       'Port Opened',
+  port_closed:       'Port Closed',
   version_downgrade: 'Version Downgrade',
-  version_upgrade: 'Version Upgrade',
-  config_change:   'Config Change',
-  new_package:     'New Package',
-  removed_package: 'Removed Package',
-  new_device:      'New Device',
+  version_upgrade:   'Version Upgrade',
+  config_change:     'Config Change',
+  new_package:       'New Package',
+  removed_package:   'Removed Package',
+  new_device:        'New Device',
 }
+
+// Derive a more specific label for config_change events based on changed_attribute
+function configChangeLabel(attr) {
+  const labels = {
+    hostname:       'Hostname Changed',
+    mac_address:    'MAC Address Changed',
+    internet_facing:'Exposure Changed',
+    device_type:    'Device Type Changed',
+    availability:   'Asset Offline',
+    os_version:     'OS Version Changed',
+    package_version:'Package Updated',
+  }
+  return labels[attr] ?? 'Config Change'
+}
+
+// Render a human-readable summary for the Detail column
+function renderDetail(e) {
+  const d = e.details ?? {}
+  if (d.cve_id) return d.cve_id
+  if (d.indicator_value) return d.indicator_value
+  if (e.event_type === 'config_change') {
+    if (d.changed_attribute === 'internet_facing') {
+      return `${d.from ? 'Internal' : 'Internet-facing'} → ${d.to ? 'Internet-facing' : 'Internal'}`
+    }
+    return d.from != null && d.to != null
+      ? `${d.from} → ${d.to}`
+      : (d.changed_attribute ?? '—')
+  }
+  if (e.event_type === 'port_opened' || e.event_type === 'port_closed') {
+    return `Port ${d.port}${d.protocol ? `/${d.protocol}` : ''}`
+  }
+  if (e.event_type === 'version_downgrade' || e.event_type === 'version_upgrade') {
+    const target = d.package ?? 'OS'
+    return d.from && d.to ? `${target}: ${d.from} → ${d.to}` : target
+  }
+  if (e.event_type === 'new_package')     return `+${d.package ?? ''}${d.version ? ` ${d.version}` : ''}`
+  if (e.event_type === 'removed_package') return `-${d.package ?? ''}`
+  if (e.event_type === 'new_device')      return `New: ${d.ip ?? ''}${d.mac ? ` (${d.mac})` : ''}`
+  return d.changed_attribute ?? '—'
+}
+
+// Whether an event is drift-type (eligible for acknowledge)
+const DRIFT_TYPES = new Set([
+  'port_opened','port_closed','version_downgrade','version_upgrade',
+  'config_change','new_package','removed_package','new_device',
+])
 
 // ── Severity badge ────────────────────────────────────────────
 function SevBadge({ sev }) {
@@ -63,7 +109,8 @@ export default function AlertsPage() {
   const [page,            setPage]            = useState(1)
   const [severityFilter,  setSeverityFilter]  = useState('')
   const [typeFilter,      setTypeFilter]      = useState('')
-  const [advisoryLoading, setAdvisoryLoading] = useState({}) // eventId → bool
+  const [advisoryLoading,     setAdvisoryLoading]     = useState({}) // eventId → bool
+  const [acknowledgeLoading,  setAcknowledgeLoading]  = useState({}) // eventId → bool
   const { toast, show: showToast } = useToast()
 
   const PAGE_SIZE = 15
@@ -102,6 +149,19 @@ export default function AlertsPage() {
       showToast('Failed to trigger advisory generation.', 'error')
     } finally {
       setAdvisoryLoading(s => ({ ...s, [eventId]: false }))
+    }
+  }
+
+  const acknowledgeEvent = async (eventId) => {
+    setAcknowledgeLoading(s => ({ ...s, [eventId]: true }))
+    try {
+      await client.post(`/events/${eventId}/acknowledge`)
+      showToast('Event acknowledged — baseline updated to current state.', 'success')
+      loadData()
+    } catch {
+      showToast('Failed to acknowledge event.', 'error')
+    } finally {
+      setAcknowledgeLoading(s => ({ ...s, [eventId]: false }))
     }
   }
 
@@ -356,10 +416,12 @@ export default function AlertsPage() {
                   <td><SevBadge sev={e.severity} /></td>
 
                   <td className="text-dark-300 text-xs">
-                    {EVENT_TYPE_LABELS[e.event_type] || e.event_type}
+                    {e.event_type === 'config_change'
+                      ? configChangeLabel(e.details?.changed_attribute)
+                      : (EVENT_TYPE_LABELS[e.event_type] || e.event_type)}
                   </td>
 
-                  <td className="font-mono text-sm text-accent-cyan max-w-xs">
+                  <td className="font-mono text-sm text-accent-cyan max-w-xs truncate">
                     {e.details?.cve_id
                       ? <a
                           href={`https://nvd.nist.gov/vuln/detail/${e.details.cve_id}`}
@@ -372,9 +434,7 @@ export default function AlertsPage() {
                           {e.details.cve_id}
                           <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-70 transition-opacity" />
                         </a>
-                      : e.details?.indicator_value
-                        || e.details?.changed_attribute
-                        || '—'}
+                      : renderDetail(e)}
                   </td>
 
                   {/* Asset: prefer hostname, fall back to IP, then UUID */}
@@ -432,16 +492,30 @@ export default function AlertsPage() {
                   </td>
 
                   <td>
-                    <button
-                      onClick={() => triggerAdvisory(e.event_id)}
-                      disabled={advisoryLoading[e.event_id]}
-                      className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
-                      title="Generate AI Advisory"
-                    >
-                      {advisoryLoading[e.event_id]
-                        ? <RefreshCw className="w-4 h-4 animate-spin" />
-                        : <Zap className="w-4 h-4" />}
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => triggerAdvisory(e.event_id)}
+                        disabled={advisoryLoading[e.event_id]}
+                        className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
+                        title="Generate AI Advisory"
+                      >
+                        {advisoryLoading[e.event_id]
+                          ? <RefreshCw className="w-4 h-4 animate-spin" />
+                          : <Zap className="w-4 h-4" />}
+                      </button>
+                      {DRIFT_TYPES.has(e.event_type) && (
+                        <button
+                          onClick={() => acknowledgeEvent(e.event_id)}
+                          disabled={acknowledgeLoading[e.event_id]}
+                          className="p-1.5 hover:bg-green-500/10 rounded text-green-500 transition-colors disabled:opacity-40"
+                          title="Accept change — updates baseline and removes alert"
+                        >
+                          {acknowledgeLoading[e.event_id]
+                            ? <RefreshCw className="w-4 h-4 animate-spin" />
+                            : <Check className="w-4 h-4" />}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

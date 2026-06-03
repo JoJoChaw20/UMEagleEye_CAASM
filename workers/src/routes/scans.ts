@@ -5,8 +5,9 @@ import { eq, and, sql, desc, ne } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { scanResults, agents, assets } from '../db/schema'
+import { scanResults, agents, assets, events } from '../db/schema'
 import { computeCriticality } from '../lib/criticality'
+import { buildBaseline, runDriftAudit } from '../services/drift'
 
 // ── Ingest helpers ───────────────────────────────────────────────
 type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
@@ -84,6 +85,20 @@ async function sha256Hex(input: string): Promise<string> {
     .join('')
 }
 
+// ── POST /drift-audit ─── manual on-demand drift run ────────────
+app.post('/drift-audit', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user')
+    const db   = getDb(c.env.DATABASE_URL)
+    const tenantId = user.role === 'superadmin' ? undefined : (user.tenantId ?? undefined)
+    const count = await runDriftAudit(db, tenantId)
+    return c.json({ message: 'Drift audit complete', drift_events_generated: count })
+  } catch (err) {
+    console.error('drift-audit error:', err)
+    return c.json({ detail: 'Drift audit failed' }, 500)
+  }
+})
+
 // ── GET / ─── list scans for authenticated user ──────────────────
 app.get('/', authMiddleware, async (c) => {
   try {
@@ -109,6 +124,117 @@ app.get('/', authMiddleware, async (c) => {
   } catch (err) {
     console.error('scans GET / error:', err)
     return c.json({ detail: 'Failed to fetch scans' }, 500)
+  }
+})
+
+// ── GET /compare ─── cross-reference active vs passive results ───
+// Finds IPs that appear in both scan types and diffs captured data.
+app.get('/compare', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+
+    const tenantCond = (user.role !== 'superadmin' && user.tenantId)
+      ? and(eq(scanResults.status, 'completed'), ne(scanResults.scanType, 'sbom'), eq(scanResults.tenantId, user.tenantId))
+      : and(eq(scanResults.status, 'completed'), ne(scanResults.scanType, 'sbom'))
+
+    const scans = await db
+      .select()
+      .from(scanResults)
+      .where(tenantCond)
+      .orderBy(desc(scanResults.startedAt))
+      .limit(500)
+
+    // Collect most-recent data per IP per scan type (first occurrence = most recent)
+    type HostEntry = { host: Record<string, unknown>; scanId: string; scannedAt: Date; subnet: string | null }
+    const activeByIp = new Map<string, HostEntry>()
+    const passiveByIp = new Map<string, HostEntry>()
+
+    for (const scan of scans) {
+      const hosts = Array.isArray(scan.rawResults) ? scan.rawResults : []
+      const map = scan.scanType === 'passive' ? passiveByIp : activeByIp
+      for (const h of hosts) {
+        const host = h as Record<string, unknown>
+        const ip = host['ip'] as string
+        if (ip && !map.has(ip)) {
+          map.set(ip, { host, scanId: scan.scanId, scannedAt: scan.startedAt, subnet: scan.subnet })
+        }
+      }
+    }
+
+    // Build overlap: IPs found by both
+    const overlap = []
+    for (const [ip, activeEntry] of activeByIp) {
+      const passiveEntry = passiveByIp.get(ip)
+      if (!passiveEntry) continue
+
+      const ah = activeEntry.host
+      const ph = passiveEntry.host
+      const ports = Array.isArray(ah['ports']) ? ah['ports'] as Record<string, unknown>[] : []
+      const ahOs  = ah['os'] as Record<string, unknown> | null | undefined
+      const hasOs = !!(ahOs && Object.keys(ahOs).length > 0)
+
+      const ahHostname = (ah['hostname'] as string | null) ?? null
+      const phHostname = (ph['hostname'] as string | null) ?? null
+      const ahMac = ((ah['mac'] as string | null) ?? '').toLowerCase()
+      const phMac = ((ph['mac'] as string | null) ?? '').toLowerCase()
+
+      const activeRichness = [ahHostname, ah['mac'], hasOs || null, ports.length > 0 || null].filter(Boolean).length
+      const passiveRichness = [phHostname, ph['mac']].filter(Boolean).length
+
+      overlap.push({
+        ip,
+        active: {
+          scan_id:    activeEntry.scanId,
+          subnet:     activeEntry.subnet,
+          scanned_at: activeEntry.scannedAt,
+          hostname:   ahHostname,
+          mac:        ah['mac'] ?? null,
+          ports:      ports.map(p => ({ port: p['port'], protocol: p['protocol'] ?? 'tcp', service: p['service'] ?? null })),
+          os:         ahOs ?? null,
+          description: ah['description'] ?? null,
+          suggestion:  ah['suggestion']  ?? null,
+        },
+        passive: {
+          scan_id:    passiveEntry.scanId,
+          subnet:     passiveEntry.subnet,
+          scanned_at: passiveEntry.scannedAt,
+          hostname:   phHostname,
+          mac:        ph['mac'] ?? null,
+          description: ph['description'] ?? null,
+          suggestion:  ph['suggestion']  ?? null,
+        },
+        delta: {
+          ports_found:    ports.length,
+          has_os:         hasOs,
+          hostname_match: ahHostname !== null && ahHostname === phHostname,
+          mac_match:      !!(ahMac && phMac && ahMac === phMac),
+          active_richness:  activeRichness,
+          passive_richness: passiveRichness,
+          extra_fields_from_active: ports.length + (hasOs ? 1 : 0),
+        },
+      })
+    }
+
+    overlap.sort((a, b) => {
+      const toNum = (ip: string) => ip.split('.').reduce((acc, o) => acc * 256 + parseInt(o, 10), 0)
+      return toNum(a.ip) - toNum(b.ip)
+    })
+
+    const activeOnlyCount  = [...activeByIp.keys()].filter(ip => !passiveByIp.has(ip)).length
+    const passiveOnlyCount = [...passiveByIp.keys()].filter(ip => !activeByIp.has(ip)).length
+
+    return c.json({
+      overlap,
+      total_overlap:       overlap.length,
+      total_active_ips:    activeByIp.size,
+      total_passive_ips:   passiveByIp.size,
+      active_only_count:   activeOnlyCount,
+      passive_only_count:  passiveOnlyCount,
+    })
+  } catch (err) {
+    console.error('scans GET /compare error:', err)
+    return c.json({ detail: 'Failed to compare scans' }, 500)
   }
 })
 
@@ -334,13 +460,13 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     // For each discovered host, look up its existing DB record (if any).
     // We pass existing description/deviceType to the LLM so it doesn't
     // flip-flop between scans when port data is sparse or missing.
-    const existingAssetMap: Map<string, { deviceType: string; hostname: string | null; owner: string | null }> = new Map()
+    const existingAssetMap: Map<string, { deviceType: string; hostname: string | null; owner: string | null; hardwareVendor: string | null }> = new Map()
     for (const host of hosts) {
       try {
         const conds = [eq(assets.ipAddress, host.ip)]
         if (tenantId) conds.push(eq(assets.tenantId, tenantId))
         const [found] = await getDb(c.env.DATABASE_URL)
-          .select({ deviceType: assets.deviceType, hostname: assets.hostname, owner: assets.owner })
+          .select({ deviceType: assets.deviceType, hostname: assets.hostname, owner: assets.owner, hardwareVendor: assets.hardwareVendor })
           .from(assets)
           .where(and(...conds))
           .limit(1)
@@ -540,6 +666,8 @@ Example:
       }).score
 
       // Insert or update — conflict on (ip_address, tenant_id) → update in place
+      const hardwareVendor = macVendorMap.get(host.ip) ?? null
+
       const [upserted] = await db
         .insert(assets)
         .values({
@@ -547,6 +675,7 @@ Example:
           ipAddress: host.ip,
           hostname: host.hostname ?? existing?.hostname ?? null,
           macAddress: host.mac ?? existing?.macAddress ?? null,
+          hardwareVendor: hardwareVendor ?? existing?.hardwareVendor ?? null,
           deviceType: resolvedDeviceType,
           osInfo,
           isInternetFacing: internetFacing,
@@ -563,6 +692,7 @@ Example:
           set: {
             hostname: sql`COALESCE(assets.hostname, EXCLUDED.hostname)`,
             macAddress: sql`COALESCE(EXCLUDED.mac_address, assets.mac_address)`,
+            hardwareVendor: sql`COALESCE(EXCLUDED.hardware_vendor, assets.hardware_vendor)`,
             osInfo: sql`EXCLUDED.os_info`,
             deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
             isInternetFacing: sql`EXCLUDED.is_internet_facing`,
@@ -573,7 +703,43 @@ Example:
         })
         .returning({ assetId: assets.assetId })
 
-      if (upserted?.assetId) upsertedAssetIds.push(upserted.assetId)
+      if (upserted?.assetId) {
+        upsertedAssetIds.push(upserted.assetId)
+
+        // ── Auto-baseline on first discovery ──────────────────────
+        // If this asset had no baseline, snapshot the current state immediately.
+        // Future scans will compare against this, enabling drift detection.
+        if (!existing?.baselineState) {
+          const baseline = buildBaseline({
+            ports:            ports.map(p => p.port),
+            osInfo:           osInfo as Record<string, unknown> | null,
+            hostname:         host.hostname ?? existing?.hostname ?? null,
+            macAddress:       host.mac ?? existing?.macAddress ?? null,
+            isInternetFacing: internetFacing,
+            deviceType:       resolvedDeviceType,
+            autoSet:          true,
+          })
+          await db
+            .update(assets)
+            .set({ baselineState: baseline })
+            .where(eq(assets.assetId, upserted.assetId))
+        }
+
+        // ── New device event — fires only on true first discovery ──
+        if (!existing) {
+          await db.insert(events).values({
+            assetId:   upserted.assetId,
+            eventType: 'new_device',
+            severity:  internetFacing ? 'high' : 'medium',
+            details:   {
+              ip:       host.ip,
+              mac:      host.mac ?? null,
+              hostname: host.hostname ?? null,
+              source:   isPassive ? 'passive_scan' : 'active_scan',
+            },
+          })
+        }
+      }
     }
 
     // Mark scan completed — unified for active, dashboard-triggered passive, and

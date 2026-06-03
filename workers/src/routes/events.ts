@@ -9,6 +9,7 @@ import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { events, assets, advisories } from '../db/schema'
+import { buildBaseline, extractPorts } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -243,6 +244,59 @@ app.get('/:eventId', authMiddleware, async (c) => {
   } catch (err) {
     console.error('events GET /:eventId error:', err)
     return c.json({ detail: 'Failed to fetch event' }, 500)
+  }
+})
+
+// ── POST /:eventId/acknowledge ───────────────────────────────────
+// Accepts a drift event as intentional: re-baselines the asset to the
+// current state and removes the event so it stops appearing in alerts.
+app.post('/:eventId/acknowledge', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user')
+    const db   = getDb(c.env.DATABASE_URL)
+    const { eventId } = c.req.param()
+
+    const [event] = await db.select().from(events).where(eq(events.eventId, eventId)).limit(1)
+    if (!event) return c.json({ detail: 'Event not found' }, 404)
+
+    // Tenant guard
+    if (user.role !== 'superadmin' && user.tenantId) {
+      const [assetRow] = await db
+        .select({ tenantId: assets.tenantId })
+        .from(assets)
+        .where(eq(assets.assetId, event.assetId))
+        .limit(1)
+      if (!assetRow || assetRow.tenantId !== user.tenantId) {
+        return c.json({ detail: 'Event not found' }, 404)
+      }
+    }
+
+    // Re-baseline the asset to its current state so this drift is no longer reported
+    const [asset] = await db.select().from(assets).where(eq(assets.assetId, event.assetId)).limit(1)
+    if (asset) {
+      const osInfo = asset.osInfo as Record<string, unknown> | null
+      const snapshot = buildBaseline({
+        ports:            extractPorts(osInfo),
+        osInfo,
+        hostname:         asset.hostname,
+        macAddress:       asset.macAddress,
+        isInternetFacing: asset.isInternetFacing,
+        deviceType:       asset.deviceType,
+        autoSet:          false,
+      })
+      await db
+        .update(assets)
+        .set({ baselineState: snapshot, updatedAt: new Date() })
+        .where(eq(assets.assetId, asset.assetId))
+    }
+
+    // Remove the acknowledged event
+    await db.delete(events).where(eq(events.eventId, eventId))
+
+    return c.json({ message: 'Event acknowledged and baseline updated' })
+  } catch (err) {
+    console.error('events POST acknowledge error:', err)
+    return c.json({ detail: 'Failed to acknowledge event' }, 500)
   }
 })
 
