@@ -30,7 +30,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Asset Relationship Graph** — Force-directed canvas graph showing asset connectivity; device type and relationship type filter pills; tenant-scoped view; BFS blast-radius highlighting; drag, zoom, and pan controls
 
 ### Security Operations
-- **Continuous Posture Management** — Automated drift detection, ongoing posture scoring tracked over time with daily snapshots
+- **Continuous Posture Management** — Automated drift detection (port changes, OS/package version drift, hostname/MAC/exposure/device-type changes, new device discovery) with 24-hour deduplication and an acknowledge workflow that re-baselines an asset in one click; ongoing posture scoring tracked over time with daily snapshots
 - **Threat Intelligence Integration** — Ingests live IoC feeds (AlienVault OTX, ThreatFox) every morning (MYT); each indicator is correlated to a MITRE ATT&CK tactic via a three-level derivation cascade; IoC Lookup cross-references any IP/domain/hash against the internal asset table in real time; MITRE ATT&CK heatmap visualises tactic coverage across all ingested indicators
 - **AI-Driven Advisory Pipeline** — DeepSeek generates actionable remediation instructions for security events; queued asynchronously via Cloudflare Queues
 - **SLA Monitoring** — Alerts on advisories open longer than 72 hours; checked every 30 minutes
@@ -41,6 +41,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Composite Risk Scoring** — Each CVE finding is scored using a weighted formula: `(CVSS × 10 × 0.40) + (EPSS × 100 × 0.35) + (Criticality × 10 × 0.15) + (CTI match ? 10 : 0)`, capped at 100
 - **EPSS Enrichment** — Exploit Prediction Scoring System scores fetched in batch from FIRST.org API and incorporated into the risk formula at ingest time
 - **CTI Enrichment** — CVE IDs cross-referenced against the platform's CTI indicator table; confirmed threat-intel matches add 10 points to the risk score
+- **NVD CWE Enrichment** — Daily cron queries CVE alerts missing CWE (Common Weakness Enumeration) data and back-fills them from the NIST NVD REST API; enriched `cwe_ids` are merged into the existing event's `details` without modifying other fields; rate-limited to 30 CVEs per run (100 ms/request with API key, 700 ms without)
 - **Deduplication** — Re-scanning the same asset updates existing alerts (refreshing CVSS, EPSS, fix versions, description) rather than creating duplicates; dedup key is `cve_id + package_name`
 - **Dependency Inventory** — Expandable per-SBOM dependency table with package manager filter and search; counts by manager visualised as a bar chart
 - **Superadmin Delete** — Superadmins can delete all SBOM records for an asset directly from the SBOM page
@@ -150,7 +151,7 @@ UMEagleEye2.0/
 │   │   │   ├── assets.ts        # Asset CRUD, baseline, CSV import, SBOM trigger, search
 │   │   │   ├── scans.ts         # Scan dispatch, agent poll, agent ingest (active + passive), auto-expire
 │   │   │   ├── sbom.ts          # SBOM ingest, list, dependencies, stats; CVE ingest + risk scoring
-│   │   │   ├── events.ts        # Security events
+│   │   │   ├── events.ts        # Security events; acknowledge endpoint re-baselines asset + deletes event
 │   │   │   ├── advisories.ts    # AI advisory management
 │   │   │   ├── posture.ts       # Posture score + history
 │   │   │   ├── cti.ts           # Threat indicators, MITRE
@@ -160,7 +161,11 @@ UMEagleEye2.0/
 │   │   │   ├── agents.ts        # EagleEye agent registry
 │   │   │   ├── topology.ts      # Network topology tree with subnet-aware inference
 │   │   │   └── tenants.ts       # Multi-tenant management (superadmin only)
-│   │   ├── services/            # Business logic (drift, posture, CTI)
+│   │   ├── services/            # Business logic (drift, posture, CTI, NVD enrichment)
+│   │   │   ├── drift.ts         # Drift detection + baseline comparison
+│   │   │   ├── posture.ts       # Daily posture snapshot calculation
+│   │   │   ├── cti.ts           # OTX + ThreatFox ingestion, MITRE tactic derivation
+│   │   │   └── nvd.ts           # NVD REST API client; CWE enrichment for CVE events
 │   │   ├── queues/
 │   │   │   └── consumer.ts      # Queue handler (advisory + PDF report jobs)
 │   │   ├── cron/
@@ -228,7 +233,7 @@ UMEagleEye2.0/
 | `*/15 * * * *` | Every 15 min | Drift audit — compares asset state to baseline snapshots |
 | `*/30 * * * *` | Every 30 min | SLA monitor — Telegram alert for advisories open >72 h |
 | `0 22 * * *` | 6:00 AM | CTI ingestion — pulls AlienVault OTX + ThreatFox feeds |
-| `0 23 * * *` | 7:00 AM | NVD update — fetches recent CVEs from NIST NVD API |
+| `0 23 * * *` | 7:00 AM | NVD enrichment — back-fills missing CWE IDs on `cve_detected` events from the last 48 h using the NIST NVD REST API (up to 30 CVEs per run) |
 | `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history |
 
 > There is no scheduled active scan. Active scans (Nmap) are triggered manually from the Discovery page. Passive scanning runs autonomously on the agent at a configurable interval.
@@ -421,6 +426,7 @@ Every SBOM scan automatically triggers a CVE scan (Grype) on the agent. Findings
 3. **CTI cross-reference** — CVE IDs looked up against the `cti_indicators` table; matches add 10 pts to risk score
 4. **Deduplication** — all existing `cve_detected` events for the asset fetched in one query; dedup key is `cve_id::package_name`
 5. **Upsert** — existing events are updated (refreshed CVSS, EPSS, fix versions, description); new findings batch-inserted in groups of 50
+6. **NVD CWE enrichment (deferred)** — the daily `nvd-update` cron queries events with empty `cwe_ids` from the last 48 h and calls the NIST NVD REST API (`/rest/json/cves/2.0?cveId=`) to back-fill CWE weakness classifications; rate-limited to 30 CVEs per cron run
 
 ### Composite Risk Score formula
 
@@ -591,21 +597,46 @@ Sample datasets included in the repository root:
 | `cyberforce_corporation_assets.csv` | CyberForce Corporation | 33 |
 | `vanilla_corporation_assets.csv` | Vanilla Corporation | 30 |
 
-## Baseline Snapshots
+## Baseline Snapshots & Drift Detection
 
-Setting a baseline via **My Assets → Bookmark icon** captures a point-in-time snapshot:
+Setting a baseline via **Assets → Bookmark icon** captures a point-in-time Golden Image snapshot:
 
 ```json
 {
-  "os": { "name": "Ubuntu", "version": "22.04", "ports": ["22/tcp", "80/tcp", "443/tcp"] },
-  "criticality_score": 8,
-  "is_internet_facing": false,
+  "ports": [22, 80, 443],
+  "os_version": "22.04",
+  "packages": { "nginx": "1.24.0", "openssl": "3.0.2" },
   "hostname": "web-server-01",
-  "captured_at": "2026-05-15T10:00:00.000Z"
+  "mac_address": "AA:BB:CC:DD:EE:FF",
+  "is_internet_facing": false,
+  "device_type": "server",
+  "captured_at": "2026-05-15T10:00:00.000Z",
+  "auto_set": false
 }
 ```
 
-The advisory worker (`drift_check` queue messages) compares incoming scan results against this snapshot to detect configuration drift and generate AI remediation advisories.
+**Auto-baseline:** The first scan of a previously-unseen asset automatically sets its baseline so future scans can detect drift immediately. Manually overriding the baseline (Bookmark icon) sets `auto_set: false`.
+
+The drift audit cron (`*/15 * * * *`) compares each asset's current `os_info` and fields against its `baseline_state` and generates typed security events:
+
+| Event type | Trigger | Severity |
+|---|---|---|
+| `port_opened` | New port seen in scan | High if port < 1024, else Medium |
+| `port_closed` | Port no longer seen | Low |
+| `version_downgrade` | OS/package version decreased | High |
+| `version_upgrade` | OS/package version increased | Low |
+| `new_package` | Package in scan not in baseline | Medium |
+| `removed_package` | Baseline package no longer present | Low |
+| `config_change` (hostname) | Hostname changed | Medium |
+| `config_change` (mac_address) | MAC address changed | High |
+| `config_change` (internet_facing) | Asset became internet-facing | Critical |
+| `config_change` (internet_facing) | Asset became internal | Medium |
+| `config_change` (device_type) | Device type reclassified | Medium |
+| `new_device` | IP never seen before; set at scan ingest | High if internet-facing, else Medium |
+
+**Deduplication:** Identical drift events within a 24-hour window are suppressed to avoid flooding alerts on every 15-minute cron run.
+
+**Acknowledge workflow:** Clicking the checkmark button on a drift alert in the Alerts page accepts the change as the new normal — it re-baselines the asset to its current state and removes the alert.
 
 ## Deployment
 
@@ -646,8 +677,7 @@ The `deploy-workers.ps1` script:
 cd workers && npx wrangler deploy
 
 # Frontend only
-cd frontend && npm run build
-npx wrangler pages deploy dist --project-name umeagleeye-caasm
+cd frontend && npm run deploy
 
 # Both (recommended)
 .\deploy-workers.ps1
@@ -675,7 +705,7 @@ See `.env.example` for the full list. Key variables:
 | `TELEGRAM_CHAT_ID` | Telegram chat/user ID for notifications |
 | `OTX_API_KEY` | AlienVault OTX threat intelligence |
 | `THREATFOX_API_KEY` | ThreatFox threat intelligence |
-| `NVD_API_KEY` | NIST NVD vulnerability database |
+| `NVD_API_KEY` | NIST NVD API key — optional but recommended; increases rate limit from 5 req/30s to 50 req/30s for CWE enrichment |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token (for wrangler deployments) |
 
 All variables are stored as **Cloudflare Workers secrets** (never in code). The frontend needs `VITE_API_URL` and `VITE_GOOGLE_CLIENT_ID` in `frontend/.env.production` (git-ignored; set by deploy script).
