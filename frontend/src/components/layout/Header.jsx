@@ -50,25 +50,107 @@ export default function Header({ onToggleSidebar }) {
   const searchTimer = useRef(null)
 
   // ── Notifications ─────────────────────────────────────────────────
-  const [notifs, setNotifs]     = useState([])
+  const [notifs, setNotifs]       = useState([])
   const [notifOpen, setNotifOpen] = useState(false)
-  const [lastSeen, setLastSeen] = useState(
-    () => parseInt(localStorage.getItem('notif-last-seen') ?? '0', 10)
-  )
-  const notifRef = useRef(null)
+  const [seenIds, setSeenIds]     = useState(() => {
+    try {
+      const raw = localStorage.getItem('notif-seen-ids')
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch { return new Set() }
+  })
+  const notifRef      = useRef(null)
+  const seenIdsRef    = useRef(seenIds)
+  const prevIdsRef    = useRef(null)   // null = first fetch (skip sound)
+  const audioCtxRef   = useRef(null)
+
+  // Mirror seenIds into a ref so the poll closure can read it without staling
+  useEffect(() => { seenIdsRef.current = seenIds }, [seenIds])
+
+  // Initialise AudioContext on first user interaction (browser autoplay policy)
+  useEffect(() => {
+    const init = () => {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      }
+    }
+    document.addEventListener('click', init, { once: true })
+    return () => document.removeEventListener('click', init)
+  }, [])
+
+  // ── Sound helper ──────────────────────────────────────────────────
+  const playNotifSound = (severity) => {
+    const ctx = audioCtxRef.current
+    if (!ctx) return
+    try {
+      if (ctx.state === 'suspended') ctx.resume()
+      const osc  = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      const now = ctx.currentTime
+
+      if (severity === 'critical') {
+        // Double ding — urgent (SLA breach, critical advisory)
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(1047, now)
+        osc.frequency.setValueAtTime(784,  now + 0.13)
+        osc.frequency.setValueAtTime(1047, now + 0.26)
+        gain.gain.setValueAtTime(0,    now)
+        gain.gain.linearRampToValueAtTime(0.28, now + 0.01)
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.55)
+        osc.start(now)
+        osc.stop(now + 0.55)
+      } else {
+        // Soft single ding — advisory generated, agent offline
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(880,  now)
+        osc.frequency.exponentialRampToValueAtTime(1047, now + 0.08)
+        gain.gain.setValueAtTime(0,    now)
+        gain.gain.linearRampToValueAtTime(0.18, now + 0.01)
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38)
+        osc.start(now)
+        osc.stop(now + 0.38)
+      }
+    } catch { /* ignore if audio not available */ }
+  }
 
   // ── Profile ───────────────────────────────────────────────────────
   const [profileOpen, setProfileOpen] = useState(false)
   const profileRef = useRef(null)
 
-  // ── Load notifications on mount ───────────────────────────────────
+  // ── Poll notifications every 20 s + on window focus ──────────────
   useEffect(() => {
-    client.get('/notifications')
-      .then(r => setNotifs(r.data.items || []))
-      .catch(() => {})
-  }, [])
+    const fetchNotifs = () => {
+      client.get('/notifications')
+        .then(r => {
+          const items = r.data.items || []
+          setNotifs(items)
 
-  const unreadCount = notifs.filter(n => new Date(n.timestamp).getTime() > lastSeen).length
+          const isFirstFetch = prevIdsRef.current === null
+          if (!isFirstFetch) {
+            // Find IDs that weren't in the previous response AND aren't marked seen
+            const newUnread = items.filter(
+              n => !prevIdsRef.current.has(n.id) && !seenIdsRef.current.has(n.id)
+            )
+            if (newUnread.length > 0) {
+              const hasCritical = newUnread.some(n => n.severity === 'critical')
+              playNotifSound(hasCritical ? 'critical' : 'warning')
+            }
+          }
+          prevIdsRef.current = new Set(items.map(n => n.id))
+        })
+        .catch(() => {})
+    }
+    fetchNotifs()
+    const interval = setInterval(fetchNotifs, 20_000)
+    window.addEventListener('focus', fetchNotifs)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', fetchNotifs)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const unreadCount = notifs.filter(n => !seenIds.has(n.id)).length
 
   // ── Close all dropdowns on outside click ──────────────────────────
   useEffect(() => {
@@ -104,13 +186,17 @@ export default function Header({ onToggleSidebar }) {
     navigate('/assets')
   }
 
-  // ── Open notifications: mark all as seen ─────────────────────────
+  // ── Open notifications: mark all visible IDs as seen ────────────
   const openNotifications = () => {
     setNotifOpen(o => {
       if (!o) {
-        const now = Date.now()
-        localStorage.setItem('notif-last-seen', String(now))
-        setLastSeen(now)
+        setSeenIds(prev => {
+          const next = new Set(prev)
+          notifs.forEach(n => next.add(n.id))
+          const arr = [...next].slice(-300)
+          localStorage.setItem('notif-seen-ids', JSON.stringify(arr))
+          return new Set(arr)
+        })
       }
       return !o
     })
@@ -235,7 +321,14 @@ export default function Header({ onToggleSidebar }) {
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700/50 flex-shrink-0">
                 <span className="text-sm font-semibold text-white">Notifications</span>
-                <span className="text-xs text-dark-500">{notifs.length} total</span>
+                <div className="flex items-center gap-2">
+                  {unreadCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-eagle-500/20 text-eagle-400 text-[10px] font-bold">
+                      {unreadCount} new
+                    </span>
+                  )}
+                  <span className="text-xs text-dark-500">{notifs.length} total</span>
+                </div>
               </div>
 
               {/* List */}
@@ -245,20 +338,26 @@ export default function Header({ onToggleSidebar }) {
                     <Bell className="w-8 h-8 mx-auto mb-2 opacity-20" />
                     No notifications
                   </div>
-                ) : notifs.slice(0, 30).map(n => (
-                  <div key={n.id} className="px-4 py-3 border-b border-dark-800/60 hover:bg-dark-750/30 transition-colors">
-                    <div className="flex items-start gap-2.5">
-                      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${severityDot(n.severity)}`} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-dark-100 leading-tight">{n.title}</p>
-                        <p className="text-xs text-dark-400 mt-0.5 line-clamp-2">{n.message}</p>
+                ) : notifs.slice(0, 30).map(n => {
+                  const isUnread = !seenIds.has(n.id)
+                  return (
+                    <div key={n.id} className={`px-4 py-3 border-b border-dark-800/60 hover:bg-dark-750/30 transition-colors ${isUnread ? 'bg-eagle-500/5' : ''}`}>
+                      <div className="flex items-start gap-2.5">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${isUnread ? 'bg-eagle-400' : severityDot(n.severity)}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm font-medium leading-tight ${isUnread ? 'text-white' : 'text-dark-100'}`}>{n.title}</p>
+                          <p className="text-xs text-dark-400 mt-0.5 line-clamp-2">{n.message}</p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                          {isUnread && <span className="w-1.5 h-1.5 rounded-full bg-eagle-400" />}
+                          <span className={`text-[10px] ${severityText(n.severity)}`}>
+                            {formatRelTime(n.timestamp)}
+                          </span>
+                        </div>
                       </div>
-                      <span className={`text-[10px] flex-shrink-0 mt-0.5 ${severityText(n.severity)}`}>
-                        {formatRelTime(n.timestamp)}
-                      </span>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
 
               {/* Footer */}

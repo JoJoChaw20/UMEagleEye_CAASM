@@ -135,32 +135,26 @@ app.get('/', authMiddleware, async (c) => {
   }
 })
 
-// ── POST /test — send test Telegram message ───────────────────────
-app.post('/test', authMiddleware, async (c) => {
-  const user = c.get('user')
-  if (!['ops_lead', 'superadmin'].includes(user.role)) {
-    return c.json({ detail: 'Forbidden' }, 403)
-  }
-
-  const { TELEGRAM_BOT_TOKEN: token, TELEGRAM_CHAT_ID: chatId } = c.env
-  if (!token || !chatId) {
-    return c.json({ detail: 'Telegram not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.' }, 400)
-  }
-
+// ── GET /count — lightweight unread count for header polling ──────
+app.get('/count', authMiddleware, async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: `*Test Notification — UMEagleEye*\nSent by *${user.username}* via dashboard\n${new Date().toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })} MYT`,
-        parse_mode: 'Markdown',
-      }),
+    const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000)
+    const [recent, breach] = await Promise.all([
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(advisories)
+        .where(sql`${advisories.createdAt} > now() - interval '7 days'`),
+      db.select({ count: sql<number>`count(*)::int` })
+        .from(advisories)
+        .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff))),
+    ])
+    return c.json({
+      recent_advisories: recent[0]?.count ?? 0,
+      sla_breaches: breach[0]?.count ?? 0,
     })
-    if (!res.ok) return c.json({ detail: 'Telegram API rejected the request. Check bot token and chat ID.' }, 502)
-    return c.json({ ok: true })
-  } catch {
-    return c.json({ detail: 'Failed to reach Telegram API' }, 500)
+  } catch (err) {
+    console.error('notifications GET /count error:', err)
+    return c.json({ detail: 'Failed to fetch count' }, 500)
   }
 })
 

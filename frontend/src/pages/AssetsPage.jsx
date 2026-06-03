@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Server, Search, Shield, Bookmark, GitBranch, Target, Building2, CheckCircle } from 'lucide-react'
+import { Server, Search, Shield, Bookmark, GitBranch, Target, Building2, CheckCircle, RefreshCw } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import AssetGraph from '../components/common/AssetGraph'
@@ -20,6 +20,7 @@ export default function AssetsPage() {
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
   const [graphBlastId, setGraphBlastId] = useState(null)
+  const [rescoring, setRescoring] = useState(false)
 
   // Fetch tenant list for superadmin filter
   useEffect(() => {
@@ -94,6 +95,20 @@ export default function AssetsPage() {
     }
   }
 
+  const rescoreAssets = async () => {
+    if (!confirm('Recalculate criticality scores for all assets using the risk formula?')) return
+    setRescoring(true)
+    try {
+      const res = await client.post('/assets/rescore')
+      alert(`Rescored ${res.data.updated} asset(s) successfully.`)
+      loadAssets()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to rescore assets.')
+    } finally {
+      setRescoring(false)
+    }
+  }
+
   const handleGraphAssetSelect = (assetId) => {
     setGraphBlastId(prev => prev === assetId ? null : assetId)
   }
@@ -132,6 +147,15 @@ export default function AssetsPage() {
             {activeTenantName && <span className="ml-2 text-eagle-400">· {activeTenantName}</span>}
           </p>
         </div>
+        <button
+          onClick={rescoreAssets}
+          disabled={rescoring}
+          className="btn-secondary flex items-center gap-2 text-sm"
+          title="Recalculate criticality scores for all assets"
+        >
+          <RefreshCw className={`w-4 h-4 ${rescoring ? 'animate-spin' : ''}`} />
+          {rescoring ? 'Rescoring…' : 'Rescore Criticality'}
+        </button>
       </div>
 
       {/* Tab Toggle + shared Tenant Filter */}
@@ -231,7 +255,7 @@ export default function AssetsPage() {
                           <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
                         </td>
                         <td>
-                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>
+                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${srcMeta.cls}`}>
                             {srcMeta.label}
                           </span>
                         </td>

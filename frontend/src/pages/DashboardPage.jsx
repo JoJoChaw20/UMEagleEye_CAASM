@@ -24,7 +24,7 @@ export default function DashboardPage() {
     try {
       const [postureRes, historyRes, eventsRes] = await Promise.all([
         client.get('/posture/current'),
-        client.get('/posture/history?limit=14'),
+        client.get('/posture/history?limit=30'),
         client.get('/events?page_size=10'),
       ])
       setPosture(postureRes.data)
@@ -123,7 +123,7 @@ export default function DashboardPage() {
               <TrendingUp className="w-4 h-4 text-eagle-400" />
               Posture Score Trend
             </h3>
-            <span className="text-xs text-dark-400">Last 14 days</span>
+            <span className="text-xs text-dark-400">Last 30 days</span>
           </div>
           <ResponsiveContainer width="100%" height={250}>
             <AreaChart data={trendData}>

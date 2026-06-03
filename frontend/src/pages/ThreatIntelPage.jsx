@@ -341,65 +341,101 @@ export default function ThreatIntelPage() {
       ) : tab === 'matrix' ? (
 
         // ── MITRE ATT&CK tab ─────────────────────────────────────
-        <div className="space-y-4">
-          {matrixChartData.length > 0 && (
-            <div className="glass-card p-5">
-              <h3 className="text-sm font-semibold text-dark-200 mb-4">
-                Technique Coverage by Tactic
-              </h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={matrixChartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-                  <XAxis
-                    dataKey="tactic"
-                    tick={{ fill: '#7b7f87', fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={80}
-                  />
-                  <YAxis tick={{ fill: '#7b7f87', fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}
-                  />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                    {matrixChartData.map((e, i) => <Cell key={i} fill={e.fill} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
+        (() => {
+          const maxCount = Math.max(
+            ...MITRE_TACTICS.flatMap(t => (matrix[t] || []).map(x => x.count)), 1
+          )
+          const toRgba = (hex, alpha) => {
+            const r = parseInt(hex.slice(1, 3), 16)
+            const g = parseInt(hex.slice(3, 5), 16)
+            const b = parseInt(hex.slice(5, 7), 16)
+            return `rgba(${r},${g},${b},${alpha.toFixed(2)})`
+          }
+          return (
+            <div className="space-y-4">
+              {/* Bar chart summary */}
+              {matrixChartData.length > 0 && (
+                <div className="glass-card p-5">
+                  <h3 className="text-sm font-semibold text-dark-200 mb-4">
+                    Technique Coverage by Tactic
+                  </h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={matrixChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
+                      <XAxis dataKey="tactic" tick={{ fill: '#7b7f87', fontSize: 10 }} angle={-30} textAnchor="end" height={80} />
+                      <YAxis tick={{ fill: '#7b7f87', fontSize: 11 }} />
+                      <Tooltip contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))' }} />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                        {matrixChartData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
 
-          <div className="glass-card p-5">
-            <h3 className="text-sm font-semibold text-dark-200 mb-4">ATT&CK Tactic Matrix</h3>
-            <div className="grid grid-cols-7 gap-2 overflow-x-auto">
-              {MITRE_TACTICS.map((tactic, i) => {
-                const techniques = matrix[tactic] || []
-                return (
-                  <div key={tactic} className="text-center min-w-[80px]">
-                    <div className="text-[9px] font-semibold text-dark-300 mb-1 h-8 flex items-center justify-center leading-tight">
-                      {tactic}
+              {/* 2-D Heatmap */}
+              <div className="glass-card p-5">
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="text-sm font-semibold text-dark-200">MITRE ATT&CK Heatmap</h3>
+                  <div className="flex items-center gap-2 text-[10px] text-dark-500">
+                    <span>Low</span>
+                    <div className="flex gap-0.5">
+                      {[0.15, 0.35, 0.55, 0.75, 0.95].map(a => (
+                        <span key={a} className="w-4 h-3 rounded-sm inline-block" style={{ background: toRgba('#3393ff', a) }} />
+                      ))}
                     </div>
-                    {techniques.length > 0
-                      ? techniques.map(t => (
-                          <div
-                            key={t.technique_id}
-                            className="mb-1 px-1 py-1 rounded text-[10px] font-mono"
-                            style={{
-                              background: TACTIC_COLORS[i] + '30',
-                              color: TACTIC_COLORS[i],
-                              border: `1px solid ${TACTIC_COLORS[i]}40`,
-                            }}
-                          >
-                            {t.technique_id} ({t.count})
-                          </div>
-                        ))
-                      : <div className="text-[10px] text-dark-600 py-1">—</div>}
+                    <span>High</span>
                   </div>
-                )
-              })}
+                </div>
+                <p className="text-[10px] text-dark-600 mb-4">Cell colour = indicator count intensity · hover for details</p>
+
+                <div className="overflow-x-auto">
+                  <div className="flex gap-1 min-w-max pb-2">
+                    {MITRE_TACTICS.map((tactic, ti) => {
+                      const techniques = matrix[tactic] || []
+                      const color = TACTIC_COLORS[ti]
+                      return (
+                        <div key={tactic} className="flex flex-col gap-0.5 w-[88px]">
+                          {/* Tactic column header */}
+                          <div
+                            className="text-center py-1.5 px-1 rounded text-[9px] font-bold leading-tight h-10 flex items-center justify-center"
+                            style={{ background: toRgba(color, 0.18), color, border: `1px solid ${toRgba(color, 0.4)}` }}
+                          >
+                            {tactic}
+                          </div>
+
+                          {/* Technique cells */}
+                          {techniques.length > 0
+                            ? techniques.map(t => {
+                                const intensity = t.count / maxCount
+                                const bg = toRgba(color, intensity * 0.72 + 0.14)
+                                const textColor = intensity > 0.55 ? '#fff' : color
+                                return (
+                                  <div
+                                    key={t.technique_id}
+                                    title={`${t.technique_id} — ${t.count} indicator${t.count !== 1 ? 's' : ''}`}
+                                    className="text-center py-1 px-0.5 rounded text-[10px] font-mono leading-tight cursor-default transition-transform hover:scale-105 hover:z-10"
+                                    style={{ background: bg, color: textColor, border: `1px solid ${toRgba(color, 0.3)}` }}
+                                  >
+                                    {t.technique_id}
+                                    <span className="ml-0.5 text-[8px] opacity-80">({t.count})</span>
+                                  </div>
+                                )
+                              })
+                            : (
+                              <div className="text-center py-1.5 rounded text-[10px] text-dark-700 border border-dark-800/40">
+                                —
+                              </div>
+                            )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          )
+        })()
 
       ) : (
 

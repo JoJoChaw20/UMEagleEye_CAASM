@@ -378,21 +378,6 @@ app.post('/active', authMiddleware, zValidator('json', activeScanSchema, (result
       return c.json({ detail: 'Failed to create scan record' }, 500)
     }
 
-    // Notify agent via Telegram if agent_id is provided
-    if (agent_id && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID) {
-      const mode = effectiveScanType === 'passive' ? 'Passive (ARP)' : 'Active (Nmap)'
-      const message = `Scan Dispatched\nMode: ${mode}\nScan ID: ${scan.scanId}\nSubnet: ${effectiveSubnet}\nAgent: ${agent_id}\nTriggered by: ${user.username}`
-      fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: c.env.TELEGRAM_CHAT_ID,
-          text: message,
-          parse_mode: 'Markdown',
-        }),
-      }).catch((err) => console.error('Telegram notify error:', err))
-    }
-
     const message = effectiveScanType === 'passive'
       ? 'Passive scan registered — agent will flush ARP discoveries to this record'
       : 'Scan dispatched to agent'

@@ -5,7 +5,7 @@ import { desc, eq, and, or, sql, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, events, advisories, postureMetrics } from '../db/schema'
+import { assets, events, advisories, postureMetrics, ctiIndicators } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -14,19 +14,25 @@ function detectIntent(raw: string): { intent: string; query: string } {
   const m = raw.toLowerCase().trim()
 
   if (/^\/?(help)$/.test(m)) return { intent: 'help', query: '' }
-  if (/^\/status$/.test(m) || /\b(status|health|how are|overview)\b/.test(m))
+  if (/^\/?status$/.test(m) || /\b(status|health|how are|overview)\b/.test(m))
     return { intent: 'status', query: '' }
-  if (/^\/assets$/.test(m) || /\b(asset|device|server|host|workstation)\b/.test(m))
+  if (/^\/?(assets?)$/.test(m) || /\bassets?\b/.test(m) || /\b(device|server|host|workstation)\b/.test(m))
     return { intent: 'assets', query: '' }
-  if (/^\/alerts$/.test(m) || /\b(alert|threat|critical event|attack|incident)\b/.test(m))
+  if (/^\/?alerts?$/.test(m) || /\balerts?\b/.test(m) || /\b(threat|critical event|attack|incident)\b/.test(m))
     return { intent: 'alerts', query: '' }
-  if (/^\/advisories$/.test(m) || /\b(advisor|remediat|action item|pending fix|resolve)\b/.test(m))
+  if (/^\/?advisori/.test(m) || /\badvisori/.test(m) || /\b(remediat|action item|pending fix)\b/.test(m))
     return { intent: 'advisories', query: '' }
-  if (/^\/posture$/.test(m) || /\b(posture|score|risk level|security score)\b/.test(m))
+  if (/^\/?posture$/.test(m) || /\b(posture|score|risk level|security score)\b/.test(m))
     return { intent: 'posture', query: '' }
   if (/^\/ask\s+/.test(m))
     return { intent: 'ai', query: raw.slice(4).trim() }
-  if (/\b(how (to|do|can|should)|what is|explain|why|prevent|mitigat|harden|block|stop|fix)\b/.test(m))
+  if (/^debug\s+\S+/i.test(m))
+    return { intent: 'debug', query: raw.replace(/^debug\s+/i, '').trim() }
+  if (/^fix\s+\S+/i.test(m))
+    return { intent: 'fix', query: raw.replace(/^fix\s+/i, '').trim() }
+  if (/^fix$/i.test(m))
+    return { intent: 'fix', query: '' }
+  if (/\b(how (to|do|can|should)|what is|explain|why|prevent|mitigat|harden|block|stop)\b/.test(m))
     return { intent: 'ai', query: raw }
 
   // Default: AI
@@ -46,6 +52,7 @@ function helpText(role: string): string {
       '`alerts` — Recent critical & high alerts',
       '`advisories` — Open advisories',
       '`ask <question>` — AI security assistant',
+      '`fix <advisory_id>` — Mark advisory as resolved',
     )
   }
   lines.push('', 'You can also type naturally — I\'ll understand!')
@@ -55,10 +62,14 @@ function helpText(role: string): string {
 // ── DB helpers ────────────────────────────────────────────────────
 async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
   const af = tenantId ? eq(assets.tenantId, tenantId) : undefined
-  const [assetCnt, advisoryCnt] = await Promise.all([
+
+  const [totalAssetCnt, myAssetCnt, advisoryCnt, ctiCnt] = await Promise.all([
     db.select({ count: sql<number>`count(*)::int` }).from(assets).where(af),
+    db.select({ count: sql<number>`count(*)::int` }).from(assets)
+      .where(af ? and(af, eq(assets.source, 'manual')) : eq(assets.source, 'manual')),
     db.select({ count: sql<number>`count(*)::int` }).from(advisories)
       .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'))),
+    db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators),
   ])
 
   // Critical events scoped by asset tenant
@@ -78,9 +89,12 @@ async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
   }
 
   return [
-    { label: 'Total Assets',     value: assetCnt[0]?.count ?? 0 },
-    { label: 'Open Advisories',  value: advisoryCnt[0]?.count ?? 0 },
-    { label: 'Critical Events',  value: critCount },
+    { label: 'Total Assets',    value: totalAssetCnt[0]?.count ?? 0 },
+    { label: 'My Assets',       value: myAssetCnt[0]?.count ?? 0 },
+    { label: 'Critical Events', value: critCount },
+    { label: 'Open Advisories', value: advisoryCnt[0]?.count ?? 0 },
+    { label: 'CTI Indicators',  value: ctiCnt[0]?.count ?? 0 },
+    { label: 'Updated',         value: new Date().toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kuala_Lumpur' }) },
   ]
 }
 
@@ -109,24 +123,44 @@ async function queryAlerts(db: ReturnType<typeof getDb>, tenantId?: string) {
   const severityFilter = or(eq(events.severity, 'critical'), eq(events.severity, 'high'))
   const where = assetIds ? and(inArray(events.assetId, assetIds), severityFilter) : severityFilter
 
-  return db.select({
+  const rows = await db.select({
     eventId:   events.eventId,
     eventType: events.eventType,
     severity:  events.severity,
     timestamp: events.timestamp,
+    details:   events.details,
+    assetId:   events.assetId,
+    hostname:  assets.hostname,
+    ipAddress: assets.ipAddress,
   })
     .from(events)
+    .innerJoin(assets, eq(events.assetId, assets.assetId))
     .where(where)
     .orderBy(desc(events.timestamp))
-    .limit(10)
+    .limit(100)
+
+  // Deduplicate by (cve_id/detail + assetId) — keep most recent occurrence
+  const seen = new Set<string>()
+  const unique = []
+  for (const r of rows) {
+    const d = (r.details ?? {}) as Record<string, unknown>
+    const key = `${r.assetId}::${d.cve_id ?? d.package_name ?? r.eventType}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      unique.push(r)
+      if (unique.length === 10) break
+    }
+  }
+  return unique
 }
 
 async function queryAdvisories(db: ReturnType<typeof getDb>) {
   return db.select({
-    advisoryId: advisories.advisoryId,
-    summary:    advisories.summary,
-    status:     advisories.status,
-    createdAt:  advisories.createdAt,
+    advisoryId:       advisories.advisoryId,
+    summary:          advisories.summary,
+    recommendedAction: advisories.recommendedAction,
+    status:           advisories.status,
+    createdAt:        advisories.createdAt,
   })
     .from(advisories)
     .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged')))
@@ -163,8 +197,11 @@ async function queryPosture(db: ReturnType<typeof getDb>, tenantId?: string) {
   return { score, total, critical, openCrit: 0 }
 }
 
-async function askAI(env: Env, question: string): Promise<string> {
-  // Prefer DeepSeek direct API if key is available, fall back to OpenRouter
+async function askAI(
+  env: Env,
+  question: string,
+  history: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+): Promise<string> {
   const useDeepSeek = !!env.DEEPSEEK_API_KEY
   const apiKey = useDeepSeek ? env.DEEPSEEK_API_KEY : env.OPENROUTER_API_KEY
   const baseUrl = useDeepSeek
@@ -186,8 +223,10 @@ async function askAI(env: Env, question: string): Promise<string> {
           content:
             'You are a cybersecurity assistant for the UMEagleEye CAASM platform. ' +
             'Give concise, actionable security advice. Keep responses under 300 words. ' +
-            'Use bullet points for steps. Focus on practical remediation.',
+            'Use bullet points for steps. Focus on practical remediation. ' +
+            'When the user asks follow-up questions, answer in the context of the ongoing security discussion.',
         },
+        ...history,
         { role: 'user', content: question },
       ],
       max_tokens: 450,
@@ -198,13 +237,54 @@ async function askAI(env: Env, question: string): Promise<string> {
   return data.choices?.[0]?.message?.content ?? 'No response from AI.'
 }
 
+// ── POST /categorize — AI names an advisory session ──────────────
+app.post(
+  '/categorize',
+  authMiddleware,
+  zValidator('json', z.object({
+    summary:           z.string().max(600),
+    recommendedAction: z.string().max(1000),
+  })),
+  async (c) => {
+    const { summary, recommendedAction } = c.req.valid('json')
+    if (!c.env.DEEPSEEK_API_KEY && !c.env.OPENROUTER_API_KEY) {
+      return c.json({ name: 'Security Advisory', category: 'Security', emoji: '🔴' })
+    }
+    const prompt =
+      `You are categorising a security advisory for a CAASM dashboard.\n` +
+      `Summary: ${summary}\n` +
+      `Action: ${recommendedAction.slice(0, 300)}\n\n` +
+      `Reply with ONLY valid JSON (no markdown) in this exact shape:\n` +
+      `{"name":"<4 words max>","category":"<CVE Vulnerability|Network Issue|Config Drift|Access Control|Malware|Other>","emoji":"<one emoji>"}`
+    try {
+      const raw = await askAI(c.env, prompt)
+      const parsed = JSON.parse(raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()) as {
+        name?: string; category?: string; emoji?: string
+      }
+      return c.json({
+        name:     parsed.name     ?? 'Security Advisory',
+        category: parsed.category ?? 'Security',
+        emoji:    parsed.emoji    ?? '🔴',
+      })
+    } catch {
+      return c.json({ name: 'Security Advisory', category: 'Security', emoji: '🔴' })
+    }
+  },
+)
+
 // ── Route ─────────────────────────────────────────────────────────
 app.post(
   '/',
   authMiddleware,
-  zValidator('json', z.object({ message: z.string().min(1).max(1000) })),
+  zValidator('json', z.object({
+    message: z.string().min(1).max(1000),
+    history: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().max(2000),
+    })).max(10).optional(),
+  })),
   async (c) => {
-    const { message } = c.req.valid('json')
+    const { message, history = [] } = c.req.valid('json')
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
     const tenantId = user.role !== 'superadmin' ? user.tenantId : undefined
@@ -249,11 +329,55 @@ app.post(
           return c.json({ type: 'posture', content: 'Security Posture', data })
         }
 
+        case 'debug': {
+          if (restricted) {
+            return c.json({ type: 'text', content: 'Your role does not have permission to use the AI debug assistant.' })
+          }
+          if (!query) {
+            return c.json({ type: 'text', content: 'Please provide an advisory ID:\n`debug <advisory_id>`' })
+          }
+          const allAdvs = await db.select().from(advisories).limit(200)
+          const adv = allAdvs.find(a => a.advisoryId === query || a.advisoryId.startsWith(query))
+          if (!adv) {
+            return c.json({ type: 'text', content: `Advisory \`${query}\` not found.` })
+          }
+          if (!c.env.DEEPSEEK_API_KEY && !c.env.OPENROUTER_API_KEY) {
+            return c.json({ type: 'text', content: 'AI assistant is not configured on this instance.' })
+          }
+          const prompt = `You are a cybersecurity expert. A security advisory has these recommended actions:\n\n${adv.recommendedAction}\n\nSummary: ${adv.summary}\n\nExplain these recommended actions in detail, step by step, in plain language that a system administrator can follow. Be specific and practical.`
+          const answer = await askAI(c.env, prompt, history)
+          return c.json({ type: 'ai', content: answer })
+        }
+
+        case 'fix': {
+          if (restricted) {
+            return c.json({ type: 'text', content: 'Your role does not have permission to resolve advisories.' })
+          }
+          if (!query) {
+            return c.json({ type: 'text', content: 'Please provide an advisory ID:\n`fix <advisory_id>`\n\nUse the `advisories` command to see open advisory IDs.' })
+          }
+          const allOpen = await db.select().from(advisories)
+            .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress')))
+          const target = allOpen.find(a => a.advisoryId === query || a.advisoryId.startsWith(query))
+          if (!target) {
+            return c.json({ type: 'text', content: `Advisory \`${query}\` not found or already resolved.` })
+          }
+          await db.update(advisories)
+            .set({ status: 'resolved', resolvedAt: new Date() })
+            .where(eq(advisories.advisoryId, target.advisoryId))
+          return c.json({
+            type: 'fix',
+            content: `Advisory \`${target.advisoryId.slice(0, 8)}\` marked as **resolved**.`,
+            data: { advisoryId: target.advisoryId, summary: target.summary },
+          })
+        }
+
+
         case 'ai': {
           if (!c.env.DEEPSEEK_API_KEY && !c.env.OPENROUTER_API_KEY) {
             return c.json({ type: 'text', content: 'AI assistant is not configured on this instance.' })
           }
-          const answer = await askAI(c.env, query || message)
+          const answer = await askAI(c.env, query || message, history)
           return c.json({ type: 'ai', content: answer })
         }
 

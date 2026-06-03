@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono'
-import { eq, and, desc, sql, gte } from 'drizzle-orm'
+import { eq, and, desc, sql, gte, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -82,6 +82,17 @@ app.get('/', authMiddleware, async (c) => {
       db.select({ count: sql<number>`count(*)::int` }).from(events).where(whereClause),
     ])
 
+    // Check which of the returned events already have an advisory
+    const pageEventIds = rows.map(r => r.eventId).filter(Boolean)
+    let advisoryEventIdSet = new Set<string>()
+    if (pageEventIds.length > 0) {
+      const advRows = await db
+        .select({ eventId: advisories.eventId })
+        .from(advisories)
+        .where(inArray(advisories.eventId, pageEventIds))
+      advisoryEventIdSet = new Set(advRows.map(a => a.eventId))
+    }
+
     const items = rows.map(row => ({
       event_id:            row.eventId,
       asset_id:            row.assetId,
@@ -92,6 +103,7 @@ app.get('/', authMiddleware, async (c) => {
       timestamp:           row.timestamp,
       asset_hostname:      row.assetHostname ?? null,
       asset_ip:            row.assetIp ?? null,
+      has_advisory:        advisoryEventIdSet.has(row.eventId),
     }))
 
     return c.json({
@@ -321,7 +333,7 @@ app.post('/:eventId/advisory', authMiddleware, async (c) => {
       }
     }
 
-    await c.env.ADVISORY_QUEUE.send({ eventId, userId: user.userId })
+    await c.env.ADVISORY_QUEUE.send({ type: 'advisory', eventId, userId: user.userId })
 
     return c.json({ message: 'Advisory generation queued', task_queued: true })
   } catch (err) {
