@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FileSearch, X, CheckCircle, ShieldAlert, UserPlus, Filter } from 'lucide-react'
+import { FileSearch, X, CheckCircle, ShieldAlert, UserPlus, Filter, Sparkles } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -7,6 +8,7 @@ const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved'
 
 export default function AdvisoriesPage() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [advisories, setAdvisories] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedAdvisory, setSelectedAdvisory] = useState(null)
@@ -184,8 +186,18 @@ export default function AdvisoriesPage() {
                 )}
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-3 flex-wrap">
                 <button onClick={() => setSelectedAdvisory(null)} className="btn-secondary">Close</button>
+                <button
+                  onClick={() => {
+                    navigate('/chatbot', { state: { advisory: selectedAdvisory } })
+                    setSelectedAdvisory(null)
+                  }}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-sm font-medium"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Debug with AI
+                </button>
                 {selectedAdvisory.status === 'open' && (
                   <button
                     onClick={() => handleAssignToMe(selectedAdvisory.advisoryId)}

@@ -5,7 +5,7 @@ import {
   CheckCircle2, ChevronDown, ChevronUp, Sparkles,
   Trash2, Plus, PanelLeft,
 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -361,6 +361,7 @@ function SessionSidebar({ sessions, activeId, onSelect, onDelete, onNew }) {
 // ── Main page ─────────────────────────────────────────────────────
 export default function ChatbotPage() {
   const { user } = useAuth()
+  const location = useLocation()
   const [sessions, setSessions] = useState(() => loadSessions(user?.username))
   const [activeId, setActiveId] = useState(() => {
     const id = loadActiveId()
@@ -480,6 +481,15 @@ export default function ChatbotPage() {
       setLoading(false)
     }
   }, [sessions])
+
+  // ── Auto-open advisory session when navigated from AdvisoriesPage ─
+  useEffect(() => {
+    const advisory = location.state?.advisory
+    if (!advisory?.advisoryId) return
+    openAdvisorySession(advisory)
+    // Clear router state so re-renders don't re-trigger
+    window.history.replaceState({}, '')
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const deleteSession = (id) => {
     if (id === 'general') return
