@@ -10,9 +10,6 @@ export interface Env {
   OTX_API_KEY: string
   THREATFOX_API_KEY: string
   NVD_API_KEY: string
-  TELEGRAM_BOT_TOKEN: string
-  TELEGRAM_CHAT_ID: string
-
   // ── Vars ──
   APP_ENV: string
   OPENROUTER_MODEL: string

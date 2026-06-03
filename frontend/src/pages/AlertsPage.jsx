@@ -64,6 +64,7 @@ export default function AlertsPage() {
   const [severityFilter,  setSeverityFilter]  = useState('')
   const [typeFilter,      setTypeFilter]      = useState('')
   const [advisoryLoading, setAdvisoryLoading] = useState({}) // eventId → bool
+  const [advisoryDone,    setAdvisoryDone]    = useState(new Set()) // eventIds with advisory
   const { toast, show: showToast } = useToast()
 
   const PAGE_SIZE = 15
@@ -80,9 +81,16 @@ export default function AlertsPage() {
         client.get('/events/stats/summary'),
       ])
 
-      setEvents(eventsRes.data.items || [])
+      const items = eventsRes.data.items || []
+      setEvents(items)
       setTotal(eventsRes.data.total || 0)
       setStats(statsRes.data)
+      // Seed done-set from server — events that already have an advisory
+      setAdvisoryDone(prev => {
+        const next = new Set(prev)
+        items.forEach(e => { if (e.has_advisory) next.add(e.event_id) })
+        return next
+      })
     } catch (err) {
       console.error('Alerts load error:', err)
     } finally {
@@ -97,6 +105,7 @@ export default function AlertsPage() {
     setAdvisoryLoading(s => ({ ...s, [eventId]: true }))
     try {
       await client.post(`/events/${eventId}/advisory`)
+      setAdvisoryDone(prev => new Set(prev).add(eventId))
       showToast('AI Advisory generation queued — check Advisories page shortly.', 'success')
     } catch {
       showToast('Failed to trigger advisory generation.', 'error')
@@ -432,16 +441,27 @@ export default function AlertsPage() {
                   </td>
 
                   <td>
-                    <button
-                      onClick={() => triggerAdvisory(e.event_id)}
-                      disabled={advisoryLoading[e.event_id]}
-                      className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
-                      title="Generate AI Advisory"
-                    >
-                      {advisoryLoading[e.event_id]
-                        ? <RefreshCw className="w-4 h-4 animate-spin" />
-                        : <Zap className="w-4 h-4" />}
-                    </button>
+                    {advisoryDone.has(e.event_id) ? (
+                      <span
+                        className="flex items-center gap-1 text-xs text-green-400 px-2 py-1 rounded bg-green-500/10 border border-green-500/20 whitespace-nowrap"
+                        title="AI Advisory already generated"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                        Advisory Created
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => triggerAdvisory(e.event_id)}
+                        disabled={advisoryLoading[e.event_id]}
+                        className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/10 transition-colors disabled:opacity-40 whitespace-nowrap"
+                        title="Generate AI Advisory"
+                      >
+                        {advisoryLoading[e.event_id]
+                          ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          : <Zap className="w-3.5 h-3.5" />}
+                        {advisoryLoading[e.event_id] ? 'Generating…' : 'Generate Advisory'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

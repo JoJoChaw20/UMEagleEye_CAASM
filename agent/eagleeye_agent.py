@@ -641,7 +641,7 @@ class AgentClient:
 
     def get_pending_scans(self) -> list[dict]:
         try:
-            resp = self.session.get(f"{self.api_url}/scans/pending", timeout=15)
+            resp = self.session.get(f"{self.api_url}/scans/pending", timeout=30)
             resp.raise_for_status()
             return resp.json().get("scans", [])
         except requests.RequestException as e:

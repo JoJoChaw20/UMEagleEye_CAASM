@@ -18,24 +18,16 @@ function getCronName(cron: string): string {
   return names[cron] ?? cron
 }
 
-async function checkSlaBreaches(db: ReturnType<typeof getDb>, telegramToken: string, chatId: string): Promise<void> {
-  // Advisories open > 72 hours → SLA breach
+async function checkSlaBreaches(db: ReturnType<typeof getDb>): Promise<void> {
+  // Advisories open > 72 hours → SLA breach (surfaced in the in-app notification feed)
   const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000)
   const breaches = await db
     .select({ advisoryId: advisories.advisoryId })
     .from(advisories)
     .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff)))
 
-  if (breaches.length > 0 && telegramToken && chatId) {
-    await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: `*SLA Breach Alert*\n${breaches.length} advisories have been open for >72 hours. Please review.`,
-        parse_mode: 'Markdown',
-      }),
-    }).catch(() => undefined)
+  if (breaches.length > 0) {
+    console.log(`[sla-monitor] ${breaches.length} SLA breach(es) detected — visible in Notification Centre`)
   }
 }
 
@@ -53,7 +45,7 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
       }
 
       case 'sla-monitor': {
-        await checkSlaBreaches(db, env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID)
+        await checkSlaBreaches(db)
         break
       }
 
