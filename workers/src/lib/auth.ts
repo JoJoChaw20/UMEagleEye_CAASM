@@ -98,7 +98,28 @@ export function verifyTotp(secret: string, token: string): boolean {
 export async function generateTotpQR(secret: string, username: string): Promise<string> {
   const otpauthUrl = authenticator.keyuri(username, 'UMEagleEye', secret)
   const QRCode = await import('qrcode')
-  return QRCode.toDataURL(otpauthUrl)
+
+  // Use module matrix → filled <rect> SVG (no canvas, universally scannable)
+  const qrData = QRCode.create(otpauthUrl, { errorCorrectionLevel: 'M' })
+  const modules = qrData.modules
+  const size    = modules.size
+  const cell    = 4
+  const margin  = 4
+  const total   = (size + margin * 2) * cell
+
+  let rects = ''
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (modules.get(r, c)) {
+        const x = (c + margin) * cell
+        const y = (r + margin) * cell
+        rects += `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="#000"/>`
+      }
+    }
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}"><rect width="${total}" height="${total}" fill="#fff"/>${rects}</svg>`
+  return btoa(svg)
 }
 
 // ── Crypto helpers ────────────────────────────────────────────────

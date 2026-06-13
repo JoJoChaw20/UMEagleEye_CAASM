@@ -12,9 +12,9 @@ import { buildBaseline, extractPorts } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
 
-const READ_ROLES = ['ops_lead', 'security_engineer', 'mssp_analyst', 'business_owner', 'superadmin']
-const WRITE_ROLES = ['ops_lead', 'security_engineer', 'superadmin']
-const DELETE_ROLES = ['ops_lead', 'superadmin']
+const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
+const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin']
+const DELETE_ROLES = ['tenant_superadmin']
 
 function computeAssetCriticality(input: {
   deviceType: string
@@ -86,7 +86,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
         .select()
         .from(assets)
         .where(whereClause)
-        .orderBy(desc(assets.createdAt))
+        .orderBy(sql`${assets.lastScanned} DESC NULLS LAST`, desc(assets.createdAt))
         .limit(limit)
         .offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(assets).where(whereClause),
@@ -619,6 +619,35 @@ app.get('/:assetId/baseline', authMiddleware, requireRoles(...READ_ROLES), async
   }
 })
 
+// ── GET /:assetId/sbom-scan-status ─── frontend polls this after triggering ───
+app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+    const [row] = await db
+      .select({
+        scanId:    scanResults.scanId,
+        status:    scanResults.status,
+        startedAt: scanResults.startedAt,
+        completedAt: scanResults.completedAt,
+      })
+      .from(scanResults)
+      .where(and(eq(scanResults.subnet, assetId), eq(scanResults.scanType, 'sbom')))
+      .orderBy(desc(scanResults.startedAt))
+      .limit(1)
+    if (!row) return c.json({ status: 'none' })
+    return c.json({
+      scan_id:      row.scanId,
+      status:       row.status,
+      started_at:   row.startedAt,
+      completed_at: row.completedAt,
+    })
+  } catch (err) {
+    console.error('sbom-scan-status error:', err)
+    return c.json({ detail: 'Failed to fetch SBOM scan status' }, 500)
+  }
+})
+
 // ── POST /:assetId/scan-sbom ────────────────────────────────────
 // Queues a real SBOM scan job — picked up by the EagleEye agent via
 // GET /scans/pending, which runs Syft locally and POSTs back to POST /sboms/ingest.
@@ -643,11 +672,18 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
         return c.json({ detail: 'Asset not found' }, 404)
       }
 
-      // Find an online agent for this tenant
+      // Find the most-recently active agent for this tenant.
+      // Require a heartbeat within the last 2 minutes — same threshold used by the
+      // notifications system — so stale 'online' rows from dead agents are ignored.
       const [agent] = await db
         .select({ agentId: agents.agentId })
         .from(agents)
-        .where(and(eq(agents.tenantId, asset.tenantId!), eq(agents.status, 'online')))
+        .where(and(
+          eq(agents.tenantId, asset.tenantId!),
+          eq(agents.status, 'online'),
+          sql`${agents.lastHeartbeat} > now() - interval '2 minutes'`,
+        ))
+        .orderBy(desc(agents.lastHeartbeat))
         .limit(1)
       if (!agent) return c.json({ detail: 'No online agent available — start the EagleEye agent on the target machine' }, 503)
 

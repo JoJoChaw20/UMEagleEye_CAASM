@@ -648,6 +648,13 @@ class AgentClient:
             log.error(f"Failed to fetch pending scans: {e}")
             return []
 
+    def mark_scan_running(self, scan_id: str) -> None:
+        """Signal to the backend that this scan has started (pending → running)."""
+        try:
+            self.session.post(f"{self.api_url}/scans/{scan_id}/start", timeout=10)
+        except Exception as e:
+            log.warning(f"Could not mark scan {scan_id[:8]}… as running: {e}")
+
     def ingest_results(self, scan_id: str, hosts: list[dict]) -> bool:
         """Ingest results for an active scan dispatched from the dashboard."""
         payload = {
@@ -1036,14 +1043,16 @@ def main():
                                 pass
                     elif scan_type == "sbom":
                         log.info(f"Processing SBOM scan {scan_id[:8]}…")
+                        client.mark_scan_running(scan_id)
                         run_sbom_scan(scan, client)
                     else:
                         # Active scan: run nmap with enhanced NSE scripts
                         log.info(f"Processing ACTIVE scan {scan_id[:8]}… subnet={subnet}")
+                        client.mark_scan_running(scan_id)
                         hosts = run_nmap(subnet)
                         client.ingest_results(scan_id, hosts)
             else:
-                log.debug("No pending scans")
+                log.info("No pending scans")
 
             # ── Autonomous periodic passive flush ──────────────────────────────
             # Runs every --passive-interval seconds regardless of dashboard triggers.

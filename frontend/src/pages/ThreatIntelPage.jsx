@@ -17,6 +17,7 @@ import {
   BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
 
 // ── Constants ─────────────────────────────────────────────────
 const MITRE_TACTICS = [
@@ -51,6 +52,8 @@ function ConfBar({ score }) {
 }
 
 export default function ThreatIntelPage() {
+  const { user } = useAuth()
+  const canIngest = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const [indicators, setIndicators] = useState([])
   const [matrix,     setMatrix]     = useState({})
   const [stats,      setStats]      = useState(null)
@@ -177,16 +180,18 @@ export default function ThreatIntelPage() {
             {Object.keys(stats?.by_source ?? {}).length} sources
           </p>
         </div>
-        <button
-          onClick={triggerIngestion}
-          disabled={ingesting}
-          className="btn-primary flex items-center gap-2"
-        >
-          {ingesting
-            ? <RefreshCw className="w-4 h-4 animate-spin" />
-            : <Globe className="w-4 h-4" />}
-          {ingesting ? 'Ingesting…' : 'Ingest Feeds'}
-        </button>
+        {canIngest && (
+          <button
+            onClick={triggerIngestion}
+            disabled={ingesting}
+            className="btn-primary flex items-center gap-2"
+          >
+            {ingesting
+              ? <RefreshCw className="w-4 h-4 animate-spin" />
+              : <Globe className="w-4 h-4" />}
+            {ingesting ? 'Ingesting…' : 'Ingest Feeds'}
+          </button>
+        )}
       </div>
 
       {/* ── Source & type stat cards ── */}

@@ -98,7 +98,6 @@ function CreateTenantModal({ onClose, onSubmit }) {
 // ── Edit Tenant Modal ─────────────────────────────────────────────
 function EditTenantModal({ tenant, onClose, onSave }) {
   const [name, setName] = useState(tenant.name)
-  const [isActive, setIsActive] = useState(tenant.is_active)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -106,7 +105,7 @@ function EditTenantModal({ tenant, onClose, onSave }) {
     setSaving(true)
     setError(null)
     try {
-      await onSave(tenant.tenant_id, { name, is_active: isActive })
+      await onSave(tenant.tenant_id, { name })
       onClose()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to update tenant')
@@ -142,16 +141,6 @@ function EditTenantModal({ tenant, onClose, onSave }) {
             <label className="block text-xs text-dark-400 mb-1">Slug</label>
             <input type="text" value={tenant.slug} disabled className="input-field w-full text-sm opacity-50 font-mono" />
           </div>
-
-          <div className="flex items-center justify-between py-2">
-            <label className="text-sm text-dark-300">Active</label>
-            <button type="button" onClick={() => setIsActive(v => !v)} className="text-dark-400 hover:text-white transition-colors">
-              {isActive
-                ? <ToggleRight className="w-7 h-7 text-eagle-400" />
-                : <ToggleLeft className="w-7 h-7" />
-              }
-            </button>
-          </div>
         </div>
 
         <div className="flex gap-3">
@@ -168,11 +157,11 @@ function EditTenantModal({ tenant, onClose, onSave }) {
 
 // ── Invite / Assign User Modal ────────────────────────────────────
 function InviteUserModal({ tenantId, onClose, onInvite }) {
-  const [mode, setMode] = useState('email') // 'email' | 'uuid'
+  const [mode, setMode] = useState('email') // 'email' | 'username'
   const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
   const [role, setRole] = useState('business_owner')
-  const [userId, setUserId] = useState('')
+  const [assignUsername, setAssignUsername] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
@@ -183,7 +172,7 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
     setError(null)
     setResult(null)
     try {
-      const res = await onInvite(tenantId, mode === 'email' ? { email, username: username || undefined, role } : { user_id: userId })
+      const res = await onInvite(tenantId, mode === 'email' ? { email, username: username || undefined, role } : { username: assignUsername })
       setResult(res)
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to invite user')
@@ -237,10 +226,10 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
           </button>
           <button
             type="button"
-            onClick={() => setMode('uuid')}
-            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'uuid' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
+            onClick={() => setMode('username')}
+            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'username' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
           >
-            Assign by UUID
+            Assign by Username
           </button>
         </div>
 
@@ -274,24 +263,24 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
               <div>
                 <label className="block text-xs text-dark-400 mb-1">Role</label>
                 <select value={role} onChange={(e) => setRole(e.target.value)} className="input-field w-full text-sm">
+                  <option value="tenant_superadmin">Tenant Superadmin</option>
+                  <option value="tenant_admin">Tenant Admin</option>
                   <option value="business_owner">Business Owner</option>
-                  <option value="security_engineer">Security Engineer</option>
-                  <option value="ops_lead">Ops Lead</option>
-                  <option value="mssp_analyst">MSSP Analyst</option>
                 </select>
               </div>
             </>
           ) : (
             <div>
-              <label className="block text-xs text-dark-400 mb-1">User ID (UUID)</label>
+              <label className="block text-xs text-dark-400 mb-1">Username</label>
               <input
                 type="text"
-                value={userId}
-                onChange={(e) => setUserId(e.target.value)}
-                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                className="input-field w-full text-sm font-mono"
+                value={assignUsername}
+                onChange={(e) => setAssignUsername(e.target.value)}
+                placeholder="e.g. john_doe"
+                className="input-field w-full text-sm"
                 required
               />
+              <p className="text-xs text-dark-500 mt-1">Must match an existing account username exactly.</p>
             </div>
           )}
 
@@ -299,7 +288,7 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
             <button type="button" onClick={onClose} className="btn-secondary flex-1 text-xs py-1.5">Cancel</button>
             <button type="submit" disabled={submitting} className="btn-primary flex-1 text-xs py-1.5 flex items-center justify-center gap-1">
               {submitting ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-3 h-3" />}
-              {mode === 'email' ? 'Invite' : 'Assign'}
+              {mode === 'email' ? 'Invite' : 'Assign User'}
             </button>
           </div>
         </form>
@@ -309,44 +298,66 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
 }
 
 // ── Users side panel ──────────────────────────────────────────────
+const ROLE_OPTIONS = [
+  { value: 'tenant_superadmin', label: 'Tenant Superadmin', color: 'text-purple-400' },
+  { value: 'tenant_admin',      label: 'Tenant Admin',      color: 'text-blue-400'   },
+  { value: 'business_owner',    label: 'Business Owner',    color: 'text-green-400'  },
+]
+const roleColor = (r) => ROLE_OPTIONS.find(o => o.value === r)?.color ?? 'text-dark-300'
+const roleLabel = (r) => ROLE_OPTIONS.find(o => o.value === r)?.label ?? (r?.replace(/_/g, ' ') ?? '—')
+
 function UsersPanel({ tenant, onClose, onAssigned }) {
+  const { user: currentUser } = useAuth()
+  const isSuperadmin = currentUser?.role === 'superadmin'
+
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAssign, setShowAssign] = useState(false)
+  const [pendingRoles, setPendingRoles] = useState({})   // userId → new role string
+  const [savingRole, setSavingRole] = useState({})       // userId → bool
+  const [roleError, setRoleError] = useState({})         // userId → error string
 
-  useEffect(() => {
+  const refreshUsers = () =>
     client.get(`/tenants/${tenant.tenant_id}/users`)
       .then(res => setUsers(res.data.users || []))
       .catch(() => setUsers([]))
       .finally(() => setLoading(false))
-  }, [tenant.tenant_id])
+
+  useEffect(() => { refreshUsers() }, [tenant.tenant_id])
 
   const handleInvite = async (tenantId, payload) => {
     let result
-    if (payload.user_id) {
-      await client.post(`/tenants/${tenantId}/users`, { user_id: payload.user_id })
-      result = { action: 'assigned', username: payload.user_id, email: '', role: '' }
+    if (payload.username && !payload.email) {
+      const r = await client.post(`/tenants/${tenantId}/users`, { username: payload.username })
+      result = { action: 'assigned', username: r.data.username || payload.username, email: '', role: '' }
     } else {
       const r = await client.post(`/tenants/${tenantId}/users/invite`, payload)
       result = r.data
     }
-    const updated = await client.get(`/tenants/${tenantId}/users`)
-    setUsers(updated.data.users || [])
+    await refreshUsers()
     if (onAssigned) onAssigned()
     return result
   }
 
-  const ROLE_COLORS = {
-    superadmin: 'text-purple-400',
-    ops_lead: 'text-blue-400',
-    security_engineer: 'text-cyan-400',
-    mssp_analyst: 'text-yellow-400',
-    business_owner: 'text-green-400',
+  const saveRole = async (userId) => {
+    const newRole = pendingRoles[userId]
+    if (!newRole) return
+    setSavingRole(prev => ({ ...prev, [userId]: true }))
+    setRoleError(prev => ({ ...prev, [userId]: null }))
+    try {
+      await client.patch(`/tenants/${tenant.tenant_id}/users/${userId}/role`, { role: newRole })
+      await refreshUsers()
+      setPendingRoles(prev => { const n = { ...prev }; delete n[userId]; return n })
+    } catch (err) {
+      setRoleError(prev => ({ ...prev, [userId]: err?.response?.data?.detail || 'Failed to change role' }))
+    } finally {
+      setSavingRole(prev => ({ ...prev, [userId]: false }))
+    }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/40 backdrop-blur-sm">
-      <div className="glass-card w-full sm:w-[420px] h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
+      <div className="glass-card w-full sm:w-[460px] h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
         <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
           <div>
             <h3 className="font-semibold text-white">Users — {tenant.name}</h3>
@@ -374,23 +385,59 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
           ) : users.length === 0 ? (
             <p className="text-dark-400 text-sm text-center py-8">No users assigned to this tenant.</p>
           ) : (
-            users.map((u) => (
-              <div key={u.user_id} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40 flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-white text-sm">{u.username}</p>
-                  <p className="text-xs text-dark-400">{u.email}</p>
-                  <p className="text-xs text-dark-500 font-mono mt-0.5">{u.user_id?.slice(0, 16)}...</p>
+            users.map((u) => {
+              const currentRole = pendingRoles[u.user_id] ?? u.role
+              const isDirty = pendingRoles[u.user_id] && pendingRoles[u.user_id] !== u.role
+              return (
+                <div key={u.user_id} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium text-white text-sm">{u.username}</p>
+                      <p className="text-xs text-dark-400 truncate">{u.email}</p>
+                      <p className="text-xs text-dark-600 font-mono mt-0.5">{u.user_id?.slice(0, 20)}…</p>
+                    </div>
+                    <span className="text-xs text-dark-500 flex-shrink-0">{u.is_active ? 'Active' : 'Inactive'}</span>
+                  </div>
+
+                  {isSuperadmin ? (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={currentRole}
+                        onChange={e => setPendingRoles(prev => ({ ...prev, [u.user_id]: e.target.value }))}
+                        className="flex-1 text-xs bg-dark-700 border border-dark-600 rounded-lg px-2 py-1.5 text-dark-200 focus:border-eagle-500 focus:outline-none appearance-none"
+                      >
+                        {ROLE_OPTIONS.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      {isDirty && (
+                        <button
+                          onClick={() => saveRole(u.user_id)}
+                          disabled={savingRole[u.user_id]}
+                          className="btn-primary text-xs py-1 px-3 flex items-center gap-1 flex-shrink-0"
+                        >
+                          {savingRole[u.user_id]
+                            ? <RefreshCw className="w-3 h-3 animate-spin" />
+                            : <Check className="w-3 h-3" />}
+                          Save
+                        </button>
+                      )}
+                      {!isDirty && (
+                        <span className={`text-xs font-medium flex-shrink-0 ${roleColor(u.role)}`}>
+                          {roleLabel(u.role)}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className={`text-xs font-medium ${roleColor(u.role)}`}>{roleLabel(u.role)}</p>
+                  )}
+
+                  {roleError[u.user_id] && (
+                    <p className="text-xs text-red-400">{roleError[u.user_id]}</p>
+                  )}
                 </div>
-                <div className="text-right">
-                  <p className={`text-xs font-medium capitalize ${ROLE_COLORS[u.role] || 'text-dark-300'}`}>
-                    {u.role?.replace('_', ' ')}
-                  </p>
-                  <p className="text-xs text-dark-500 mt-0.5">
-                    {u.is_active ? 'Active' : 'Inactive'}
-                  </p>
-                </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       </div>

@@ -10,11 +10,11 @@ import {
   hashPassword,
   verifyPassword,
   createToken,
-
   generateTotpSecret,
   verifyTotp,
   generateTotpQR,
 } from '../lib/auth'
+import { authenticator } from 'otplib'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -23,7 +23,7 @@ const registerSchema = z.object({
   username: z.string().min(3).max(100),
   email: z.string().email(),
   password: z.string().min(8),
-  role: z.enum(['ops_lead', 'security_engineer', 'business_owner', 'mssp_analyst', 'superadmin']).optional(),
+  role: z.enum(['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']).optional(),
 })
 
 app.post('/register', zValidator('json', registerSchema), async (c) => {
@@ -118,10 +118,11 @@ app.post('/mfa/setup', authMiddleware, async (c) => {
 
     const secret = generateTotpSecret()
     const qr_code_base64 = await generateTotpQR(secret, user.username)
+    const otpauth_url = authenticator.keyuri(user.username, 'UMEagleEye', secret)
 
     await db.update(users).set({ totpSecret: secret }).where(eq(users.userId, user.userId))
 
-    return c.json({ totp_secret: secret, qr_code_base64 })
+    return c.json({ totp_secret: secret, qr_code_base64, otpauth_url })
   } catch (err) {
     console.error('mfa/setup error:', err)
     return c.json({ detail: 'MFA setup failed' }, 500)
@@ -163,19 +164,19 @@ app.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema), asy
 
 // ── POST /mfa/verify ─────────────────────────────────────────────
 const mfaVerifySchema = z.object({
-  username: z.string(),
+  user_id: z.string().uuid(),
   code: z.string().length(6),
 })
 
 app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
   try {
-    const { username, code } = c.req.valid('json')
+    const { user_id, code } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)
 
     const [user] = await db
       .select()
       .from(users)
-      .where(eq(users.username, username))
+      .where(eq(users.userId, user_id))
       .limit(1)
 
     if (!user || !user.isActive || !user.mfaEnabled || !user.totpSecret) {
@@ -261,6 +262,10 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
 
     await db.update(users).set({ lastLogin: new Date() }).where(eq(users.userId, resolvedUser.userId))
 
+    if (resolvedUser.mfaEnabled) {
+      return c.json({ mfa_required: true, user_id: resolvedUser.userId })
+    }
+
     const access_token = await createToken(
       {
         sub: resolvedUser.userId,
@@ -340,6 +345,26 @@ app.get('/me', authMiddleware, async (c) => {
   } catch (err) {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)
+  }
+})
+
+// ── POST /mfa/reset ──────────────────────────────────────────────
+const mfaResetSchema = z.object({ email: z.string().email() })
+
+app.post('/mfa/reset', authMiddleware, zValidator('json', mfaResetSchema), async (c) => {
+  try {
+    const caller = c.get('user')
+    if (caller.role !== 'superadmin') {
+      return c.json({ detail: 'Forbidden' }, 403)
+    }
+    const { email } = c.req.valid('json')
+    const db = getDb(c.env.DATABASE_URL)
+    const result = await db.update(users).set({ mfaEnabled: false, totpSecret: null }).where(eq(users.email, email)).returning({ userId: users.userId, email: users.email })
+    if (result.length === 0) return c.json({ detail: 'User not found' }, 404)
+    return c.json({ message: 'MFA reset successfully', user: result[0] })
+  } catch (err) {
+    console.error('mfa/reset error:', err)
+    return c.json({ detail: 'MFA reset failed' }, 500)
   }
 })
 

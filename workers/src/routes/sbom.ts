@@ -14,23 +14,54 @@ import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators
 
 const app = new Hono<{ Bindings: Env }>()
 
-const READ_ROLES = ['ops_lead', 'security_engineer', 'mssp_analyst', 'business_owner', 'superadmin']
+const READ_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
 
 // ── GET /stats/summary ───────────────────────────────────────────
 // Must be defined BEFORE /:sbomId to avoid being swallowed by the param route
 app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
+    const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
+    // If tenant-scoped, get allowed asset IDs first
+    let assetIdFilter: string[] | undefined
+    if (effectiveTenantId) {
+      const tenantAssets = await db
+        .select({ assetId: assets.assetId })
+        .from(assets)
+        .where(eq(assets.tenantId, effectiveTenantId))
+      assetIdFilter = tenantAssets.map(a => a.assetId)
+      if (assetIdFilter.length === 0) {
+        return c.json({ total_sboms: 0, total_dependencies: 0, assets_scanned: 0, by_package_manager: {}, latest_scan: null })
+      }
+    }
+
+    const sbomWhere = assetIdFilter ? inArray(sboms.assetId, assetIdFilter) : undefined
+    const depJoinFilter = assetIdFilter
+      ? and(eq(dependencies.sbomId, sboms.sbomId), inArray(sboms.assetId, assetIdFilter))
+      : eq(dependencies.sbomId, sboms.sbomId)
+
     const [totalSboms, totalDeps, assetsWithSbom, latestRow, pmRows] = await Promise.all([
-      db.select({ n: count() }).from(sboms),
-      db.select({ n: count() }).from(dependencies),
-      db.select({ n: sql<number>`count(distinct ${sboms.assetId})::int` }).from(sboms),
-      db.select({ t: sboms.generatedAt }).from(sboms).orderBy(desc(sboms.generatedAt)).limit(1),
-      db
-        .select({ pm: dependencies.packageManager, n: count() })
-        .from(dependencies)
-        .groupBy(dependencies.packageManager),
+      sbomWhere
+        ? db.select({ n: count() }).from(sboms).where(sbomWhere)
+        : db.select({ n: count() }).from(sboms),
+      assetIdFilter
+        ? db.select({ n: count() }).from(dependencies).innerJoin(sboms, depJoinFilter)
+        : db.select({ n: count() }).from(dependencies),
+      sbomWhere
+        ? db.select({ n: sql<number>`count(distinct ${sboms.assetId})::int` }).from(sboms).where(sbomWhere)
+        : db.select({ n: sql<number>`count(distinct ${sboms.assetId})::int` }).from(sboms),
+      sbomWhere
+        ? db.select({ t: sboms.generatedAt }).from(sboms).where(sbomWhere).orderBy(desc(sboms.generatedAt)).limit(1)
+        : db.select({ t: sboms.generatedAt }).from(sboms).orderBy(desc(sboms.generatedAt)).limit(1),
+      assetIdFilter
+        ? db.select({ pm: dependencies.packageManager, n: count() }).from(dependencies).innerJoin(sboms, depJoinFilter).groupBy(dependencies.packageManager)
+        : db.select({ pm: dependencies.packageManager, n: count() }).from(dependencies).groupBy(dependencies.packageManager),
     ])
 
     const byPm: Record<string, number> = {}
@@ -68,17 +99,22 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     let rows: typeof sboms.$inferSelect[]
     let total = 0
 
-    if (user.role !== 'superadmin' && user.tenantId) {
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
+    if (effectiveTenantId) {
       // Join with assets to scope by tenant
       const tenantAssets = await db
         .select({ assetId: assets.assetId })
         .from(assets)
-        .where(eq(assets.tenantId, user.tenantId))
+        .where(eq(assets.tenantId, effectiveTenantId))
       const assetIds = tenantAssets.map(a => a.assetId)
       if (assetIds.length === 0) {
         return c.json({ items: [], total: 0, page, page_size: pageSize })
       }
-      const scopedConditions = [...conditions, sql`${sboms.assetId} = ANY(${assetIds})`]
+      const scopedConditions = [...conditions, inArray(sboms.assetId, assetIds)]
       const [data, cnt] = await Promise.all([
         db.select().from(sboms).where(and(...scopedConditions)).orderBy(desc(sboms.generatedAt)).limit(pageSize).offset(offset),
         db.select({ n: count() }).from(sboms).where(and(...scopedConditions)),

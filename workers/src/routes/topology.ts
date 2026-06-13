@@ -200,7 +200,7 @@ export async function inferForTenant(
 // Superadmin: returns { tenant_trees: [{tenant_id, tenant_name, tree, node_count}] }
 //             or { tree: [...] } when ?tenant_id= is specified
 // Regular user: { tree: [...] }
-router.get('/', authMiddleware, async (c) => {
+router.get('/', authMiddleware, requireRoles('superadmin', 'tenant_superadmin', 'tenant_admin'), async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
   const tenantIdFilter = c.req.query('tenant_id')
@@ -251,7 +251,7 @@ router.get('/', authMiddleware, async (c) => {
 router.post(
   '/nodes',
   authMiddleware,
-  requireRoles('ops_lead', 'security_engineer', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   zValidator('json', z.object({
     nodes: z.array(z.object({
       asset_id:       z.string().uuid().optional(),
@@ -291,7 +291,7 @@ router.post(
 router.delete(
   '/nodes/:nodeId',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
@@ -312,7 +312,7 @@ router.delete(
 router.post(
   '/infer',
   authMiddleware,
-  requireRoles('ops_lead', 'security_engineer', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')

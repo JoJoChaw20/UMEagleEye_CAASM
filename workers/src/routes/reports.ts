@@ -9,15 +9,16 @@ import { assets, events, postureMetrics, advisories, ctiIndicators, scanResults,
 
 const app = new Hono<{ Bindings: Env }>()
 
-const GENERATE_ROLES = ['ops_lead', 'business_owner', 'superadmin']
-const SNAPSHOT_ROLES = ['ops_lead', 'superadmin']
+const READ_ROLES     = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
+const GENERATE_ROLES = ['tenant_superadmin', 'tenant_admin']
+const SNAPSHOT_ROLES = ['tenant_superadmin']
 
 // ── GET /data — synchronous report data for browser-side PDF ─────
-app.get('/data', authMiddleware, requireRoles(...GENERATE_ROLES), async (c) => {
+app.get('/data', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)
-    const af   = user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId,       user.tenantId) : undefined
+    const af   = user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId,        user.tenantId) : undefined
     const pmf  = user.role !== 'superadmin' && user.tenantId ? eq(postureMetrics.tenantId, user.tenantId) : undefined
     const sf   = user.role !== 'superadmin' && user.tenantId ? eq(scanResults.tenantId,   user.tenantId) : undefined
     const now  = new Date()
@@ -45,37 +46,57 @@ app.get('/data', authMiddleware, requireRoles(...GENERATE_ROLES), async (c) => {
         .from(assets).where(af).groupBy(assets.deviceType),
       db.select({ count: sql<number>`count(*)::int` })
         .from(assets).where(af ? and(af, eq(assets.isInternetFacing, true)) : eq(assets.isInternetFacing, true)),
-      // Event severity counts
-      db.select({ count: sql<number>`count(*)::int` }).from(events).where(eq(events.severity, 'critical')),
-      db.select({ count: sql<number>`count(*)::int` }).from(events).where(eq(events.severity, 'high')),
-      db.select({ count: sql<number>`count(*)::int` }).from(events).where(eq(events.severity, 'medium')),
-      // Event type breakdown (top 6)
+      // Event severity counts (join assets for tenant isolation)
+      db.select({ count: sql<number>`count(*)::int` }).from(events)
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af ? and(af, eq(events.severity, 'critical')) : eq(events.severity, 'critical')),
+      db.select({ count: sql<number>`count(*)::int` }).from(events)
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af ? and(af, eq(events.severity, 'high')) : eq(events.severity, 'high')),
+      db.select({ count: sql<number>`count(*)::int` }).from(events)
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af ? and(af, eq(events.severity, 'medium')) : eq(events.severity, 'medium')),
+      // Event type breakdown (top 6, tenant-scoped)
       db.select({ eventType: events.eventType, count: sql<number>`count(*)::int` })
-        .from(events).groupBy(events.eventType).orderBy(desc(sql`count(*)`)).limit(6),
-      // Advisories
+        .from(events)
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af).groupBy(events.eventType).orderBy(desc(sql`count(*)`)).limit(6),
+      // Advisories (tenant-scoped via advisories→events→assets join)
       db.select({ advisoryId: advisories.advisoryId, summary: advisories.summary,
         recommendedAction: advisories.recommendedAction, status: advisories.status, createdAt: advisories.createdAt })
         .from(advisories)
-        .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged')))
+        .innerJoin(events, eq(advisories.eventId, events.eventId))
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af
+          ? and(af, or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged')))
+          : or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged')))
         .orderBy(desc(advisories.createdAt)).limit(15),
-      // SLA breaches (open > 72h)
+      // SLA breaches (open > 72h, tenant-scoped via join)
       db.select({ count: sql<number>`count(*)::int` }).from(advisories)
-        .where(and(eq(advisories.status, 'open'), sql`${advisories.createdAt} < ${slaThreshold}`)),
+        .innerJoin(events, eq(advisories.eventId, events.eventId))
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af
+          ? and(af, eq(advisories.status, 'open'), sql`${advisories.createdAt} < ${slaThreshold}`)
+          : and(eq(advisories.status, 'open'), sql`${advisories.createdAt} < ${slaThreshold}`)),
       // Top assets by criticality
       db.select({ hostname: assets.hostname, ipAddress: assets.ipAddress,
         deviceType: assets.deviceType, criticalityScore: assets.criticalityScore,
         isInternetFacing: assets.isInternetFacing, owner: assets.owner })
         .from(assets).where(af).orderBy(desc(assets.criticalityScore)).limit(10),
-      // Top CVE events by risk score
+      // Top CVE events by risk score (tenant-scoped via asset join)
       db.select({ eventId: events.eventId, details: events.details,
         compositeRiskScore: events.compositeRiskScore, timestamp: events.timestamp })
-        .from(events).where(eq(events.eventType, 'cve_detected'))
+        .from(events)
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(af ? and(af, eq(events.eventType, 'cve_detected')) : eq(events.eventType, 'cve_detected'))
         .orderBy(desc(events.compositeRiskScore)).limit(8),
-      // CTI summary
+      // CTI summary (global — intentional)
       db.select({ source: ctiIndicators.source, count: sql<number>`count(*)::int` })
         .from(ctiIndicators).groupBy(ctiIndicators.source),
-      // SBOM count
-      db.select({ count: sql<number>`count(*)::int` }).from(sboms),
+      // SBOM count (tenant-scoped via asset join)
+      db.select({ count: sql<number>`count(*)::int` }).from(sboms)
+        .innerJoin(assets, eq(sboms.assetId, assets.assetId))
+        .where(af),
       // Last scan
       db.select({ startedAt: scanResults.startedAt, scanType: scanResults.scanType,
         hostsDiscovered: scanResults.hostsDiscovered })
@@ -228,6 +249,9 @@ app.get('/list', authMiddleware, async (c) => {
 
         // Only show PDF reports
         if (!meta.filename?.endsWith('.pdf')) continue
+
+        // Skip reports not associated with any tenant
+        if (!meta.tenant_id) continue
 
         // Filter by tenant unless superadmin
         if (user.role !== 'superadmin' && user.tenantId) {

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/reports", tags=["Reports"])
 @router.post("/generate")
 async def generate_report(
     report_type: str = "weekly",
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer", "mssp_analyst"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Trigger async PDF report generation (FR-08-02)."""
     from app.tasks.report_tasks import generate_pdf_report
@@ -26,7 +26,7 @@ async def generate_report(
 
 @router.post("/snapshot")
 async def trigger_posture_snapshot(
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Trigger an immediate posture score snapshot."""
     from app.tasks.report_tasks import generate_posture_snapshot

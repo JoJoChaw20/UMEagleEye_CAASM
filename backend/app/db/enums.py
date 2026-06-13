@@ -54,12 +54,11 @@ class AdvisoryStatus(str, enum.Enum):
 
 
 class UserRole(str, enum.Enum):
-    """RBAC roles matching PRD personas."""
-    OPS_LEAD = "ops_lead"
-    SECURITY_ENGINEER = "security_engineer"
-    BUSINESS_OWNER = "business_owner"
-    MSSP_ANALYST = "mssp_analyst"
-    SUPERADMIN = "superadmin"   # Platform super-admin (bypasses all RBAC guards)
+    """4-role RBAC model."""
+    SUPERADMIN        = "superadmin"         # Platform-wide; read-only on tenant data
+    TENANT_SUPERADMIN = "tenant_superadmin"  # Full control within own tenant
+    TENANT_ADMIN      = "tenant_admin"       # Ops/security tasks within own tenant
+    BUSINESS_OWNER    = "business_owner"     # Read-only dashboard view
 
 
 class RelationshipType(str, enum.Enum):

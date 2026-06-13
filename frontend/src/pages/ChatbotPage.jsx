@@ -8,44 +8,11 @@ import {
 import { useNavigate, useLocation } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
-
-// ── Session storage helpers ───────────────────────────────────────
-const SESSIONS_KEY = 'umeagleeye_chat_sessions'
-const ACTIVE_KEY   = 'umeagleeye_chat_active'
-const MAX_MSG      = 50
-
-function makeWelcome(username) {
-  return {
-    role: 'bot', type: 'text', ts: Date.now(),
-    content: `Hello **${username ?? 'there'}**! I'm the UMEagleEye security assistant.\n\nSelect an advisory folder on the left to debug it, or use the quick buttons below.`,
-  }
-}
-
-function loadSessions(username) {
-  try {
-    const raw = localStorage.getItem(SESSIONS_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (parsed && Object.keys(parsed).length > 0) return parsed
-    }
-  } catch {}
-  return { general: { id: 'general', name: 'General', emoji: '💬', category: null, advisoryId: null, messages: [makeWelcome(username)], updatedAt: Date.now() } }
-}
-
-function saveSessions(sessions) {
-  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)) } catch {}
-}
-
-function loadActiveId() {
-  return localStorage.getItem(ACTIVE_KEY) ?? 'general'
-}
-
-function saveActiveId(id) {
-  localStorage.setItem(ACTIVE_KEY, id)
-}
+import { useChatbot, makeWelcome, MAX_MSG } from '../context/ChatbotContext'
+import { useTheme } from '../context/ThemeContext'
 
 // ── Message bubble ────────────────────────────────────────────────
-function Bubble({ msg, onSend, onOpenAdvisorySession }) {
+function Bubble({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI }) {
   const isBot = msg.role === 'bot'
   return (
     <div className={`flex gap-3 ${isBot ? '' : 'flex-row-reverse'}`}>
@@ -58,7 +25,7 @@ function Bubble({ msg, onSend, onOpenAdvisorySession }) {
             ? 'bg-dark-800 border border-dark-700/50 text-dark-100 rounded-tl-sm'
             : 'bg-eagle-600/20 border border-eagle-500/30 text-dark-100 rounded-tr-sm'
         }`}>
-          <BotContent msg={msg} onSend={onSend} onOpenAdvisorySession={onOpenAdvisorySession} />
+          <BotContent msg={msg} onSend={onSend} onOpenAdvisorySession={onOpenAdvisorySession} onSelectTenant={onSelectTenant} canDebugAI={canDebugAI} />
         </div>
         <p className="text-[10px] text-dark-500 mt-1 px-1">
           {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -68,9 +35,108 @@ function Bubble({ msg, onSend, onOpenAdvisorySession }) {
   )
 }
 
+// ── Inline markdown parser (bold + code — no dangerouslySetInnerHTML) ────
+function parseInline(text, keyPrefix, isLight) {
+  const codeClass = isLight
+    ? 'inline-flex items-center bg-eagle-700/15 border border-eagle-700/60 text-eagle-800 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold mx-0.5 leading-none'
+    : 'inline-flex items-center bg-eagle-500/25 border border-eagle-500/70 text-eagle-200 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold mx-0.5 leading-none'
+
+  const segments = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
+  return segments.map((seg, i) => {
+    if (seg.startsWith('**') && seg.endsWith('**')) {
+      return (
+        <strong key={`${keyPrefix}-b${i}`} className="text-white font-semibold">
+          {seg.slice(2, -2)}
+        </strong>
+      )
+    }
+    if (seg.startsWith('`') && seg.endsWith('`')) {
+      return (
+        <code key={`${keyPrefix}-c${i}`} className={codeClass}>
+          {seg.slice(1, -1)}
+        </code>
+      )
+    }
+    return seg ? <span key={`${keyPrefix}-t${i}`}>{seg}</span> : null
+  }).filter(Boolean)
+}
+
+// Renders a full markdown text block: paragraphs, bullet lists, plain lines
+function MarkdownBody({ text }) {
+  const { theme } = useTheme()
+  const isLight = theme === 'light' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: dark)').matches)
+  if (!text) return null
+
+  const paragraphs = text.split(/\n{2,}/)
+
+  return (
+    <div className="space-y-2 text-dark-100 leading-relaxed">
+      {paragraphs.map((para, pi) => {
+        const lines = para.split('\n').filter(l => l !== undefined)
+
+        const isList = lines.every(l => /^\s*[-*]\s/.test(l) || l.trim() === '')
+        if (isList) {
+          return (
+            <ul key={pi} className="space-y-1 pl-1">
+              {lines.filter(l => l.trim()).map((l, li) => (
+                <li key={li} className="flex gap-2 items-start">
+                  <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-eagle-400/60 flex-shrink-0" />
+                  <span>{parseInline(l.replace(/^\s*[-*]\s+/, ''), `${pi}-${li}`, isLight)}</span>
+                </li>
+              ))}
+            </ul>
+          )
+        }
+
+        if (lines.length === 1) {
+          return (
+            <p key={pi}>
+              {parseInline(lines[0], String(pi), isLight)}
+            </p>
+          )
+        }
+
+        return (
+          <div key={pi} className="space-y-0.5">
+            {lines.map((line, li) => (
+              <p key={li}>{parseInline(line, `${pi}-${li}`, isLight)}</p>
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Renders structured bot responses ─────────────────────────────
-function BotContent({ msg, onSend, onOpenAdvisorySession }) {
+function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI }) {
   const { type, content, items, data } = msg
+
+  if (type === 'tenant_select') {
+    const msgTenants = msg.tenants || []
+    return (
+      <div>
+        <p className="text-dark-200 mb-3">{content}</p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => onSelectTenant?.(null, 'All Tenants', msg.command)}
+            className="px-3 py-1.5 text-xs rounded-lg bg-dark-700 border border-dark-600 text-dark-300 hover:text-white hover:border-dark-400 transition-colors"
+          >
+            🌐 All Tenants
+          </button>
+          {msgTenants.map(t => (
+            <button
+              key={t.tenant_id}
+              onClick={() => onSelectTenant?.(t.tenant_id, t.name, msg.command)}
+              className="px-3 py-1.5 text-xs rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-300 hover:bg-eagle-500/20 transition-colors"
+            >
+              {t.name}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
   const navigate = useNavigate()
   const [expandedId, setExpandedId] = useState(null)
 
@@ -82,7 +148,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession }) {
           {items.map(({ label, value }) => (
             <div key={label} className="bg-dark-900/60 rounded-lg p-2 text-center">
               <p className="text-lg font-bold text-eagle-400">{value}</p>
-              <p className="text-[10px] text-dark-400 mt-0.5">{label}</p>
+              <p className="text-[10px] text-dark-300 mt-0.5">{label}</p>
             </div>
           ))}
         </div>
@@ -171,7 +237,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession }) {
                       {detail}
                     </a>
                   ) : (
-                    <span className="font-mono text-dark-300 truncate max-w-[60%]">{detail}</span>
+                    <span className="font-mono text-dark-200 truncate max-w-[60%]">{detail}</span>
                   )}
                   <span className="text-dark-500">{e.hostname || e.ipAddress}</span>
                 </div>
@@ -214,37 +280,47 @@ function BotContent({ msg, onSend, onOpenAdvisorySession }) {
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold capitalize ${statusCls[a.status] ?? 'text-dark-400 border-dark-600'}`}>
+                      <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold capitalize flex-shrink-0 ${statusCls[a.status] ?? 'text-dark-400 border-dark-600'}`}>
                         {a.status?.replace('_', ' ')}
                       </span>
-                      <span className="text-dark-500 font-mono">{shortId}...</span>
-                      <span className="text-dark-600 ml-auto">{new Date(a.createdAt).toLocaleDateString()}</span>
+                      <span className="text-dark-500 font-mono text-[10px] truncate">{shortId}...</span>
+                      <span className="text-dark-600 text-[10px] flex-shrink-0 ml-auto">{new Date(a.createdAt).toLocaleDateString()}</span>
                     </div>
-                    <p className="text-dark-200 leading-snug line-clamp-2">{a.summary}</p>
+                    <p className="text-dark-300 leading-snug line-clamp-2">{a.summary}</p>
                   </div>
                   {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-dark-400 flex-shrink-0 mt-0.5" /> : <ChevronDown className="w-3.5 h-3.5 text-dark-400 flex-shrink-0 mt-0.5" />}
                 </button>
 
                 {isExpanded && (
-                  <div className="px-3 pb-3 border-t border-dark-700/50 pt-2 space-y-2">
+                  <div className="px-3 pb-3 border-t border-dark-700/50 pt-2 space-y-3">
+                    <div>
+                      <p className="text-dark-500 uppercase text-[10px] tracking-wider mb-1">Advisory ID</p>
+                      <p className="text-dark-200 font-mono break-all leading-relaxed select-all">{a.advisoryId}</p>
+                    </div>
+                    <div>
+                      <p className="text-dark-500 uppercase text-[10px] tracking-wider mb-1">Description</p>
+                      <p className="text-dark-200 leading-relaxed whitespace-pre-wrap">{a.summary}</p>
+                    </div>
                     <div>
                       <p className="text-dark-500 uppercase text-[10px] tracking-wider mb-1">Recommended Actions</p>
-                      <div className="space-y-1">
+                      <div className="space-y-1.5">
                         {steps.length > 1 ? steps.map((step, i) => (
                           <div key={i} className="flex gap-2 items-start">
                             <span className="flex-shrink-0 w-4 h-4 rounded-full bg-eagle-500/20 text-eagle-400 text-[9px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
-                            <p className="text-dark-300 leading-relaxed">{step}</p>
+                            <p className="text-dark-200 leading-relaxed">{step}</p>
                           </div>
-                        )) : <p className="text-dark-300 leading-relaxed whitespace-pre-wrap">{a.recommendedAction}</p>}
+                        )) : <p className="text-dark-200 leading-relaxed whitespace-pre-wrap">{a.recommendedAction}</p>}
                       </div>
                     </div>
-                    <button
-                      onClick={() => onOpenAdvisorySession?.(a)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-[11px] font-medium w-full justify-center"
-                    >
-                      <Sparkles className="w-3 h-3" />
-                      Debug with AI
-                    </button>
+                    {canDebugAI && (
+                      <button
+                        onClick={() => onOpenAdvisorySession?.(a)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-[11px] font-medium w-full justify-center"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        Debug with AI
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -263,30 +339,28 @@ function BotContent({ msg, onSend, onOpenAdvisorySession }) {
           <p className="font-semibold text-green-400">Advisory Resolved</p>
         </div>
         <div className="bg-dark-900/60 rounded-lg px-3 py-2 text-xs space-y-1">
-          <p className="text-dark-400 font-mono">{data.advisoryId?.slice(0, 8)}...</p>
-          <p className="text-dark-200">{data.summary}</p>
+          <p className="text-dark-400 font-mono text-[10px]">{data.advisoryId?.slice(0, 8)}...</p>
+          <p className="text-dark-100">{data.summary}</p>
         </div>
       </div>
     )
   }
 
 
-  // AI / text — markdown-lite
-  const html = (content ?? '')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="bg-dark-900 px-1 rounded text-accent-cyan text-[11px]">$1</code>')
-    .replace(/\n/g, '<br/>')
-
-  return <span dangerouslySetInnerHTML={{ __html: html }} />
+  // AI / text — markdown renderer (no dangerouslySetInnerHTML)
+  return <MarkdownBody text={content ?? ''} />
 }
+
+// Commands that require tenant selection for superadmin before querying
+const DATA_COMMANDS = new Set(['status', 'assets', 'alerts', 'advisories', 'posture'])
 
 // ── Quick-command pills ───────────────────────────────────────────
 const QUICK = [
   { label: 'Status',      icon: Activity,   cmd: 'status',     roles: null },
   { label: 'Posture',     icon: BarChart2,  cmd: 'posture',    roles: null },
-  { label: 'Assets',      icon: Server,     cmd: 'assets',     roles: ['ops_lead','security_engineer','mssp_analyst','superadmin'] },
-  { label: 'Alerts',      icon: Bell,       cmd: 'alerts',     roles: ['ops_lead','security_engineer','mssp_analyst','superadmin'] },
-  { label: 'Advisories',  icon: Shield,     cmd: 'advisories', roles: ['ops_lead','security_engineer','mssp_analyst','superadmin'] },
+  { label: 'Assets',      icon: Server,     cmd: 'assets',     roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
+  { label: 'Alerts',      icon: Bell,       cmd: 'alerts',     roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
+  { label: 'Advisories',  icon: Shield,     cmd: 'advisories', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
   { label: 'Help',        icon: HelpCircle, cmd: 'help',       roles: null },
 ]
 
@@ -361,30 +435,31 @@ function SessionSidebar({ sessions, activeId, onSelect, onDelete, onNew }) {
 // ── Main page ─────────────────────────────────────────────────────
 export default function ChatbotPage() {
   const { user } = useAuth()
+  const isSuperadmin = user?.role === 'superadmin'
+  const canDebugAI   = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const location = useLocation()
-  const [sessions, setSessions] = useState(() => loadSessions(user?.username))
-  const [activeId, setActiveId] = useState(() => {
-    const id = loadActiveId()
-    return sessions[id] ? id : 'general'
-  })
+
+  // Sessions and streaming state live in ChatbotContext (persists across page navigation)
+  const { sessions, setSessions, activeId, setActiveId, updateSession, streamingSessionId, setStreamingSessionId } = useChatbot()
+
   const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [localLoading, setLocalLoading] = useState(false)
+  const [tenants, setTenants] = useState([])
   const bottomRef = useRef(null)
+
+  // Combine: local loading (commands) OR background streaming on this session
+  const loading = localLoading || streamingSessionId === activeId
 
   const activeSession = sessions[activeId] ?? sessions.general
 
-  // Persist whenever sessions change
-  useEffect(() => { saveSessions(sessions) }, [sessions])
-  useEffect(() => { saveActiveId(activeId) }, [activeId])
+  // Fetch tenant list once for superadmin (used by tenant_select prompt)
+  useEffect(() => {
+    if (!isSuperadmin) return
+    client.get('/tenants').then(res => setTenants(res.data.tenants || [])).catch(() => {})
+  }, [isSuperadmin])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [activeId, sessions, loading])
 
-  const updateSession = useCallback((id, updater) => {
-    setSessions(prev => {
-      const s = prev[id]
-      if (!s) return prev
-      return { ...prev, [id]: { ...s, ...updater(s), updatedAt: Date.now() } }
-    })
-  }, [])
+
 
   const send = useCallback(async (text) => {
     const trimmed = (text ?? input).trim()
@@ -393,16 +468,109 @@ export default function ChatbotPage() {
 
     const userMsg = { role: 'user', type: 'text', content: trimmed, ts: Date.now() }
     updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), userMsg] }))
-    setLoading(true)
+
+    // Superadmin data commands → ask which tenant first instead of querying immediately
+    if (isSuperadmin && DATA_COMMANDS.has(trimmed.toLowerCase())) {
+      const botMsg = {
+        role: 'bot', type: 'tenant_select', ts: Date.now(),
+        content: 'Which tenant would you like to query?',
+        tenants,
+        command: trimmed,
+      }
+      updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), botMsg] }))
+      return
+    }
+
+    setLocalLoading(true)
 
     try {
       const currentMsgs = sessions[activeId]?.messages ?? []
       const history = currentMsgs
         .filter(m => m.role === 'user' || (m.role === 'bot' && ['text', 'ai'].includes(m.type)))
         .slice(-6)
-        .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content ?? '' }))
+        .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: (m.content ?? '').slice(0, 6000) }))
 
-      const res = await client.post('/chatbot', { message: trimmed, history })
+      // Detect AI-intent messages and stream the response token-by-token
+      const NON_AI = /^(status|posture|assets?|alerts?|advisori|help|debug\s|fix[\s$])/i
+      const isAI = !NON_AI.test(trimmed.trim())
+
+      if (isAI) {
+        const placeholderTs = Date.now() + 1
+        const sessionIdAtSend = activeId  // capture so closure works after navigation
+        updateSession(sessionIdAtSend, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), { role: 'bot', type: 'ai', content: '', ts: placeholderTs }] }))
+        setStreamingSessionId(sessionIdAtSend)  // mark in context — survives page unmount
+        setLocalLoading(false)  // release local spinner; streaming indicator takes over
+
+        const apiBase = import.meta.env.VITE_API_URL || '/api/v1'
+        const token = localStorage.getItem('access_token')
+        const fetchRes = await fetch(`${apiBase}/chatbot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ message: trimmed, history, stream: true }),
+        })
+        if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`)
+
+        const reader = fetchRes.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+        let full = ''
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buf += decoder.decode(value, { stream: true })
+            const lines = buf.split('\n')
+            buf = lines.pop() ?? ''
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const chunk = line.slice(6).trim()
+              if (chunk === '[DONE]') break
+              try {
+                const parsed = JSON.parse(chunk)
+                if (parsed.error) throw new Error(parsed.error)
+                if (parsed.token) {
+                  full += parsed.token
+                  // updateSession is from context — works even when ChatbotPage is unmounted
+                  updateSession(sessionIdAtSend, s => {
+                    const msgs = [...s.messages]
+                    const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
+                    if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full }
+                    return { messages: msgs }
+                  })
+                }
+              } catch { /* skip malformed chunk */ }
+            }
+          }
+        } finally {
+          reader.releaseLock()
+          setStreamingSessionId(null)  // clear background streaming flag
+        }
+        return  // skip outer finally setLocalLoading (already cleared above)
+      } else {
+        const res = await client.post('/chatbot', { message: trimmed, history })
+        const { type, content, items, data } = res.data
+        const botMsg = { role: 'bot', type, content, items, data, ts: Date.now() }
+        updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), botMsg] }))
+      }
+    } catch (err) {
+      setStreamingSessionId(null)
+      const detail = err?.response?.data?.detail || err?.message || 'Failed to reach the assistant.'
+      updateSession(activeId, s => ({ messages: [...s.messages, { role: 'bot', type: 'text', content: detail, ts: Date.now() }] }))
+    } finally {
+      setLocalLoading(false)
+    }
+  }, [input, loading, activeId, sessions, updateSession, isSuperadmin, tenants, setStreamingSessionId])
+
+  // Called when superadmin picks a tenant from the tenant_select prompt
+  const sendWithTenant = useCallback(async (tenantId, tenantName, command) => {
+    if (loading) return
+    const label = tenantName ?? 'All Tenants'
+    const confirmMsg = { role: 'bot', type: 'text', content: `Querying **${label}**…`, ts: Date.now() }
+    updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), confirmMsg] }))
+    setLocalLoading(true)
+    try {
+      const body = { message: command, ...(tenantId ? { tenant_id: tenantId } : {}) }
+      const res = await client.post('/chatbot', body)
       const { type, content, items, data } = res.data
       const botMsg = { role: 'bot', type, content, items, data, ts: Date.now() }
       updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), botMsg] }))
@@ -410,9 +578,9 @@ export default function ChatbotPage() {
       const detail = err?.response?.data?.detail || 'Failed to reach the assistant.'
       updateSession(activeId, s => ({ messages: [...s.messages, { role: 'bot', type: 'text', content: detail, ts: Date.now() }] }))
     } finally {
-      setLoading(false)
+      setLocalLoading(false)
     }
-  }, [input, loading, activeId, sessions, updateSession])
+  }, [loading, activeId, updateSession])
 
   // Called when user clicks "Debug with AI" on an advisory
   const openAdvisorySession = useCallback(async (advisory) => {
@@ -436,7 +604,7 @@ export default function ChatbotPage() {
     }
     setSessions(prev => ({ ...prev, [sessionId]: placeholder }))
     setActiveId(sessionId)
-    setLoading(true)
+    setLocalLoading(true)
 
     try {
       // AI categorize in parallel with first debug message
@@ -455,19 +623,69 @@ export default function ChatbotPage() {
         [sessionId]: { ...prev[sessionId], name: cat.name, emoji: cat.emoji, category: cat.category },
       }))
 
-      // Auto-send the debug command
+      // Auto-send the debug command — stream so background generation survives navigation
       const prompt = `debug ${advisory.advisoryId}`
       const userMsg = { role: 'user', type: 'text', content: prompt, ts: Date.now() }
-      setSessions(prev => ({ ...prev, [sessionId]: { ...prev[sessionId], messages: [userMsg], updatedAt: Date.now() } }))
-
-      const res = await client.post('/chatbot', { message: prompt, history: [] })
-      const { type, content, items, data } = res.data
-      const botMsg = { role: 'bot', type, content, items, data, ts: Date.now() }
+      const placeholderTs = Date.now() + 1
       setSessions(prev => ({
         ...prev,
-        [sessionId]: { ...prev[sessionId], messages: [userMsg, botMsg], updatedAt: Date.now() },
+        [sessionId]: {
+          ...prev[sessionId],
+          messages: [userMsg, { role: 'bot', type: 'ai', content: '', ts: placeholderTs }],
+          updatedAt: Date.now(),
+        },
       }))
+      setStreamingSessionId(sessionId)
+      setLocalLoading(false)
+
+      const apiBase = import.meta.env.VITE_API_URL || '/api/v1'
+      const token = localStorage.getItem('access_token')
+      const fetchRes = await fetch(`${apiBase}/chatbot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ message: prompt, history: [], stream: true }),
+      })
+      if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`)
+
+      const reader = fetchRes.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let full = ''
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          const lines = buf.split('\n')
+          buf = lines.pop() ?? ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const chunk = line.slice(6).trim()
+            if (chunk === '[DONE]') break
+            try {
+              const parsed = JSON.parse(chunk)
+              if (parsed.token) {
+                full += parsed.token
+                // setSessions from context — continues working after navigation
+                setSessions(prev => {
+                  const s = prev[sessionId]
+                  if (!s) return prev
+                  const msgs = [...s.messages]
+                  const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
+                  if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full }
+                  return { ...prev, [sessionId]: { ...s, messages: msgs, updatedAt: Date.now() } }
+                })
+              }
+            } catch { /* skip malformed chunk */ }
+          }
+        }
+      } finally {
+        reader.releaseLock()
+        setStreamingSessionId(null)
+      }
+      return  // skip outer finally setLocalLoading
     } catch {
+      setStreamingSessionId(null)
       setSessions(prev => ({
         ...prev,
         [sessionId]: {
@@ -478,9 +696,9 @@ export default function ChatbotPage() {
         },
       }))
     } finally {
-      setLoading(false)
+      setLocalLoading(false)
     }
-  }, [sessions])
+  }, [sessions, setStreamingSessionId])
 
   // ── Auto-open advisory session when navigated from AdvisoriesPage ─
   useEffect(() => {
@@ -600,7 +818,7 @@ export default function ChatbotPage() {
             </div>
           )}
           {messages.map((msg, i) => (
-            <Bubble key={i} msg={msg} onSend={send} onOpenAdvisorySession={openAdvisorySession} />
+            <Bubble key={i} msg={msg} onSend={send} onOpenAdvisorySession={openAdvisorySession} onSelectTenant={sendWithTenant} canDebugAI={canDebugAI} />
           ))}
           {loading && <Typing />}
           <div ref={bottomRef} />

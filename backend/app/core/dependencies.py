@@ -58,20 +58,16 @@ async def get_current_user(
 def require_roles(allowed_roles: List[str]):
     """Dependency factory for role-based access control.
 
-    Superadmin always bypasses role restrictions.
-
     Usage:
-        current_user: User = Depends(require_roles(["ops_lead", "security_engineer"]))
+        current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"]))
     """
     async def role_checker(current_user: User = Depends(get_current_user)):
-        # Normalise: role may be a UserRole enum member or a raw string (superadmin)
         role_val = (
             current_user.role.value
             if hasattr(current_user.role, "value")
             else str(current_user.role)
         )
-        # Superadmin bypasses all role restrictions
-        if role_val == "superadmin" or role_val in allowed_roles:
+        if role_val in allowed_roles:
             return current_user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

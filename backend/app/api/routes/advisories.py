@@ -55,7 +55,7 @@ async def update_advisory_status(
     advisory_id: UUID,
     payload: AdvisoryStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer", "mssp_analyst"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Transition an advisory's status with immutable audit logging (FR-06-02)."""
     result = await db.execute(select(Advisory).where(Advisory.advisory_id == advisory_id))

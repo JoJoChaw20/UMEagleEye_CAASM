@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, RefreshCw, X, ChevronRight, Wifi, Globe, GitCompare } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 // ── Status badge ──────────────────────────────────────────────────
 function StatusBadge({ status }) {
@@ -214,7 +215,7 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
 }
 
 // ── Discovered hosts side panel ────────────────────────────────────
-function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
+function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps, readOnly }) {
   const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
   const [accepted, setAccepted] = useState(new Set())
@@ -331,7 +332,7 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps }) {
                       )}
                     </div>
 
-                    {!isAccepted && !isInMyAssets && (
+                    {!readOnly && !isAccepted && !isInMyAssets && (
                       <button
                         onClick={() => handleAdd(host)}
                         disabled={isAdding}
@@ -584,6 +585,7 @@ const SCAN_PAGE_SIZE = 15
 // ── Main page ─────────────────────────────────────────────────────
 export default function DiscoveryPage() {
   const { user } = useAuth()
+  const isSuperadmin = user?.role === 'superadmin'
   const [scans, setScans] = useState([])
   const [agents, setAgents] = useState([])
   const [tenants, setTenants] = useState([])
@@ -598,11 +600,13 @@ export default function DiscoveryPage() {
   const [scanTypeFilter, setScanTypeFilter] = useState('')
   const [scanPage, setScanPage] = useState(1)
   const [showCompare, setShowCompare] = useState(false)
+  const [tenantFilter, setTenantFilter] = useState('')
 
   const loadData = useCallback(async () => {
     try {
+      const scanParams = tenantFilter ? { tenant_id: tenantFilter } : {}
       const [scansRes, agentsRes, allAssetsRes, myAssetsRes, tenantsRes] = await Promise.all([
-        client.get('/scans'),
+        client.get('/scans', { params: scanParams }),
         client.get('/agents'),
         client.get('/assets', { params: { limit: 200 } }),
         client.get('/assets', { params: { source: 'manual', limit: 200 } }),
@@ -618,7 +622,7 @@ export default function DiscoveryPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [tenantFilter])
 
   useEffect(() => {
     loadData()
@@ -707,20 +711,24 @@ export default function DiscoveryPage() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <button
-            onClick={() => setShowCompare(true)}
-            className="btn-secondary flex items-center gap-2 text-sm"
-          >
-            <GitCompare className="w-4 h-4" />
-            Compare Scans
-          </button>
-          <button
-            onClick={() => setShowNew(true)}
-            className="btn-primary flex items-center gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            New Scan
-          </button>
+          {!isSuperadmin && (
+            <button
+              onClick={() => setShowCompare(true)}
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              <GitCompare className="w-4 h-4" />
+              Compare Scans
+            </button>
+          )}
+          {!isSuperadmin && (
+            <button
+              onClick={() => setShowNew(true)}
+              className="btn-primary flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              New Scan
+            </button>
+          )}
         </div>
       </div>
 
@@ -734,6 +742,7 @@ export default function DiscoveryPage() {
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
+        <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setScanPage(1) }} />
         <select
           value={statusFilter}
           onChange={e => { setStatusFilter(e.target.value); setScanPage(1) }}
@@ -869,6 +878,7 @@ export default function DiscoveryPage() {
           scan={selectedScan}
           onClose={() => setSelectedScan(null)}
           onAddAsset={handleAddAsset}
+          readOnly={isSuperadmin}
           inventoriedIps={inventoriedIps}
           myAssetIps={myAssetIps}
         />

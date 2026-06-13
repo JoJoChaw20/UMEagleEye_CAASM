@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, sql, desc, ne } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, events } from '../db/schema'
 import { computeCriticality } from '../lib/criticality'
@@ -45,6 +45,8 @@ function inferDeviceType(
   const text = ports.map(p => `${p.product ?? ''} ${p.service ?? ''}`).join(' ').toLowerCase()
   if (/busybox|router|cisco|juniper|aruba|mikrotik|ubiquiti|fortigate|panos|snmp/.test(text)) return 'network'
   if (/rdp|remote.desktop/.test(text) || ports.some(p => p.port === 3389)) return 'workstation'
+  // SMB-only profile (139/445 without server ports) is characteristic of a Windows workstation
+  if (ports.some(p => [139, 445].includes(p.port)) && !ports.some(p => [22, 80, 443, 3306, 5432, 8080, 8443, 6379, 27017, 1433].includes(p.port))) return 'workstation'
   if (ports.some(p => [22, 80, 443, 3306, 5432, 8080, 8443, 6379, 27017, 1433].includes(p.port))) return 'server'
 
   // OS-based fallback when no port signal is available
@@ -86,7 +88,7 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 // ── POST /drift-audit ─── manual on-demand drift run ────────────
-app.post('/drift-audit', authMiddleware, async (c) => {
+app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)
@@ -105,9 +107,11 @@ app.get('/', authMiddleware, async (c) => {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
-    const tenantCondition = (user.role !== 'superadmin' && user.tenantId)
-      ? eq(scanResults.tenantId, user.tenantId)
-      : undefined
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+    const tenantCondition = effectiveTenantId ? eq(scanResults.tenantId, effectiveTenantId) : undefined
 
     const whereClause = tenantCondition
       ? and(ne(scanResults.scanType, 'sbom'), tenantCondition)
@@ -274,13 +278,13 @@ app.get('/pending', async (c) => {
         sql`${scanResults.startedAt} < now() - interval '10 minutes'`,
       ))
 
-    // Auto-expire SBOM scans pending > 20 min — Syft has a 10 min hard timeout;
+    // Auto-expire SBOM scans stuck in pending/running > 20 min — Syft has a 10 min hard timeout;
     // if the agent died or timed out without calling /fail, clean up here.
     await db.update(scanResults)
       .set({ status: 'failed', completedAt: new Date() })
       .where(and(
         eq(scanResults.agentId, agentId),
-        eq(scanResults.status, 'pending'),
+        sql`${scanResults.status} IN ('pending', 'running')`,
         eq(scanResults.scanType, 'sbom'),
         sql`${scanResults.startedAt} < now() - interval '20 minutes'`,
       ))
@@ -302,6 +306,33 @@ app.get('/pending', async (c) => {
   } catch (err) {
     console.error('scans GET /pending error:', err)
     return c.json({ detail: 'Failed to fetch pending scans' }, 500)
+  }
+})
+
+// ── POST /scans/:scanId/start ── agent signals it has begun processing ────────
+// Transitions status from 'pending' → 'running' so the dashboard reflects real state.
+app.post('/:scanId/start', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) return c.json({ detail: 'Unauthorized' }, 401)
+    const incomingKey = authHeader.slice(7)
+    const enc = new TextEncoder()
+    const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(incomingKey))
+    const incomingKeyHash = Array.from(new Uint8Array(hashBuf))
+      .map(b => b.toString(16).padStart(2, '0')).join('')
+    const agentId = c.req.header('X-Agent-ID')
+    if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
+    const db = getDb(c.env.DATABASE_URL)
+    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+    if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
+    const { scanId } = c.req.param()
+    await db.update(scanResults)
+      .set({ status: 'running' })
+      .where(and(eq(scanResults.scanId, scanId), eq(scanResults.agentId, agentId), eq(scanResults.status, 'pending')))
+    return c.json({ ok: true })
+  } catch (err) {
+    console.error('scan start error:', err)
+    return c.json({ detail: 'Failed to update scan status' }, 500)
   }
 })
 
@@ -335,7 +366,7 @@ const activeScanSchema = z.object({
   scan_type: z.enum(['active', 'passive']).optional().default('active'),
 })
 
-app.post('/active', authMiddleware, zValidator('json', activeScanSchema, (result, c) => {
+app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), zValidator('json', activeScanSchema, (result, c) => {
   if (!result.success) {
     const firstIssue = result.error.issues[0]
     const detail = firstIssue?.message ?? 'Invalid request body'
@@ -527,6 +558,7 @@ Example:
           })
         })
 
+        console.log(`[scans] LLM call → ${c.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat'}, status=${res.status}, hosts=${hosts.length}`)
         if (res.ok) {
           const data = await res.json() as any
           let content = data.choices?.[0]?.message?.content || '[]'
@@ -629,7 +661,15 @@ Example:
     const upsertedAssetIds: string[] = []
     for (const host of enhancedHosts) {
       const ports = (host.ports ?? []) as NmapPort[]
-      const deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null)
+      let deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null)
+      // LLM description fallback: if port/OS heuristics couldn't classify, parse the AI's text
+      if (deviceType === 'unknown') {
+        const llmDesc = String((host as Record<string, unknown>)['description'] ?? '').toLowerCase()
+        if (/workstation|laptop|desktop|windows pc/.test(llmDesc)) deviceType = 'workstation'
+        else if (/server/.test(llmDesc)) deviceType = 'server'
+        else if (/router|gateway|switch|access.point/.test(llmDesc)) deviceType = 'network'
+        else if (/iot|camera|printer|sensor/.test(llmDesc)) deviceType = 'iot'
+      }
       const osInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports)
       const internetFacing = isGatewayIp(host.ip)
 

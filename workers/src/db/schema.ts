@@ -28,7 +28,7 @@ export const advisoryStatusEnum = pgEnum('advisory_status', [
   'open', 'acknowledged', 'in_progress', 'resolved'
 ])
 export const userRoleEnum = pgEnum('user_role', [
-  'ops_lead', 'security_engineer', 'business_owner', 'mssp_analyst', 'superadmin'
+  'superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner'
 ])
 export const relationshipTypeEnum = pgEnum('relationship_type', [
   'connects_to', 'depends_on', 'same_subnet', 'authenticates_to', 'exposes_service'

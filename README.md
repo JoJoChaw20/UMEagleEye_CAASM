@@ -30,10 +30,10 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Asset Relationship Graph** — Force-directed canvas graph showing asset connectivity; device type and relationship type filter pills; tenant-scoped view; BFS blast-radius highlighting; drag, zoom, and pan controls
 
 ### Security Operations
-- **Continuous Posture Management** — Automated drift detection (port changes, OS/package version drift, hostname/MAC/exposure/device-type changes, new device discovery) with 24-hour deduplication and an acknowledge workflow that re-baselines an asset in one click; ongoing posture scoring tracked over time with daily snapshots
+- **Continuous Posture Management** — Automated drift detection (port changes, OS/package version drift, hostname/MAC/exposure/device-type changes, new device discovery) with 24-hour deduplication and an acknowledge workflow that re-baselines an asset in one click; posture score computed live on demand (start at 100, −5 per critical event capped at −40, −2 per high event capped at −20, −10 if >20% of assets have criticality ≥ 8) with 30-day reconstructed history
 - **Threat Intelligence Integration** — Ingests live IoC feeds (AlienVault OTX, ThreatFox) every morning (MYT); each indicator is correlated to a MITRE ATT&CK tactic via a three-level derivation cascade; IoC Lookup cross-references any IP/domain/hash against the internal asset table in real time; MITRE ATT&CK heatmap visualises tactic coverage across all ingested indicators
-- **AI-Driven Advisory Pipeline** — DeepSeek generates actionable remediation instructions for security events; queued asynchronously via Cloudflare Queues
-- **SLA Monitoring** — Alerts on advisories open longer than 72 hours; checked every 30 minutes
+- **AI-Driven Advisory Pipeline** — Triggering an advisory via the Alerts page sends a message to `advisory-queue` (Cloudflare Queues); the queue consumer fetches the event + asset context, builds a structured prompt, and calls DeepSeek; the resulting advisory is stored with `status = 'open'`; the pipeline is fully async so the HTTP request returns instantly; queue configured with max batch size 10, 30-second timeout, 2 retries on failure; advisory lifecycle managed as a state machine: `open → acknowledged → in_progress → resolved` with optional analyst assignment; `has_advisory` flag returned on every event row prevents accidental duplicate advisory generation from the UI
+- **SLA Monitoring** — Cron every 30 minutes queries all advisories where `status != 'resolved'` and `created_at < NOW() - 72h`; breaches are surfaced in the Notification Centre as a distinct alert type
 
 ### SBOM & CVE Detection
 - **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOM generation via [Syft](https://github.com/anchore/syft); the EagleEye agent runs Syft locally and POSTs the result to the platform
@@ -49,19 +49,30 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 > **Note on SBOM scope:** Syft and Grype always run on the machine where the agent is deployed. The scan target (directory or Docker image) is specified at trigger time via a prompt in the dashboard. To generate SBOMs for multiple assets, deploy an agent on each target machine.
 
 ### Reporting & Notifications
-- **Automated Reporting** — Queued PDF report generation stored in Cloudflare R2; secure blob download (no token in URL)
-- **ChatOps Integration** — Telegram bot with role-based filtering and real-time security alerts
-- **Notification Centre** — In-app notification bell with unread count badge; aggregates recent advisories, SLA breaches (>72 h), and agent offline/degraded alerts; last-seen timestamp persisted in localStorage
+- **Automated Reporting** — Report generation is queued via `report-queue` (Cloudflare Queues) so large reports never block the HTTP response; the consumer builds the PDF and writes it to Cloudflare R2; download is served via a backend-signed blob endpoint — the R2 object key is never exposed in the URL, preventing enumeration; accessible to all roles
+- **Notification Centre** — In-app notification bell with unread count badge; the `/notifications` endpoint runs three parallel queries: recent open/acknowledged advisories, advisories open > 72 h (SLA breach), and agents with `status = 'degraded'` or `lastHeartbeat` older than 5 minutes (offline); results are merged and sorted by recency; last-seen timestamp persisted in localStorage so the unread badge resets per-device without a backend read-tracking table
 
 ### Platform
 - **Multi-Tenant Support** — SuperAdmin role manages multiple tenant organisations; all data scoped by tenant; tenant filter shared between inventory and graph tabs
+- **Tenant Self-Management** — `tenant_superadmin` can edit their tenant name and status; invite new users by email (auto-creates a Google-linked account if none exists) or assign by username; manage roles for `tenant_admin` and `business_owner` users within their own tenant; accessible at `/users`
 - **Agent Management** — Register and monitor EagleEye scanning agents; SHA-256 hashed API keys; read-only config view for non-admin roles
-- **MFA / TOTP** — Per-user two-factor authentication via authenticator apps
-- **Google OAuth** — Sign in with Google; auto-links to existing account by email
+- **MFA / TOTP** — Per-user two-factor authentication via any TOTP authenticator app (Google Authenticator, Authy, Microsoft Authenticator); three-step backend flow: `POST /mfa/setup` generates a secret and a SVG QR code (built from the raw module matrix as filled `<rect>` elements — no canvas, fully compatible with Cloudflare Workers and phone scanners); `POST /mfa/enable` verifies the first TOTP code and activates MFA; at login, if MFA is enabled the API returns `mfa_required: true` and the frontend prompts for a 6-digit code before issuing the JWT; Settings page provides a manual secret copy fallback for users who cannot scan the QR code
+- **Google OAuth** — Sign in with Google via `@react-oauth/google`; the frontend receives a short-lived Google access token and sends it to the backend; the Workers API validates it by calling Google's `userinfo` endpoint (not by decoding client-side) — this prevents token forgery; if the Google email matches an existing account it is linked automatically; if not, a new account is created with the Google profile data; JWT is issued on success using the same HS256 flow as password login
 - **Global Search** — Live asset search in the top header bar (hostname + IP); debounced 300 ms; results dropdown with device type; navigates to Asset Inventory
 - **Collapsible Sidebar** — Sidebar collapses to icon-only mode (64 px) or expands to full labels (256 px); logo click navigates to Dashboard; state persists via localStorage
 - **Customisable Theme** — Dark, Light, and System theme modes; colours driven by CSS custom properties so the entire UI switches without touching component code; preference persists via localStorage
 - **Profile Dropdown** — Header avatar opens a dropdown with username, role, tenant name, email; links to Profile & Settings; logout
+
+### AI Security Chatbot
+- **Natural Language Interface** — Accessible to all roles via the `/chatbot` route; understands plain-language queries in addition to slash-style commands
+- **Structured Commands** — `status` (system overview), `posture` (security score), `assets` (top assets by criticality), `alerts` (recent critical/high events), `advisories` (open advisory list)
+- **AI Assistant** — Any free-text question is routed to DeepSeek with injected live context (posture score, top critical alerts, open advisories with recommended actions); multi-session conversation history persisted in localStorage per user (up to 50 messages per session); sessions survive page navigation and browser refresh
+- **SSE Streaming** — AI responses stream word-by-word via Server-Sent Events (`TransformStream` on the Worker, native fetch reader on the frontend) so answers appear instantly and the 30-second Worker wall-clock limit is never reached
+- **Advisory Debug** — Selecting an advisory from the left sidebar opens a dedicated session; DeepSeek expands the recommended action into a full step-by-step remediation guide; streaming continues even if the user navigates away and returns
+- **Advisory Fix** — `fix <advisory_id>` marks an advisory as resolved directly from the chat interface; available to `tenant_superadmin` and `tenant_admin`
+- **Role-Filtered Access** — `business_owner` is limited to `status` and `posture`; all other roles have full chatbot capabilities
+- **Dual AI Backend** — Uses `DEEPSEEK_API_KEY` (direct DeepSeek API) when set; falls back to OpenRouter (`OPENROUTER_API_KEY`) when only that is configured; current model: `deepseek/deepseek-v4-pro` via OpenRouter; `max_tokens: 2048` (safe limit that completes within the 30-second edge timeout)
+- **Rich Message Rendering** — Bot responses render full markdown: `**bold**` as white semibold, `` `inline code` `` as teal pill badges (theme-aware: bright in dark mode, dark in light mode), bullet lists, and paragraph-spaced answers — no `dangerouslySetInnerHTML`
 
 ## Technology Stack
 
@@ -79,14 +90,13 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Object Storage | Cloudflare R2 (PDF reports) |
 | KV Store | Cloudflare KV (rate-limit locks, report metadata) |
 | AI Advisory | DeepSeek via OpenRouter API |
-| Notifications | Telegram Bot API |
 
 ### Frontend — Cloudflare Pages (React / Vite)
 | Component | Technology |
 |-----------|------------|
 | Framework | React 18 + Vite 5 |
 | Styling | Tailwind CSS + CSS custom properties (theme tokens) |
-| State | React Context API (Auth, Theme) |
+| State | React Context API (Auth, Theme, Chatbot) |
 | HTTP | Axios |
 | Charts | Recharts |
 | Icons | Lucide React |
@@ -143,9 +153,10 @@ UMEagleEye2.0/
 │   │   │   └── client.ts        # Neon + Drizzle client
 │   │   ├── lib/
 │   │   │   ├── auth.ts          # PBKDF2, JWT, TOTP, Google OAuth
-│   │   │   └── criticality.ts   # Criticality scoring (device type, owner, internet-facing)
+│   │   │   ├── criticality.ts   # Criticality scoring (device type, owner, internet-facing)
+│   │   │   └── permissions.ts   # Centralised RBAC role constants + feature permission groups
 │   │   ├── middleware/
-│   │   │   └── auth.ts          # JWT middleware + role guard
+│   │   │   └── auth.ts          # JWT middleware + requireRoles / requireTenantAccess guards
 │   │   ├── routes/
 │   │   │   ├── auth.ts          # register, login, MFA, Google, change-password, /me
 │   │   │   ├── assets.ts        # Asset CRUD, baseline, CSV import, SBOM trigger, search
@@ -160,7 +171,8 @@ UMEagleEye2.0/
 │   │   │   ├── notifications.ts # Aggregated notification feed (advisories, SLA, agents)
 │   │   │   ├── agents.ts        # EagleEye agent registry
 │   │   │   ├── topology.ts      # Network topology tree with subnet-aware inference
-│   │   │   └── tenants.ts       # Multi-tenant management (superadmin only)
+│   │   │   ├── chatbot.ts       # AI chatbot — structured commands + free-text AI; SSE streaming via TransformStream; live context injection (posture, alerts, advisories)
+│   │   │   └── tenants.ts       # Multi-tenant management; superadmin full + tenant_superadmin own-tenant
 │   │   ├── services/            # Business logic (drift, posture, CTI, NVD enrichment)
 │   │   │   ├── drift.ts         # Drift detection + baseline comparison
 │   │   │   ├── posture.ts       # Daily posture snapshot calculation
@@ -183,24 +195,27 @@ UMEagleEye2.0/
 │   │   │   │   ├── Header.jsx       # Search bar, notification bell, profile dropdown
 │   │   │   │   └── MainLayout.jsx
 │   │   │   └── common/
-│   │   │       ├── AssetGraph.jsx   # Canvas force-graph with device/rel-type filter pills
-│   │   │       └── BlastRadiusModal.jsx
-│   │   ├── context/             # AuthContext, ThemeContext (dark/light/system)
+│   │   │       ├── AssetGraph.jsx       # Canvas force-graph with device/rel-type filter pills
+│   │   │       ├── BlastRadiusModal.jsx
+│   │   │       └── TenantSelector.jsx   # Shared tenant-filter dropdown (superadmin only)
+│   │   ├── context/             # AuthContext, ThemeContext (dark/light/system), ChatbotContext (sessions + streaming state)
 │   │   ├── pages/
 │   │   │   ├── LoginPage.jsx
 │   │   │   ├── DashboardPage.jsx
-│   │   │   ├── AssetsPage.jsx       # All assets + relationship graph; tenant filter
-│   │   │   ├── MyAssetsPage.jsx     # Manual assets — add, import CSV, baseline
-│   │   │   ├── DiscoveryPage.jsx    # Scan dispatch (active + passive) + scan history
-│   │   │   ├── SBOMPage.jsx         # SBOM inventory, dependency explorer, charts
-│   │   │   ├── AlertsPage.jsx       # Security events with severity/type filters
-│   │   │   ├── AdvisoriesPage.jsx   # AI advisories with status filter
-│   │   │   ├── ThreatIntelPage.jsx  # CTI indicators + MITRE heatmap
-│   │   │   ├── ReportsPage.jsx      # Report generation + secure blob download
-│   │   │   ├── SettingsPage.jsx     # Profile, password change, integrations
-│   │   │   ├── TopologyPage.jsx     # Collapsible tree; per-tenant sections; DMZ + criticality badges
-│   │   │   ├── AgentsPage.jsx       # Agent registry + RBAC config modal
-│   │   │   └── TenantsPage.jsx      # SuperAdmin only — tenant + user management
+│   │   │   ├── AssetsPage.jsx           # All assets + relationship graph; tenant filter
+│   │   │   ├── MyAssetsPage.jsx         # Manual assets — add, import CSV, baseline
+│   │   │   ├── DiscoveryPage.jsx        # Scan dispatch (active + passive) + scan history
+│   │   │   ├── SBOMPage.jsx             # SBOM inventory, dependency explorer, charts
+│   │   │   ├── AlertsPage.jsx           # Security events with severity/type filters
+│   │   │   ├── AdvisoriesPage.jsx       # AI advisories with status filter
+│   │   │   ├── ThreatIntelPage.jsx      # CTI indicators + MITRE heatmap
+│   │   │   ├── ReportsPage.jsx          # Report generation + secure blob download
+│   │   │   ├── SettingsPage.jsx         # Profile, password change, integrations
+│   │   │   ├── TopologyPage.jsx         # Collapsible tree; per-tenant sections; DMZ + criticality badges
+│   │   │   ├── AgentsPage.jsx           # Agent registry + RBAC config modal
+│   │   │   ├── TenantsPage.jsx          # SuperAdmin only — platform-wide tenant + user management
+│   │   │   ├── TenantSettingsPage.jsx   # Tenant self-management (tenant_superadmin edits own tenant/users)
+│   │   │   └── ChatbotPage.jsx          # AI chatbot — SSE streaming, multi-session localStorage persistence, advisory debug, context-aware AI
 │   │   └── App.jsx
 │   ├── .env.production          # VITE_API_URL + VITE_GOOGLE_CLIENT_ID (git-ignored)
 │   └── package.json
@@ -220,18 +235,21 @@ UMEagleEye2.0/
 
 | Role | Description |
 |------|-------------|
-| `superadmin` | Full platform access + tenant management; sees all tenants in topology, graph, inventory, and SBOM |
-| `ops_lead` | Full operational access — scans, assets, SBOM, reports, advisories, agent config |
-| `security_engineer` | Discovery, SBOM, threat intel, drift management, advisory pipeline; read-only agent config |
-| `mssp_analyst` | Read-only operational modules, advisories, posture reports |
-| `business_owner` | Executive overview — posture metrics and executive reports only; read-only assets |
+| `superadmin` | Platform-wide access — manages all tenants, users, and data; sees all tenants in topology, graph, inventory, and SBOM |
+| `tenant_superadmin` | Full operational access within their own tenant — scans, assets, SBOM, reports, advisories, agent config, and tenant user management |
+| `tenant_admin` | Operational access within their own tenant — scans, assets, SBOM, reports, advisories; view-only tenant users; no discovery write restrictions |
+| `business_owner` | Executive overview — posture metrics, reports, advisories, and read-only asset/SBOM/CTI/alerts; no discovery or topology access |
+
+> **Discovery and Topology** are restricted to `superadmin`, `tenant_superadmin`, and `tenant_admin`. All other modules are available to `business_owner` in read-only mode.
+>
+> RBAC is enforced at the **API layer**, not just the UI — hiding a button in React is not security; every route is gated by `requireRoles()` or `requireTenantAccess()` middleware in the Workers backend before any query runs. Multi-tenant data isolation is enforced at the query level: every request first resolves the caller's tenant-scoped asset ID list, then filters all downstream queries through that list — a `tenant_admin` cannot read another tenant's events, assets, or advisories even with a valid JWT. Role constants and feature permission groups are centralised in `permissions.ts` so access rules have a single source of truth.
 
 ## Scheduled Tasks (Cron Triggers)
 
 | Schedule (UTC) | MYT Equivalent | Task |
 |---|---|---|
 | `*/15 * * * *` | Every 15 min | Drift audit — compares asset state to baseline snapshots |
-| `*/30 * * * *` | Every 30 min | SLA monitor — Telegram alert for advisories open >72 h |
+| `*/30 * * * *` | Every 30 min | SLA monitor — flags advisories open >72 h (visible in Notification Centre) |
 | `0 22 * * *` | 6:00 AM | CTI ingestion — pulls AlienVault OTX + ThreatFox feeds |
 | `0 23 * * *` | 7:00 AM | NVD enrichment — back-fills missing CWE IDs on `cve_detected` events from the last 48 h using the NIST NVD REST API (up to 30 CVEs per run) |
 | `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history |
@@ -385,7 +403,7 @@ Reverse DNS                (fallback — often unreliable)
 
 ### SBOM scan
 
-Triggered from **SBOM page → Re-scan button** (ops_lead or security_engineer) or **My Assets → SBOM icon**. The agent runs the full pipeline automatically:
+Triggered from **SBOM page → Re-scan button** (`tenant_superadmin` or `tenant_admin`) or **My Assets → SBOM icon**. The agent runs the full pipeline automatically:
 
 ```
 1. syft <target> -o cyclonedx-json   → CycloneDX SBOM (package inventory)
@@ -699,10 +717,9 @@ See `.env.example` for the full list. Key variables:
 | `DATABASE_URL` | Neon PostgreSQL connection string |
 | `JWT_SECRET_KEY` | HS256 signing secret (min 32 chars) |
 | `GOOGLE_CLIENT_ID` | Google OAuth Client ID |
-| `OPENROUTER_API_KEY` | DeepSeek AI via OpenRouter |
-| `OPENROUTER_MODEL` | Model ID (default: `deepseek/deepseek-chat`) |
-| `TELEGRAM_BOT_TOKEN` | Telegram ChatOps bot token |
-| `TELEGRAM_CHAT_ID` | Telegram chat/user ID for notifications |
+| `OPENROUTER_API_KEY` | DeepSeek AI via OpenRouter (used if `DEEPSEEK_API_KEY` is not set) |
+| `OPENROUTER_MODEL` | Model ID for OpenRouter (currently `deepseek/deepseek-v4-pro`; set in `wrangler.toml` `[vars]`) |
+| `DEEPSEEK_API_KEY` | Direct DeepSeek API key — optional; takes priority over OpenRouter when set |
 | `OTX_API_KEY` | AlienVault OTX threat intelligence |
 | `THREATFOX_API_KEY` | ThreatFox threat intelligence |
 | `NVD_API_KEY` | NIST NVD API key — optional but recommended; increases rate limit from 5 req/30s to 50 req/30s for CWE enrichment |

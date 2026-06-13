@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Shield, Server, AlertTriangle, Activity, TrendingUp, Bug } from 'lucide-react'
-import { AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
+import { AreaChart, Area, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 const SEVERITY_COLORS = {
   critical: '#ff5252',
@@ -11,31 +13,36 @@ const SEVERITY_COLORS = {
 }
 
 export default function DashboardPage() {
+  const { user } = useAuth()
   const [posture, setPosture] = useState(null)
   const [history, setHistory] = useState([])
   const [events, setEvents] = useState([])
+  const [eventStats, setEventStats] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [tenantFilter, setTenantFilter] = useState('')
 
-  useEffect(() => {
-    loadDashboardData()
-  }, [])
-
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
+    setLoading(true)
     try {
-      const [postureRes, historyRes, eventsRes] = await Promise.all([
-        client.get('/posture/current'),
-        client.get('/posture/history?limit=30'),
-        client.get('/events?page_size=10'),
+      const tParam = tenantFilter ? { tenant_id: tenantFilter } : {}
+      const [postureRes, historyRes, eventsRes, statsRes] = await Promise.all([
+        client.get('/posture/current', { params: tParam }),
+        client.get('/posture/history', { params: { limit: 30, ...tParam } }),
+        client.get('/events', { params: { page_size: 10, ...tParam } }),
+        client.get('/events/stats/summary', { params: tParam }),
       ])
       setPosture(postureRes.data)
       setHistory(historyRes.data.items || [])
       setEvents(eventsRes.data.items || [])
+      setEventStats(statsRes.data)
     } catch (err) {
       console.error('Dashboard load error:', err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [tenantFilter])
+
+  useEffect(() => { loadDashboardData() }, [loadDashboardData])
 
   const score = posture?.overall_score ?? 100
   const scoreColor = score >= 80 ? '#00e676' : score >= 50 ? '#ffc400' : '#ff5252'
@@ -46,22 +53,24 @@ export default function DashboardPage() {
     assets: h.total_assets,
   }))
 
+  // Fix #2: use stats/summary (all events) instead of counting from the 10-row page
   const severityData = [
-    { name: 'Critical', value: events.filter(e => e.severity === 'critical').length, color: SEVERITY_COLORS.critical },
-    { name: 'High', value: events.filter(e => e.severity === 'high').length, color: SEVERITY_COLORS.high },
-    { name: 'Medium', value: events.filter(e => e.severity === 'medium').length, color: SEVERITY_COLORS.medium },
-    { name: 'Low', value: events.filter(e => e.severity === 'low').length, color: SEVERITY_COLORS.low },
+    { name: 'Critical', value: eventStats?.by_severity?.critical || 0, color: SEVERITY_COLORS.critical },
+    { name: 'High',     value: eventStats?.by_severity?.high     || 0, color: SEVERITY_COLORS.high },
+    { name: 'Medium',   value: eventStats?.by_severity?.medium   || 0, color: SEVERITY_COLORS.medium },
+    { name: 'Low',      value: eventStats?.by_severity?.low      || 0, color: SEVERITY_COLORS.low },
   ]
 
   return (
     <div className="space-y-6">
       {/* Page header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Security Posture Dashboard</h1>
           <p className="text-dark-400 text-sm mt-1">Real-time attack surface overview</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
           <span className="w-2 h-2 rounded-full bg-accent-green animate-pulse" />
           <span className="text-xs text-dark-400">Live Monitoring Active</span>
         </div>
@@ -91,15 +100,16 @@ export default function DashboardPage() {
           <p className="text-xs text-dark-400 mt-1">discovered devices</p>
         </div>
 
+        {/* Fix #1: label corrected — backend only counts critical events here */}
         <div className="stat-card">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-dark-400 text-sm">Active Alerts</span>
+            <span className="text-dark-400 text-sm">Critical Alerts</span>
             <div className="w-8 h-8 rounded-lg bg-accent-red/20 flex items-center justify-center">
               <AlertTriangle className="w-4 h-4 text-accent-red" />
             </div>
           </div>
           <p className="text-3xl font-bold text-accent-red">{posture?.open_critical_events ?? 0}</p>
-          <p className="text-xs text-dark-400 mt-1">unresolved critical/high</p>
+          <p className="text-xs text-dark-400 mt-1">unresolved critical events</p>
         </div>
 
         <div className="stat-card">
@@ -144,16 +154,19 @@ export default function DashboardPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Threat distribution */}
+        {/* Fix #2: Threat distribution now uses full event counts from stats/summary */}
         <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <Bug className="w-4 h-4 text-accent-red" />
-            Threat Distribution
-          </h3>
-          <ResponsiveContainer width="100%" height={250}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2">
+              <Bug className="w-4 h-4 text-accent-red" />
+              Threat Distribution
+            </h3>
+            <span className="text-xs text-dark-400">All events</span>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
             <PieChart>
               <Pie
-                data={severityData}
+                data={severityData.filter(d => d.value > 0)}
                 cx="50%"
                 cy="50%"
                 innerRadius={55}
@@ -161,7 +174,7 @@ export default function DashboardPage() {
                 paddingAngle={4}
                 dataKey="value"
               >
-                {severityData.map((entry, idx) => (
+                {severityData.filter(d => d.value > 0).map((entry, idx) => (
                   <Cell key={idx} fill={entry.color} />
                 ))}
               </Pie>

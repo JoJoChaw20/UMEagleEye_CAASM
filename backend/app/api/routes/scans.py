@@ -17,7 +17,7 @@ router = APIRouter(prefix="/scans", tags=["Scans"])
 async def trigger_active_scan(
     payload: ScanRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Trigger an active network scan (Nmap/Masscan). Ops Lead or Security Engineer only."""
     from app.tasks.discovery_tasks import run_active_scan
@@ -38,7 +38,7 @@ async def trigger_active_scan(
 @router.post("/passive", response_model=ScanStatusResponse)
 async def trigger_passive_scan(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Start passive network listener (Scapy). Ops Lead or Security Engineer only."""
     from app.tasks.discovery_tasks import run_passive_scan
@@ -72,7 +72,7 @@ async def get_scan_status(
 @router.post("/drift-audit", response_model=ScanStatusResponse)
 async def trigger_drift_audit(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Trigger a manual drift audit against all baselined assets."""
     from app.tasks.drift_tasks import run_drift_audit

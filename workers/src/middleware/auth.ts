@@ -30,6 +30,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   await next()
 })
 
+// Enforce that user has one of the listed roles (exact match).
 export function requireRoles(...roles: string[]) {
   return createMiddleware<{ Bindings: Env }>(async (c, next) => {
     const user = c.get('user')
@@ -38,5 +39,29 @@ export function requireRoles(...roles: string[]) {
       return c.json({ detail: 'Insufficient permissions' }, 403)
     }
     await next()
+  })
+}
+
+// Allow superadmin platform-wide, or allow ownTenantRoles when the user's tenantId
+// matches the :tenantId route parameter.
+export function requireTenantAccess(platformRoles: string[], ownTenantRoles: string[]) {
+  return createMiddleware<{ Bindings: Env }>(async (c, next) => {
+    const user = c.get('user')
+    if (!user) return c.json({ detail: 'Unauthorized' }, 401)
+
+    if (platformRoles.includes(user.role)) {
+      await next()
+      return
+    }
+
+    if (ownTenantRoles.includes(user.role)) {
+      const tenantId = c.req.param('tenantId')
+      if (tenantId && user.tenantId === tenantId) {
+        await next()
+        return
+      }
+    }
+
+    return c.json({ detail: 'Insufficient permissions' }, 403)
   })
 }

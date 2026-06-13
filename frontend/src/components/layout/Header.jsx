@@ -186,6 +186,21 @@ export default function Header({ onToggleSidebar }) {
     navigate('/assets')
   }
 
+  // ── Map notification type → route + state ────────────────────────
+  const handleNotifClick = (n) => {
+    setNotifOpen(false)
+    if (n.type === 'agent_offline' || n.type === 'agent_degraded') {
+      navigate('/agents')
+    } else if (
+      (n.type === 'advisory_generated' || n.type === 'advisory_resolved') &&
+      n.metadata?.advisory_id
+    ) {
+      navigate('/advisories', { state: { openAdvisoryId: n.metadata.advisory_id } })
+    } else {
+      navigate('/advisories')
+    }
+  }
+
   // ── Open notifications: mark all visible IDs as seen ────────────
   const openNotifications = () => {
     setNotifOpen(o => {
@@ -341,7 +356,11 @@ export default function Header({ onToggleSidebar }) {
                 ) : notifs.slice(0, 30).map(n => {
                   const isUnread = !seenIds.has(n.id)
                   return (
-                    <div key={n.id} className={`px-4 py-3 border-b border-dark-800/60 hover:bg-dark-750/30 transition-colors ${isUnread ? 'bg-eagle-500/5' : ''}`}>
+                    <button
+                      key={n.id}
+                      onClick={() => handleNotifClick(n)}
+                      className={`w-full text-left px-4 py-3 border-b border-dark-800/60 hover:bg-dark-700/40 transition-colors cursor-pointer ${isUnread ? 'bg-eagle-500/5' : ''}`}
+                    >
                       <div className="flex items-start gap-2.5">
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${isUnread ? 'bg-eagle-400' : severityDot(n.severity)}`} />
                         <div className="flex-1 min-w-0">
@@ -355,7 +374,7 @@ export default function Header({ onToggleSidebar }) {
                           </span>
                         </div>
                       </div>
-                    </div>
+                    </button>
                   )
                 })}
               </div>

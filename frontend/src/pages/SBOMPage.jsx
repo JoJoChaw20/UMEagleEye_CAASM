@@ -8,6 +8,7 @@ import {
 } from 'recharts'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 // ── Package-manager icon/label map ────────────────────────────
 const PM_META = {
@@ -26,8 +27,8 @@ const pmLabel  = (pm) => PM_META[pm]?.label  ?? pm
 
 export default function SBOMPage() {
   const { user } = useAuth()
-  const canScan = ['ops_lead', 'security_engineer'].includes(user?.role)
-  const isSuperAdmin = user?.role === 'superadmin'
+  const canScan = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const canDeleteSbom = user?.role === 'tenant_superadmin'
 
   // ── State ────────────────────────────────────────────────────
   const [sboms,       setSboms]       = useState([])
@@ -35,6 +36,7 @@ export default function SBOMPage() {
   const [total,       setTotal]       = useState(0)
   const [page,        setPage]        = useState(1)
   const [loading,     setLoading]     = useState(true)
+  const [tenantFilter, setTenantFilter] = useState('')
 
   // Expanded SBOM → dependency panel
   const [expandedId,  setExpandedId]  = useState(null)
@@ -63,9 +65,10 @@ export default function SBOMPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
+      const tParam = tenantFilter ? { tenant_id: tenantFilter } : {}
       const [sbomsRes, statsRes] = await Promise.all([
-        client.get('/sboms', { params: { page, page_size: PAGE_SIZE } }),
-        client.get('/sboms/stats/summary'),
+        client.get('/sboms', { params: { page, page_size: PAGE_SIZE, ...tParam } }),
+        client.get('/sboms/stats/summary', { params: tParam }),
       ])
       setSboms(sbomsRes.data.items || [])
       setTotal(sbomsRes.data.total || 0)
@@ -75,7 +78,7 @@ export default function SBOMPage() {
     } finally {
       setLoading(false)
     }
-  }, [page])
+  }, [page, tenantFilter])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -149,7 +152,7 @@ export default function SBOMPage() {
     <div className="space-y-6">
 
       {/* ── Page header ── */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">
             <Package className="w-6 h-6 text-eagle-400" />
@@ -159,13 +162,16 @@ export default function SBOMPage() {
             CycloneDX SBOM inventory — powered by Syft
           </p>
         </div>
-        <button
-          onClick={loadData}
-          className="btn-secondary flex items-center gap-2 text-sm"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
+          <button
+            onClick={loadData}
+            className="btn-secondary flex items-center gap-2 text-sm"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── Stats cards ── */}
@@ -301,7 +307,7 @@ export default function SBOMPage() {
                 <th>GCS Storage</th>
                 <th>Generated</th>
                 {canScan && <th>Re-scan</th>}
-                {isSuperAdmin && <th>Delete</th>}
+                {canDeleteSbom && <th>Delete</th>}
                 <th className="w-8" />
               </tr>
             </thead>
@@ -357,7 +363,7 @@ export default function SBOMPage() {
                         </button>
                       </td>
                     )}
-                    {isSuperAdmin && (
+                    {canDeleteSbom && (
                       <td onClick={e => e.stopPropagation()}>
                         <button
                           onClick={() => deleteSbomsByAsset(sbom.asset_id)}
@@ -379,7 +385,7 @@ export default function SBOMPage() {
                   {expandedId === sbom.sbom_id && (
                     <tr key={`${sbom.sbom_id}-deps`}>
                       <td
-                        colSpan={(canScan ? 8 : 7) + (isSuperAdmin ? 1 : 0)}
+                        colSpan={(canScan ? 8 : 7) + (canDeleteSbom ? 1 : 0)}
                         className="p-0 bg-dark-900/60"
                       >
                         <div className="border-t border-dark-700/50 p-4">

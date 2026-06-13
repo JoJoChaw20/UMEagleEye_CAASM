@@ -1,35 +1,30 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Server, Search, Shield, Bookmark, GitBranch, Target, Building2, CheckCircle, RefreshCw } from 'lucide-react'
+import { Server, Search, Shield, Bookmark, GitBranch, Target, CheckCircle, RefreshCw } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import AssetGraph from '../components/common/AssetGraph'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
+import TenantSelector from '../components/common/TenantSelector'
 
 const PAGE_SIZE = 25
 
 export default function AssetsPage() {
   const { user } = useAuth()
+  const isSuperadmin = user?.role === 'superadmin'
+  const isBusinessOwner = user?.role === 'business_owner'
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('')
   const [tenantFilter, setTenantFilter] = useState('')
-  const [tenants, setTenants] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
   const [graphBlastId, setGraphBlastId] = useState(null)
   const [rescoring, setRescoring] = useState(false)
-
-  // Fetch tenant list for superadmin filter
-  useEffect(() => {
-    if (user?.role === 'superadmin') {
-      client.get('/tenants')
-        .then(res => setTenants(res.data.tenants || []))
-        .catch(() => {})
-    }
-  }, [user?.role])
+  // assetId → { status, scanId } for in-progress SBOM scans
+  const [sbomScans, setSbomScans] = useState({})
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -75,11 +70,24 @@ export default function AssetsPage() {
     );
     if (target === null) return;  // user pressed Cancel
     try {
-      await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
-      alert('SBOM Scan queued. Check Alerts page in a few minutes.')
+      const res = await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
+      const scanId = res.data.scan_id
+      setSbomScans(prev => ({ ...prev, [assetId]: { status: 'pending', scanId } }))
+      // Poll every 5s until terminal state
+      const poll = setInterval(async () => {
+        try {
+          const r = await client.get(`/assets/${assetId}/sbom-scan-status`)
+          const s = r.data.status
+          setSbomScans(prev => ({ ...prev, [assetId]: { status: s, scanId: r.data.scan_id } }))
+          if (s === 'completed' || s === 'failed' || s === 'none') {
+            clearInterval(poll)
+            if (s === 'completed') loadAssets()
+          }
+        } catch { clearInterval(poll) }
+      }, 5000)
     } catch (err) {
       console.error(err)
-      alert('Failed to trigger SBOM scan.')
+      alert(err?.response?.data?.detail || 'Failed to trigger SBOM scan.')
     }
   }
 
@@ -135,27 +143,25 @@ export default function AssetsPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-  const activeTenantName = tenants.find(t => t.tenant_id === tenantFilter)?.name
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Asset Inventory</h1>
-          <p className="text-dark-400 text-sm mt-1">
-            {total} assets discovered
-            {activeTenantName && <span className="ml-2 text-eagle-400">· {activeTenantName}</span>}
-          </p>
+          <p className="text-dark-400 text-sm mt-1">{total} assets discovered</p>
         </div>
-        <button
-          onClick={rescoreAssets}
-          disabled={rescoring}
-          className="btn-secondary flex items-center gap-2 text-sm"
-          title="Recalculate criticality scores for all assets"
-        >
-          <RefreshCw className={`w-4 h-4 ${rescoring ? 'animate-spin' : ''}`} />
-          {rescoring ? 'Rescoring…' : 'Rescore Criticality'}
-        </button>
+        {!isSuperadmin && !isBusinessOwner && (
+          <button
+            onClick={rescoreAssets}
+            disabled={rescoring}
+            className="btn-secondary flex items-center gap-2 text-sm"
+            title="Recalculate criticality scores for all assets"
+          >
+            <RefreshCw className={`w-4 h-4 ${rescoring ? 'animate-spin' : ''}`} />
+            {rescoring ? 'Rescoring…' : 'Rescore Criticality'}
+          </button>
+        )}
       </div>
 
       {/* Tab Toggle + shared Tenant Filter */}
@@ -169,32 +175,19 @@ export default function AssetsPage() {
             <Server className="w-4 h-4" />
             Inventory
           </button>
-          <button
-            onClick={() => setActiveTab('graph')}
-            className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}
-            id="tab-graph"
-          >
-            <GitBranch className="w-4 h-4" />
-            Relationship Graph
-          </button>
+          {!isBusinessOwner && (
+            <button
+              onClick={() => setActiveTab('graph')}
+              className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}
+              id="tab-graph"
+            >
+              <GitBranch className="w-4 h-4" />
+              Relationship Graph
+            </button>
+          )}
         </div>
 
-        {/* Tenant filter — superadmin only, shared between both tabs */}
-        {user?.role === 'superadmin' && tenants.length > 0 && (
-          <div className="relative">
-            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
-            <select
-              value={tenantFilter}
-              onChange={(e) => { setTenantFilter(e.target.value); setPage(1) }}
-              className="input-field pl-9 pr-8 text-sm appearance-none min-w-[180px]"
-            >
-              <option value="">All Tenants</option>
-              {tenants.map((t) => (
-                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
+        <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
       </div>
 
       {/* Inventory View */}
@@ -269,7 +262,7 @@ export default function AssetsPage() {
                         <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
                         <td>
                           <div className="flex items-center gap-1">
-                            {!isManual && (
+                            {!isSuperadmin && !isBusinessOwner && !isManual && (
                               <button
                                 onClick={() => promoteToMyAssets(a)}
                                 className="p-1.5 hover:bg-green-500/10 rounded text-dark-400 hover:text-green-400 transition-colors"
@@ -278,27 +271,36 @@ export default function AssetsPage() {
                                 <CheckCircle className="w-4 h-4" />
                               </button>
                             )}
-                            <button
-                              onClick={() => triggerSbomScan(a.assetId)}
-                              className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
-                              title="Scan SBOM"
-                            >
-                              <Shield className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => triggerSetBaseline(a.assetId)}
-                              className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
-                              title="Set Baseline"
-                            >
-                              <Bookmark className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => setBlastRadiusAssetId(a.assetId)}
-                              className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                              title="Blast Radius"
-                            >
-                              <Target className="w-4 h-4" />
-                            </button>
+                            {!isSuperadmin && !isBusinessOwner && (
+                              <button
+                                onClick={() => triggerSbomScan(a.assetId)}
+                                className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors flex items-center gap-1"
+                                title="Scan SBOM"
+                                disabled={['pending','running'].includes(sbomScans[a.assetId]?.status)}
+                              >
+                                <Shield className={`w-4 h-4 ${sbomScans[a.assetId]?.status === 'running' ? 'animate-pulse text-blue-400' : sbomScans[a.assetId]?.status === 'pending' ? 'text-yellow-400' : ''}`} />
+                                {sbomScans[a.assetId]?.status === 'running' && <span className="text-xs text-blue-400">Running</span>}
+                                {sbomScans[a.assetId]?.status === 'pending' && <span className="text-xs text-yellow-400">Queued</span>}
+                              </button>
+                            )}
+                            {!isSuperadmin && !isBusinessOwner && (
+                              <button
+                                onClick={() => triggerSetBaseline(a.assetId)}
+                                className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
+                                title="Set Baseline"
+                              >
+                                <Bookmark className="w-4 h-4" />
+                              </button>
+                            )}
+                            {!isSuperadmin && !isBusinessOwner && (
+                              <button
+                                onClick={() => setBlastRadiusAssetId(a.assetId)}
+                                className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                                title="Blast Radius"
+                              >
+                                <Target className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

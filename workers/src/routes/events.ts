@@ -6,7 +6,7 @@
 import { Hono } from 'hono'
 import { eq, and, desc, sql, gte, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { events, assets, advisories } from '../db/schema'
 import { buildBaseline, extractPorts } from '../services/drift'
@@ -32,12 +32,17 @@ app.get('/', authMiddleware, async (c) => {
     const assetId   = c.req.query('asset_id')
 
     // Build tenant-scoped asset ID list
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
     let allowedAssetIds: string[] | null = null
-    if (user.role !== 'superadmin' && user.tenantId) {
+    if (effectiveTenantId) {
       const assetRows = await db
         .select({ assetId: assets.assetId })
         .from(assets)
-        .where(eq(assets.tenantId, user.tenantId))
+        .where(eq(assets.tenantId, effectiveTenantId))
       allowedAssetIds = assetRows.map(a => a.assetId)
       if (allowedAssetIds.length === 0) {
         return c.json({ total: 0, page, page_size: pageSize, items: [] })
@@ -125,18 +130,53 @@ app.get('/stats/summary', authMiddleware, async (c) => {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)
 
+    const statsTenantIdParam = c.req.query('tenant_id')
+    const statsEffectiveTenantId = user.role === 'superadmin'
+      ? (statsTenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
     let allowedAssetIds: string[] | null = null
-    if (user.role !== 'superadmin' && user.tenantId) {
+    let allowedEventIds: string[] | null = null
+    if (statsEffectiveTenantId) {
       const assetRows = await db
         .select({ assetId: assets.assetId })
         .from(assets)
-        .where(eq(assets.tenantId, user.tenantId))
+        .where(eq(assets.tenantId, statsEffectiveTenantId))
       allowedAssetIds = assetRows.map(a => a.assetId)
+      if (allowedAssetIds.length === 0) {
+        return c.json({
+          total_alerts: 0,
+          by_severity: { low: 0, medium: 0, high: 0, critical: 0 },
+          by_type: {},
+          unresolved_critical: 0,
+          avg_risk_score: 0,
+          resolution_rate: 100,
+          daily_trend: [],
+        })
+      }
+      const eventRows = await db
+        .select({ eventId: events.eventId })
+        .from(events)
+        .where(inArray(events.assetId, allowedAssetIds))
+      allowedEventIds = eventRows.map(e => e.eventId)
     }
 
     const assetFilter = allowedAssetIds !== null
       ? sql`${events.assetId} = ANY(ARRAY[${sql.join(allowedAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
       : sql`1=1`
+
+    // Advisory query scoped to the same tenant
+    const advisoryQuery = allowedEventIds !== null
+      ? allowedEventIds.length === 0
+        ? Promise.resolve([{ total: 0, resolved: 0 }])
+        : db.select({
+            total:    sql<number>`count(*)::int`,
+            resolved: sql<number>`count(*) filter (where status = 'resolved')::int`,
+          }).from(advisories).where(inArray(advisories.eventId, allowedEventIds))
+      : db.select({
+          total:    sql<number>`count(*)::int`,
+          resolved: sql<number>`count(*) filter (where status = 'resolved')::int`,
+        }).from(advisories)
 
     // 7-day daily trend
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
@@ -162,10 +202,7 @@ app.get('/stats/summary', authMiddleware, async (c) => {
         .where(and(assetFilter, gte(events.timestamp, sevenDaysAgo)))
         .groupBy(sql`date_trunc('day', timestamp)`)
         .orderBy(sql`date_trunc('day', timestamp)`),
-      db.select({
-        total:    sql<number>`count(*)::int`,
-        resolved: sql<number>`count(*) filter (where status = 'resolved')::int`,
-      }).from(advisories),
+      advisoryQuery,
     ])
 
     const by_severity: Record<string, number> = { low: 0, medium: 0, high: 0, critical: 0 }
@@ -194,7 +231,7 @@ app.get('/stats/summary', authMiddleware, async (c) => {
       total_alerts:     totals[0]?.total ?? 0,
       by_severity,
       by_type,
-      unresolved_critical: by_severity.critical,
+      total_critical: by_severity.critical,
       avg_risk_score:   avgRisk[0]?.avg ?? 0,
       resolution_rate,
       daily_trend,
@@ -262,7 +299,7 @@ app.get('/:eventId', authMiddleware, async (c) => {
 // ── POST /:eventId/acknowledge ───────────────────────────────────
 // Accepts a drift event as intentional: re-baselines the asset to the
 // current state and removes the event so it stops appearing in alerts.
-app.post('/:eventId/acknowledge', authMiddleware, async (c) => {
+app.post('/:eventId/acknowledge', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)
@@ -313,7 +350,7 @@ app.post('/:eventId/acknowledge', authMiddleware, async (c) => {
 })
 
 // ── POST /:eventId/advisory ──────────────────────────────────────
-app.post('/:eventId/advisory', authMiddleware, async (c) => {
+app.post('/:eventId/advisory', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)

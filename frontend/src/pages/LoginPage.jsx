@@ -8,7 +8,8 @@ export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [mfaRequired, setMfaRequired] = useState(false)
+  const [mfaRequired, setMfaRequired] = useState(() => sessionStorage.getItem('mfa_pending') === 'true')
+  const [mfaUserId, setMfaUserId] = useState(() => sessionStorage.getItem('mfa_user_id') || '')
   const [mfaCode, setMfaCode] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -30,6 +31,9 @@ export default function LoginPage() {
     try {
       const result = await login(username, password)
       if (result.mfa_required) {
+        sessionStorage.setItem('mfa_pending', 'true')
+        sessionStorage.setItem('mfa_user_id', result.user_id)
+        setMfaUserId(result.user_id)
         setMfaRequired(true)
       } else {
         navigate('/')
@@ -45,8 +49,15 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await loginWithGoogle(credential)
-      navigate('/')
+      const result = await loginWithGoogle(credential)
+      if (result.mfa_required) {
+        sessionStorage.setItem('mfa_pending', 'true')
+        sessionStorage.setItem('mfa_user_id', result.user_id)
+        setMfaUserId(result.user_id)
+        setMfaRequired(true)
+      } else {
+        navigate('/')
+      }
     } catch (err) {
       setError(err.response?.data?.detail || 'Google login failed')
     } finally {
@@ -60,7 +71,9 @@ export default function LoginPage() {
     setLoading(true)
 
     try {
-      await verifyMFA(username, mfaCode)
+      await verifyMFA(mfaUserId, mfaCode)
+      sessionStorage.removeItem('mfa_pending')
+      sessionStorage.removeItem('mfa_user_id')
       navigate('/')
     } catch (err) {
       setError(err.response?.data?.detail || 'Invalid MFA code')
@@ -198,6 +211,19 @@ export default function LoginPage() {
               id="mfa-submit"
             >
               {loading ? 'Verifying...' : 'Verify MFA'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                sessionStorage.removeItem('mfa_pending')
+                sessionStorage.removeItem('mfa_user_id')
+                setMfaRequired(false)
+                setMfaUserId('')
+                setMfaCode('')
+              }}
+              className="w-full text-sm text-dark-400 hover:text-dark-200 transition-colors"
+            >
+              ← Back to login
             </button>
           </form>
         )}

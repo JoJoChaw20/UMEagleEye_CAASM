@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Building2, Zap, Info } from 'lucide-react'
+import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, Info } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 // ── Criticality badge with score-breakdown tooltip ────────────────
 function CriticalityBadge({ score, assetId }) {
@@ -508,23 +509,13 @@ export default function MyAssetsPage() {
   const [search, setSearch] = useState('')
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('')
   const [tenantFilter, setTenantFilter] = useState('')
-  const [tenants, setTenants] = useState([])
   const [showAdd, setShowAdd] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [error, setError] = useState(null)
 
   const [rescoring, setRescoring] = useState(false)
-  const isReadOnly = user?.role === 'business_owner'
-  const canDelete = ['ops_lead', 'superadmin'].includes(user?.role)
-
-  // Fetch tenant list for superadmin filter
-  useEffect(() => {
-    if (user?.role === 'superadmin') {
-      client.get('/tenants')
-        .then(res => setTenants(res.data.tenants || []))
-        .catch(() => {})
-    }
-  }, [user?.role])
+  const isReadOnly = ['business_owner', 'superadmin'].includes(user?.role)
+  const canDelete = user?.role === 'tenant_superadmin'
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -640,21 +631,7 @@ export default function MyAssetsPage() {
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
-        {user?.role === 'superadmin' && tenants.length > 0 && (
-          <div className="relative">
-            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
-            <select
-              value={tenantFilter}
-              onChange={(e) => { setTenantFilter(e.target.value); setPage(1) }}
-              className="input-field pl-9 pr-8 text-sm appearance-none min-w-[180px]"
-            >
-              <option value="">All Tenants</option>
-              {tenants.map((t) => (
-                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
+        <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
           <input

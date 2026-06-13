@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { FileText, Download, RefreshCw, Clock, ChevronDown, Loader2, Trash2 } from 'lucide-react'
 import { jsPDF } from 'jspdf'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 const REPORT_TYPES = [
   { value: 'executive', label: 'Executive Briefing' },
@@ -323,7 +325,11 @@ function buildPdf(data, reportType) {
 
 // ── Page component ────────────────────────────────────────────────
 export default function ReportsPage() {
+  const { user } = useAuth()
+  const isSuperadmin = user?.role === 'superadmin'
+  const isBusinessOwner = user?.role === 'business_owner'
   const [reports,     setReports]     = useState([])
+  const [tenantFilter, setTenantFilter] = useState('')
   const [listLoading, setListLoading] = useState(true)
   const [generating,  setGenerating]  = useState(false)
   const [downloading, setDownloading] = useState(null)
@@ -395,31 +401,40 @@ export default function ReportsPage() {
     catch (err) { console.error(err) }
   }
 
+  const filteredReports = tenantFilter
+    ? reports.filter(r => r.tenant_id === tenantFilter)
+    : reports
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Reports</h1>
           <p className="text-dark-400 text-sm mt-1">Generate and download security posture reports as PDF</p>
         </div>
-        <div className="flex gap-2 items-center">
-          <button onClick={triggerSnapshot} className="btn-secondary flex items-center gap-2 text-sm">
-            <Clock className="w-4 h-4" /> Snapshot Now
-          </button>
-          <div className="flex items-stretch">
-            <div className="relative">
-              <select value={reportType} onChange={e => setReportType(e.target.value)}
-                className="input-field text-sm py-2 pl-3 pr-8 rounded-r-none border-r-0 appearance-none">
-                {REPORT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
-            </div>
-            <button onClick={generateReport} disabled={generating}
-              className="btn-primary flex items-center gap-2 rounded-l-none">
-              {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-              {generating ? 'Generating...' : 'Generate PDF'}
+        <div className="flex gap-2 items-center flex-wrap">
+          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
+          {!isSuperadmin && !isBusinessOwner && (
+            <button onClick={triggerSnapshot} className="btn-secondary flex items-center gap-2 text-sm">
+              <Clock className="w-4 h-4" /> Snapshot Now
             </button>
-          </div>
+          )}
+          {!isSuperadmin && !isBusinessOwner && (
+            <div className="flex items-stretch">
+              <div className="relative">
+                <select value={reportType} onChange={e => setReportType(e.target.value)}
+                  className="input-field text-sm py-2 pl-3 pr-8 rounded-r-none border-r-0 appearance-none">
+                  {REPORT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400 pointer-events-none" />
+              </div>
+              <button onClick={generateReport} disabled={generating}
+                className="btn-primary flex items-center gap-2 rounded-l-none">
+                {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                {generating ? 'Generating...' : 'Generate PDF'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -428,11 +443,11 @@ export default function ReportsPage() {
           <div className="flex justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-        ) : reports.length > 0 ? (
+        ) : filteredReports.length > 0 ? (
           <table className="data-table">
             <thead><tr><th>Report Name</th><th>Type</th><th>Generated</th><th>Actions</th></tr></thead>
             <tbody>
-              {reports.map(r => (
+              {filteredReports.map(r => (
                 <tr key={r.filename}>
                   <td className="flex items-center gap-2">
                     <FileText className="w-4 h-4 text-accent-red flex-shrink-0" />
@@ -462,10 +477,14 @@ export default function ReportsPage() {
           <div className="text-center py-20 text-dark-400">
             <FileText className="w-16 h-16 mx-auto mb-4 opacity-20" />
             <p className="text-lg font-medium mb-2">No reports yet</p>
-            <p className="text-sm mb-4">Select a report type and click Generate PDF</p>
-            <button onClick={generateReport} disabled={generating} className="btn-primary">
-              {generating ? 'Generating...' : 'Generate PDF'}
-            </button>
+            {!isSuperadmin && !isBusinessOwner && (
+              <>
+                <p className="text-sm mb-4">Select a report type and click Generate PDF</p>
+                <button onClick={generateReport} disabled={generating} className="btn-primary">
+                  {generating ? 'Generating...' : 'Generate PDF'}
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

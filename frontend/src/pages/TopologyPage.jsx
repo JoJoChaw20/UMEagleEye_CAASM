@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Globe, Network, GitBranch, Wifi, Monitor, RefreshCw, ChevronRight, ChevronDown, Cpu, Building2, AlertTriangle } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 // ── Node icon by type ─────────────────────────────────────────────
 function NodeIcon({ type, className = 'w-4 h-4' }) {
@@ -168,20 +169,13 @@ export default function TopologyPage() {
   const { user } = useAuth()
   const [tree, setTree] = useState([])
   const [tenantTrees, setTenantTrees] = useState([])   // superadmin all-tenant view
-  const [tenants, setTenants] = useState([])
   const [tenantFilter, setTenantFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [inferring, setInferring] = useState(false)
   const [error, setError] = useState(null)
 
   const isSuperadmin = user?.role === 'superadmin'
-  const canInfer = ['ops_lead', 'security_engineer', 'superadmin'].includes(user?.role)
-
-  // Fetch tenant list for filter dropdown
-  useEffect(() => {
-    if (!isSuperadmin) return
-    client.get('/tenants').then(res => setTenants(res.data.tenants || [])).catch(() => {})
-  }, [isSuperadmin])
+  const canInfer = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
 
   const loadTopology = useCallback(async () => {
     setLoading(true)
@@ -238,22 +232,7 @@ export default function TopologyPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Tenant filter — superadmin only */}
-          {isSuperadmin && tenants.length > 0 && (
-            <div className="relative">
-              <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
-              <select
-                value={tenantFilter}
-                onChange={e => setTenantFilter(e.target.value)}
-                className="input-field pl-9 pr-8 text-sm appearance-none min-w-[180px]"
-              >
-                <option value="">All Tenants</option>
-                {tenants.map(t => (
-                  <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
 
           <button onClick={loadTopology} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />

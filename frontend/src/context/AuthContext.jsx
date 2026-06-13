@@ -40,8 +40,8 @@ export function AuthProvider({ children }) {
     return data
   }
 
-  const verifyMFA = async (username, code) => {
-    const res = await client.post('/auth/mfa/verify', { username, code })
+  const verifyMFA = async (userId, code) => {
+    const res = await client.post('/auth/mfa/verify', { user_id: userId, code })
     const data = res.data
     localStorage.setItem('access_token', data.access_token)
     localStorage.setItem('user', JSON.stringify(data))
@@ -58,6 +58,9 @@ export function AuthProvider({ children }) {
   const loginWithGoogle = async (access_token) => {
     const res = await client.post('/auth/google', { access_token })
     const data = res.data
+    if (data.mfa_required) {
+      return { mfa_required: true, user_id: data.user_id }
+    }
     localStorage.setItem('access_token', data.access_token)
     localStorage.setItem('user', JSON.stringify(data))
     setToken(data.access_token)

@@ -1,28 +1,43 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FileSearch, X, CheckCircle, ShieldAlert, UserPlus, Filter, Sparkles } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved']
 
 export default function AdvisoriesPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [advisories, setAdvisories] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedAdvisory, setSelectedAdvisory] = useState(null)
   const [statusFilter, setStatusFilter] = useState('all')
+  const [tenantFilter, setTenantFilter] = useState('')
+
+  // Auto-open advisory when navigated from a notification
+  useEffect(() => {
+    const id = location.state?.openAdvisoryId
+    if (!id) return
+    // Clear state so a refresh doesn't re-open the modal
+    window.history.replaceState({}, '')
+    client.get(`/advisories/${id}`)
+      .then(res => setSelectedAdvisory(res.data))
+      .catch(console.error)
+  }, [location.state?.openAdvisoryId])
 
   const fetchAdvisories = useCallback(() => {
     setLoading(true)
     const params = { page_size: 100 }
     if (statusFilter !== 'all') params.status = statusFilter
+    if (tenantFilter) params.tenant_id = tenantFilter
     client.get('/advisories', { params })
       .then(res => setAdvisories(res.data.items || []))
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [statusFilter])
+  }, [statusFilter, tenantFilter])
 
   useEffect(() => { fetchAdvisories() }, [fetchAdvisories])
 
@@ -57,9 +72,10 @@ export default function AdvisoriesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-white">AI Advisories</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
           <Filter className="w-4 h-4 text-dark-400" />
           <select
             value={statusFilter}

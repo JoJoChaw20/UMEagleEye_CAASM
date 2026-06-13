@@ -6,43 +6,67 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 
-const navSections = [
-  { label: 'OVERVIEW', items: [
-    { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  ]},
-  { label: 'ASSETS', items: [
-    { to: '/my-assets',    icon: Server,     label: 'My Assets' },
-    { to: '/assets',       icon: Network,    label: 'All Assets' },
-    { to: '/discovery',    icon: Radar,      label: 'Discovery' },
-    { to: '/topology',     icon: GitBranch,  label: 'Topology' },
-  ]},
-  { label: 'SECURITY', items: [
-    { to: '/alerts',       icon: Bell,       label: 'Alerts' },
-    { to: '/advisories',   icon: FileSearch, label: 'Advisories' },
-    { to: '/threat-intel', icon: Globe,      label: 'Threat Intel' },
-    { to: '/sbom',         icon: Package,    label: 'SBOM' },
-  ]},
-  { label: 'REPORTS', items: [
-    { to: '/reports',      icon: FileText,   label: 'Reports' },
-  ]},
-  { label: 'SYSTEM', items: [
-    { to: '/agents',       icon: Bot,           label: 'Agents' },
-    { to: '/chatbot',      icon: MessageCircle, label: 'Chatbot' },
-    { to: '/settings',     icon: Settings,      label: 'Settings' },
-  ]},
+// Items visible to all authenticated roles
+const baseItems = [
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
 ]
 
-const adminSections = [
-  { label: 'ADMIN', items: [
-    { to: '/tenants', icon: Building2, label: 'Tenants' },
-  ]},
+// Items hidden from business_owner
+const opsItems = [
+  { to: '/discovery',  icon: Radar,     label: 'Discovery' },
+  { to: '/topology',   icon: GitBranch, label: 'Topology' },
 ]
+
+// Settings hidden from business_owner
+const settingsItem = { to: '/settings', icon: Settings, label: 'Settings' }
+
+function buildSections(role) {
+  const isSuperadmin       = role === 'superadmin'
+  const isTenantSuperadmin = role === 'tenant_superadmin'
+  const isTenantAdmin      = role === 'tenant_admin'
+  const isBusinessOwner    = role === 'business_owner'
+  const canSeeOps          = !isBusinessOwner // superadmin, tenant_superadmin, tenant_admin
+
+  const assetItems = [
+    { to: '/my-assets', icon: Server,  label: 'My Assets' },
+    { to: '/assets',    icon: Network, label: 'All Assets' },
+    ...(canSeeOps ? opsItems : []),
+  ]
+
+  const systemItems = [
+    { to: '/agents',  icon: Bot,           label: 'Agents' },
+    { to: '/chatbot', icon: MessageCircle, label: 'Chatbot' },
+    ...(canSeeOps ? [settingsItem] : []),
+  ]
+
+  const sections = [
+    { label: 'OVERVIEW', items: baseItems },
+    { label: 'ASSETS',   items: assetItems },
+    { label: 'SECURITY', items: [
+      { to: '/alerts',       icon: Bell,       label: 'Alerts' },
+      { to: '/advisories',   icon: FileSearch, label: 'Advisories' },
+      { to: '/threat-intel', icon: Globe,      label: 'Threat Intel' },
+      { to: '/sbom',         icon: Package,    label: 'SBOM' },
+    ]},
+    { label: 'REPORTS', items: [
+      { to: '/reports', icon: FileText, label: 'Reports' },
+    ]},
+    { label: 'SYSTEM', items: systemItems },
+  ]
+
+  if (isSuperadmin || isTenantSuperadmin || isTenantAdmin) {
+    sections.push({ label: 'ADMIN', items: [
+      ...(isSuperadmin ? [{ to: '/tenants', icon: Building2, label: 'Tenants' }] : []),
+      ...(!isSuperadmin ? [{ to: '/users', icon: Building2, label: 'Users' }] : []),
+    ]})
+  }
+
+  return sections
+}
 
 export default function Sidebar({ collapsed, onToggle }) {
   const { logout, user } = useAuth()
-  const sections = user?.role === 'superadmin'
-    ? [...navSections, ...adminSections]
-    : navSections
+  const sections = buildSections(user?.role)
 
   return (
     <aside

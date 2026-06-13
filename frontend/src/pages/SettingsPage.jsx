@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Settings, Users, Shield, Clock, Key, Eye, EyeOff, Lock } from 'lucide-react'
+import { Users, Shield, Clock, Key, Eye, EyeOff, Lock, Copy, Check } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 
@@ -7,9 +7,11 @@ export default function SettingsPage() {
   const { user } = useAuth()
 
   // MFA state
-  const [mfaSetup, setMfaSetup] = useState(null)
-  const [mfaCode, setMfaCode] = useState('')
+  const [mfaSetup, setMfaSetup]     = useState(null)
+  const [mfaCode, setMfaCode]       = useState('')
   const [mfaMessage, setMfaMessage] = useState('')
+  const [mfaLoading, setMfaLoading] = useState(false)
+  const [copied, setCopied]         = useState(false)
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('')
@@ -32,14 +34,25 @@ export default function SettingsPage() {
   }
 
   const enableMFA = async () => {
+    if (mfaCode.length !== 6 || mfaLoading) return
+    setMfaLoading(true)
+    setMfaMessage('')
     try {
-      await client.post('/auth/mfa/enable', { username: user?.username, code: mfaCode })
+      await client.post('/auth/mfa/enable', { code: mfaCode })
       setMfaMessage('MFA enabled successfully!')
       setMfaSetup(null)
       setMfaCode('')
     } catch (err) {
-      setMfaMessage(err.response?.data?.detail || 'Invalid code')
+      setMfaMessage(err.response?.data?.detail || 'Invalid code — check your authenticator app and try again')
+    } finally {
+      setMfaLoading(false)
     }
+  }
+
+  const copySecret = () => {
+    navigator.clipboard.writeText(mfaSetup?.totp_secret ?? '')
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   const handleChangePassword = async (e) => {
@@ -189,19 +202,77 @@ export default function SettingsPage() {
         )}
 
         {!mfaSetup ? (
-          <button onClick={setupMFA} className="btn-primary">Setup TOTP MFA</button>
+          <div className="space-y-2">
+            <p className="text-dark-400 text-sm">Use any TOTP authenticator app (Google Authenticator, Authy, Microsoft Authenticator).</p>
+            <button onClick={setupMFA} className="btn-primary flex items-center gap-2">
+              <Shield className="w-4 h-4" /> Setup TOTP MFA
+            </button>
+          </div>
         ) : (
-          <div className="space-y-4">
-            <p className="text-dark-300 text-sm">Scan this QR code with your authenticator app:</p>
-            <div className="bg-white p-4 rounded-lg inline-block">
-              <img src={`data:image/png;base64,${mfaSetup.qr_code_base64}`} alt="TOTP QR" className="w-48 h-48" />
+          <div className="space-y-5 max-w-sm">
+
+            {/* Step 1 — QR */}
+            <div>
+              <p className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Step 1 — Scan QR code</p>
+              <div className="bg-white p-3 rounded-xl inline-block shadow">
+                <img
+                  src={`data:image/svg+xml;base64,${mfaSetup.qr_code_base64}`}
+                  alt="TOTP QR Code"
+                  className="w-44 h-44 block"
+                />
+              </div>
             </div>
-            <p className="text-dark-400 text-xs font-mono">Secret: {mfaSetup.totp_secret}</p>
-            <div className="flex gap-2 max-w-xs">
-              <input type="text" value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                className="input-field flex-1 text-center font-mono tracking-widest" placeholder="000000" maxLength={6} />
-              <button onClick={enableMFA} disabled={mfaCode.length !== 6} className="btn-primary">Verify</button>
+
+            {/* Manual entry fallback */}
+            <div>
+              <p className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Can't scan? Enter secret manually</p>
+              <div className="flex items-center gap-2 bg-dark-900/60 border border-dark-700/50 rounded-lg px-3 py-2">
+                <code className="flex-1 text-xs font-mono text-eagle-300 break-all select-all">
+                  {mfaSetup.totp_secret}
+                </code>
+                <button
+                  onClick={copySecret}
+                  className="flex-shrink-0 p-1 text-dark-400 hover:text-eagle-400 transition-colors"
+                  title="Copy secret"
+                >
+                  {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-dark-500 mt-1">In your authenticator app → Add account → Enter setup key → paste the secret above</p>
             </div>
+
+            {/* Step 2 — Verify */}
+            <div>
+              <p className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Step 2 — Enter the 6-digit code</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={mfaCode}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 6)
+                    setMfaCode(val)
+                  }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') enableMFA() }}
+                  className="input-field flex-1 text-center font-mono tracking-[0.4em] text-lg"
+                  placeholder="000000"
+                  maxLength={6}
+                  autoComplete="one-time-code"
+                />
+                <button
+                  onClick={enableMFA}
+                  disabled={mfaCode.length !== 6 || mfaLoading}
+                  className="btn-primary flex items-center gap-2 disabled:opacity-50"
+                >
+                  {mfaLoading
+                    ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    : <Check className="w-4 h-4" />}
+                  Verify
+                </button>
+              </div>
+            </div>
+
           </div>
         )}
       </div>
@@ -248,10 +319,9 @@ export default function SettingsPage() {
         </div>
         <div className="space-y-2 text-sm">
           {[
-            { name: 'DeepSeek AI (via OpenRouter)', status: true, detail: 'Advisory generation' },
+            { name: 'DeepSeek AI (via OpenRouter)', status: true, detail: 'Advisory generation & chatbot' },
             { name: 'AlienVault OTX', status: true, detail: 'Threat intelligence feed' },
             { name: 'ThreatFox', status: true, detail: 'IoC feed' },
-            { name: 'Telegram Bot', status: true, detail: 'ChatOps & SLA alerts' },
             { name: 'Cloudflare R2', status: true, detail: 'PDF report storage' },
             { name: 'NIST NVD', status: true, detail: 'CVE vulnerability database' },
           ].map(api => (

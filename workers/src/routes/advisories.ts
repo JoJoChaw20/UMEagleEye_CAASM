@@ -9,7 +9,8 @@ import { advisories, events, assets, auditLogs } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
-const STATUS_ROLES = ['ops_lead', 'security_engineer', 'mssp_analyst', 'superadmin']
+const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
+const STATUS_ROLES = ['tenant_superadmin', 'tenant_admin']
 
 // Helper: resolve tenantId from advisory via event->asset chain
 async function getAdvisoryTenantId(
@@ -54,12 +55,17 @@ app.get('/', authMiddleware, async (c) => {
     }
 
     // Tenant filter: join through events->assets
-    if (user.role !== 'superadmin' && user.tenantId) {
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
+    if (effectiveTenantId) {
       // Get asset IDs belonging to tenant
       const assetRows = await db
         .select({ assetId: assets.assetId })
         .from(assets)
-        .where(eq(assets.tenantId, user.tenantId))
+        .where(eq(assets.tenantId, effectiveTenantId))
       const allowedAssetIds = assetRows.map((a) => a.assetId)
 
       if (allowedAssetIds.length === 0) {

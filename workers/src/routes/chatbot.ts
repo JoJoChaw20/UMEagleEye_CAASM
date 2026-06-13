@@ -68,7 +68,7 @@ async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
     db.select({ count: sql<number>`count(*)::int` }).from(assets)
       .where(af ? and(af, eq(assets.source, 'manual')) : eq(assets.source, 'manual')),
     db.select({ count: sql<number>`count(*)::int` }).from(advisories)
-      .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'))),
+      .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress'))),
     db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators),
   ])
 
@@ -154,18 +154,32 @@ async function queryAlerts(db: ReturnType<typeof getDb>, tenantId?: string) {
   return unique
 }
 
-async function queryAdvisories(db: ReturnType<typeof getDb>) {
-  return db.select({
-    advisoryId:       advisories.advisoryId,
-    summary:          advisories.summary,
+async function queryAdvisories(db: ReturnType<typeof getDb>, tenantId?: string) {
+  const selectCols = {
+    advisoryId:        advisories.advisoryId,
+    summary:           advisories.summary,
     recommendedAction: advisories.recommendedAction,
-    status:           advisories.status,
-    createdAt:        advisories.createdAt,
-  })
-    .from(advisories)
-    .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged')))
-    .orderBy(desc(advisories.createdAt))
-    .limit(10)
+    status:            advisories.status,
+    createdAt:         advisories.createdAt,
+  }
+  const statusFilter = or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress'))
+
+  if (!tenantId) {
+    return db.select(selectCols).from(advisories).where(statusFilter)
+      .orderBy(desc(advisories.createdAt)).limit(10)
+  }
+
+  const assetIds = (await db.select({ assetId: assets.assetId }).from(assets)
+    .where(eq(assets.tenantId, tenantId))).map(a => a.assetId)
+  if (assetIds.length === 0) return []
+
+  const eventIds = (await db.select({ eventId: events.eventId }).from(events)
+    .where(inArray(events.assetId, assetIds))).map(e => e.eventId)
+  if (eventIds.length === 0) return []
+
+  return db.select(selectCols).from(advisories)
+    .where(and(inArray(advisories.eventId, eventIds), statusFilter))
+    .orderBy(desc(advisories.createdAt)).limit(10)
 }
 
 async function queryPosture(db: ReturnType<typeof getDb>, tenantId?: string) {
@@ -209,6 +223,7 @@ async function askAI(
     : 'https://openrouter.ai/api/v1/chat/completions'
   const model = useDeepSeek ? 'deepseek-chat' : (env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat')
 
+  console.log(`[chatbot] askAI → ${model} via ${baseUrl}`)
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers: {
@@ -222,14 +237,13 @@ async function askAI(
           role: 'system',
           content:
             'You are a cybersecurity assistant for the UMEagleEye CAASM platform. ' +
-            'Give concise, actionable security advice. Keep responses under 300 words. ' +
-            'Use bullet points for steps. Focus on practical remediation. ' +
+            'Give actionable security advice. Use bullet points for steps. Focus on practical remediation. ' +
             'When the user asks follow-up questions, answer in the context of the ongoing security discussion.',
         },
         ...history,
         { role: 'user', content: question },
       ],
-      max_tokens: 450,
+      max_tokens: 2048,
     }),
   })
   if (!res.ok) throw new Error(`AI API error: ${res.status}`)
@@ -272,6 +286,87 @@ app.post(
   },
 )
 
+// ── Streaming AI response (avoids Worker 30s wall-clock timeout) ──
+function streamAIResponse(
+  env: Env,
+  question: string,
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+): Response {
+  const useDeepSeek = !!env.DEEPSEEK_API_KEY
+  const apiKey = useDeepSeek ? env.DEEPSEEK_API_KEY : env.OPENROUTER_API_KEY
+  const baseUrl = useDeepSeek
+    ? 'https://api.deepseek.com/chat/completions'
+    : 'https://openrouter.ai/api/v1/chat/completions'
+  const model = useDeepSeek ? 'deepseek-chat' : (env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat')
+
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
+  const writer = writable.getWriter()
+  const encoder = new TextEncoder()
+
+  ;(async () => {
+    try {
+      console.log(`[chatbot] streamAI → ${model}`)
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are a cybersecurity assistant for the UMEagleEye CAASM platform. ' +
+                'Give actionable security advice. Use bullet points for steps. Focus on practical remediation. ' +
+                'When the user asks follow-up questions, answer in the context of the ongoing security discussion.',
+            },
+            ...history,
+            { role: 'user', content: question },
+          ],
+          stream: true,
+          max_tokens: 2048,
+        }),
+      })
+      if (!res.ok || !res.body) {
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ error: `AI API error: ${res.status}` })}\n\n`))
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const chunk = line.slice(6).trim()
+          if (chunk === '[DONE]') { await writer.write(encoder.encode('data: [DONE]\n\n')); return }
+          try {
+            const token = (JSON.parse(chunk) as { choices?: { delta?: { content?: string } }[] }).choices?.[0]?.delta?.content
+            if (token) await writer.write(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
+          } catch { /* skip malformed chunk */ }
+        }
+      }
+      await writer.write(encoder.encode('data: [DONE]\n\n'))
+    } catch (err) {
+      console.error('[chatbot] stream error:', err)
+      await writer.write(encoder.encode(`data: ${JSON.stringify({ error: 'Stream failed' })}\n\n`))
+    } finally {
+      await writer.close()
+    }
+  })()
+
+  return new Response(readable, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Transfer-Encoding': 'chunked',
+    },
+  })
+}
+
 // ── Route ─────────────────────────────────────────────────────────
 app.post(
   '/',
@@ -280,14 +375,19 @@ app.post(
     message: z.string().min(1).max(1000),
     history: z.array(z.object({
       role: z.enum(['user', 'assistant']),
-      content: z.string().max(2000),
+      content: z.string().max(8000),
     })).max(10).optional(),
+    tenant_id: z.string().optional(),
+    stream: z.boolean().optional(),
   })),
   async (c) => {
-    const { message, history = [] } = c.req.valid('json')
+    const { message, history = [], tenant_id, stream: wantStream = false } = c.req.valid('json')
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
-    const tenantId = user.role !== 'superadmin' ? user.tenantId : undefined
+    // Superadmin can pass an explicit tenant_id to filter per-tenant; others always use own tenant
+    const tenantId = user.role === 'superadmin'
+      ? (tenant_id || undefined)
+      : (user.tenantId ?? undefined)
     const restricted = user.role === 'business_owner'
 
     const { intent, query } = detectIntent(message)
@@ -320,7 +420,7 @@ app.post(
         }
 
         case 'advisories': {
-          const items = await queryAdvisories(db)
+          const items = await queryAdvisories(db, tenantId)
           return c.json({ type: 'advisories', content: 'Open Advisories', items })
         }
 
@@ -330,14 +430,16 @@ app.post(
         }
 
         case 'debug': {
-          if (restricted) {
+          if (restricted || user.role === 'superadmin') {
             return c.json({ type: 'text', content: 'Your role does not have permission to use the AI debug assistant.' })
           }
           if (!query) {
             return c.json({ type: 'text', content: 'Please provide an advisory ID:\n`debug <advisory_id>`' })
           }
-          const allAdvs = await db.select().from(advisories).limit(200)
-          const adv = allAdvs.find(a => a.advisoryId === query || a.advisoryId.startsWith(query))
+          const advRows = await db.select().from(advisories)
+            .where(sql`${advisories.advisoryId}::text LIKE ${query + '%'}`)
+            .limit(1)
+          const adv = advRows[0]
           if (!adv) {
             return c.json({ type: 'text', content: `Advisory \`${query}\` not found.` })
           }
@@ -345,6 +447,7 @@ app.post(
             return c.json({ type: 'text', content: 'AI assistant is not configured on this instance.' })
           }
           const prompt = `You are a cybersecurity expert. A security advisory has these recommended actions:\n\n${adv.recommendedAction}\n\nSummary: ${adv.summary}\n\nExplain these recommended actions in detail, step by step, in plain language that a system administrator can follow. Be specific and practical.`
+          if (wantStream) return streamAIResponse(c.env, prompt, history)
           const answer = await askAI(c.env, prompt, history)
           return c.json({ type: 'ai', content: answer })
         }
@@ -356,9 +459,13 @@ app.post(
           if (!query) {
             return c.json({ type: 'text', content: 'Please provide an advisory ID:\n`fix <advisory_id>`\n\nUse the `advisories` command to see open advisory IDs.' })
           }
-          const allOpen = await db.select().from(advisories)
-            .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress')))
-          const target = allOpen.find(a => a.advisoryId === query || a.advisoryId.startsWith(query))
+          const openRows = await db.select().from(advisories)
+            .where(and(
+              or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress')),
+              sql`${advisories.advisoryId}::text LIKE ${query + '%'}`,
+            ))
+            .limit(1)
+          const target = openRows[0]
           if (!target) {
             return c.json({ type: 'text', content: `Advisory \`${query}\` not found or already resolved.` })
           }
@@ -377,7 +484,29 @@ app.post(
           if (!c.env.DEEPSEEK_API_KEY && !c.env.OPENROUTER_API_KEY) {
             return c.json({ type: 'text', content: 'AI assistant is not configured on this instance.' })
           }
-          const answer = await askAI(c.env, query || message, history)
+          // Inject live security context so the AI answers about this environment
+          const [postureData, critAlerts, openAdvisories] = await Promise.all([
+            queryPosture(db, tenantId),
+            queryAlerts(db, tenantId).then(a => a.slice(0, 3)),
+            queryAdvisories(db, tenantId).then(a => a.slice(0, 5)),
+          ])
+          const contextLines = [
+            `Current security posture score: ${postureData.score}/100`,
+            `Total assets: ${postureData.total}, Critical assets: ${postureData.critical}`,
+            `Open critical events: ${postureData.openCrit}`,
+          ]
+          if (critAlerts.length > 0) {
+            contextLines.push(`Recent critical/high alerts: ${critAlerts.map(e => `${e.eventType} on ${e.hostname || e.ipAddress}`).join('; ')}`)
+          }
+          if (openAdvisories.length > 0) {
+            contextLines.push(`Open advisories (${openAdvisories.length}):`)
+            openAdvisories.forEach((adv, i) => {
+              contextLines.push(`  ${i + 1}. [${adv.advisoryId.slice(0, 8)}] ${adv.summary}. Fix: ${adv.recommendedAction?.slice(0, 500) ?? 'N/A'}`)
+            })
+          }
+          const contextPrompt = `${query || message}\n\n[Live environment context:\n${contextLines.join('\n')}]`
+          if (wantStream) return streamAIResponse(c.env, contextPrompt, history)
+          const answer = await askAI(c.env, contextPrompt, history)
           return c.json({ type: 'ai', content: answer })
         }
 

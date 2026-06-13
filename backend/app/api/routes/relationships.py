@@ -105,7 +105,7 @@ async def get_blast_radius(
 
 @router.post("/infer", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_inference(
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Trigger async relationship inference from scan data."""
     from app.tasks.relationship_tasks import infer_asset_relationships
@@ -117,7 +117,7 @@ async def trigger_inference(
 async def create_relationship(
     payload: AssetRelationshipCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Manually create an asset relationship."""
     # Verify both assets exist
@@ -154,7 +154,7 @@ async def create_relationship(
 async def delete_relationship(
     relationship_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin"])),
 ):
     """Delete an asset relationship. Ops Lead only."""
     result = await db.execute(

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, Settings, Copy, Check, X, RefreshCw, Radio, AlertCircle, Waypoints, Network, Building2 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 // ── Helpers ───────────────────────────────────────────────────────
 function relativeTime(ts) {
@@ -440,7 +441,8 @@ export default function AgentsPage() {
   const [assignTarget, setAssignTarget] = useState(null) // { item, type: 'agent'|'bridge' }
 
   const isReadOnly = ['mssp_analyst', 'business_owner'].includes(user?.role)
-  const canManage = ['ops_lead', 'superadmin'].includes(user?.role)
+  const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const [tenantFilter, setTenantFilter] = useState('')
 
   const loadAgents = useCallback(async () => {
     setLoading(true)
@@ -522,14 +524,18 @@ export default function AgentsPage() {
     }
   }
 
+  const filteredAgents = tenantFilter ? agents.filter(a => a.tenant_id === tenantFilter) : agents
+  const filteredBridges = tenantFilter ? bridges.filter(b => b.tenant_id === tenantFilter) : bridges
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Agents</h1>
-          <p className="text-dark-400 text-sm mt-1">{agents.length} agent{agents.length !== 1 ? 's' : ''} registered</p>
+          <p className="text-dark-400 text-sm mt-1">{filteredAgents.length} agent{filteredAgents.length !== 1 ? 's' : ''} registered</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
           <button onClick={() => { loadAgents(); loadBridges() }} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -568,7 +574,7 @@ export default function AgentsPage() {
             <div className="flex items-center justify-center py-12">
               <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
             </div>
-          ) : bridges.length > 0 ? (
+          ) : filteredBridges.length > 0 ? (
             <table className="data-table">
               <thead>
                 <tr>
@@ -583,7 +589,7 @@ export default function AgentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {bridges.map((b) => (
+                {filteredBridges.map((b) => (
                   <tr key={b.bridge_id}>
                     <td>
                       <div>
@@ -658,7 +664,7 @@ export default function AgentsPage() {
           <div className="flex items-center justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-        ) : agents.length > 0 ? (
+        ) : filteredAgents.length > 0 ? (
           <table className="data-table">
             <thead>
               <tr>
@@ -673,7 +679,7 @@ export default function AgentsPage() {
               </tr>
             </thead>
             <tbody>
-              {agents.map((a) => {
+              {filteredAgents.map((a) => {
                 const bridge = a.bridge_id ? bridges.find((b) => b.bridge_id === a.bridge_id) : null
                 return (
                   <tr key={a.agent_id}>

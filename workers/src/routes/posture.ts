@@ -3,7 +3,7 @@ import { eq, and, desc, gte, lte, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, events, postureMetrics } from '../db/schema'
+import { assets, events } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -13,8 +13,11 @@ app.get('/current', authMiddleware, async (c) => {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
-    const tenantCondition =
-      user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId, user.tenantId) : undefined
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+    const tenantCondition = effectiveTenantId ? eq(assets.tenantId, effectiveTenantId) : undefined
 
     // Fetch assets
     const assetRows = await db
@@ -98,6 +101,7 @@ app.get('/current', authMiddleware, async (c) => {
 // ── GET /history ─────────────────────────────────────────────────
 app.get('/history', authMiddleware, async (c) => {
   try {
+    const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
 
     const raw   = c.req.query('limit') ?? c.req.query('days') ?? '14'
@@ -106,16 +110,39 @@ app.get('/history', authMiddleware, async (c) => {
     const since = new Date(now)
     since.setDate(since.getDate() - limit)
 
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
+    // Resolve asset IDs for tenant scoping
+    let tenantAssetIds: string[] | null = null
+    if (effectiveTenantId) {
+      const rows = await db
+        .select({ assetId: assets.assetId })
+        .from(assets)
+        .where(eq(assets.tenantId, effectiveTenantId))
+      tenantAssetIds = rows.map(r => r.assetId)
+    }
+
+    const assetFilter = tenantAssetIds !== null
+      ? sql`${assets.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
+      : sql`1=1`
+    const eventAssetFilter = tenantAssetIds !== null
+      ? sql`${events.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
+      : sql`1=1`
+
     // 3 bulk queries — no per-day loops
     const [allAssets, critEvents, highEvents] = await Promise.all([
       db.select({ criticalityScore: assets.criticalityScore, createdAt: assets.createdAt })
-        .from(assets),
+        .from(assets)
+        .where(assetFilter),
       db.select({ timestamp: events.timestamp })
         .from(events)
-        .where(and(eq(events.severity, 'critical'), gte(events.timestamp, since))),
+        .where(and(eventAssetFilter, eq(events.severity, 'critical'), gte(events.timestamp, since))),
       db.select({ timestamp: events.timestamp })
         .from(events)
-        .where(and(eq(events.severity, 'high'), gte(events.timestamp, since))),
+        .where(and(eventAssetFilter, eq(events.severity, 'high'), gte(events.timestamp, since))),
     ])
 
     const items = []

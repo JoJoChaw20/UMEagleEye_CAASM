@@ -73,7 +73,7 @@ async def get_asset(
 async def create_asset(
     payload: AssetCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Manually create a new asset record."""
     asset = Asset(**payload.model_dump())
@@ -88,7 +88,7 @@ async def update_asset(
     asset_id: UUID,
     payload: AssetUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Update asset attributes."""
     result = await db.execute(select(Asset).where(Asset.asset_id == asset_id))
@@ -109,7 +109,7 @@ async def update_asset(
 async def delete_asset(
     asset_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin"])),
 ):
     """Delete an asset record. Ops Lead only."""
     result = await db.execute(select(Asset).where(Asset.asset_id == asset_id))
@@ -124,7 +124,7 @@ async def set_baseline(
     asset_id: UUID,
     payload: BaselineSetRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Capture the current state as the Golden Image baseline (FR-03-01).
     Requires explicit confirmation to overwrite existing baseline."""
@@ -186,7 +186,7 @@ async def scan_asset_sbom(
     asset_id: UUID,
     payload: SBOMScanRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(["ops_lead", "security_engineer"])),
+    current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
     """Trigger an async SBOM generation and vulnerability scan for an asset (FR-02)."""
     from app.tasks.sbom_tasks import generate_asset_sbom

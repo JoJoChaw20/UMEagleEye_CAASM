@@ -8,6 +8,8 @@ import {
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
 } from 'recharts'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
+import TenantSelector from '../components/common/TenantSelector'
 
 // ── Colour maps ───────────────────────────────────────────────
 const SEVERITY_COLORS = {
@@ -102,6 +104,9 @@ function useToast() {
 }
 
 export default function AlertsPage() {
+  const { user } = useAuth()
+  const isSuperadmin    = user?.role === 'superadmin'
+  const isBusinessOwner = user?.role === 'business_owner'
   const [events,          setEvents]          = useState([])
   const [stats,           setStats]           = useState(null)
   const [loading,         setLoading]         = useState(true)
@@ -109,6 +114,7 @@ export default function AlertsPage() {
   const [page,            setPage]            = useState(1)
   const [severityFilter,  setSeverityFilter]  = useState('')
   const [typeFilter,      setTypeFilter]      = useState('')
+  const [tenantFilter,    setTenantFilter]    = useState('')
   const [advisoryLoading,     setAdvisoryLoading]     = useState({}) // eventId → bool
   const [acknowledgeLoading,  setAcknowledgeLoading]  = useState({}) // eventId → bool
   const { toast, show: showToast } = useToast()
@@ -121,10 +127,11 @@ export default function AlertsPage() {
       const params = { page, page_size: PAGE_SIZE }
       if (severityFilter) params.severity = severityFilter
       if (typeFilter) params.event_type = typeFilter
+      if (tenantFilter) params.tenant_id = tenantFilter
 
       const [eventsRes, statsRes] = await Promise.all([
         client.get('/events', { params }),
-        client.get('/events/stats/summary'),
+        client.get('/events/stats/summary', { params: tenantFilter ? { tenant_id: tenantFilter } : {} }),
       ])
 
       setEvents(eventsRes.data.items || [])
@@ -135,7 +142,7 @@ export default function AlertsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, severityFilter, typeFilter])
+  }, [page, severityFilter, typeFilter, tenantFilter])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -212,21 +219,24 @@ export default function AlertsPage() {
       )}
 
       {/* ── Header ── */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Alerts</h1>
           <p className="text-dark-400 text-sm mt-1">
             Unified view of CVE detections, drift events, and CTI matches
           </p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={triggerDriftAudit}
-            className="btn-secondary flex items-center gap-2 text-sm"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Run Drift Audit
-          </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
+          {!isSuperadmin && !isBusinessOwner && (
+            <button
+              onClick={triggerDriftAudit}
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Run Drift Audit
+            </button>
+          )}
         </div>
       </div>
 
@@ -273,7 +283,7 @@ export default function AlertsPage() {
             </div>
           </div>
           <p className="text-3xl font-bold text-accent-amber">{stats?.avg_risk_score ?? 0}</p>
-          <p className="text-xs text-dark-400 mt-1">EPSS-weighted composite</p>
+          <p className="text-xs text-dark-400 mt-1">CVE events only (EPSS-weighted)</p>
         </div>
       </div>
 
@@ -493,17 +503,26 @@ export default function AlertsPage() {
 
                   <td>
                     <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => triggerAdvisory(e.event_id)}
-                        disabled={advisoryLoading[e.event_id]}
-                        className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
-                        title="Generate AI Advisory"
-                      >
-                        {advisoryLoading[e.event_id]
-                          ? <RefreshCw className="w-4 h-4 animate-spin" />
-                          : <Zap className="w-4 h-4" />}
-                      </button>
-                      {DRIFT_TYPES.has(e.event_type) && (
+                      {!isSuperadmin && (
+                        <button
+                          onClick={() => triggerAdvisory(e.event_id)}
+                          disabled={advisoryLoading[e.event_id]}
+                          className={`relative p-1.5 rounded transition-colors disabled:opacity-40 ${
+                            e.has_advisory
+                              ? 'hover:bg-accent-green/10 text-accent-green'
+                              : 'hover:bg-eagle-500/10 text-eagle-400'
+                          }`}
+                          title={e.has_advisory ? 'Advisory exists — regenerate?' : 'Generate AI Advisory'}
+                        >
+                          {advisoryLoading[e.event_id]
+                            ? <RefreshCw className="w-4 h-4 animate-spin" />
+                            : <Zap className="w-4 h-4" />}
+                          {e.has_advisory && !advisoryLoading[e.event_id] && (
+                            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent-green" />
+                          )}
+                        </button>
+                      )}
+                      {!isSuperadmin && DRIFT_TYPES.has(e.event_type) && (
                         <button
                           onClick={() => acknowledgeEvent(e.event_id)}
                           disabled={acknowledgeLoading[e.event_id]}

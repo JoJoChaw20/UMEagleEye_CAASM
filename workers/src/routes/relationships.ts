@@ -9,8 +9,9 @@ import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema
 import { inferForTenant } from './topology'
 
 const app = new Hono<{ Bindings: Env }>()
-const WRITE_ROLES = ['ops_lead', 'security_engineer', 'superadmin'] as const
-const DELETE_ROLES = ['ops_lead', 'superadmin'] as const
+const VIEW_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin'] as const
+const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin'] as const
+const DELETE_ROLES = ['tenant_superadmin', 'tenant_admin'] as const
 
 // ── Helpers ───────────────────────────────────────────────────────
 function toSnakeNode(n: typeof assets.$inferSelect, edgeCount: number) {
@@ -44,7 +45,7 @@ function anyOfUuids(col: any, ids: string[]) {
 
 // ── GET /graph ───────────────────────────────────────────────────
 // Returns nodes + edges with snake_case field names and edge_count per node.
-app.get('/graph', authMiddleware, async (c) => {
+app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -98,7 +99,7 @@ app.get('/graph', authMiddleware, async (c) => {
 })
 
 // ── GET /graph/:assetId — subgraph for one asset ─────────────────
-app.get('/graph/:assetId', authMiddleware, async (c) => {
+app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -145,7 +146,7 @@ app.get('/graph/:assetId', authMiddleware, async (c) => {
 
 // ── GET /blast-radius/:assetId ───────────────────────────────────
 // BFS up to max_depth hops. Returns per-asset depth + path.
-app.get('/blast-radius/:assetId', authMiddleware, async (c) => {
+app.get('/blast-radius/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)

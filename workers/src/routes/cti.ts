@@ -12,7 +12,8 @@ import { ctiIndicators, assets } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
-const INGEST_ROLES = ['ops_lead', 'security_engineer', 'superadmin']
+const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
+const INGEST_ROLES = ['tenant_superadmin', 'tenant_admin']
 
 // ── Helper: transform a Drizzle CTI row → snake_case ─────────────
 function toSnake(row: typeof ctiIndicators.$inferSelect) {
