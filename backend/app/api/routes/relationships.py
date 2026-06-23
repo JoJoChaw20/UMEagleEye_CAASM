@@ -103,14 +103,28 @@ async def get_blast_radius(
         session.close()
 
 
-@router.post("/infer", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/infer")
 async def trigger_inference(
     current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
-    """Trigger async relationship inference from scan data."""
-    from app.tasks.relationship_tasks import infer_asset_relationships
-    task = infer_asset_relationships.delay()
-    return {"task_id": task.id, "status": "QUEUED"}
+    """Run relationship inference synchronously and return the result."""
+    from app.services.relationship import RelationshipService
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.core.config import settings
+
+    engine = create_engine(settings.DATABASE_URL_SYNC, pool_pre_ping=True)
+    session = Session(engine)
+    try:
+        result = RelationshipService.infer_relationships(session)
+        return {
+            "message": f"Inferred {result['new_relationships']} new relationships ({result['total_relationships']} total)",
+            "new_relationships": result["new_relationships"],
+            "total_relationships": result["total_relationships"],
+            "total_assets": result["total_assets"],
+        }
+    finally:
+        session.close()
 
 
 @router.post("", response_model=AssetRelationshipResponse, status_code=status.HTTP_201_CREATED)

@@ -57,7 +57,7 @@ export default function BlastRadiusModal({ assetId, onClose }) {
               <h2 className="text-lg font-bold text-white">Blast Radius Analysis</h2>
               {assetInfo && (
                 <p className="text-sm text-dark-400">
-                  Origin: <span className="text-accent-cyan font-mono">{assetInfo.hostname || assetInfo.ip_address}</span>
+                  Origin: <span className="text-accent-cyan font-mono">{assetInfo.hostname || assetInfo.ipAddress}</span>
                 </p>
               )}
             </div>

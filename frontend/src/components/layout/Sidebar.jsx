@@ -1,7 +1,7 @@
 import { NavLink, Link } from 'react-router-dom'
 import {
   LayoutDashboard, Server, Bell, FileSearch, Globe, FileText,
-  Settings, LogOut, Eye, Network, Radar, GitBranch, Bot, Building2,
+  Settings, LogOut, Eye, Network, Radar, Bot, Building2,
   ChevronLeft, MessageCircle, Package,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
@@ -13,8 +13,7 @@ const baseItems = [
 
 // Items hidden from business_owner
 const opsItems = [
-  { to: '/discovery',  icon: Radar,     label: 'Discovery' },
-  { to: '/topology',   icon: GitBranch, label: 'Topology' },
+  { to: '/discovery', icon: Radar, label: 'Discovery' },
 ]
 
 // Settings hidden from business_owner

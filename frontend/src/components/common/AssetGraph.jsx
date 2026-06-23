@@ -461,6 +461,8 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
   const triggerInference = async () => {
     setInferring(true)
     try {
+      // Topology must be inferred first so assets get network layer data
+      try { await client.post('/topology/infer') } catch { /* backend optional */ }
       const res = await client.post('/relationships/infer')
       await loadGraph()
       alert(res.data?.message || 'Relationships inferred.')

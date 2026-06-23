@@ -12,7 +12,6 @@ import ThreatIntelPage from './pages/ThreatIntelPage'
 import SBOMPage from './pages/SBOMPage'
 import ReportsPage from './pages/ReportsPage'
 import SettingsPage from './pages/SettingsPage'
-import TopologyPage from './pages/TopologyPage'
 import AgentsPage from './pages/AgentsPage'
 import TenantsPage from './pages/TenantsPage'
 import TenantSettingsPage from './pages/TenantSettingsPage'
@@ -41,7 +40,6 @@ export default function App() {
 
         {/* DISCOVERY / NETWORK — business_owner excluded */}
         <Route path="discovery" element={<ProtectedRoute allowedRoles={OPS_ROLES}><DiscoveryPage /></ProtectedRoute>} />
-        <Route path="topology"  element={<ProtectedRoute allowedRoles={OPS_ROLES}><TopologyPage /></ProtectedRoute>} />
 
         {/* SECURITY — all roles */}
         <Route path="alerts"       element={<ProtectedRoute allowedRoles={ALL_ROLES}><AlertsPage /></ProtectedRoute>} />

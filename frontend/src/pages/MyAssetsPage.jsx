@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, Info } from 'lucide-react'
+import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, GitBranch } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import AssetGraph from '../components/common/AssetGraph'
 
 // ── Criticality badge with score-breakdown tooltip ────────────────
 function CriticalityBadge({ score, assetId }) {
@@ -514,6 +515,8 @@ export default function MyAssetsPage() {
   const [error, setError] = useState(null)
 
   const [rescoring, setRescoring] = useState(false)
+  const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
+  const [graphBlastId, setGraphBlastId] = useState(null)
   const isReadOnly = ['business_owner', 'superadmin'].includes(user?.role)
   const canDelete = user?.role === 'tenant_superadmin'
 
@@ -601,9 +604,11 @@ export default function MyAssetsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">My Assets</h1>
-          <p className="text-dark-400 text-sm mt-1">Manually managed asset inventory</p>
+          <p className="text-dark-400 text-sm mt-1">
+            {activeTab === 'inventory' ? 'Manually managed asset inventory' : 'Asset relationship graph'}
+          </p>
         </div>
-        {!isReadOnly && (
+        {activeTab === 'inventory' && !isReadOnly && (
           <div className="flex items-center gap-2">
             <button
               onClick={handleRescore}
@@ -629,187 +634,217 @@ export default function MyAssetsPage() {
         )}
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-          <input
-            type="text"
-            placeholder="Search by IP or hostname..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-            className="input-field pl-10 text-sm"
-          />
-        </div>
-        <select
-          value={deviceTypeFilter}
-          onChange={e => { setDeviceTypeFilter(e.target.value); setPage(1) }}
-          className="input-field text-sm py-1.5 w-44"
-        >
-          <option value="">All Types</option>
-          <option value="server">Server</option>
-          <option value="workstation">Workstation</option>
-          <option value="network">Network</option>
-          <option value="iot">IoT</option>
-          <option value="unknown">Unknown</option>
-        </select>
+      {/* Tab Toggle */}
+      <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50">
         <button
-          onClick={() => { setSearch(''); setDeviceTypeFilter(''); setPage(1) }}
-          className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
+          onClick={() => setActiveTab('inventory')}
+          className={`tab-toggle ${activeTab === 'inventory' ? 'active' : ''}`}
         >
-          Clear filters
+          <Server className="w-4 h-4" />
+          Inventory
         </button>
-        <span className="text-dark-400 text-sm ml-auto">{total} assets</span>
+        <button
+          onClick={() => setActiveTab('graph')}
+          className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}
+        >
+          <GitBranch className="w-4 h-4" />
+          Relationship Graph
+        </button>
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="glass-card p-4 border border-red-500/30">
-          <p className="text-red-400 text-sm">{error}</p>
-          <button onClick={loadAssets} className="btn-secondary text-sm mt-2">Retry</button>
+      {/* Graph Tab */}
+      {activeTab === 'graph' && (
+        <div className="glass-card p-5">
+          <AssetGraph
+            onSelectAsset={(id) => setGraphBlastId(prev => prev === id ? null : id)}
+            blastRadiusId={graphBlastId}
+            tenantFilter={tenantFilter}
+          />
         </div>
       )}
 
-      {/* Table */}
-      <div className="glass-card overflow-visible">
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+      {/* Inventory Tab */}
+      {activeTab === 'inventory' && (
+        <>
+          <div className="flex items-center gap-3 flex-wrap">
+            <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+              <input
+                type="text"
+                placeholder="Search by IP or hostname..."
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+                className="input-field pl-10 text-sm"
+              />
+            </div>
+            <select
+              value={deviceTypeFilter}
+              onChange={e => { setDeviceTypeFilter(e.target.value); setPage(1) }}
+              className="input-field text-sm py-1.5 w-44"
+            >
+              <option value="">All Types</option>
+              <option value="server">Server</option>
+              <option value="workstation">Workstation</option>
+              <option value="network">Network</option>
+              <option value="iot">IoT</option>
+              <option value="unknown">Unknown</option>
+            </select>
+            <button
+              onClick={() => { setSearch(''); setDeviceTypeFilter(''); setPage(1) }}
+              className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
+            >
+              Clear filters
+            </button>
+            <span className="text-dark-400 text-sm ml-auto">{total} assets</span>
           </div>
-        ) : assets.length > 0 ? (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>IP Address</th>
-                <th>Hostname</th>
-                <th>Device Type</th>
-                <th>Owner</th>
-                <th className="criticality-col">Criticality</th>
-                <th>Internet Facing</th>
-                <th>Last Scanned</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {assets.map((a) => (
-                <tr key={a.assetId}>
-                  <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
-                  <td>
-                    <div className="font-medium text-white">{a.hostname || '—'}</div>
-                    {a.osInfo?.ai_description && (
-                      <div className="text-xs text-dark-300 mt-1 max-w-[200px] sm:max-w-[300px]" title={a.osInfo.ai_description}>
-                        <span className="text-eagle-400/80 font-medium mr-1">AI:</span> 
-                        {a.osInfo.ai_description}
-                      </div>
-                    )}
-                  </td>
-                  <td className="criticality-col">
-                    {(() => {
-                      const ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡', unknown: '❓' }
-                      return (
-                        <span className="flex items-center gap-1.5 whitespace-nowrap">
-                          <span className="text-base leading-none">{ICONS[a.deviceType] ?? '❓'}</span>
-                          <span className="text-xs text-dark-300 capitalize">{a.deviceType}</span>
-                        </span>
-                      )
-                    })()}
-                  </td>
-                  <td>
-                    <EditableCell
-                      value={a.owner}
-                      readOnly={isReadOnly}
-                      onSave={(v) => handleUpdate(a.assetId, 'owner', v)}
-                    />
-                  </td>
-                  <td>
-                    {isReadOnly ? (
-                      <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
-                        <input
-                          type="range"
-                          min="1"
-                          max="10"
-                          value={a.criticalityScore}
-                          onChange={(e) => handleUpdate(a.assetId, 'criticality_score', Number(e.target.value))}
-                          className="w-20 accent-eagle-500"
+
+          {error && (
+            <div className="glass-card p-4 border border-red-500/30">
+              <p className="text-red-400 text-sm">{error}</p>
+              <button onClick={loadAssets} className="btn-secondary text-sm mt-2">Retry</button>
+            </div>
+          )}
+
+          <div className="glass-card overflow-visible">
+            {loading ? (
+              <div className="flex items-center justify-center py-20">
+                <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+              </div>
+            ) : assets.length > 0 ? (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>IP Address</th>
+                    <th>Hostname</th>
+                    <th>Device Type</th>
+                    <th>Owner</th>
+                    <th className="criticality-col">Criticality</th>
+                    <th>Internet Facing</th>
+                    <th>Last Scanned</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assets.map((a) => (
+                    <tr key={a.assetId}>
+                      <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
+                      <td>
+                        <div className="font-medium text-white">{a.hostname || '—'}</div>
+                        {a.osInfo?.ai_description && (
+                          <div className="text-xs text-dark-300 mt-1 max-w-[200px] sm:max-w-[300px]" title={a.osInfo.ai_description}>
+                            <span className="text-eagle-400/80 font-medium mr-1">AI:</span>
+                            {a.osInfo.ai_description}
+                          </div>
+                        )}
+                      </td>
+                      <td className="criticality-col">
+                        {(() => {
+                          const ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡', unknown: '❓' }
+                          return (
+                            <span className="flex items-center gap-1.5 whitespace-nowrap">
+                              <span className="text-base leading-none">{ICONS[a.deviceType] ?? '❓'}</span>
+                              <span className="text-xs text-dark-300 capitalize">{a.deviceType}</span>
+                            </span>
+                          )
+                        })()}
+                      </td>
+                      <td>
+                        <EditableCell
+                          value={a.owner}
+                          readOnly={isReadOnly}
+                          onSave={(v) => handleUpdate(a.assetId, 'owner', v)}
                         />
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    {a.isInternetFacing
-                      ? <span className="text-xs text-yellow-400 font-medium">Yes</span>
-                      : <span className="text-xs text-dark-500">No</span>
-                    }
-                  </td>
-                  <td className="text-dark-400 text-xs">
-                    {a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-1">
-                      {!isReadOnly && (
-                        <button
-                          onClick={() => handleBaseline(a.assetId)}
-                          className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`}
-                          title="Set Baseline"
-                        >
-                          <Bookmark className="w-4 h-4" />
-                        </button>
-                      )}
-                      {canDelete && (
-                        <button
-                          onClick={() => handleDelete(a.assetId)}
-                          className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                          title="Delete Asset"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <div className="text-center py-20 text-dark-400">
-            <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p className="text-lg font-medium mb-2">No manual assets found</p>
-            <p className="text-sm mb-4">
-              {search || deviceTypeFilter ? 'No assets match your filters.' : 'Add assets manually to track them here.'}
-            </p>
-            {!isReadOnly && !search && !deviceTypeFilter && (
-              <button onClick={() => setShowAdd(true)} className="btn-primary">
-                <Plus className="w-4 h-4 mr-2" />
-                Add First Asset
-              </button>
+                      </td>
+                      <td>
+                        {isReadOnly ? (
+                          <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
+                            <input
+                              type="range"
+                              min="1"
+                              max="10"
+                              value={a.criticalityScore}
+                              onChange={(e) => handleUpdate(a.assetId, 'criticality_score', Number(e.target.value))}
+                              className="w-20 accent-eagle-500"
+                            />
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {a.isInternetFacing
+                          ? <span className="text-xs text-yellow-400 font-medium">Yes</span>
+                          : <span className="text-xs text-dark-500">No</span>
+                        }
+                      </td>
+                      <td className="text-dark-400 text-xs">
+                        {a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}
+                      </td>
+                      <td>
+                        <div className="flex items-center gap-1">
+                          {!isReadOnly && (
+                            <button
+                              onClick={() => handleBaseline(a.assetId)}
+                              className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`}
+                              title="Set Baseline"
+                            >
+                              <Bookmark className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              onClick={() => handleDelete(a.assetId)}
+                              className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                              title="Delete Asset"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="text-center py-20 text-dark-400">
+                <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium mb-2">No manual assets found</p>
+                <p className="text-sm mb-4">
+                  {search || deviceTypeFilter ? 'No assets match your filters.' : 'Add assets manually to track them here.'}
+                </p>
+                {!isReadOnly && !search && !deviceTypeFilter && (
+                  <button onClick={() => setShowAdd(true)} className="btn-primary">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add First Asset
+                  </button>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          <button
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
-          >
-            Previous
-          </button>
-          <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
-          <button
-            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
-          >
-            Next
-          </button>
-        </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+              >
+                Previous
+              </button>
+              <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Add Modal */}
