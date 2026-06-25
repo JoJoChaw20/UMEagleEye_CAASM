@@ -1,8 +1,9 @@
 const fs = require('fs');
 const { Pool } = require('pg');
-const pool = new Pool({
-  connectionString: 'postgresql://REDACTED:REDACTED@REDACTED/neondb?sslmode=require'
-});
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL env var is required, e.g. DATABASE_URL=postgresql://... node import-csv.js');
+}
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 function parseCSVLine(line) {
   const result = [];
