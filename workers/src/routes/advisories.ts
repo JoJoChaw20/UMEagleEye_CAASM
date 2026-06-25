@@ -36,7 +36,7 @@ async function getAdvisoryTenantId(
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const page = Math.max(1, parseInt(c.req.query('page') ?? '1'))
     const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') ?? '50')))
@@ -114,7 +114,7 @@ app.get('/', authMiddleware, async (c) => {
 app.get('/:advisoryId', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { advisoryId } = c.req.param()
 
     const [advisory] = await db
@@ -155,7 +155,7 @@ app.patch(
   async (c) => {
     try {
       const user = c.get('user')
-      const db = getDb(c.env.DATABASE_URL)
+      const db = getDb(c.env.HYPERDRIVE.connectionString)
       const { advisoryId } = c.req.param()
       const { status } = c.req.valid('json')
 

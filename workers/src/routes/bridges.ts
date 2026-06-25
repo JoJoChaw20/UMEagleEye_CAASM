@@ -28,7 +28,7 @@ function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'off
 
 // ── GET / — List bridges ──────────────────────────────────────────
 router.get('/', authMiddleware, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const user = c.get('user')
 
   const rows = user.role === 'superadmin'
@@ -74,7 +74,7 @@ router.post(
     mode: z.enum(['relay', 'buffer']).optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { name, mode } = c.req.valid('json')
 
@@ -115,7 +115,7 @@ router.patch(
     tenant_id: z.string().uuid().nullable().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { bridgeId } = c.req.param()
     const updates = c.req.valid('json')
@@ -147,7 +147,7 @@ router.delete(
   authMiddleware,
   requireRoles('ops_lead', 'superadmin'),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { bridgeId } = c.req.param()
 
@@ -171,7 +171,7 @@ router.post(
     queue_depth: z.number().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { bridgeId } = c.req.param()
     const { version, bridge_ip } = c.req.valid('json')
 

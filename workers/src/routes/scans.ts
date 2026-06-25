@@ -91,7 +91,7 @@ async function sha256Hex(input: string): Promise<string> {
 app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.DATABASE_URL)
+    const db   = getDb(c.env.HYPERDRIVE.connectionString)
     const tenantId = user.role === 'superadmin' ? undefined : (user.tenantId ?? undefined)
     const count = await runDriftAudit(db, tenantId)
     return c.json({ message: 'Drift audit complete', drift_events_generated: count })
@@ -105,7 +105,7 @@ app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tena
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const tenantIdParam = c.req.query('tenant_id')
     const effectiveTenantId = user.role === 'superadmin'
@@ -136,7 +136,7 @@ app.get('/', authMiddleware, async (c) => {
 app.get('/compare', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const tenantCond = (user.role !== 'superadmin' && user.tenantId)
       ? and(eq(scanResults.status, 'completed'), ne(scanResults.scanType, 'sbom'), eq(scanResults.tenantId, user.tenantId))
@@ -258,7 +258,7 @@ app.get('/pending', async (c) => {
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
 
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid agent credentials' }, 401)
@@ -322,7 +322,7 @@ app.post('/:scanId/start', async (c) => {
       .map(b => b.toString(16).padStart(2, '0')).join('')
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
     const { scanId } = c.req.param()
@@ -375,7 +375,7 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
 }), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { subnet, agent_id, tenant_id, scan_type } = c.req.valid('json')
 
     const effectiveScanType = scan_type ?? 'active'
@@ -438,7 +438,7 @@ const ingestSchema = z.object({
 
 app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
   try {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     // Agent authentication via API key
     const authHeader = c.req.header('Authorization')
@@ -481,7 +481,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
       try {
         const conds = [eq(assets.ipAddress, host.ip)]
         if (tenantId) conds.push(eq(assets.tenantId, tenantId))
-        const [found] = await getDb(c.env.DATABASE_URL)
+        const [found] = await getDb(c.env.HYPERDRIVE.connectionString)
           .select({ deviceType: assets.deviceType, hostname: assets.hostname, owner: assets.owner, hardwareVendor: assets.hardwareVendor })
           .from(assets)
           .where(and(...conds))
@@ -805,7 +805,7 @@ Example:
 // ── POST /fail ───────────────────────────────────────────────────
 app.post('/fail', async (c) => {
   try {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const authHeader = c.req.header('Authorization')
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return c.json({ detail: 'Missing or invalid Authorization header' }, 401)
@@ -844,7 +844,7 @@ app.post('/fail', async (c) => {
 app.get('/status/:scanId', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { scanId } = c.req.param()
 
     const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scanId)).limit(1)

@@ -11,7 +11,7 @@ const app = new Hono<{ Bindings: Env }>()
 app.get('/current', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const tenantIdParam = c.req.query('tenant_id')
     const effectiveTenantId = user.role === 'superadmin'
@@ -102,7 +102,7 @@ app.get('/current', authMiddleware, async (c) => {
 app.get('/history', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const raw   = c.req.query('limit') ?? c.req.query('days') ?? '14'
     const limit = Math.min(365, Math.max(1, parseInt(raw)))

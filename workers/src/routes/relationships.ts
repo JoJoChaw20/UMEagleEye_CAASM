@@ -48,7 +48,7 @@ function anyOfUuids(col: any, ids: string[]) {
 app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const tenantIdParam = c.req.query('tenant_id')
 
     // Determine the effective tenant scope
@@ -102,7 +102,7 @@ app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
 app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
 
     const [asset] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
@@ -149,7 +149,7 @@ app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c
 app.get('/blast-radius/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
     const maxDepth = Math.min(parseInt(c.req.query('max_depth') ?? '3', 10), 5)
 
@@ -298,7 +298,7 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
 app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     if (!user.tenantId && user.role !== 'superadmin') {
       return c.json({ detail: 'User has no tenant assigned' }, 400)
@@ -332,7 +332,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES),
   async (c) => {
     try {
       const user = c.get('user')
-      const db = getDb(c.env.DATABASE_URL)
+      const db = getDb(c.env.HYPERDRIVE.connectionString)
       const body = c.req.valid('json')
 
       const [srcAsset, tgtAsset] = await Promise.all([
@@ -368,7 +368,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES),
 app.delete('/:relationshipId', authMiddleware, requireRoles(...DELETE_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { relationshipId } = c.req.param()
 
     const [rel] = await db.select().from(assetRelationships)

@@ -29,7 +29,7 @@ const registerSchema = z.object({
 app.post('/register', zValidator('json', registerSchema), async (c) => {
   try {
     const { username, email, password, role } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const existing = await db
       .select({ userId: users.userId })
@@ -73,7 +73,7 @@ const loginSchema = z.object({
 app.post('/login', zValidator('json', loginSchema), async (c) => {
   try {
     const { username, password } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const [user] = await db
       .select()
@@ -114,7 +114,7 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
 app.post('/mfa/setup', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const secret = generateTotpSecret()
     const qr_code_base64 = await generateTotpQR(secret, user.username)
@@ -136,7 +136,7 @@ app.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema), asy
   try {
     const user = c.get('user')
     const { code } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const [dbUser] = await db
       .select({ totpSecret: users.totpSecret })
@@ -171,7 +171,7 @@ const mfaVerifySchema = z.object({
 app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
   try {
     const { user_id, code } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const [user] = await db
       .select()
@@ -207,7 +207,7 @@ const googleSchema = z.object({ access_token: z.string() })
 app.post('/google', zValidator('json', googleSchema), async (c) => {
   try {
     const { access_token: googleToken } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     // Verify via Google's userinfo endpoint
     const userinfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${googleToken}`)
@@ -294,7 +294,7 @@ app.post('/change-password', authMiddleware, zValidator('json', changePasswordSc
   try {
     const { current_password, new_password } = c.req.valid('json')
     const authUser = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const [user] = await db.select().from(users).where(eq(users.userId, authUser.userId)).limit(1)
     if (!user) return c.json({ detail: 'User not found' }, 404)
@@ -316,7 +316,7 @@ app.post('/change-password', authMiddleware, zValidator('json', changePasswordSc
 app.get('/me', authMiddleware, async (c) => {
   try {
     const authUser = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const [row] = await db
       .select({
@@ -358,7 +358,7 @@ app.post('/mfa/reset', authMiddleware, zValidator('json', mfaResetSchema), async
       return c.json({ detail: 'Forbidden' }, 403)
     }
     const { email } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const result = await db.update(users).set({ mfaEnabled: false, totpSecret: null }).where(eq(users.email, email)).returning({ userId: users.userId, email: users.email })
     if (result.length === 0) return c.json({ detail: 'User not found' }, 404)
     return c.json({ message: 'MFA reset successfully', user: result[0] })

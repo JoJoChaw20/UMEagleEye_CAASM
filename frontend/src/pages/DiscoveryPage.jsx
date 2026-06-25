@@ -74,11 +74,10 @@ function validateSubnet(value) {
   return null // valid
 }
 
-function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
+function NewScanModal({ onClose, onSubmit, agents }) {
   const [subnet, setSubnet] = useState(import.meta.env.VITE_SCAN_DEFAULT_SUBNET || '192.168.1.0/24')
   const [agentId, setAgentId] = useState('')
   const [scanType, setScanType] = useState('active')
-  const [tenantId, setTenantId] = useState(userTenantId || (tenants.length === 1 ? tenants[0].tenant_id : ''))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [subnetError, setSubnetError] = useState(null)
@@ -108,7 +107,7 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
 
     try {
       const finalSubnet = scanType === 'passive' ? 'arp-discovery' : subnet
-      await onSubmit({ subnet: finalSubnet, agent_id: effectiveAgentId, scan_type: scanType, tenant_id: tenantId || undefined })
+      await onSubmit({ subnet: finalSubnet, agent_id: effectiveAgentId, scan_type: scanType })
       onClose()
     } catch (err) {
       const data = err?.response?.data
@@ -155,18 +154,6 @@ function NewScanModal({ onClose, onSubmit, agents, tenants, userTenantId }) {
               )}
             </div>
           )}
-
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">
-              Tenant <span className="text-dark-500">(auto-detected from agent)</span>
-            </label>
-            <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className="input-field w-full text-sm">
-              <option value="">— Auto from agent —</option>
-              {tenants.map((t) => (
-                <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
 
           <div>
             <label className="block text-xs text-dark-400 mb-1">Agent</label>
@@ -639,8 +626,8 @@ export default function DiscoveryPage() {
     return () => clearInterval(intervalRef.current)
   }, [scans, loadData])
 
-  const handleStartScan = async ({ subnet, agent_id, scan_type, tenant_id }) => {
-    await client.post('/scans/active', { subnet, agent_id, scan_type, tenant_id })
+  const handleStartScan = async ({ subnet, agent_id, scan_type }) => {
+    await client.post('/scans/active', { subnet, agent_id, scan_type })
     await loadData()
   }
 
@@ -868,8 +855,6 @@ export default function DiscoveryPage() {
           onClose={() => setShowNew(false)}
           onSubmit={handleStartScan}
           agents={agents}
-          tenants={tenants}
-          userTenantId={user?.tenantId}
         />
       )}
 

@@ -36,7 +36,7 @@ function computeAssetCriticality(input: {
 app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const page = Math.max(1, parseInt(c.req.query('page') ?? '1'))
     const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') ?? '50')))
@@ -103,7 +103,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
 
     const [asset] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
@@ -141,7 +141,7 @@ const createAssetSchema = z.object({
 app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', createAssetSchema), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const body = c.req.valid('json')
 
     const targetTenantId = (user.role === 'superadmin' && body.tenant_id)
@@ -230,7 +230,7 @@ const updateAssetSchema = z.object({
 app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', updateAssetSchema), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
     const body = c.req.valid('json')
 
@@ -291,7 +291,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
 app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
 
     const [existing] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
@@ -315,7 +315,7 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
 app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
 
     const [existing] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
@@ -354,7 +354,7 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
 app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     if (!user.tenantId && user.role !== 'superadmin') {
       return c.json({ detail: 'User has no tenant assigned' }, 400)
@@ -376,7 +376,7 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
 app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
 
     const [asset] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
@@ -426,7 +426,7 @@ const VALID_DEVICE_TYPES = new Set(['server', 'workstation', 'network', 'iot', '
 app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const targetTenantId = user.role === 'superadmin'
       ? (c.req.query('tenant_id') || user.tenantId || null)
@@ -593,7 +593,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
 app.get('/:assetId/baseline', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
 
     const [asset] = await db
@@ -622,7 +622,7 @@ app.get('/:assetId/baseline', authMiddleware, requireRoles(...READ_ROLES), async
 // ── GET /:assetId/sbom-scan-status ─── frontend polls this after triggering ───
 app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
     const [row] = await db
       .select({
@@ -659,7 +659,7 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
   zValidator('json', scanSbomSchema), async (c) => {
     try {
       const user = c.get('user')
-      const db   = getDb(c.env.DATABASE_URL)
+      const db   = getDb(c.env.HYPERDRIVE.connectionString)
       const { assetId } = c.req.param()
       const { target }  = c.req.valid('json')
 

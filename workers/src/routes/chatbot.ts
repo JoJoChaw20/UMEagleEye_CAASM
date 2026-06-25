@@ -383,7 +383,7 @@ app.post(
   async (c) => {
     const { message, history = [], tenant_id, stream: wantStream = false } = c.req.valid('json')
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     // Superadmin can pass an explicit tenant_id to filter per-tenant; others always use own tenant
     const tenantId = user.role === 'superadmin'
       ? (tenant_id || undefined)

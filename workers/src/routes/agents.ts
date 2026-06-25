@@ -28,7 +28,7 @@ function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'off
 
 // ── GET / — List agents ───────────────────────────────────────────
 router.get('/', authMiddleware, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const user = c.get('user')
 
   const rows = user.role === 'superadmin'
@@ -64,7 +64,7 @@ router.post(
     bridge_id: z.string().uuid().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { name, config, bridge_id } = c.req.valid('json')
 
@@ -97,7 +97,7 @@ router.post(
 
 // ── GET /:agentId — Single agent detail ───────────────────────────
 router.get('/:agentId', authMiddleware, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const user = c.get('user')
   const { agentId } = c.req.param()
 
@@ -133,7 +133,7 @@ router.patch(
     tenant_id: z.string().uuid().nullable().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { agentId } = c.req.param()
     const updates = c.req.valid('json')
@@ -173,7 +173,7 @@ router.delete(
   authMiddleware,
   requireRoles('ops_lead', 'superadmin'),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { agentId } = c.req.param()
 
@@ -196,7 +196,7 @@ router.post(
     gateway_ip: z.string().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { agentId } = c.req.param()
     const { version, gateway_ip } = c.req.valid('json')
 

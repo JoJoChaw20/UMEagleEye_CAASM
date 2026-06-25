@@ -21,7 +21,7 @@ const READ_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business
 app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const tenantIdParam = c.req.query('tenant_id')
     const effectiveTenantId = user.role === 'superadmin'
@@ -84,7 +84,7 @@ app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c)
 app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
 
     const page = Math.max(1, parseInt(c.req.query('page') ?? '1'))
     const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('page_size') ?? '15')))
@@ -158,7 +158,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 // ── GET /:sbomId ─────────────────────────────────────────────────
 app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { sbomId } = c.req.param()
 
     const [sbom] = await db.select().from(sboms).where(eq(sboms.sbomId, sbomId)).limit(1)
@@ -189,7 +189,7 @@ app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 // ── GET /:sbomId/dependencies ────────────────────────────────────
 app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { sbomId } = c.req.param()
     const limit = Math.min(1000, Math.max(1, parseInt(c.req.query('limit') ?? '500')))
     const search = c.req.query('search')
@@ -225,7 +225,7 @@ app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), as
 // ── DELETE /by-asset/:assetId ─── superadmin cleans up stale SBOM records ────
 app.delete('/by-asset/:assetId', authMiddleware, requireRoles('superadmin'), async (c) => {
   try {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { assetId } = c.req.param()
     // CASCADE on sbomId FK deletes dependencies automatically
     const deleted = await db.delete(sboms).where(eq(sboms.assetId, assetId)).returning({ sbomId: sboms.sbomId })
@@ -265,7 +265,7 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
 
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid agent credentials' }, 401)
@@ -421,7 +421,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
 
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid agent credentials' }, 401)

@@ -32,7 +32,7 @@ function agentStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'offli
 // ── GET / — aggregated notification feed ─────────────────────────
 app.get('/', authMiddleware, async (c) => {
   const user = c.get('user')
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const items: Notification[] = []
 
   try {
@@ -137,7 +137,7 @@ app.get('/', authMiddleware, async (c) => {
 
 // ── GET /count — lightweight unread count for header polling ──────
 app.get('/count', authMiddleware, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   try {
     const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000)
     const [recent, breach] = await Promise.all([

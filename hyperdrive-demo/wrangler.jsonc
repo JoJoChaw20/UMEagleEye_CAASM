@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "eagleeye-hyperdrive-demo",
+  "main": "src/index.ts",
+  "account_id": "6952d86b33a173095e02adcf78bc6fe1",
+  "compatibility_date": "2025-02-04",
+  "observability": {
+    "enabled": true
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "456c0c991a4b43c89ae9b92f71e0e62b"
+    },
+    {
+      "binding": "NEON_HYPERDRIVE",
+      "id": "42a61d213ab44bdabc9c5de5bf5671d1"
+    }
+  ]
+}

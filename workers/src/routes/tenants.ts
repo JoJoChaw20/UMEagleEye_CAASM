@@ -18,7 +18,7 @@ const tenantViewAccess    = [authMiddleware, requireTenantAccess(['superadmin'],
 
 // ── GET / — List all tenants (superadmin only) ────────────────────
 router.get('/', ...superadminOnly, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const rows = await db.select().from(tenants)
   return c.json({
     tenants: rows.map((t) => ({
@@ -40,7 +40,7 @@ router.post(
     slug: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase kebab-case'),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { name, slug } = c.req.valid('json')
 
     const [existing] = await db.select().from(tenants).where(eq(tenants.slug, slug)).limit(1)
@@ -63,7 +63,7 @@ router.post(
 // ── GET /:tenantId — Single tenant with counts ────────────────────
 // superadmin sees any; tenant_superadmin + tenant_admin see own
 router.get('/:tenantId', ...tenantViewAccess, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const { tenantId } = c.req.param()
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
@@ -106,7 +106,7 @@ router.patch(
     is_active: z.boolean().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { tenantId } = c.req.param()
     const user = c.get('user')
     const updates = c.req.valid('json')
@@ -136,7 +136,7 @@ router.patch(
 
 // ── DELETE /:tenantId — Deactivate tenant (superadmin only) ───────
 router.delete('/:tenantId', ...superadminOnly, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const { tenantId } = c.req.param()
 
   const [existing] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
@@ -150,7 +150,7 @@ router.delete('/:tenantId', ...superadminOnly, async (c) => {
 // ── GET /:tenantId/users — List users in tenant ───────────────────
 // superadmin sees any; tenant_superadmin + tenant_admin see own
 router.get('/:tenantId/users', ...tenantViewAccess, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const { tenantId } = c.req.param()
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
@@ -190,7 +190,7 @@ router.post(
     username: z.string().min(1).optional(),
   }).refine(d => d.user_id || d.username, { message: 'Either user_id or username is required' })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { tenantId } = c.req.param()
     const { user_id, username } = c.req.valid('json')
 
@@ -224,7 +224,7 @@ router.post(
     role: z.enum(['tenant_superadmin', 'tenant_admin', 'business_owner']).optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { tenantId } = c.req.param()
     const { email, username, role } = c.req.valid('json')
 
@@ -283,7 +283,7 @@ router.patch(
     role: z.enum(['tenant_superadmin', 'tenant_admin', 'business_owner']),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { tenantId, userId } = c.req.param()
     const { role } = c.req.valid('json')
     const caller = c.get('user')
@@ -332,7 +332,7 @@ router.patch(
     is_active: z.boolean(),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const { tenantId, userId } = c.req.param()
     const { is_active } = c.req.valid('json')
 

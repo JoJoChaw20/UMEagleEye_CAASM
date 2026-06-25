@@ -22,6 +22,7 @@ export interface Env {
   KV_CACHE: KVNamespace
   ADVISORY_QUEUE: Queue
   REPORT_QUEUE: Queue
+  HYPERDRIVE: Hyperdrive
 }
 
 export interface JWTPayload {

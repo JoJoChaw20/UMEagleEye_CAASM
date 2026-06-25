@@ -201,7 +201,7 @@ export async function inferForTenant(
 //             or { tree: [...] } when ?tenant_id= is specified
 // Regular user: { tree: [...] }
 router.get('/', authMiddleware, requireRoles('superadmin', 'tenant_superadmin', 'tenant_admin'), async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
+  const db = getDb(c.env.HYPERDRIVE.connectionString)
   const user = c.get('user')
   const tenantIdFilter = c.req.query('tenant_id')
 
@@ -263,7 +263,7 @@ router.post(
     })),
   })),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { nodes } = c.req.valid('json')
 
@@ -293,7 +293,7 @@ router.delete(
   authMiddleware,
   requireRoles('tenant_superadmin', 'tenant_admin'),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
     const { nodeId } = c.req.param()
 
@@ -314,7 +314,7 @@ router.post(
   authMiddleware,
   requireRoles('tenant_superadmin', 'tenant_admin'),
   async (c) => {
-    const db = getDb(c.env.DATABASE_URL)
+    const db = getDb(c.env.HYPERDRIVE.connectionString)
     const user = c.get('user')
 
     if (!user.tenantId && user.role !== 'superadmin') {
