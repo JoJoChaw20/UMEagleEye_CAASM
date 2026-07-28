@@ -111,7 +111,7 @@ async def delete_asset(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["tenant_superadmin"])),
 ):
-    """Delete an asset record. Ops Lead only."""
+    """Delete an asset record. Tenant superadmin only."""
     result = await db.execute(select(Asset).where(Asset.asset_id == asset_id))
     asset = result.scalar_one_or_none()
     if not asset:

@@ -170,7 +170,7 @@ async def delete_relationship(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["tenant_superadmin"])),
 ):
-    """Delete an asset relationship. Ops Lead only."""
+    """Delete an asset relationship. Tenant superadmin only."""
     result = await db.execute(
         select(AssetRelationship).where(
             AssetRelationship.relationship_id == relationship_id

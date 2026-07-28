@@ -328,6 +328,7 @@ export default function ReportsPage() {
   const { user } = useAuth()
   const isSuperadmin = user?.role === 'superadmin'
   const isBusinessOwner = user?.role === 'business_owner'
+  const canDeleteReports = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const [reports,     setReports]     = useState([])
   const [tenantFilter, setTenantFilter] = useState('')
   const [listLoading, setListLoading] = useState(true)
@@ -462,11 +463,13 @@ export default function ReportsPage() {
                         {downloading===r.filename ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
                         Download
                       </button>
-                      <button onClick={() => deleteReport(r.filename)} disabled={deleting===r.filename}
-                        className="text-xs flex items-center gap-1 py-1 px-2 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50">
-                        {deleting===r.filename ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                        Delete
-                      </button>
+                      {canDeleteReports && (
+                        <button onClick={() => deleteReport(r.filename)} disabled={deleting===r.filename}
+                          className="text-xs flex items-center gap-1 py-1 px-2 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50">
+                          {deleting===r.filename ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                          Delete
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

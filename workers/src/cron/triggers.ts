@@ -33,7 +33,7 @@ async function checkSlaBreaches(db: ReturnType<typeof getDb>): Promise<void> {
 }
 
 export async function handleCron(controller: ScheduledController, env: Env): Promise<void> {
-  const db = getDb(env.HYPERDRIVE.connectionString)
+  const db = getDb(env.DATABASE_URL)
   const name = getCronName(controller.cron)
   console.log(`[cron] Running: ${name} (${controller.cron})`)
 

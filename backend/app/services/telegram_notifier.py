@@ -144,7 +144,7 @@ def notify_drift_event(
         role=None,
     )
     # Only broadcast to technical staff
-    technical_roles = ["ops_lead", "security_engineer", "mssp_analyst"]
+    technical_roles = ["superadmin", "tenant_superadmin", "tenant_admin"]
     return broadcast_telegram_message(
         text, 
         reply_markup=_markup_to_dict(markup),
@@ -173,7 +173,7 @@ def notify_pdpa_violation(
         f"_Reply /advisories for AI remediation steps_"
     )
     # Broadcast to technical staff + MSSP
-    technical_roles = ["ops_lead", "security_engineer", "mssp_analyst"]
+    technical_roles = ["superadmin", "tenant_superadmin", "tenant_admin"]
     return broadcast_telegram_message(text, allowed_roles=technical_roles) > 0
 
 
@@ -196,7 +196,7 @@ def notify_new_advisory(
         role=None,
     )
     # Default to technical roles only (business_owner excluded for detailed advisories)
-    technical_roles = ["ops_lead", "security_engineer", "mssp_analyst"]
+    technical_roles = ["superadmin", "tenant_superadmin", "tenant_admin"]
     return broadcast_telegram_message(
         text, 
         reply_markup=_markup_to_dict(markup),
@@ -220,7 +220,7 @@ def notify_critical_escalation(
         role=None,
     )
     # Escalate only to technical roles
-    technical_roles = ["ops_lead", "security_engineer", "mssp_analyst"]
+    technical_roles = ["superadmin", "tenant_superadmin", "tenant_admin"]
     return broadcast_telegram_message(
         text, 
         reply_markup=_markup_to_dict(markup),

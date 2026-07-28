@@ -21,7 +21,7 @@ const READ_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business
 app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const tenantIdParam = c.req.query('tenant_id')
     const effectiveTenantId = user.role === 'superadmin'
@@ -80,11 +80,63 @@ app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c)
   }
 })
 
+// ── GET /scans/active ───────────────────────────────────────────
+// Restores visible progress after navigation or a browser refresh.
+// Must remain above /:sbomId so "scans" is not treated as an SBOM UUID.
+app.get('/scans/active', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const tenantIdParam = c.req.query('tenant_id')
+    const effectiveTenantId = user.role === 'superadmin'
+      ? (tenantIdParam ?? undefined)
+      : (user.tenantId ?? undefined)
+
+    const conditions = [
+      eq(scanResults.scanType, 'sbom'),
+      inArray(scanResults.status, ['pending', 'running']),
+    ]
+    if (effectiveTenantId) conditions.push(eq(scanResults.tenantId, effectiveTenantId))
+
+    const rows = await db
+      .select({
+        scanId: scanResults.scanId,
+        assetId: scanResults.subnet,
+        status: scanResults.status,
+        startedAt: scanResults.startedAt,
+        completedAt: scanResults.completedAt,
+        failureReason: scanResults.failureReason,
+        rawResults: scanResults.rawResults,
+      })
+      .from(scanResults)
+      .where(and(...conditions))
+      .orderBy(desc(scanResults.startedAt))
+      .limit(100)
+
+    return c.json({
+      items: rows.map(row => ({
+        scan_id: row.scanId,
+        asset_id: row.assetId,
+        status: row.status,
+        started_at: row.startedAt,
+        completed_at: row.completedAt,
+        failure_reason: row.failureReason,
+        target: Array.isArray(row.rawResults)
+          ? (row.rawResults[0] as Record<string, unknown> | undefined)?.target ?? null
+          : null,
+      })),
+    })
+  } catch (err) {
+    console.error('active SBOM scans error:', err)
+    return c.json({ detail: 'Failed to fetch active SBOM scans' }, 500)
+  }
+})
+
 // ── GET / ────────────────────────────────────────────────────────
 app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const page = Math.max(1, parseInt(c.req.query('page') ?? '1'))
     const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('page_size') ?? '15')))
@@ -158,7 +210,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 // ── GET /:sbomId ─────────────────────────────────────────────────
 app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { sbomId } = c.req.param()
 
     const [sbom] = await db.select().from(sboms).where(eq(sboms.sbomId, sbomId)).limit(1)
@@ -189,7 +241,7 @@ app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 // ── GET /:sbomId/dependencies ────────────────────────────────────
 app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { sbomId } = c.req.param()
     const limit = Math.min(1000, Math.max(1, parseInt(c.req.query('limit') ?? '500')))
     const search = c.req.query('search')
@@ -222,11 +274,24 @@ app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), as
   }
 })
 
-// ── DELETE /by-asset/:assetId ─── superadmin cleans up stale SBOM records ────
-app.delete('/by-asset/:assetId', authMiddleware, requireRoles('superadmin'), async (c) => {
+// ── DELETE /by-asset/:assetId ─── tenant admins clean up their tenant's SBOMs ──
+app.delete('/by-asset/:assetId', authMiddleware,
+  requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
     const { assetId } = c.req.param()
+
+    // Authorize against the asset tenant before deleting any SBOM data.
+    const [asset] = await db
+      .select({ tenantId: assets.tenantId })
+      .from(assets)
+      .where(eq(assets.assetId, assetId))
+      .limit(1)
+    if (!asset || !user.tenantId || asset.tenantId !== user.tenantId) {
+      return c.json({ detail: 'Asset not found' }, 404)
+    }
+
     // CASCADE on sbomId FK deletes dependencies automatically
     const deleted = await db.delete(sboms).where(eq(sboms.assetId, assetId)).returning({ sbomId: sboms.sbomId })
     return c.json({ deleted: deleted.length })
@@ -265,7 +330,7 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
 
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid agent credentials' }, 401)
@@ -280,6 +345,9 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
       .where(and(eq(scanResults.scanId, scan_id), eq(scanResults.scanType, 'sbom')))
       .limit(1)
     if (!scanRow) return c.json({ detail: 'Scan not found' }, 404)
+    if (scanRow.status === 'cancelled') {
+      return c.json({ detail: 'Scan was cancelled; SBOM output was discarded' }, 409)
+    }
 
     const assetId = scanRow.subnet
     if (!assetId) return c.json({ detail: 'Scan has no associated asset' }, 400)
@@ -421,7 +489,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
 
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid agent credentials' }, 401)

@@ -394,7 +394,9 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
                     <div className="min-w-0">
                       <p className="font-medium text-white text-sm">{u.username}</p>
                       <p className="text-xs text-dark-400 truncate">{u.email}</p>
-                      <p className="text-xs text-dark-600 font-mono mt-0.5">{u.user_id?.slice(0, 20)}…</p>
+                      <p className="text-[11px] text-dark-400 font-mono mt-1 break-all bg-dark-900/70 border border-dark-700 rounded px-2 py-1">
+                        <span className="text-dark-500 mr-1">User ID:</span>{u.user_id || '—'}
+                      </p>
                     </div>
                     <span className="text-xs text-dark-500 flex-shrink-0">{u.is_active ? 'Active' : 'Inactive'}</span>
                   </div>
@@ -581,7 +583,7 @@ export default function TenantsPage() {
                   <tr key={t.tenant_id}>
                     <td>
                       <p className="font-medium text-white">{t.name}</p>
-                      <p className="text-xs text-dark-500 font-mono">{t.tenant_id?.slice(0, 12)}...</p>
+                      <p className="text-xs text-dark-500 font-mono break-all">{t.tenant_id || '—'}</p>
                     </td>
                     <td className="font-mono text-sm text-accent-cyan">{t.slug}</td>
                     <td><ActiveBadge active={t.is_active} /></td>

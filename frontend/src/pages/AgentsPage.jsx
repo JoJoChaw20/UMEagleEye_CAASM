@@ -440,7 +440,7 @@ export default function AgentsPage() {
   const [tenants, setTenants] = useState([])
   const [assignTarget, setAssignTarget] = useState(null) // { item, type: 'agent'|'bridge' }
 
-  const isReadOnly = ['mssp_analyst', 'business_owner'].includes(user?.role)
+  const isReadOnly = ['superadmin', 'business_owner'].includes(user?.role)
   const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const [tenantFilter, setTenantFilter] = useState('')
 
@@ -585,7 +585,7 @@ export default function AgentsPage() {
                   <th>Last Heartbeat</th>
                   <th>Bridge IP</th>
                   <th>Agents Behind</th>
-                  <th>Actions</th>
+                  {canManage && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -616,17 +616,8 @@ export default function AgentsPage() {
                     <td className="text-dark-400 text-sm">{relativeTime(b.last_heartbeat)}</td>
                     <td className="font-mono text-sm text-accent-cyan">{b.bridge_ip || '—'}</td>
                     <td className="text-dark-400 text-sm">{b.agent_count ?? 0}</td>
-                    <td>
+                    {canManage && <td>
                       <div className="flex items-center gap-1">
-                        {user?.role === 'superadmin' && (
-                          <button
-                            onClick={() => setAssignTarget({ item: b, type: 'bridge' })}
-                            className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
-                            title="Assign Tenant"
-                          >
-                            <Building2 className="w-4 h-4" />
-                          </button>
-                        )}
                         {canManage && (
                           <button
                             onClick={() => handleDeleteBridge(b.bridge_id, b.name)}
@@ -637,7 +628,7 @@ export default function AgentsPage() {
                           </button>
                         )}
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 ))}
               </tbody>
@@ -675,7 +666,7 @@ export default function AgentsPage() {
                 <th>Last Heartbeat</th>
                 <th>Gateway IP</th>
                 <th>Version</th>
-                <th>Actions</th>
+                {canManage && <th>Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -711,7 +702,7 @@ export default function AgentsPage() {
                     <td className="text-dark-400 text-sm">{relativeTime(a.last_heartbeat)}</td>
                     <td className="font-mono text-sm text-accent-cyan">{a.gateway_ip || '—'}</td>
                     <td className="text-dark-400 text-sm">{a.version || '—'}</td>
-                    <td>
+                    {canManage && <td>
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => setConfigAgent(a)}
@@ -720,15 +711,6 @@ export default function AgentsPage() {
                         >
                           <Settings className="w-4 h-4" />
                         </button>
-                        {user?.role === 'superadmin' && (
-                          <button
-                            onClick={() => setAssignTarget({ item: a, type: 'agent' })}
-                            className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
-                            title="Assign Tenant"
-                          >
-                            <Building2 className="w-4 h-4" />
-                          </button>
-                        )}
                         {canManage && (
                           <button
                             onClick={() => handleDelete(a.agent_id, a.name)}
@@ -739,7 +721,7 @@ export default function AgentsPage() {
                           </button>
                         )}
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 )
               })}

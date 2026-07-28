@@ -28,7 +28,7 @@ function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'off
 
 // ── GET / — List bridges ──────────────────────────────────────────
 router.get('/', authMiddleware, async (c) => {
-  const db = getDb(c.env.HYPERDRIVE.connectionString)
+  const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
 
   const rows = user.role === 'superadmin'
@@ -68,13 +68,13 @@ router.get('/', authMiddleware, async (c) => {
 router.post(
   '/',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   zValidator('json', z.object({
     name: z.string().min(1).max(100),
     mode: z.enum(['relay', 'buffer']).optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
     const { name, mode } = c.req.valid('json')
 
@@ -105,33 +105,28 @@ router.post(
   }
 )
 
-// ── PATCH /:bridgeId — Update name / tenant ──────────────────────
+// ── PATCH /:bridgeId — Update bridge name ────────────────────────
 router.patch(
   '/:bridgeId',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   zValidator('json', z.object({
     name: z.string().min(1).max(100).optional(),
-    tenant_id: z.string().uuid().nullable().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
     const { bridgeId } = c.req.param()
     const updates = c.req.valid('json')
 
     const [existing] = await db.select().from(bridges).where(eq(bridges.bridgeId, bridgeId)).limit(1)
     if (!existing) return c.json({ detail: 'Bridge not found' }, 404)
-    if (user.role !== 'superadmin' && existing.tenantId !== user.tenantId) {
+    if (existing.tenantId !== user.tenantId) {
       return c.json({ detail: 'Forbidden' }, 403)
-    }
-    if (updates.tenant_id !== undefined && user.role !== 'superadmin') {
-      return c.json({ detail: 'Only superadmin can reassign tenant' }, 403)
     }
 
     const updateData: Record<string, unknown> = {}
     if (updates.name !== undefined) updateData.name = updates.name
-    if (updates.tenant_id !== undefined) updateData.tenantId = updates.tenant_id
 
     const patched = await db.update(bridges).set(updateData).where(eq(bridges.bridgeId, bridgeId)).returning()
     const updated = patched[0]
@@ -145,15 +140,15 @@ router.patch(
 router.delete(
   '/:bridgeId',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
     const { bridgeId } = c.req.param()
 
     const [existing] = await db.select().from(bridges).where(eq(bridges.bridgeId, bridgeId)).limit(1)
     if (!existing) return c.json({ detail: 'Bridge not found' }, 404)
-    if (user.role !== 'superadmin' && existing.tenantId !== user.tenantId) {
+    if (existing.tenantId !== user.tenantId) {
       return c.json({ detail: 'Forbidden' }, 403)
     }
 
@@ -171,7 +166,7 @@ router.post(
     queue_depth: z.number().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { bridgeId } = c.req.param()
     const { version, bridge_ip } = c.req.valid('json')
 

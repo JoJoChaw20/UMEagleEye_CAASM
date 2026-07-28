@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Package, Shield, Search, ChevronDown, ChevronUp,
   RefreshCw, FileCode2, Database, Cpu, CheckCircle2, Trash2,
+  Clock3, AlertCircle, XCircle,
 } from 'lucide-react'
 import {
   BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -25,10 +26,17 @@ const pmColor  = (pm) => PM_META[pm]?.color  ?? '#6b7280'
 const pmIcon   = (pm) => PM_META[pm]?.icon   ?? '📦'
 const pmLabel  = (pm) => PM_META[pm]?.label  ?? pm
 
+const formatElapsed = (seconds) => {
+  const value = Math.max(0, seconds || 0)
+  const minutes = Math.floor(value / 60)
+  const remainder = value % 60
+  return minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`
+}
+
 export default function SBOMPage() {
   const { user } = useAuth()
   const canScan = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
-  const canDeleteSbom = user?.role === 'tenant_superadmin'
+  const canDeleteSbom = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
 
   // ── State ────────────────────────────────────────────────────
   const [sboms,       setSboms]       = useState([])
@@ -47,6 +55,21 @@ export default function SBOMPage() {
 
   // Per-asset SBOM scan trigger
   const [scanning,    setScanning]    = useState({})
+  const [cancelling,  setCancelling]  = useState({})
+  const [clock,       setClock]       = useState(Date.now())
+  const scanPolls = useRef({})
+  const completionTimers = useRef({})
+
+  useEffect(() => () => {
+    Object.values(scanPolls.current).forEach(clearInterval)
+    Object.values(completionTimers.current).forEach(clearTimeout)
+  }, [])
+
+  useEffect(() => {
+    if (Object.keys(scanning).length === 0) return undefined
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [scanning])
 
   // Superadmin: delete all SBOMs for an asset
   const deleteSbomsByAsset = async (assetId) => {
@@ -82,6 +105,98 @@ export default function SBOMPage() {
 
   useEffect(() => { loadData() }, [loadData])
 
+  const removeScanAfterDelay = useCallback((assetId) => {
+    clearTimeout(completionTimers.current[assetId])
+    completionTimers.current[assetId] = setTimeout(() => {
+      setScanning(current => {
+        const next = { ...current }
+        delete next[assetId]
+        return next
+      })
+      delete completionTimers.current[assetId]
+    }, 12000)
+  }, [])
+
+  const pollScanStatus = useCallback(async (assetId) => {
+    try {
+      const response = await client.get(`/assets/${assetId}/sbom-scan-status`)
+      const data = response.data
+      const scanInfo = {
+        status: data.status,
+        scanId: data.scan_id,
+        startedAt: data.started_at,
+        completedAt: data.completed_at,
+        failureReason: data.failure_reason,
+      }
+
+      if (data.status === 'pending' || data.status === 'running') {
+        setScanning(current => ({ ...current, [assetId]: scanInfo }))
+        return false
+      }
+
+      clearInterval(scanPolls.current[assetId])
+      delete scanPolls.current[assetId]
+
+      if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+        setScanning(current => ({ ...current, [assetId]: scanInfo }))
+        removeScanAfterDelay(assetId)
+        if (data.status === 'completed') await loadData()
+      } else {
+        setScanning(current => {
+          const next = { ...current }
+          delete next[assetId]
+          return next
+        })
+      }
+      return true
+    } catch (err) {
+      console.error('SBOM status polling error:', err)
+      return false
+    }
+  }, [loadData, removeScanAfterDelay])
+
+  const startScanPolling = useCallback((assetId) => {
+    clearInterval(scanPolls.current[assetId])
+    void pollScanStatus(assetId)
+    scanPolls.current[assetId] = setInterval(() => {
+      void pollScanStatus(assetId)
+    }, 5000)
+  }, [pollScanStatus])
+
+  // Recover queued/running scans after refresh or tenant navigation.
+  useEffect(() => {
+    if (!canScan) return undefined
+    let cancelled = false
+
+    Object.values(scanPolls.current).forEach(clearInterval)
+    scanPolls.current = {}
+
+    const recoverActiveScans = async () => {
+      try {
+        const params = tenantFilter ? { tenant_id: tenantFilter } : {}
+        const response = await client.get('/sboms/scans/active', { params })
+        if (cancelled) return
+        const recovered = {}
+        for (const item of response.data.items || []) {
+          if (!item.asset_id) continue
+          recovered[item.asset_id] = {
+            status: item.status,
+            scanId: item.scan_id,
+            startedAt: item.started_at,
+            target: item.target,
+          }
+        }
+        setScanning(recovered)
+        Object.keys(recovered).forEach(startScanPolling)
+      } catch (err) {
+        console.error('Failed to recover active SBOM scans:', err)
+      }
+    }
+
+    void recoverActiveScans()
+    return () => { cancelled = true }
+  }, [canScan, tenantFilter, startScanPolling])
+
   // ── Dependency expansion ─────────────────────────────────────
   const toggleDeps = async (sbomId) => {
     if (expandedId === sbomId) {
@@ -111,21 +226,52 @@ export default function SBOMPage() {
   const triggerScan = async (assetId) => {
     const target = prompt(
       'Enter Syft scan target (leave blank to scan the agent machine\'s filesystem)\n' +
-      '  • Blank / dir:C:\\Program Files  — agent machine (Windows default)\n' +
+      '  • Blank                  — agent\'s default scan directory\n' +
       '  • dir:/home             — agent machine (Linux default)\n' +
       '  • image:nginx:alpine    — Docker image on agent machine',
       '',
     )
     if (target === null) return  // user pressed Cancel
-    setScanning(s => ({ ...s, [assetId]: true }))
+    setScanning(s => ({
+      ...s,
+      [assetId]: { status: 'pending', startedAt: new Date().toISOString(), target: target || null },
+    }))
     try {
-      await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
-      alert('✅ SBOM scan queued — results will appear in ~1 min.')
-      setTimeout(loadData, 8000)
-    } catch {
-      alert('❌ Failed to queue SBOM scan.')
+      const response = await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
+      setScanning(s => ({
+        ...s,
+        [assetId]: {
+          status: 'pending',
+          scanId: response.data.scan_id,
+          startedAt: new Date().toISOString(),
+          target: target || null,
+        },
+      }))
+      startScanPolling(assetId)
+    } catch (err) {
+      setScanning(s => {
+        const next = { ...s }
+        delete next[assetId]
+        return next
+      })
+      alert(err?.response?.data?.detail || '❌ Failed to queue SBOM scan.')
+    }
+  }
+
+  const cancelScan = async (assetId, scanId) => {
+    if (!scanId || !confirm('Cancel this SBOM scan? The partial Syft output will be discarded.')) return
+    setCancelling(current => ({ ...current, [scanId]: true }))
+    try {
+      await client.post(`/scans/${scanId}/cancel`)
+      await pollScanStatus(assetId)
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to cancel the SBOM scan.')
     } finally {
-      setScanning(s => ({ ...s, [assetId]: false }))
+      setCancelling(current => {
+        const next = { ...current }
+        delete next[scanId]
+        return next
+      })
     }
   }
 
@@ -173,6 +319,106 @@ export default function SBOMPage() {
           </button>
         </div>
       </div>
+
+      {/* ── Live SBOM scan progress ── */}
+      {Object.keys(scanning).length > 0 && (
+        <div className="glass-card p-5 border border-eagle-500/20">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-eagle-400" />
+                Live SBOM Scan Progress
+              </h2>
+              <p className="text-xs text-dark-400 mt-1">Updates automatically every 5 seconds</p>
+            </div>
+            <span className="flex items-center gap-1.5 text-xs text-accent-green">
+              <span className="w-2 h-2 rounded-full bg-accent-green animate-pulse" /> Live
+            </span>
+          </div>
+
+          <div className="space-y-3">
+            {Object.entries(scanning).map(([assetId, scan]) => {
+              const status = scan.status || 'pending'
+              const isPending = status === 'pending'
+              const isRunning = status === 'running'
+              const isCompleted = status === 'completed'
+              const isFailed = status === 'failed'
+              const started = Date.parse(scan.startedAt || '')
+              const finished = Date.parse(scan.completedAt || '')
+              const elapsedUntil = (isCompleted || isFailed) && Number.isFinite(finished) ? finished : clock
+              const elapsed = Number.isFinite(started)
+                ? Math.max(0, Math.floor((elapsedUntil - started) / 1000))
+                : 0
+              const stage = isPending
+                ? 'Queued — waiting for the EagleEye agent'
+                : isRunning
+                  ? 'Syft is cataloging packages and dependencies'
+                  : isCompleted
+                    ? 'SBOM generated and stored successfully'
+                    : isFailed
+                      ? (scan.failureReason || 'The scan failed without a reported reason')
+                      : 'Scan was cancelled'
+
+              return (
+                <div key={assetId} className="rounded-xl bg-dark-800/60 border border-dark-700/70 p-4">
+                  <div className="flex items-start justify-between gap-4 mb-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-dark-100 break-all">Asset {assetId}</p>
+                      <p className={`text-xs mt-1 ${isFailed ? 'text-red-400' : isCompleted ? 'text-accent-green' : 'text-dark-400'}`}>
+                        {stage}
+                      </p>
+                    </div>
+                    <div className="shrink-0 flex items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-full border text-xs font-medium ${
+                        isPending ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
+                          : isRunning ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                            : isCompleted ? 'bg-green-500/10 text-accent-green border-green-500/30'
+                              : 'bg-red-500/10 text-red-400 border-red-500/30'
+                      }`}>
+                        {status.charAt(0).toUpperCase() + status.slice(1)}
+                      </span>
+                      {(isPending || isRunning) && scan.scanId && (
+                        <button
+                          type="button"
+                          onClick={() => cancelScan(assetId, scan.scanId)}
+                          disabled={Boolean(cancelling[scan.scanId])}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-red-500/40 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          {cancelling[scan.scanId] ? 'Cancelling…' : 'Cancel'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="h-2.5 bg-dark-700 rounded-full overflow-hidden mb-3">
+                    {isRunning ? (
+                      <div className="sbom-progress-indeterminate h-full w-1/3 rounded-full bg-gradient-to-r from-eagle-500 to-accent-cyan" />
+                    ) : (
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          isPending ? 'bg-yellow-500' : isCompleted ? 'bg-accent-green' : 'bg-red-500'
+                        }`}
+                        style={{ width: isPending ? '12%' : '100%' }}
+                      />
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-dark-500">
+                    <span className="flex items-center gap-1.5">
+                      <Clock3 className="w-3.5 h-3.5" />
+                      {isCompleted || isFailed ? 'Total' : 'Elapsed'}: {formatElapsed(elapsed)}
+                    </span>
+                    {scan.scanId && <span className="font-mono">Scan {scan.scanId.slice(0, 8)}…</span>}
+                    {scan.target && <span className="font-mono truncate max-w-sm">Target: {scan.target}</span>}
+                    {isFailed && <AlertCircle className="w-3.5 h-3.5 text-red-400" />}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Stats cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -321,8 +567,8 @@ export default function SBOMPage() {
                     onClick={() => toggleDeps(sbom.sbom_id)}
                   >
                     <td>
-                      <span className="font-mono text-xs text-accent-cyan">
-                        {sbom.asset_id.slice(0, 8)}…
+                      <span className="font-mono text-xs text-accent-cyan break-all">
+                        {sbom.asset_id || '—'}
                       </span>
                     </td>
                     <td>
@@ -353,11 +599,13 @@ export default function SBOMPage() {
                       <td onClick={e => e.stopPropagation()}>
                         <button
                           onClick={() => triggerScan(sbom.asset_id)}
-                          disabled={scanning[sbom.asset_id]}
+                          disabled={['pending', 'running'].includes(scanning[sbom.asset_id]?.status)}
                           className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
-                          title="Re-trigger SBOM scan for this asset"
+                          title={['pending', 'running'].includes(scanning[sbom.asset_id]?.status)
+                            ? `SBOM scan ${scanning[sbom.asset_id].status}`
+                            : 'Re-trigger SBOM scan for this asset'}
                         >
-                          {scanning[sbom.asset_id]
+                          {['pending', 'running'].includes(scanning[sbom.asset_id]?.status)
                             ? <RefreshCw className="w-4 h-4 animate-spin" />
                             : <Shield className="w-4 h-4" />}
                         </button>

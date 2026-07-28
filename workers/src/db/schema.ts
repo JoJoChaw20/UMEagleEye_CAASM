@@ -252,6 +252,7 @@ export const scanResults = pgTable('scan_results', {
   status: varchar('status', { length: 20 }).notNull().default('completed'),
   hostsDiscovered: integer('hosts_discovered').notNull().default(0),
   rawResults: jsonb('raw_results').notNull().default([]),
+  failureReason: text('failure_reason'),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().default(now()),
   completedAt: timestamp('completed_at', { withTimezone: true }),
 }, (t) => [index('idx_scans_tenant').on(t.tenantId)])

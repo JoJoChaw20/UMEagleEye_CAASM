@@ -5,7 +5,7 @@ import { eq, and, desc, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { advisories, events, assets, auditLogs } from '../db/schema'
+import { advisories, events, assets, auditLogs, users } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -36,7 +36,7 @@ async function getAdvisoryTenantId(
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const page = Math.max(1, parseInt(c.req.query('page') ?? '1'))
     const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') ?? '50')))
@@ -94,8 +94,13 @@ app.get('/', authMiddleware, async (c) => {
 
     const [rows, countRows] = await Promise.all([
       db
-        .select()
+        .select({
+          advisory: advisories,
+          assignedToUsername: users.username,
+          assignedToEmail: users.email,
+        })
         .from(advisories)
+        .leftJoin(users, eq(advisories.assignedTo, users.userId))
         .where(whereClause)
         .orderBy(desc(advisories.createdAt))
         .limit(limit)
@@ -103,7 +108,16 @@ app.get('/', authMiddleware, async (c) => {
       db.select({ count: sql<number>`count(*)::int` }).from(advisories).where(whereClause),
     ])
 
-    return c.json({ total: countRows[0]?.count ?? 0, page, limit, items: rows })
+    return c.json({
+      total: countRows[0]?.count ?? 0,
+      page,
+      limit,
+      items: rows.map(({ advisory, assignedToUsername, assignedToEmail }) => ({
+        ...advisory,
+        assignedToName: assignedToUsername ?? assignedToEmail ?? null,
+        assignedToEmail: assignedToEmail ?? null,
+      })),
+    })
   } catch (err) {
     console.error('advisories GET / error:', err)
     return c.json({ detail: 'Failed to fetch advisories' }, 500)
@@ -114,18 +128,24 @@ app.get('/', authMiddleware, async (c) => {
 app.get('/:advisoryId', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { advisoryId } = c.req.param()
 
-    const [advisory] = await db
-      .select()
+    const [row] = await db
+      .select({
+        advisory: advisories,
+        assignedToUsername: users.username,
+        assignedToEmail: users.email,
+      })
       .from(advisories)
+      .leftJoin(users, eq(advisories.assignedTo, users.userId))
       .where(eq(advisories.advisoryId, advisoryId))
       .limit(1)
 
-    if (!advisory) {
+    if (!row) {
       return c.json({ detail: 'Advisory not found' }, 404)
     }
+    const advisory = row.advisory
 
     // Tenant check via event->asset
     if (user.role !== 'superadmin' && user.tenantId) {
@@ -135,7 +155,11 @@ app.get('/:advisoryId', authMiddleware, async (c) => {
       }
     }
 
-    return c.json(advisory)
+    return c.json({
+      ...advisory,
+      assignedToName: row.assignedToUsername ?? row.assignedToEmail ?? null,
+      assignedToEmail: row.assignedToEmail ?? null,
+    })
   } catch (err) {
     console.error('advisories GET /:advisoryId error:', err)
     return c.json({ detail: 'Failed to fetch advisory' }, 500)
@@ -145,6 +169,7 @@ app.get('/:advisoryId', authMiddleware, async (c) => {
 // ── PATCH /:advisoryId/status ────────────────────────────────────
 const updateStatusSchema = z.object({
   status: z.enum(['open', 'acknowledged', 'in_progress', 'resolved']),
+  assigned_to: z.string().uuid().nullable().optional(),
 })
 
 app.patch(
@@ -155,9 +180,9 @@ app.patch(
   async (c) => {
     try {
       const user = c.get('user')
-      const db = getDb(c.env.HYPERDRIVE.connectionString)
+      const db = getDb(c.env.DATABASE_URL)
       const { advisoryId } = c.req.param()
-      const { status } = c.req.valid('json')
+      const { status, assigned_to } = c.req.valid('json')
 
       const [existing] = await db
         .select()
@@ -178,6 +203,25 @@ app.patch(
       }
 
       const updateData: Partial<typeof advisories.$inferInsert> = { status }
+      if (assigned_to !== undefined) {
+        if (assigned_to === null) {
+          updateData.assignedTo = null
+        } else {
+          const meta = await getAdvisoryTenantId(db, advisoryId)
+          if (!meta) return c.json({ detail: 'Advisory not found' }, 404)
+
+          const [assignee] = await db
+            .select({ userId: users.userId, tenantId: users.tenantId })
+            .from(users)
+            .where(eq(users.userId, assigned_to))
+            .limit(1)
+
+          if (!assignee || (user.role !== 'superadmin' && assignee.tenantId !== meta.tenantId)) {
+            return c.json({ detail: 'Assignee is not a member of this advisory tenant' }, 400)
+          }
+          updateData.assignedTo = assigned_to
+        }
+      }
       if (status === 'resolved') {
         updateData.resolvedAt = new Date()
       }

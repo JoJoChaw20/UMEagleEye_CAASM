@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "vite build && ../workers/node_modules/.bin/wrangler pages deploy dist --project-name=umeagleeye-caasm --branch=main --commit-dirty=true"
+    "deploy": "vite build && node ../workers/node_modules/wrangler/bin/wrangler.js pages deploy dist --project-name=umeagleeye-caasm --branch=main --commit-dirty=true"
   },
   "dependencies": {
     "@react-oauth/google": "^0.12.2",

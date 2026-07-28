@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, sql, desc, ne } from 'drizzle-orm'
+import { eq, and, sql, desc, ne, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -91,7 +91,7 @@ async function sha256Hex(input: string): Promise<string> {
 app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.HYPERDRIVE.connectionString)
+    const db   = getDb(c.env.DATABASE_URL)
     const tenantId = user.role === 'superadmin' ? undefined : (user.tenantId ?? undefined)
     const count = await runDriftAudit(db, tenantId)
     return c.json({ message: 'Drift audit complete', drift_events_generated: count })
@@ -105,7 +105,7 @@ app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tena
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const tenantIdParam = c.req.query('tenant_id')
     const effectiveTenantId = user.role === 'superadmin'
@@ -136,7 +136,7 @@ app.get('/', authMiddleware, async (c) => {
 app.get('/compare', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const tenantCond = (user.role !== 'superadmin' && user.tenantId)
       ? and(eq(scanResults.status, 'completed'), ne(scanResults.scanType, 'sbom'), eq(scanResults.tenantId, user.tenantId))
@@ -258,7 +258,7 @@ app.get('/pending', async (c) => {
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID header required' }, 400)
 
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid agent credentials' }, 401)
@@ -270,7 +270,11 @@ app.get('/pending', async (c) => {
 
     // Auto-expire passive scans pending > 10 min
     await db.update(scanResults)
-      .set({ status: 'failed', completedAt: new Date() })
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        failureReason: 'Passive scan was not picked up by the agent within 10 minutes',
+      })
       .where(and(
         eq(scanResults.agentId, agentId),
         eq(scanResults.status, 'pending'),
@@ -281,7 +285,11 @@ app.get('/pending', async (c) => {
     // Auto-expire SBOM scans stuck in pending/running > 20 min — Syft has a 10 min hard timeout;
     // if the agent died or timed out without calling /fail, clean up here.
     await db.update(scanResults)
-      .set({ status: 'failed', completedAt: new Date() })
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        failureReason: 'SBOM scan exceeded the server-side 20-minute execution window',
+      })
       .where(and(
         eq(scanResults.agentId, agentId),
         sql`${scanResults.status} IN ('pending', 'running')`,
@@ -309,6 +317,33 @@ app.get('/pending', async (c) => {
   }
 })
 
+// ── GET /agent-status/:scanId ── agent checks for user cancellation ─────────
+app.get('/agent-status/:scanId', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) return c.json({ detail: 'Unauthorized' }, 401)
+    const agentId = c.req.header('X-Agent-ID')
+    if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
+
+    const db = getDb(c.env.DATABASE_URL)
+    const incomingKeyHash = await sha256Hex(authHeader.slice(7))
+    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+    if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
+
+    const { scanId } = c.req.param()
+    const [scan] = await db
+      .select({ status: scanResults.status })
+      .from(scanResults)
+      .where(and(eq(scanResults.scanId, scanId), eq(scanResults.agentId, agentId)))
+      .limit(1)
+    if (!scan) return c.json({ detail: 'Scan not found' }, 404)
+    return c.json({ status: scan.status })
+  } catch (err) {
+    console.error('agent scan status error:', err)
+    return c.json({ detail: 'Failed to fetch scan status' }, 500)
+  }
+})
+
 // ── POST /scans/:scanId/start ── agent signals it has begun processing ────────
 // Transitions status from 'pending' → 'running' so the dashboard reflects real state.
 app.post('/:scanId/start', async (c) => {
@@ -322,7 +357,7 @@ app.post('/:scanId/start', async (c) => {
       .map(b => b.toString(16).padStart(2, '0')).join('')
     const agentId = c.req.header('X-Agent-ID')
     if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
     const { scanId } = c.req.param()
@@ -333,6 +368,46 @@ app.post('/:scanId/start', async (c) => {
   } catch (err) {
     console.error('scan start error:', err)
     return c.json({ detail: 'Failed to update scan status' }, 500)
+  }
+})
+
+// ── POST /:scanId/cancel ── tenant admin cancels pending/running SBOM scan ──
+app.post('/:scanId/cancel', authMiddleware,
+  requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { scanId } = c.req.param()
+
+    const [scan] = await db
+      .select({
+        scanId: scanResults.scanId,
+        tenantId: scanResults.tenantId,
+        scanType: scanResults.scanType,
+        status: scanResults.status,
+      })
+      .from(scanResults)
+      .where(eq(scanResults.scanId, scanId))
+      .limit(1)
+
+    if (!scan || !user.tenantId || scan.tenantId !== user.tenantId || scan.scanType !== 'sbom') {
+      return c.json({ detail: 'SBOM scan not found' }, 404)
+    }
+    if (!['pending', 'running'].includes(scan.status)) {
+      return c.json({ detail: `Cannot cancel a scan with status ${scan.status}` }, 409)
+    }
+
+    await db.update(scanResults)
+      .set({ status: 'cancelled', completedAt: new Date(), failureReason: 'Cancelled by user' })
+      .where(and(
+        eq(scanResults.scanId, scanId),
+        inArray(scanResults.status, ['pending', 'running']),
+      ))
+
+    return c.json({ scan_id: scanId, status: 'cancelled' })
+  } catch (err) {
+    console.error('scan cancel error:', err)
+    return c.json({ detail: 'Failed to cancel scan' }, 500)
   }
 })
 
@@ -375,7 +450,7 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
 }), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { subnet, agent_id, tenant_id, scan_type } = c.req.valid('json')
 
     const effectiveScanType = scan_type ?? 'active'
@@ -438,7 +513,7 @@ const ingestSchema = z.object({
 
 app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     // Agent authentication via API key
     const authHeader = c.req.header('Authorization')
@@ -481,7 +556,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
       try {
         const conds = [eq(assets.ipAddress, host.ip)]
         if (tenantId) conds.push(eq(assets.tenantId, tenantId))
-        const [found] = await getDb(c.env.HYPERDRIVE.connectionString)
+        const [found] = await getDb(c.env.DATABASE_URL)
           .select({ deviceType: assets.deviceType, hostname: assets.hostname, owner: assets.owner, hardwareVendor: assets.hardwareVendor })
           .from(assets)
           .where(and(...conds))
@@ -805,7 +880,7 @@ Example:
 // ── POST /fail ───────────────────────────────────────────────────
 app.post('/fail', async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const authHeader = c.req.header('Authorization')
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return c.json({ detail: 'Missing or invalid Authorization header' }, 401)
@@ -814,7 +889,13 @@ app.post('/fail', async (c) => {
     const incomingKey = authHeader.slice(7)
     const incomingKeyHash = await sha256Hex(incomingKey)
 
-    const { agent_id, scan_id } = await c.req.json()
+    const { agent_id, scan_id, reason } = await c.req.json<{
+      agent_id?: string
+      scan_id?: string
+      reason?: string
+    }>()
+
+    if (!agent_id) return c.json({ detail: 'agent_id is required' }, 400)
 
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
 
@@ -829,8 +910,15 @@ app.post('/fail', async (c) => {
     if (scan_id) {
       await db
         .update(scanResults)
-        .set({ status: 'failed', completedAt: new Date() })
-        .where(eq(scanResults.scanId, scan_id))
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          failureReason: typeof reason === 'string' ? reason.slice(0, 1000) : 'Scan failed on agent',
+        })
+        .where(and(
+          eq(scanResults.scanId, scan_id),
+          inArray(scanResults.status, ['pending', 'running']),
+        ))
     }
 
     return c.json({ message: 'Scan marked as failed' })
@@ -844,7 +932,7 @@ app.post('/fail', async (c) => {
 app.get('/status/:scanId', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { scanId } = c.req.param()
 
     const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scanId)).limit(1)

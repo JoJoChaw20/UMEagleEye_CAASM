@@ -64,10 +64,25 @@ try {
         "NVD_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"
     )
     foreach ($key in $secrets) {
-        $val = $envVars[$key]
+        # Workers use Neon's HTTP driver, so always publish the plain
+        # postgresql:// URL. DATABASE_URL is reserved for the Python async
+        # driver and may contain the unsupported postgresql+asyncpg:// scheme.
+        $val = if ($key -eq "DATABASE_URL" -and -not [string]::IsNullOrEmpty($envVars["DATABASE_URL_SYNC"])) {
+            $envVars["DATABASE_URL_SYNC"]
+        } else {
+            $envVars[$key]
+        }
         if ([string]::IsNullOrEmpty($val)) {
             Write-Warn "Skipping empty secret: $key"
             continue
+        }
+        if ($key -eq "DATABASE_URL") {
+            if ($val -match '^postgresql\+asyncpg://') {
+                throw "DATABASE_URL for Workers must be a plain Neon PostgreSQL URL, not an asyncpg URL. Set DATABASE_URL_SYNC to the Neon connection string."
+            }
+            if ($val -notmatch '(?i)neon\.tech') {
+                throw "Refusing to deploy: DATABASE_URL does not appear to be a Neon URL. The production Worker is Neon-only."
+            }
         }
         # pipe the value into wrangler secret put
         $val | npx wrangler secret put $key --name $WorkerName

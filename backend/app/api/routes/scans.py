@@ -19,7 +19,7 @@ async def trigger_active_scan(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
-    """Trigger an active network scan (Nmap/Masscan). Ops Lead or Security Engineer only."""
+    """Trigger an active network scan (Nmap/Masscan). Tenant operators only."""
     from app.tasks.discovery_tasks import run_active_scan
 
     target = payload.target_subnet or settings.SCAN_DEFAULT_SUBNET
@@ -40,7 +40,7 @@ async def trigger_passive_scan(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["tenant_superadmin", "tenant_admin"])),
 ):
-    """Start passive network listener (Scapy). Ops Lead or Security Engineer only."""
+    """Start passive network listener (Scapy). Tenant operators only."""
     from app.tasks.discovery_tasks import run_passive_scan
 
     task = run_passive_scan.delay(

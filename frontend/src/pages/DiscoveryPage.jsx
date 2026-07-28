@@ -507,7 +507,7 @@ function ScanComparePanel({ onClose }) {
                           <div className="space-y-2">
                             <p className="text-blue-500 font-semibold uppercase tracking-wide text-[10px]">Active Scan Detail</p>
                             <div className="space-y-1 text-dark-200">
-                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] truncate">{row.active.scan_id}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] break-all">{row.active.scan_id}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Subnet</span><span>{row.active.subnet || '—'}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scanned</span><span>{new Date(row.active.scanned_at).toLocaleString()}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Hostname</span><span>{row.active.hostname || '—'}</span></div>
@@ -538,7 +538,7 @@ function ScanComparePanel({ onClose }) {
                           <div className="space-y-2">
                             <p className="text-cyan-500 font-semibold uppercase tracking-wide text-[10px]">Passive Scan Detail</p>
                             <div className="space-y-1 text-dark-200">
-                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] truncate">{row.passive.scan_id}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] break-all">{row.passive.scan_id}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Source</span><span>{row.passive.subnet || 'ARP Discovery'}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Seen at</span><span>{new Date(row.passive.scanned_at).toLocaleString()}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Hostname</span><span>{row.passive.hostname || '—'}</span></div>
@@ -791,7 +791,7 @@ export default function DiscoveryPage() {
                     className={isClickable ? 'cursor-pointer hover:bg-dark-700/30' : ''}
                     onClick={() => isClickable && setSelectedScan(scan)}
                   >
-                    <td className="font-mono text-xs text-dark-400">{scan.scanId?.slice(0, 12)}...</td>
+                    <td className="font-mono text-xs text-dark-400 break-all">{scan.scanId || '—'}</td>
                     <td className="text-dark-300 text-sm">{agentName}</td>
                     <td className={`font-mono text-sm ${scan.subnet === 'arp-discovery' ? 'text-dark-400 italic' : 'text-accent-cyan'}`}>{subnetLabel}</td>
                     <td className="text-xs text-dark-300 capitalize">{scan.scanType || 'active'}</td>

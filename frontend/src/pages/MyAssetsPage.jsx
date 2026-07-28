@@ -722,7 +722,7 @@ export default function MyAssetsPage() {
                     <th className="criticality-col">Criticality</th>
                     <th>Internet Facing</th>
                     <th>Last Scanned</th>
-                    <th>Actions</th>
+                    {!isReadOnly && <th>Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -782,7 +782,7 @@ export default function MyAssetsPage() {
                       <td className="text-dark-400 text-xs">
                         {a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}
                       </td>
-                      <td>
+                      {!isReadOnly && <td>
                         <div className="flex items-center gap-1">
                           {!isReadOnly && (
                             <button
@@ -803,7 +803,7 @@ export default function MyAssetsPage() {
                             </button>
                           )}
                         </div>
-                      </td>
+                      </td>}
                     </tr>
                   ))}
                 </tbody>

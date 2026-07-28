@@ -107,6 +107,7 @@ export default function AlertsPage() {
   const { user } = useAuth()
   const isSuperadmin    = user?.role === 'superadmin'
   const isBusinessOwner = user?.role === 'business_owner'
+  const canManageAlerts = !isSuperadmin && !isBusinessOwner
   const [events,          setEvents]          = useState([])
   const [stats,           setStats]           = useState(null)
   const [loading,         setLoading]         = useState(true)
@@ -417,7 +418,7 @@ export default function AlertsPage() {
                 <th>EPSS</th>
                 <th>Risk Score</th>
                 <th>Time</th>
-                <th>Actions</th>
+                {canManageAlerts && <th>Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -501,10 +502,9 @@ export default function AlertsPage() {
                     {new Date(e.timestamp).toLocaleString()}
                   </td>
 
-                  <td>
+                  {canManageAlerts && <td>
                     <div className="flex items-center gap-1">
-                      {!isSuperadmin && (
-                        <button
+                      <button
                           onClick={() => triggerAdvisory(e.event_id)}
                           disabled={advisoryLoading[e.event_id]}
                           className={`relative p-1.5 rounded transition-colors disabled:opacity-40 ${
@@ -520,9 +520,8 @@ export default function AlertsPage() {
                           {e.has_advisory && !advisoryLoading[e.event_id] && (
                             <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent-green" />
                           )}
-                        </button>
-                      )}
-                      {!isSuperadmin && DRIFT_TYPES.has(e.event_type) && (
+                      </button>
+                      {DRIFT_TYPES.has(e.event_type) && (
                         <button
                           onClick={() => acknowledgeEvent(e.event_id)}
                           disabled={acknowledgeLoading[e.event_id]}
@@ -535,7 +534,7 @@ export default function AlertsPage() {
                         </button>
                       )}
                     </div>
-                  </td>
+                  </td>}
                 </tr>
               ))}
             </tbody>

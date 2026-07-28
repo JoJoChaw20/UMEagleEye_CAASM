@@ -33,7 +33,7 @@ function toSnake(row: typeof ctiIndicators.$inferSelect) {
 // ── GET /indicators ──────────────────────────────────────────────
 app.get('/indicators', authMiddleware, async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const page     = Math.max(1, parseInt(c.req.query('page')  ?? '1'))
     const limit    = Math.min(500, Math.max(1, parseInt(c.req.query('limit') ?? '100')))
@@ -69,7 +69,7 @@ app.get('/indicators', authMiddleware, async (c) => {
 // ── GET /stats ───────────────────────────────────────────────────
 app.get('/stats', authMiddleware, async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
     const [totalResult, bySource, byType, recent7d] = await Promise.all([
@@ -112,7 +112,7 @@ app.get('/stats', authMiddleware, async (c) => {
 // Returns { matrix: { "Tactic Name": [{technique_id, count}] } }
 app.get('/matrix', authMiddleware, async (c) => {
   try {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const rows = await db
       .select({
@@ -146,7 +146,7 @@ app.get('/matrix', authMiddleware, async (c) => {
 // ── GET /lookup ──────────────────────────────────────────────────
 app.get('/lookup', authMiddleware, async (c) => {
   try {
-    const db    = getDb(c.env.HYPERDRIVE.connectionString)
+    const db    = getDb(c.env.DATABASE_URL)
     const value = c.req.query('value')?.trim()
     if (!value) return c.json({ detail: 'value query param required' }, 422)
 

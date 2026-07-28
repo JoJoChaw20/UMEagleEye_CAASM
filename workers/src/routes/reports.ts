@@ -17,7 +17,7 @@ const SNAPSHOT_ROLES = ['tenant_superadmin']
 app.get('/data', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.HYPERDRIVE.connectionString)
+    const db   = getDb(c.env.DATABASE_URL)
     const af   = user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId,        user.tenantId) : undefined
     const pmf  = user.role !== 'superadmin' && user.tenantId ? eq(postureMetrics.tenantId, user.tenantId) : undefined
     const sf   = user.role !== 'superadmin' && user.tenantId ? eq(scanResults.tenantId,   user.tenantId) : undefined
@@ -344,7 +344,7 @@ app.delete('/delete/:filename', authMiddleware, requireRoles(...GENERATE_ROLES),
 app.post('/snapshot', authMiddleware, requireRoles(...SNAPSHOT_ROLES), async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const tenantCondition =
       user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId, user.tenantId) : undefined

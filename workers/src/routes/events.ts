@@ -17,7 +17,7 @@ const app = new Hono<{ Bindings: Env }>()
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.HYPERDRIVE.connectionString)
+    const db   = getDb(c.env.DATABASE_URL)
 
     // Support both page/page_size (AlertsPage) and page/limit (legacy)
     const page     = Math.max(1, parseInt(c.req.query('page')      ?? '1'))
@@ -128,7 +128,7 @@ app.get('/', authMiddleware, async (c) => {
 app.get('/stats/summary', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.HYPERDRIVE.connectionString)
+    const db   = getDb(c.env.DATABASE_URL)
 
     const statsTenantIdParam = c.req.query('tenant_id')
     const statsEffectiveTenantId = user.role === 'superadmin'
@@ -246,7 +246,7 @@ app.get('/stats/summary', authMiddleware, async (c) => {
 app.get('/:eventId', authMiddleware, async (c) => {
   try {
     const user    = c.get('user')
-    const db      = getDb(c.env.HYPERDRIVE.connectionString)
+    const db      = getDb(c.env.DATABASE_URL)
     const { eventId } = c.req.param()
 
     const [row] = await db
@@ -302,7 +302,7 @@ app.get('/:eventId', authMiddleware, async (c) => {
 app.post('/:eventId/acknowledge', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.HYPERDRIVE.connectionString)
+    const db   = getDb(c.env.DATABASE_URL)
     const { eventId } = c.req.param()
 
     const [event] = await db.select().from(events).where(eq(events.eventId, eventId)).limit(1)
@@ -353,7 +353,7 @@ app.post('/:eventId/acknowledge', authMiddleware, requireRoles('tenant_superadmi
 app.post('/:eventId/advisory', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
   try {
     const user = c.get('user')
-    const db   = getDb(c.env.HYPERDRIVE.connectionString)
+    const db   = getDb(c.env.DATABASE_URL)
     const { eventId } = c.req.param()
 
     const [event] = await db.select().from(events).where(eq(events.eventId, eventId)).limit(1)

@@ -11,7 +11,7 @@ const app = new Hono<{ Bindings: Env }>()
 app.get('/current', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const tenantIdParam = c.req.query('tenant_id')
     const effectiveTenantId = user.role === 'superadmin'
@@ -102,7 +102,7 @@ app.get('/current', authMiddleware, async (c) => {
 app.get('/history', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
 
     const raw   = c.req.query('limit') ?? c.req.query('days') ?? '14'
     const limit = Math.min(365, Math.max(1, parseInt(raw)))
@@ -125,12 +125,20 @@ app.get('/history', authMiddleware, async (c) => {
       tenantAssetIds = rows.map(r => r.assetId)
     }
 
-    const assetFilter = tenantAssetIds !== null
-      ? sql`${assets.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
-      : sql`1=1`
-    const eventAssetFilter = tenantAssetIds !== null
-      ? sql`${events.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
-      : sql`1=1`
+    // An explicitly selected tenant with no assets must produce an empty
+    // result, not an invalid `ANY(ARRAY[])` SQL expression.  The latter
+    // makes the whole dashboard request fail and the frontend retains the
+    // previously selected tenant's data.
+    const assetFilter = tenantAssetIds === null
+      ? sql`1=1`
+      : tenantAssetIds.length === 0
+        ? sql`1=0`
+        : sql`${assets.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
+    const eventAssetFilter = tenantAssetIds === null
+      ? sql`1=1`
+      : tenantAssetIds.length === 0
+        ? sql`1=0`
+        : sql`${events.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
 
     // 3 bulk queries — no per-day loops
     const [allAssets, critEvents, highEvents] = await Promise.all([

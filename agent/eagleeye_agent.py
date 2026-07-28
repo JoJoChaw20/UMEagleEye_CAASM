@@ -34,6 +34,7 @@ Or via environment variables:
 """
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import logging
 import os
@@ -55,7 +56,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("eagleeye")
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
+
+DEFAULT_SBOM_EXCLUDES = (
+    "**/.git/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/coverage/**",
+    "**/.next/**",
+    "**/.cache/**",
+    "**/__pycache__/**",
+    "**/.pytest_cache/**",
+    "**/.tox/**",
+    "**/.venv/**",
+    "**/venv/**",
+)
 
 
 # ── Active scanning: Nmap + NSE scripts ──────────────────────────────────────
@@ -655,6 +671,35 @@ class AgentClient:
         except Exception as e:
             log.warning(f"Could not mark scan {scan_id[:8]}… as running: {e}")
 
+    def get_scan_status(self, scan_id: str) -> Optional[str]:
+        """Fetch scan status so a running local process can honour cancellation."""
+        try:
+            resp = self.session.get(
+                f"{self.api_url}/scans/agent-status/{scan_id}",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json().get("status")
+        except requests.RequestException as e:
+            log.warning(f"Could not check scan {scan_id[:8]}… status: {e}")
+            return None
+
+    def mark_scan_failed(self, scan_id: str, reason: str) -> None:
+        """Mark a scan failed and retain a concise, user-visible reason."""
+        try:
+            resp = self.session.post(
+                f"{self.api_url}/scans/fail",
+                data=json.dumps({
+                    "agent_id": self.agent_id,
+                    "scan_id": scan_id,
+                    "reason": reason[:1000],
+                }),
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            log.warning(f"Could not mark scan {scan_id[:8]}… as failed: {e}")
+
     def ingest_results(self, scan_id: str, hosts: list[dict]) -> bool:
         """Ingest results for an active scan dispatched from the dashboard."""
         payload = {
@@ -742,19 +787,25 @@ class AgentClient:
         except requests.RequestException as e:
             log.error(f"Failed to ingest {label}: {e}")
             if scan_id:
-                try:
-                    self.session.post(
-                        f"{self.api_url}/scans/fail",
-                        data=json.dumps({"agent_id": self.agent_id, "scan_id": scan_id}),
-                        timeout=10,
-                    )
-                except Exception:
-                    pass
+                self.mark_scan_failed(scan_id, f"Failed to ingest {label}: {e}")
             return False
 
 
 
 # ── SBOM scanning via Syft ────────────────────────────────────────────────────
+
+def run_active_scan(scan: dict, client: AgentClient) -> None:
+    """Run and ingest an active Nmap scan in the dedicated active worker."""
+    scan_id = scan.get("scan_id") or scan.get("scanId")
+    subnet = scan.get("subnet", "192.168.1.0/24")
+    try:
+        hosts = run_nmap(subnet)
+        client.ingest_results(scan_id, hosts)
+    except Exception as e:
+        reason = f"Active Nmap scan failed: {e}"
+        log.error(reason, exc_info=True)
+        if scan_id:
+            client.mark_scan_failed(scan_id, reason)
 
 def run_cve_scan(scan_id: str, sbom_json: dict, client: AgentClient) -> None:
     """Run Grype against the SBOM JSON and POST findings for alert generation."""
@@ -834,7 +885,12 @@ def run_cve_scan(scan_id: str, sbom_json: dict, client: AgentClient) -> None:
                 os.unlink(path)
 
 
-def run_sbom_scan(scan: dict, client: AgentClient) -> None:
+def run_sbom_scan(
+    scan: dict,
+    client: AgentClient,
+    timeout_seconds: int = 900,
+    excludes: tuple[str, ...] = DEFAULT_SBOM_EXCLUDES,
+) -> None:
     """Run Syft on this machine to generate a CycloneDX SBOM, then POST it."""
     scan_id  = scan.get("scan_id") or scan.get("scanId")
     raw      = scan.get("raw_results") or scan.get("rawResults") or []
@@ -849,6 +905,8 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
 
     log.info(f"Starting SBOM scan (scan_id={scan_id}) — target={target}")
     success = False
+    cancelled = False
+    failure_reason = "SBOM scan failed for an unknown reason"
     sbom_json: Optional[dict] = None
     syft_out_tmp: Optional[str] = None
     try:
@@ -858,40 +916,78 @@ def run_sbom_scan(scan: dict, client: AgentClient) -> None:
 
         # Redirect stdout to a binary file — avoids Windows cp1252 pipe encoding crash
         with open(syft_out_tmp, "wb") as out_fh:
-            result = subprocess.run(
-                ["syft", target, "-o", "cyclonedx-json"],
+            command = ["syft", target, "-o", "cyclonedx-json"]
+            # Syft path exclusions apply to directory sources, not container images.
+            is_windows_path = bool(re.match(r"^[A-Za-z]:[\\/]", target))
+            if target.startswith("dir:") or is_windows_path or not re.match(r"^[a-z][a-z0-9-]*:", target, re.I):
+                for pattern in excludes:
+                    command.extend(["--exclude", pattern])
+            process = subprocess.Popen(
+                command,
                 stdout=out_fh,
                 stderr=subprocess.PIPE,
-                timeout=600,
             )
-        if result.returncode != 0:
-            log.error(f"Syft exited {result.returncode}: {result.stderr.decode('utf-8', errors='replace')[:500]}")
+            deadline = time.monotonic() + timeout_seconds
+            last_status_check = 0.0
+            while process.poll() is None:
+                now = time.monotonic()
+                if now >= deadline:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    raise subprocess.TimeoutExpired(command, timeout_seconds)
+                if scan_id and now - last_status_check >= 2:
+                    last_status_check = now
+                    if client.get_scan_status(scan_id) == "cancelled":
+                        cancelled = True
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        log.info(f"SBOM scan {scan_id[:8]}… cancelled by user")
+                        break
+                time.sleep(0.5)
+            stderr = process.stderr.read() if process.stderr else b""
+
+        if cancelled:
+            return
+        if process.returncode != 0:
+            stderr_text = stderr.decode("utf-8", errors="replace").strip()
+            failure_reason = f"Syft exited with code {process.returncode}: {stderr_text[:800]}"
+            log.error(failure_reason)
         else:
             with open(syft_out_tmp, "r", encoding="utf-8", errors="replace") as f:
                 sbom_json = json.load(f)
+            if scan_id and client.get_scan_status(scan_id) == "cancelled":
+                cancelled = True
+                log.info(f"SBOM scan {scan_id[:8]}… cancelled before ingest")
+                return
             success = client.ingest_sbom(scan_id, sbom_json)
+            if not success:
+                failure_reason = "Generated SBOM could not be ingested by the backend"
     except FileNotFoundError:
-        log.error("syft not found — install with: winget install Anchore.Syft  (Windows) "
-                  "or: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh  (Linux/macOS)")
+        failure_reason = "Syft executable not found on the scanning agent"
+        log.error(failure_reason)
     except subprocess.TimeoutExpired:
-        log.error("Syft scan timed out (>600 s)")
+        failure_reason = f"Syft scan timed out after {timeout_seconds} seconds"
+        log.error(failure_reason)
     except json.JSONDecodeError as e:
-        log.error(f"Failed to parse Syft output as JSON: {e}")
+        failure_reason = f"Failed to parse Syft output as JSON: {e}"
+        log.error(failure_reason)
     except Exception as e:
+        failure_reason = f"SBOM scan error: {e}"
         log.error(f"SBOM scan error: {e}", exc_info=True)
     finally:
         if syft_out_tmp and os.path.exists(syft_out_tmp):
             os.unlink(syft_out_tmp)
-        if not success and scan_id:
-            try:
-                client.session.post(
-                    f"{client.api_url}/scans/fail",
-                    data=json.dumps({"agent_id": client.agent_id, "scan_id": scan_id}),
-                    timeout=10,
-                )
-                log.info(f"SBOM scan {scan_id[:8]}… marked as failed")
-            except Exception:
-                pass
+        if not success and not cancelled and scan_id:
+            client.mark_scan_failed(scan_id, failure_reason)
+            log.info(f"SBOM scan {scan_id[:8]}… marked as failed: {failure_reason}")
 
     # Run CVE correlation immediately after successful SBOM ingest
     if success and sbom_json and scan_id:
@@ -926,6 +1022,9 @@ def main():
     parser.add_argument("--heartbeat-interval", type=int,
                         default=int(os.getenv("EAGLEEYE_HEARTBEAT_INTERVAL", "30")),
                         help="Heartbeat interval in seconds (default: 30)")
+    parser.add_argument("--sbom-timeout", type=int,
+                        default=int(os.getenv("EAGLEEYE_SBOM_TIMEOUT", "900")),
+                        help="Maximum SBOM scan duration in seconds (default: 900)")
 
     # Passive sniffing
     parser.add_argument("--passive",            action="store_true",
@@ -953,6 +1052,7 @@ def main():
     log.info(f"Gateway IP   : {_local_ip()}")
     log.info(f"Active poll  : {args.interval}s")
     log.info(f"Heartbeat    : {args.heartbeat_interval}s")
+    log.info(f"SBOM timeout : {args.sbom_timeout}s")
     log.info(f"Passive mode : {'enabled' if args.passive else 'disabled'}")
     if args.passive:
         log.info(f"  Interface  : {iface or 'auto'}")
@@ -996,9 +1096,27 @@ def main():
     # ── Main loop ──
     # Initialise flush timer so the first autonomous flush fires after one full interval
     last_passive_flush = time.time()
+    active_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="active")
+    active_future: Optional[Future[None]] = None
+    sbom_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sbom")
+    sbom_future: Optional[Future[None]] = None
 
     while True:
         try:
+            if active_future is not None and active_future.done():
+                try:
+                    active_future.result()
+                except Exception as e:
+                    log.error(f"Background active-scan worker failed: {e}", exc_info=True)
+                active_future = None
+
+            if sbom_future is not None and sbom_future.done():
+                try:
+                    sbom_future.result()
+                except Exception as e:
+                    log.error(f"Background SBOM worker failed: {e}", exc_info=True)
+                sbom_future = None
+
             pending = client.get_pending_scans()
             if pending:
                 log.info(f"Found {len(pending)} pending scan(s)")
@@ -1042,15 +1160,22 @@ def main():
                             except Exception:
                                 pass
                     elif scan_type == "sbom":
+                        if sbom_future is not None:
+                            log.info(f"Leaving SBOM scan {scan_id[:8]}… queued while another SBOM scan runs")
+                            continue
                         log.info(f"Processing SBOM scan {scan_id[:8]}…")
                         client.mark_scan_running(scan_id)
-                        run_sbom_scan(scan, client)
+                        sbom_future = sbom_executor.submit(
+                            run_sbom_scan, scan, client, args.sbom_timeout,
+                        )
                     else:
-                        # Active scan: run nmap with enhanced NSE scripts
+                        if active_future is not None:
+                            log.info(f"Leaving ACTIVE scan {scan_id[:8]}… queued while another active scan runs")
+                            continue
+                        # Active and SBOM scans use separate workers, so neither blocks the other.
                         log.info(f"Processing ACTIVE scan {scan_id[:8]}… subnet={subnet}")
                         client.mark_scan_running(scan_id)
-                        hosts = run_nmap(subnet)
-                        client.ingest_results(scan_id, hosts)
+                        active_future = active_executor.submit(run_active_scan, scan, client)
             else:
                 log.info("No pending scans")
 

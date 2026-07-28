@@ -71,7 +71,7 @@ async def _require_auth(update: Update):
     return user
 
 
-async def _require_role(update: Update, allowed=("admin", "security_analyst")):
+async def _require_role(update: Update, allowed=("superadmin", "tenant_superadmin", "tenant_admin")):
     user = await _get_linked_user(update)
     if user is None:
         await update.message.reply_text("⛔ Not linked. Use /link <username> first.")
@@ -289,7 +289,7 @@ async def posture_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /scan (analyst+ only) ─────────────────────────────────────────
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = await _require_role(update, allowed=("admin", "security_analyst", "ops_lead"))
+    user = await _require_role(update, allowed=("superadmin", "tenant_superadmin", "tenant_admin"))
     if not user:
         return
     from app.tasks.discovery_tasks import run_active_scan
@@ -343,7 +343,7 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /report (analyst+ only) ───────────────────────────────────────
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = await _require_role(update, allowed=("admin", "security_analyst"))
+    user = await _require_role(update, allowed=("superadmin", "tenant_superadmin", "tenant_admin"))
     if not user:
         return
     await update.message.reply_text("📄 Generating posture PDF…")

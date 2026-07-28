@@ -285,6 +285,7 @@ Environment=EAGLEEYE_API_KEY=PASTE_API_KEY_HERE
 Environment=EAGLEEYE_AGENT_ID=PASTE_AGENT_UUID_HERE
 Environment=EAGLEEYE_PASSIVE=true
 Environment=EAGLEEYE_PASSIVE_INTERVAL=60
+Environment=EAGLEEYE_SBOM_TIMEOUT=900
 ExecStart=/usr/bin/python3 /path/to/agent/eagleeye_agent.py
 Restart=always
 RestartSec=10
@@ -359,6 +360,7 @@ Environment variable alternative:
   EAGLEEYE_AGENT_ID=<uuid>
   EAGLEEYE_PASSIVE=true
   EAGLEEYE_PASSIVE_INTERVAL=60
+  EAGLEEYE_SBOM_TIMEOUT=900
   python eagleeye_agent.py
 ```
 

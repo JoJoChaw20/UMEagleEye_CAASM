@@ -16,6 +16,8 @@ export default function AdvisoriesPage() {
   const [selectedAdvisory, setSelectedAdvisory] = useState(null)
   const [statusFilter, setStatusFilter] = useState('all')
   const [tenantFilter, setTenantFilter] = useState('')
+  const isSuperadmin = user?.role === 'superadmin'
+  const canManageAdvisories = user?.role === 'tenant_superadmin' || user?.role === 'tenant_admin'
 
   // Auto-open advisory when navigated from a notification
   useEffect(() => {
@@ -50,10 +52,15 @@ export default function AdvisoriesPage() {
   }
 
   const handleAssignToMe = async (id) => {
+    const currentUserId = user?.user_id ?? user?.userId
+    if (!currentUserId) {
+      console.error('Cannot assign advisory: current user ID is unavailable')
+      return
+    }
     try {
       await client.patch(`/advisories/${id}/status`, {
         status: 'in_progress',
-        assigned_to: user.user_id,
+        assigned_to: currentUserId,
       })
       setSelectedAdvisory(null)
       fetchAdvisories()
@@ -114,7 +121,7 @@ export default function AdvisoriesPage() {
                 >
                   <td className="max-w-md truncate text-dark-200 font-medium">{a.summary}</td>
                   <td><span className={statusBadgeClass(a.status)}>{a.status?.replace('_', ' ')}</span></td>
-                  <td className="text-dark-400 text-xs">{a.assignedTo ? a.assignedTo.slice(0, 8) + '...' : '—'}</td>
+                  <td className="text-dark-300 text-xs">{a.assignedToName || (a.assignedTo ? a.assignedTo.slice(0, 8) + '...' : 'Unassigned')}</td>
                   <td className="text-dark-400 text-xs">{new Date(a.createdAt).toLocaleString()}</td>
                   <td className="text-dark-400 text-xs">{a.resolvedAt ? new Date(a.resolvedAt).toLocaleString() : '—'}</td>
                 </tr>
@@ -197,24 +204,29 @@ export default function AdvisoriesPage() {
                 </span>
                 {selectedAdvisory.assignedTo && (
                   <p className="text-xs text-dark-400 mt-1">
-                    Assigned to: <span className="font-mono">{selectedAdvisory.assignedTo.slice(0, 16)}...</span>
+                    Assigned to: <span className="font-medium text-dark-200">{selectedAdvisory.assignedToName || selectedAdvisory.assignedTo.slice(0, 16) + '...'}</span>
                   </p>
+                )}
+                {!selectedAdvisory.assignedTo && (
+                  <p className="text-xs text-dark-400 mt-1">Assigned to: <span className="text-dark-300">Unassigned</span></p>
                 )}
               </div>
 
               <div className="flex gap-3 flex-wrap">
                 <button onClick={() => setSelectedAdvisory(null)} className="btn-secondary">Close</button>
-                <button
-                  onClick={() => {
-                    navigate('/chatbot', { state: { advisory: selectedAdvisory } })
-                    setSelectedAdvisory(null)
-                  }}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-sm font-medium"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Debug with AI
-                </button>
-                {selectedAdvisory.status === 'open' && (
+                {!isSuperadmin && (
+                  <button
+                    onClick={() => {
+                      navigate('/chatbot', { state: { advisory: selectedAdvisory } })
+                      setSelectedAdvisory(null)
+                    }}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-sm font-medium"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Debug with AI
+                  </button>
+                )}
+                {canManageAdvisories && selectedAdvisory.status === 'open' && (
                   <button
                     onClick={() => handleAssignToMe(selectedAdvisory.advisoryId)}
                     className="btn-primary flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white"
@@ -223,7 +235,7 @@ export default function AdvisoriesPage() {
                     Assign to Me
                   </button>
                 )}
-                {selectedAdvisory.status !== 'resolved' && (
+                {canManageAdvisories && !['open', 'resolved'].includes(selectedAdvisory.status) && (
                   <button
                     onClick={() => handleStatus(selectedAdvisory.advisoryId, 'resolved')}
                     className="btn-primary flex items-center gap-2"

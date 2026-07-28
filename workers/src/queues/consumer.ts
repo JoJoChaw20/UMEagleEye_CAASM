@@ -156,7 +156,7 @@ async function buildReportPdf(
 }
 
 export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-  const db = getDb(env.HYPERDRIVE.connectionString)
+  const db = getDb(env.DATABASE_URL)
 
   for (const message of batch.messages) {
     const job = message.body as Job

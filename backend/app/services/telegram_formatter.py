@@ -30,10 +30,10 @@ def _esc(text: str) -> str:
 
 
 # ── Role constants ────────────────────────────────────────────────
-ROLE_ADMIN = "admin"
-ROLE_ANALYST = "security_analyst"
+ROLE_ADMIN = "superadmin"
+ROLE_ANALYST = "tenant_superadmin"
 ROLE_VIEWER = "business_owner"       # matches UserRole enum values
-ROLE_AUDITOR = "auditor"
+ROLE_AUDITOR = "tenant_admin"
 
 
 def _is_privileged(role: Optional[str]) -> bool:

@@ -347,7 +347,7 @@ pip install -r requirements.txt
 | `--passive-interval` | `60` | Seconds between autonomous ARP buffer flushes |
 | `--fingerbank-key` | — | Fingerbank API key for DHCP device fingerprinting (optional) |
 
-All flags can alternatively be set via environment variables: `EAGLEEYE_API_URL`, `EAGLEEYE_API_KEY`, `EAGLEEYE_AGENT_ID`, `EAGLEEYE_POLL_INTERVAL`, `EAGLEEYE_HEARTBEAT_INTERVAL`, `EAGLEEYE_PASSIVE`, `EAGLEEYE_PASSIVE_INTERFACE`, `EAGLEEYE_PASSIVE_INTERVAL`, `EAGLEEYE_FINGERBANK_KEY`.
+All flags can alternatively be set via environment variables: `EAGLEEYE_API_URL`, `EAGLEEYE_API_KEY`, `EAGLEEYE_AGENT_ID`, `EAGLEEYE_POLL_INTERVAL`, `EAGLEEYE_HEARTBEAT_INTERVAL`, `EAGLEEYE_SBOM_TIMEOUT`, `EAGLEEYE_PASSIVE`, `EAGLEEYE_PASSIVE_INTERFACE`, `EAGLEEYE_PASSIVE_INTERVAL`, `EAGLEEYE_FINGERBANK_KEY`.
 
 ### Active-only mode (default)
 
@@ -714,7 +714,8 @@ See `.env.example` for the full list. Key variables:
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | Neon PostgreSQL connection string |
+| `DATABASE_URL` | Neon PostgreSQL connection string (used by the legacy Python backend) |
+| `DATABASE_URL_SYNC` | Plain Neon PostgreSQL connection string used by the Cloudflare Worker; do not point this to Hyperdrive |
 | `JWT_SECRET_KEY` | HS256 signing secret (min 32 chars) |
 | `GOOGLE_CLIENT_ID` | Google OAuth Client ID |
 | `OPENROUTER_API_KEY` | DeepSeek AI via OpenRouter (used if `DEEPSEEK_API_KEY` is not set) |

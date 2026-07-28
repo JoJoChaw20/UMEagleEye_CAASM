@@ -171,6 +171,15 @@ html.light {
   animation: status-pulse 2s ease-in-out infinite;
 }
 
+/* Indeterminate progress for Syft, which does not expose a reliable percentage. */
+@keyframes sbom-progress-slide {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(310%); }
+}
+.sbom-progress-indeterminate {
+  animation: sbom-progress-slide 1.5s ease-in-out infinite;
+}
+
 /* ── Tab Toggle ── */
 .tab-toggle {
   display: flex;

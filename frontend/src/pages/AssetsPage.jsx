@@ -11,6 +11,7 @@ export default function AssetsPage() {
   const { user } = useAuth()
   const isSuperadmin = user?.role === 'superadmin'
   const isBusinessOwner = user?.role === 'business_owner'
+  const canManageAssets = !isSuperadmin && !isBusinessOwner
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -59,7 +60,7 @@ export default function AssetsPage() {
   const triggerSbomScan = async (assetId) => {
     const target = prompt(
       "Enter Syft scan target (leave blank to scan the agent machine's filesystem):\n" +
-      "  • Blank / dir:C:\\Program Files  — agent machine (Windows default)\n" +
+      "  • Blank                  — agent's default scan directory\n" +
       "  • dir:/home             — agent machine (Linux default)\n" +
       "  • image:nginx:alpine    — Docker image on agent machine",
       ""
@@ -77,6 +78,9 @@ export default function AssetsPage() {
           if (s === 'completed' || s === 'failed' || s === 'none') {
             clearInterval(poll)
             if (s === 'completed') loadAssets()
+            if (s === 'failed') {
+              alert(`SBOM scan failed: ${r.data.failure_reason || 'No failure reason was reported by the agent.'}`)
+            }
           }
         } catch { clearInterval(poll) }
       }, 5000)
@@ -209,7 +213,7 @@ export default function AssetsPage() {
                 <th className="criticality-col">Criticality</th>
                 <th>Baseline</th>
                 <th>Last Scanned</th>
-                <th>Actions</th>
+                {canManageAssets && <th>Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -243,7 +247,7 @@ export default function AssetsPage() {
                     </td>
                     <td>{a.baselineState ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
                     <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
-                    <td>
+                    {canManageAssets && <td>
                       <div className="flex items-center gap-1">
                         {!isSuperadmin && !isBusinessOwner && !isManual && (
                           <button
@@ -285,7 +289,7 @@ export default function AssetsPage() {
                           </button>
                         )}
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 )
               })}

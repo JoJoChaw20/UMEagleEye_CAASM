@@ -28,7 +28,7 @@ function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'off
 
 // ── GET / — List agents ───────────────────────────────────────────
 router.get('/', authMiddleware, async (c) => {
-  const db = getDb(c.env.HYPERDRIVE.connectionString)
+  const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
 
   const rows = user.role === 'superadmin'
@@ -57,14 +57,14 @@ router.get('/', authMiddleware, async (c) => {
 router.post(
   '/',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   zValidator('json', z.object({
     name: z.string().min(1).max(100),
     config: z.record(z.unknown()).optional(),
     bridge_id: z.string().uuid().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
     const { name, config, bridge_id } = c.req.valid('json')
 
@@ -97,7 +97,7 @@ router.post(
 
 // ── GET /:agentId — Single agent detail ───────────────────────────
 router.get('/:agentId', authMiddleware, async (c) => {
-  const db = getDb(c.env.HYPERDRIVE.connectionString)
+  const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
   const { agentId } = c.req.param()
 
@@ -122,18 +122,17 @@ router.get('/:agentId', authMiddleware, async (c) => {
   })
 })
 
-// ── PATCH /:agentId — Update config / tenant ─────────────────────
+// ── PATCH /:agentId — Update agent configuration ─────────────────
 router.patch(
   '/:agentId',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   zValidator('json', z.object({
     name: z.string().min(1).max(100).optional(),
     config: z.record(z.unknown()).optional(),
-    tenant_id: z.string().uuid().nullable().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
     const { agentId } = c.req.param()
     const updates = c.req.valid('json')
@@ -144,15 +143,9 @@ router.patch(
       return c.json({ detail: 'Forbidden' }, 403)
     }
 
-    // Only superadmin can reassign tenant
-    if (updates.tenant_id !== undefined && user.role !== 'superadmin') {
-      return c.json({ detail: 'Only superadmin can reassign tenant' }, 403)
-    }
-
     const updateData: Record<string, unknown> = {}
     if (updates.name !== undefined) updateData.name = updates.name
     if (updates.config !== undefined) updateData.config = updates.config
-    if (updates.tenant_id !== undefined) updateData.tenantId = updates.tenant_id
 
     const patched = await db.update(agents).set(updateData).where(eq(agents.agentId, agentId)).returning()
     const updated = patched[0]
@@ -171,9 +164,9 @@ router.patch(
 router.delete(
   '/:agentId',
   authMiddleware,
-  requireRoles('ops_lead', 'superadmin'),
+  requireRoles('tenant_superadmin', 'tenant_admin'),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
     const { agentId } = c.req.param()
 
@@ -196,7 +189,7 @@ router.post(
     gateway_ip: z.string().optional(),
   })),
   async (c) => {
-    const db = getDb(c.env.HYPERDRIVE.connectionString)
+    const db = getDb(c.env.DATABASE_URL)
     const { agentId } = c.req.param()
     const { version, gateway_ip } = c.req.valid('json')
 

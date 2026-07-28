@@ -18,11 +18,18 @@ export default function DashboardPage() {
   const [history, setHistory] = useState([])
   const [events, setEvents] = useState([])
   const [eventStats, setEventStats] = useState(null)
+  const [assetIdsExpanded, setAssetIdsExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [tenantFilter, setTenantFilter] = useState('')
 
   const loadDashboardData = useCallback(async () => {
     setLoading(true)
+    // Do not leave the previous tenant's cards visible while the new
+    // tenant's four dashboard requests are loading.
+    setPosture(null)
+    setHistory([])
+    setEvents([])
+    setEventStats(null)
     try {
       const tParam = tenantFilter ? { tenant_id: tenantFilter } : {}
       const [postureRes, historyRes, eventsRes, statsRes] = await Promise.all([
@@ -46,6 +53,8 @@ export default function DashboardPage() {
 
   const score = posture?.overall_score ?? 100
   const scoreColor = score >= 80 ? '#00e676' : score >= 50 ? '#ffc400' : '#ff5252'
+
+  const toggleAssetIds = () => setAssetIdsExpanded((expanded) => !expanded)
 
   const trendData = history.map((h) => ({
     day: new Date(h.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
@@ -215,7 +224,21 @@ export default function DashboardPage() {
                   <td>
                     <span className={`badge-${event.severity}`}>{event.severity}</span>
                   </td>
-                  <td className="text-dark-300 text-xs">{event.asset_id?.slice(0, 8)}...</td>
+                  <td className="text-dark-300 text-xs">
+                    {event.asset_id ? (
+                      <button
+                        type="button"
+                        onClick={toggleAssetIds}
+                        className="font-mono text-left hover:text-white break-all"
+                        title={assetIdsExpanded ? 'Collapse all asset IDs' : 'Expand all asset IDs'}
+                        aria-expanded={assetIdsExpanded}
+                      >
+                        {assetIdsExpanded
+                          ? event.asset_id
+                          : `${event.asset_id.slice(0, 8)}...`}
+                      </button>
+                    ) : '—'}
+                  </td>
                   <td className="font-mono">{event.composite_risk_score ?? '—'}</td>
                   <td className="text-dark-400 text-xs">{new Date(event.timestamp).toLocaleString()}</td>
                 </tr>

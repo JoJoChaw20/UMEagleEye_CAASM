@@ -64,7 +64,7 @@ async def download_report(
 ):
     """Download a generated PDF report (FR-08-03). Supports ?token= query param."""
     # Check roles manually
-    if current_user.role.value not in ["ops_lead", "security_engineer", "mssp_analyst", "business_owner"]:
+    if current_user.role.value not in ["superadmin", "tenant_superadmin", "tenant_admin", "business_owner"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     report_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "reports"))
     filepath = os.path.join(report_dir, filename)
