@@ -26,11 +26,19 @@ Usage:
         --passive [--passive-interface eth0] [--passive-interval 60] \\
         [--fingerbank-key <free-key-from-fingerbank.org>]
 
+    # With SNMPv3 (authPriv) polling of discovered hosts during active scans:
+    python eagleeye_agent.py \\
+        --api-url ... --api-key ... --agent-id ... \\
+        --snmp-user <v3-user> --snmp-auth-key <auth-pass> --snmp-priv-key <priv-pass> \\
+        [--snmp-auth-protocol SHA] [--snmp-priv-protocol AES]
+
 Or via environment variables:
     EAGLEEYE_API_URL, EAGLEEYE_API_KEY, EAGLEEYE_AGENT_ID,
     EAGLEEYE_POLL_INTERVAL, EAGLEEYE_HEARTBEAT_INTERVAL,
     EAGLEEYE_PASSIVE, EAGLEEYE_PASSIVE_INTERFACE, EAGLEEYE_PASSIVE_INTERVAL,
-    EAGLEEYE_FINGERBANK_KEY
+    EAGLEEYE_FINGERBANK_KEY,
+    EAGLEEYE_SNMP_USER, EAGLEEYE_SNMP_AUTH_KEY, EAGLEEYE_SNMP_PRIV_KEY,
+    EAGLEEYE_SNMP_AUTH_PROTOCOL, EAGLEEYE_SNMP_PRIV_PROTOCOL
 """
 
 import argparse
@@ -198,6 +206,160 @@ def _ping_sweep(subnet: str) -> list[dict[str, Any]]:
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log.error(f"nmap not available: {e}")
         return []
+
+
+# ── Active scanning: SNMPv3 polling (network device classification) ───────────
+
+def query_snmp_v3(
+    ip: str,
+    user: str,
+    auth_key: str,
+    priv_key: str,
+    auth_protocol: str = "SHA",
+    priv_protocol: str = "AES",
+) -> dict[str, Any]:
+    """
+    Poll a host over SNMPv3 (authPriv) and return system/interface facts.
+
+    Targets the pysnmp 6/7 (LeXtudio) asyncio HLAPI: UsmUserData carries the
+    auth+priv credentials, and the coroutines get_cmd/walk_cmd run inside a
+    throwaway event loop via asyncio.run().  A single GET fetches sysDescr
+    (1.3.6.1.2.1.1.1.0) and sysObjectID (1.3.6.1.2.1.1.2.0); a WALK of ifDescr
+    (1.3.6.1.2.1.2.2.1.2) collects interface names.
+
+    Nmap-only scans see port 161 as TCP-closed, so SNMP is invisible without a
+    dedicated UDP poll — this fills that gap and lets the backend classify the
+    host as a network device.
+
+    Any failure (timeout, auth/priv mismatch, missing pysnmp) returns an empty
+    dict and logs a warning — SNMP is best-effort enrichment and must never abort
+    a scan, mirroring how run_nmap() falls back to _ping_sweep() on ImportError.
+
+    Returns:
+        {"snmp_sysdescr": str, "snmp_sysobjectid": str, "snmp_interfaces": list[str]}
+        or {} on any error.
+    """
+    import asyncio
+    import importlib
+
+    # pysnmp 6/7 moved the HLAPI to an asyncio-only package and dropped the old
+    # top-level `pysnmp.hlapi` sync API.  Prefer the v3arch.asyncio path, then
+    # fall back to the plain .asyncio alias for intermediate releases.
+    hlapi = None
+    for _mod in ("pysnmp.hlapi.v3arch.asyncio", "pysnmp.hlapi.asyncio"):
+        try:
+            hlapi = importlib.import_module(_mod)
+            break
+        except ImportError:
+            continue
+    if hlapi is None:
+        log.warning(f"pysnmp (asyncio HLAPI) not installed — SNMPv3 poll of {ip} skipped. Run: pip install pysnmp")
+        return {}
+
+    # Map human-friendly protocol names to pysnmp constants (case-insensitive).
+    # getattr keeps this resilient to constants absent in a given pysnmp build.
+    auth_protocols = {
+        "SHA":    "usmHMACSHAAuthProtocol",
+        "SHA1":   "usmHMACSHAAuthProtocol",
+        "MD5":    "usmHMACMD5AuthProtocol",
+        "SHA224": "usmHMAC128SHA224AuthProtocol",
+        "SHA256": "usmHMAC192SHA256AuthProtocol",
+        "SHA384": "usmHMAC256SHA384AuthProtocol",
+        "SHA512": "usmHMAC384SHA512AuthProtocol",
+    }
+    priv_protocols = {
+        "AES":    "usmAesCfb128Protocol",
+        "AES128": "usmAesCfb128Protocol",
+        "AES192": "usmAesCfb192Protocol",
+        "AES256": "usmAesCfb256Protocol",
+        "DES":    "usmDESPrivProtocol",
+        "3DES":   "usm3DESEDEPrivProtocol",
+    }
+    auth_proto = getattr(hlapi, auth_protocols.get(auth_protocol.upper(), ""), None)
+    priv_proto = getattr(hlapi, priv_protocols.get(priv_protocol.upper(), ""), None)
+    if auth_proto is None or priv_proto is None:
+        log.warning(
+            f"SNMPv3 poll of {ip} skipped — unsupported protocol "
+            f"(auth={auth_protocol}, priv={priv_protocol})"
+        )
+        return {}
+
+    async def _poll() -> dict[str, Any]:
+        engine = hlapi.SnmpEngine()
+        try:
+            user_data = hlapi.UsmUserData(
+                user,
+                authKey=auth_key,
+                privKey=priv_key,
+                authProtocol=auth_proto,
+                privProtocol=priv_proto,
+            )
+            # UdpTransportTarget is now an async factory (.create) in pysnmp 6/7
+            transport = await hlapi.UdpTransportTarget.create((ip, 161), timeout=3, retries=1)
+            context   = hlapi.ContextData()
+
+            result: dict[str, Any] = {}
+
+            # ── Single GET: sysDescr + sysObjectID ──
+            error_indication, error_status, _error_index, var_binds = await hlapi.get_cmd(
+                engine, user_data, transport, context,
+                hlapi.ObjectType(hlapi.ObjectIdentity("1.3.6.1.2.1.1.1.0")),  # sysDescr
+                hlapi.ObjectType(hlapi.ObjectIdentity("1.3.6.1.2.1.1.2.0")),  # sysObjectID
+            )
+            if error_indication:
+                log.warning(f"SNMPv3 GET failed for {ip}: {error_indication}")
+                return {}
+            if error_status:
+                log.warning(f"SNMPv3 GET error for {ip}: {error_status.prettyPrint()}")
+                return {}
+
+            if len(var_binds) >= 2:
+                result["snmp_sysdescr"]    = str(var_binds[0][1])
+                result["snmp_sysobjectid"] = str(var_binds[1][1])
+
+            # ── WALK: ifDescr table → interface names ──
+            # walk_cmd is an async generator yielding one step per row.
+            interfaces: list[str] = []
+            async for (walk_error, walk_status, _walk_index, walk_binds) in hlapi.walk_cmd(
+                engine, user_data, transport, context,
+                hlapi.ObjectType(hlapi.ObjectIdentity("1.3.6.1.2.1.2.2.1.2")),  # ifDescr
+                lexicographicMode=False,
+            ):
+                if walk_error:
+                    log.warning(f"SNMPv3 ifDescr walk failed for {ip}: {walk_error}")
+                    break
+                if walk_status:
+                    log.warning(f"SNMPv3 ifDescr walk error for {ip}: {walk_status.prettyPrint()}")
+                    break
+                for _oid, value in walk_binds:
+                    name = str(value).strip()
+                    if name:
+                        interfaces.append(name)
+            if interfaces:
+                result["snmp_interfaces"] = interfaces
+
+            return result
+        finally:
+            # Release the engine's dispatcher (snake_case in 6/7, camelCase in
+            # legacy builds) — never let cleanup raise.
+            closer = getattr(engine, "close_dispatcher", None) or getattr(engine, "closeDispatcher", None)
+            if closer:
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+    try:
+        result = asyncio.run(_poll())
+        if result:
+            log.info(
+                f"SNMPv3 poll of {ip} — sysDescr='{result.get('snmp_sysdescr', '?')[:60]}', "
+                f"{len(result.get('snmp_interfaces', []))} interface(s)"
+            )
+        return result
+    except Exception as exc:
+        log.warning(f"SNMPv3 poll of {ip} failed: {exc}")
+        return {}
 
 
 # ── Passive scanning: ARP (primary host discovery) ────────────────────────────
@@ -794,12 +956,43 @@ class AgentClient:
 
 # ── SBOM scanning via Syft ────────────────────────────────────────────────────
 
-def run_active_scan(scan: dict, client: AgentClient) -> None:
-    """Run and ingest an active Nmap scan in the dedicated active worker."""
+def run_active_scan(
+    scan: dict,
+    client: AgentClient,
+    snmp_config: Optional[dict[str, str]] = None,
+) -> None:
+    """Run and ingest an active Nmap scan in the dedicated active worker.
+
+    When snmp_config is provided (SNMPv3 authPriv credentials), each discovered
+    host is polled over UDP 161 and the sysDescr/sysObjectID/interface facts are
+    merged in-place. Nmap's TCP-only port list can't see SNMP, so this is the
+    sole path to network-device classification. A failure on one host must never
+    block ingestion of the rest.
+    """
     scan_id = scan.get("scan_id") or scan.get("scanId")
     subnet = scan.get("subnet", "192.168.1.0/24")
     try:
         hosts = run_nmap(subnet)
+
+        if snmp_config:
+            for host in hosts:
+                host_ip = host.get("ip")
+                if not host_ip:
+                    continue
+                try:
+                    snmp_data = query_snmp_v3(
+                        host_ip,
+                        user=snmp_config["user"],
+                        auth_key=snmp_config["auth_key"],
+                        priv_key=snmp_config["priv_key"],
+                        auth_protocol=snmp_config["auth_protocol"],
+                        priv_protocol=snmp_config["priv_protocol"],
+                    )
+                    if snmp_data:
+                        host.update(snmp_data)
+                except Exception as e:
+                    log.warning(f"SNMPv3 enrichment failed for {host_ip}: {e}")
+
         client.ingest_results(scan_id, hosts)
     except Exception as e:
         reason = f"Active Nmap scan failed: {e}"
@@ -1038,6 +1231,18 @@ def main():
     parser.add_argument("--fingerbank-key",     default=os.getenv("EAGLEEYE_FINGERBANK_KEY", ""),
                         help="Fingerbank API key for DHCP device fingerprinting (optional, free at fingerbank.org)")
 
+    # SNMPv3 polling (active scans) — all optional; skipped entirely if user/keys absent
+    parser.add_argument("--snmp-user",          default=os.getenv("EAGLEEYE_SNMP_USER", ""),
+                        help="SNMPv3 username (enables SNMP polling of active-scan hosts)")
+    parser.add_argument("--snmp-auth-key",      default=os.getenv("EAGLEEYE_SNMP_AUTH_KEY", ""),
+                        help="SNMPv3 authentication passphrase (authPriv)")
+    parser.add_argument("--snmp-priv-key",      default=os.getenv("EAGLEEYE_SNMP_PRIV_KEY", ""),
+                        help="SNMPv3 privacy passphrase (authPriv)")
+    parser.add_argument("--snmp-auth-protocol", default=os.getenv("EAGLEEYE_SNMP_AUTH_PROTOCOL", "SHA"),
+                        help="SNMPv3 auth protocol: SHA (default), MD5, SHA256, SHA512, …")
+    parser.add_argument("--snmp-priv-protocol", default=os.getenv("EAGLEEYE_SNMP_PRIV_PROTOCOL", "AES"),
+                        help="SNMPv3 privacy protocol: AES (default), AES256, DES, 3DES, …")
+
     args = parser.parse_args()
 
     if not args.api_url or not args.api_key or not args.agent_id:
@@ -1058,6 +1263,23 @@ def main():
         log.info(f"  Interface  : {iface or 'auto'}")
         log.info(f"  Interval   : {args.passive_interval}s")
         log.info(f"  Fingerbank : {'enabled' if args.fingerbank_key else 'disabled (set --fingerbank-key to enable)'}")
+
+    # SNMPv3 polling is enabled only when the full authPriv credential set is present
+    snmp_enabled = bool(args.snmp_user and args.snmp_auth_key and args.snmp_priv_key)
+    log.info(f"SNMPv3 poll  : {'enabled' if snmp_enabled else 'disabled (set --snmp-user/--snmp-auth-key/--snmp-priv-key to enable)'}")
+    if snmp_enabled:
+        log.info(f"  User       : {args.snmp_user}")
+        log.info(f"  Auth/Priv  : {args.snmp_auth_protocol}/{args.snmp_priv_protocol}")
+
+    # Bundle SNMP credentials so the active worker thread can enrich hosts
+    # without reaching back into main()'s argparse namespace.
+    snmp_config: Optional[dict[str, str]] = {
+        "user":          args.snmp_user,
+        "auth_key":      args.snmp_auth_key,
+        "priv_key":      args.snmp_priv_key,
+        "auth_protocol": args.snmp_auth_protocol,
+        "priv_protocol": args.snmp_priv_protocol,
+    } if snmp_enabled else None
 
     client = AgentClient(args.api_url, args.api_key, args.agent_id)
     client.send_heartbeat()
@@ -1175,7 +1397,7 @@ def main():
                         # Active and SBOM scans use separate workers, so neither blocks the other.
                         log.info(f"Processing ACTIVE scan {scan_id[:8]}… subnet={subnet}")
                         client.mark_scan_running(scan_id)
-                        active_future = active_executor.submit(run_active_scan, scan, client)
+                        active_future = active_executor.submit(run_active_scan, scan, client, snmp_config)
             else:
                 log.info("No pending scans")
 

@@ -33,6 +33,25 @@ async function fetchMacVendor(mac: string | null | undefined): Promise<string | 
   }
 }
 
+// SNMP sysDescr substrings that identify a host as a router/switch/network device.
+// Mirrors _NETWORK_DEVICE_SIGNATURES in backend/app/tasks/discovery_tasks.py.
+const NETWORK_DEVICE_SIGNATURES = [
+  'cisco ios', 'cisco nx-os', 'cisco adaptive security appliance', 'cisco asa',
+  'junos', 'arista networks eos', 'mikrotik routeros', 'fortigate', 'pan-os',
+  'arubaos', 'aruba networks',
+]
+
+// A host is a NETWORK device when its SNMP sysDescr matches a known router/switch
+// signature, or when SNMP returned a non-empty interface table (ifDescr).
+function isNetworkBySnmp(snmpSysDescr?: string | null, snmpInterfaces?: string[] | null): boolean {
+  if (snmpSysDescr) {
+    const text = snmpSysDescr.toLowerCase()
+    if (NETWORK_DEVICE_SIGNATURES.some(sig => text.includes(sig))) return true
+  }
+  if (snmpInterfaces && snmpInterfaces.length > 0) return true
+  return false
+}
+
 function inferDeviceType(
   ports: NmapPort[],
   ip?: string,
@@ -502,6 +521,9 @@ const hostSchema = z.object({
   mac: z.string().max(17).nullish(),
   ports: z.array(z.unknown()).optional(),
   os: z.record(z.unknown()).nullish(),
+  snmp_sysdescr: z.string().nullish(),
+  snmp_sysobjectid: z.string().nullish(),
+  snmp_interfaces: z.array(z.string()).optional(),
 })
 
 const ingestSchema = z.object({
@@ -737,6 +759,11 @@ Example:
     for (const host of enhancedHosts) {
       const ports = (host.ports ?? []) as NmapPort[]
       let deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null)
+      // SNMP is a strong, direct signal — check it before the LLM-text fallback,
+      // matching the precedence of the Python classifier (classify_device_type).
+      if (deviceType === 'unknown' && isNetworkBySnmp(host.snmp_sysdescr, host.snmp_interfaces)) {
+        deviceType = 'network'
+      }
       // LLM description fallback: if port/OS heuristics couldn't classify, parse the AI's text
       if (deviceType === 'unknown') {
         const llmDesc = String((host as Record<string, unknown>)['description'] ?? '').toLowerCase()
@@ -745,7 +772,12 @@ Example:
         else if (/router|gateway|switch|access.point/.test(llmDesc)) deviceType = 'network'
         else if (/iot|camera|printer|sensor/.test(llmDesc)) deviceType = 'iot'
       }
-      const osInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports)
+      // Spread into a new object so we never mutate what buildOsInfo returned
+      // (it can return host.os by reference when os was already non-empty).
+      const osInfo: Record<string, unknown> = { ...buildOsInfo(host.os as Record<string, unknown> | null, ports) }
+      if (host.snmp_sysdescr) osInfo.snmp_sysdescr = host.snmp_sysdescr
+      if (host.snmp_sysobjectid) osInfo.snmp_sysobjectid = host.snmp_sysobjectid
+      if (host.snmp_interfaces) osInfo.snmp_interfaces = host.snmp_interfaces
       const internetFacing = isGatewayIp(host.ip)
 
       // Fetch existing record to preserve owner + stable device type
@@ -797,6 +829,7 @@ Example:
             deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
             isInternetFacing: sql`EXCLUDED.is_internet_facing`,
             criticalityScore: sql`EXCLUDED.criticality_score`,
+            source: sql`EXCLUDED.source`,
             lastScanned: sql`EXCLUDED.last_scanned`,
             updatedAt: sql`now()`,
           },

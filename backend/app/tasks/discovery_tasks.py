@@ -23,6 +23,48 @@ def get_sync_session() -> Session:
     return Session(engine)
 
 
+# SNMP sysDescr substrings that identify a host as a router/switch/network device.
+# Matched case-insensitively against snmp_sysdescr.
+_NETWORK_DEVICE_SIGNATURES = (
+    "cisco ios",
+    "cisco nx-os",
+    "cisco adaptive security appliance",
+    "juniper",
+    "junos",
+    "arista",
+    "mikrotik",
+    "routeros",
+    "fortigate",
+    "fortios",
+    "pan-os",
+    "huawei",
+    "vyos",
+    "edgeos",
+    "aruba",
+    "hp procurve",
+    "hpe comware",
+)
+
+
+def classify_device_type(host: dict) -> DeviceType:
+    """Classify a discovered host's device type from SNMP facts.
+
+    A host is a NETWORK device when its snmp_sysdescr matches a known
+    router/switch signature (e.g. "Cisco IOS"), or when SNMP returned a
+    non-empty interface table (ifDescr) — routers/switches expose many
+    interfaces via SNMP. Falls back to UNKNOWN when there is no signal.
+    """
+    sysdescr = (host.get("snmp_sysdescr") or "").lower()
+    if sysdescr and any(sig in sysdescr for sig in _NETWORK_DEVICE_SIGNATURES):
+        return DeviceType.NETWORK
+
+    interfaces = host.get("snmp_interfaces")
+    if isinstance(interfaces, list) and interfaces:
+        return DeviceType.NETWORK
+
+    return DeviceType.UNKNOWN
+
+
 def upsert_discovered_assets(hosts: list, session: Session) -> dict:
     """Insert or update assets in the database from scan results.
 
@@ -55,24 +97,44 @@ def upsert_discovered_assets(hosts: list, session: Session) -> dict:
             current_state = existing.os_info or {}
             current_state["open_ports"] = host.get("ports", [])
             current_state["scan_source"] = host.get("scan_source", "unknown")
+            # Persist raw SNMP facts alongside port data when present
+            if host.get("snmp_sysdescr"):
+                current_state["snmp_sysdescr"] = host["snmp_sysdescr"]
+            if host.get("snmp_sysobjectid"):
+                current_state["snmp_sysobjectid"] = host["snmp_sysobjectid"]
+            if host.get("snmp_interfaces"):
+                current_state["snmp_interfaces"] = host["snmp_interfaces"]
             existing.os_info = current_state
+
+            # Promote to NETWORK when SNMP identifies a router/switch; never
+            # downgrade an already-classified device back to UNKNOWN.
+            classified = classify_device_type(host)
+            if classified != DeviceType.UNKNOWN:
+                existing.device_type = classified
             existing.last_scanned = datetime.now(timezone.utc)
             updated_count += 1
         else:
-            # Create new asset
+            # Create new asset — classify from SNMP facts, default UNKNOWN
             asset = Asset(
                 ip_address=ip,
                 hostname=host.get("hostname"),
                 mac_address=host.get("mac_address"),
                 os_info=host.get("os_info", {}),
                 hardware_vendor=host.get("hardware_vendor"),
-                device_type=DeviceType.UNKNOWN,
+                device_type=classify_device_type(host),
                 last_scanned=datetime.now(timezone.utc),
             )
             # Store port data in os_info
             os_info = asset.os_info or {}
             os_info["open_ports"] = host.get("ports", [])
             os_info["scan_source"] = host.get("scan_source", "unknown")
+            # Persist raw SNMP facts alongside port data when present
+            if host.get("snmp_sysdescr"):
+                os_info["snmp_sysdescr"] = host["snmp_sysdescr"]
+            if host.get("snmp_sysobjectid"):
+                os_info["snmp_sysobjectid"] = host["snmp_sysobjectid"]
+            if host.get("snmp_interfaces"):
+                os_info["snmp_interfaces"] = host["snmp_interfaces"]
             asset.os_info = os_info
             session.add(asset)
             new_count += 1

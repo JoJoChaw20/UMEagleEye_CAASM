@@ -65,3 +65,9 @@ alembic/versions/__pycache__/
 
 # Celery
 backend/celerybeat-schedule
+
+# Claude Code
+Claude outputs/
+
+# VSCode workspace file
+UMEagleEye2.0.code-workspace
