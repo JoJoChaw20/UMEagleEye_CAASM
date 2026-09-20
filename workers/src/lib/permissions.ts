@@ -65,5 +65,9 @@ export const AUDIT_VIEW_OWN_ROLES = ['superadmin', 'tenant_superadmin'] as const
 export const USER_VIEW_OWN_ROLES  = ['superadmin', 'tenant_superadmin', 'tenant_admin'] as const
 export const USER_MANAGE_ROLES    = ['tenant_superadmin'] as const
 
+// Agents / Bridges (business_owner and platform superadmin are read-only)
+export const AGENT_READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner'] as const
+export const AGENT_MANAGE_ROLES = ['tenant_superadmin', 'tenant_admin'] as const
+
 // Chatbot
 export const CHATBOT_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner'] as const

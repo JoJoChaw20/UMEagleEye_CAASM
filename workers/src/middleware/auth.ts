@@ -36,7 +36,9 @@ export function requireRoles(...roles: string[]) {
     const user = c.get('user')
     if (!user) return c.json({ detail: 'Unauthorized' }, 401)
     if (!roles.includes(user.role)) {
-      return c.json({ detail: 'Insufficient permissions' }, 403)
+      return c.json({
+        detail: `Insufficient permissions: role '${user.role}' is not allowed here (requires: ${roles.join(', ')})`,
+      }, 403)
     }
     await next()
   })
@@ -62,6 +64,9 @@ export function requireTenantAccess(platformRoles: string[], ownTenantRoles: str
       }
     }
 
-    return c.json({ detail: 'Insufficient permissions' }, 403)
+    return c.json({
+      detail: `Insufficient permissions: role '${user.role}' cannot access this tenant `
+        + `(requires: ${platformRoles.join(', ')} platform-wide, or ${ownTenantRoles.join(', ')} within your own tenant)`,
+    }, 403)
   })
 }

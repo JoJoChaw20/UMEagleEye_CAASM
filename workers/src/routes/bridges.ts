@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { eq, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
+import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
 import { bridges, agents } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
@@ -68,7 +69,7 @@ router.get('/', authMiddleware, async (c) => {
 router.post(
   '/',
   authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'),
+  requireRoles(...AGENT_MANAGE_ROLES),
   zValidator('json', z.object({
     name: z.string().min(1).max(100),
     mode: z.enum(['relay', 'buffer']).optional(),
@@ -109,7 +110,7 @@ router.post(
 router.patch(
   '/:bridgeId',
   authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'),
+  requireRoles(...AGENT_MANAGE_ROLES),
   zValidator('json', z.object({
     name: z.string().min(1).max(100).optional(),
   })),
@@ -140,7 +141,7 @@ router.patch(
 router.delete(
   '/:bridgeId',
   authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'),
+  requireRoles(...AGENT_MANAGE_ROLES),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
