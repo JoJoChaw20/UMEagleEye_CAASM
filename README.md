@@ -19,6 +19,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 
 ### Network Discovery
 - **Active Scanning** — EagleEye agent dispatches Nmap (`-sV -T4` + NSE scripts: `smb-os-discovery`, `banner`) on demand; discovered hosts are AI-enriched and upserted as assets
+- **SNMPv3 Device Detection** — When authPriv credentials are configured, the agent polls each active-scan host over UDP 161 for `sysDescr`/`sysObjectID` and walks the interface table; the backend classifies routers/switches (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) as `network` devices — signal Nmap's TCP-only port list cannot see
 - **Passive Scanning (ARP + mDNS/NetBIOS + DHCP)** — Three parallel daemon sniffers on the agent: ARP for host discovery, mDNS/NetBIOS for hostname resolution, DHCP fingerprinting for OS/device classification; no active probing required
 - **Autonomous Passive Flush** — Agent drains the ARP buffer every `--passive-interval` seconds (default 60 s) and auto-creates scan records without dashboard interaction; dashboard-triggered passive scans flush the buffer on demand
 - **MAC Vendor Live Lookup** — Real-time OUI resolution via `api.macvendors.com` at ingest time; feeds the AI classification prompt
@@ -107,6 +108,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 |-----------|------------|
 | Runtime | Python 3.10+ |
 | Active Scanner | python-nmap + nmap CLI (NSE: smb-os-discovery, banner) |
+| SNMPv3 Polling | pysnmp (authPriv — SHA/MD5/SHA-2 auth, AES/DES priv); network-device detection during active scans |
 | Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68) |
 | SBOM Generation | Syft (CycloneDX JSON output) |
 | CVE Scanning | Grype (matches SBOM packages against NVD, GitHub Advisory, OSS Index) |
@@ -221,7 +223,7 @@ UMEagleEye2.0/
 │   └── package.json
 ├── agent/                       # EagleEye network scanning agent
 │   ├── eagleeye_agent.py        # Main agent: active + passive scanning loop
-│   ├── requirements.txt         # requests, python-nmap, scapy
+│   ├── requirements.txt         # requests, python-nmap, scapy, pysnmp
 │   └── README.md
 ├── cyberforce_corporation_assets.csv  # Sample dataset — 33 assets (CyberForce Corp)
 ├── vanilla_corporation_assets.csv     # Sample dataset — 30 assets (Vanilla Corp)
@@ -346,8 +348,13 @@ pip install -r requirements.txt
 | `--passive-interface` | auto | Network interface for passive sniffers |
 | `--passive-interval` | `60` | Seconds between autonomous ARP buffer flushes |
 | `--fingerbank-key` | — | Fingerbank API key for DHCP device fingerprinting (optional) |
+| `--snmp-user` | — | SNMPv3 username; providing it (with both keys) enables SNMP polling of active-scan hosts (optional) |
+| `--snmp-auth-key` | — | SNMPv3 authentication passphrase (authPriv) |
+| `--snmp-priv-key` | — | SNMPv3 privacy passphrase (authPriv) |
+| `--snmp-auth-protocol` | `SHA` | Auth protocol: `SHA`, `MD5`, `SHA256`, `SHA512`, … |
+| `--snmp-priv-protocol` | `AES` | Privacy protocol: `AES`, `AES256`, `DES`, `3DES`, … |
 
-All flags can alternatively be set via environment variables: `EAGLEEYE_API_URL`, `EAGLEEYE_API_KEY`, `EAGLEEYE_AGENT_ID`, `EAGLEEYE_POLL_INTERVAL`, `EAGLEEYE_HEARTBEAT_INTERVAL`, `EAGLEEYE_SBOM_TIMEOUT`, `EAGLEEYE_PASSIVE`, `EAGLEEYE_PASSIVE_INTERFACE`, `EAGLEEYE_PASSIVE_INTERVAL`, `EAGLEEYE_FINGERBANK_KEY`.
+All flags can alternatively be set via environment variables: `EAGLEEYE_API_URL`, `EAGLEEYE_API_KEY`, `EAGLEEYE_AGENT_ID`, `EAGLEEYE_POLL_INTERVAL`, `EAGLEEYE_HEARTBEAT_INTERVAL`, `EAGLEEYE_SBOM_TIMEOUT`, `EAGLEEYE_PASSIVE`, `EAGLEEYE_PASSIVE_INTERFACE`, `EAGLEEYE_PASSIVE_INTERVAL`, `EAGLEEYE_FINGERBANK_KEY`, `EAGLEEYE_SNMP_USER`, `EAGLEEYE_SNMP_AUTH_KEY`, `EAGLEEYE_SNMP_PRIV_KEY`, `EAGLEEYE_SNMP_AUTH_PROTOCOL`, `EAGLEEYE_SNMP_PRIV_PROTOCOL`.
 
 ### Active-only mode (default)
 
@@ -359,6 +366,24 @@ python eagleeye_agent.py \
 ```
 
 Polls `GET /scans/pending` every 30 s. For each pending active scan: runs Nmap on the target subnet and POSTs results to `POST /scans/ingest`.
+
+### SNMPv3 polling (active scans)
+
+When SNMPv3 credentials are supplied, the agent polls each host discovered during an active scan over UDP 161 (authPriv). Nmap's fixed TCP port list cannot see SNMP, so this is the only path that reveals SNMP-managed network gear. For each host the agent issues a single GET for `sysDescr` + `sysObjectID`, walks the `ifDescr` interface table, and merges `snmp_sysdescr`, `snmp_sysobjectid`, and `snmp_interfaces` into the host record before ingest.
+
+```bash
+python eagleeye_agent.py \
+  --api-url  https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
+  --api-key  <key-from-dashboard> \
+  --agent-id <uuid-from-dashboard> \
+  --snmp-user          <v3-user> \
+  --snmp-auth-key      <auth-pass> \
+  --snmp-priv-key      <priv-pass> \
+  --snmp-auth-protocol SHA \
+  --snmp-priv-protocol AES
+```
+
+On ingest the backend classifies a host as `network` when `snmp_sysdescr` matches a known router/switch signature (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) or when SNMP returned a non-empty interface table. SNMP polling is **best-effort** — any failure (timeout, auth/priv mismatch, missing `pysnmp`) is logged and skipped without aborting the scan. If credentials are omitted, SNMP polling is skipped entirely.
 
 ### Full passive mode (recommended)
 
@@ -546,7 +571,7 @@ Assets have a `source` field that controls upsert precedence:
 | `scan_active` | Active Nmap scan | Discovered by active scanning |
 | `scan_passive` | Passive ARP/mDNS/DHCP scan | Discovered by passive sniffing |
 
-The `source` field is never downgraded (a `manual` asset ingested by a passive scan remains `manual`). The Tenants page asset count shows only `source = 'manual'` assets.
+`manual` is **sticky / terminal** — once a human accepts a host into My Assets (via the Discovery scan modal's *Accept* action) or imports it via CSV, later rescans never flip it back to `scan_active`/`scan_passive`, so accepted assets are never silently evicted from My Assets. `scan_active` and `scan_passive` freely update each other on rescans of not-yet-accepted hosts. Accepting an asset also **merges** the incoming `os_info` onto the existing record — scan-derived fields (SNMP `sysDescr`/interfaces, product/version data) are preserved rather than overwritten. The Tenants page asset count shows only `source = 'manual'` assets.
 
 ## UI / UX
 
