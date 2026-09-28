@@ -182,7 +182,9 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       // Only write device type if upgrading from unknown
       if (body.device_type !== undefined && !existingDeviceKnown) updateData.deviceType = body.device_type
       if (body.hardware_vendor != null) updateData.hardwareVendor = body.hardware_vendor
-      if (body.os_info !== undefined) updateData.osInfo = body.os_info
+      if (body.os_info !== undefined) {
+        updateData.osInfo = { ...(existing.osInfo as Record<string, unknown> ?? {}), ...body.os_info }
+      }
       if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
       const [updated] = await db.update(assets).set(updateData).where(eq(assets.assetId, existing.assetId)).returning()
       return c.json(updated, 200)

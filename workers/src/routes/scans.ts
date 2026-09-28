@@ -829,7 +829,7 @@ Example:
             deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
             isInternetFacing: sql`EXCLUDED.is_internet_facing`,
             criticalityScore: sql`EXCLUDED.criticality_score`,
-            source: sql`EXCLUDED.source`,
+            source: sql`CASE WHEN assets.source = 'manual' THEN assets.source ELSE EXCLUDED.source END`,
             lastScanned: sql`EXCLUDED.last_scanned`,
             updatedAt: sql`now()`,
           },
