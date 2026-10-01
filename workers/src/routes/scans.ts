@@ -7,6 +7,8 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, events } from '../db/schema'
 import { computeCriticality } from '../lib/criticality'
+import { normalizeMac } from '../lib/mac'
+import { mergeOsInfo } from '../lib/osInfo'
 import { buildBaseline, runDriftAudit } from '../services/drift'
 
 // ── Ingest helpers ───────────────────────────────────────────────
@@ -199,8 +201,8 @@ app.get('/compare', authMiddleware, async (c) => {
 
       const ahHostname = (ah['hostname'] as string | null) ?? null
       const phHostname = (ph['hostname'] as string | null) ?? null
-      const ahMac = ((ah['mac'] as string | null) ?? '').toLowerCase()
-      const phMac = ((ph['mac'] as string | null) ?? '').toLowerCase()
+      const ahMac = normalizeMac(ah['mac'])
+      const phMac = normalizeMac(ph['mac'])
 
       const activeRichness = [ahHostname, ah['mac'], hasOs || null, ports.length > 0 || null].filter(Boolean).length
       const passiveRichness = [phHostname, ph['mac']].filter(Boolean).length
@@ -594,7 +596,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const macVendorMap: Map<string, string | null> = new Map()
     await Promise.all(
       hosts.map(async (h) => {
-        const vendor = await fetchMacVendor(h.mac as string | null)
+        const vendor = await fetchMacVendor(normalizeMac(h.mac))
         macVendorMap.set(h.ip, vendor)
       })
     )
@@ -772,18 +774,39 @@ Example:
         else if (/router|gateway|switch|access.point/.test(llmDesc)) deviceType = 'network'
         else if (/iot|camera|printer|sensor/.test(llmDesc)) deviceType = 'iot'
       }
-      // Spread into a new object so we never mutate what buildOsInfo returned
-      // (it can return host.os by reference when os was already non-empty).
-      const osInfo: Record<string, unknown> = { ...buildOsInfo(host.os as Record<string, unknown> | null, ports) }
-      if (host.snmp_sysdescr) osInfo.snmp_sysdescr = host.snmp_sysdescr
-      if (host.snmp_sysobjectid) osInfo.snmp_sysobjectid = host.snmp_sysobjectid
-      if (host.snmp_interfaces) osInfo.snmp_interfaces = host.snmp_interfaces
+      // Build the os_info this scan observed. Spread into a new object so we
+      // never mutate what buildOsInfo returned (it can return host.os by
+      // reference when os was already non-empty).
+      const observedOsInfo: Record<string, unknown> = { ...buildOsInfo(host.os as Record<string, unknown> | null, ports) }
+      // Active scans are authoritative for the port-derived keys even when the
+      // host's os object is non-empty (buildOsInfo returns os as-is in that case
+      // and skips port computation). Force all three from the scanned ports so an
+      // active scan always writes them ([] when none, clearing stale values).
+      if (!isPassive) {
+        observedOsInfo.ports    = ports.map(p => `${p.port}/${p.protocol ?? 'tcp'}`)
+        observedOsInfo.products = [...new Set(ports.map(p => p.product).filter(Boolean))]
+        observedOsInfo.versions = [...new Set(ports.map(p => p.version).filter(Boolean))]
+      }
+      if (host.snmp_sysdescr) observedOsInfo.snmp_sysdescr = host.snmp_sysdescr
+      if (host.snmp_sysobjectid) observedOsInfo.snmp_sysobjectid = host.snmp_sysobjectid
+      if (host.snmp_interfaces) observedOsInfo.snmp_interfaces = host.snmp_interfaces
       const internetFacing = isGatewayIp(host.ip)
+      const mac = normalizeMac(host.mac)
 
       // Fetch existing record to preserve owner + stable device type
       const conditions = [eq(assets.ipAddress, host.ip)]
       if (tenantId) conditions.push(eq(assets.tenantId, tenantId))
       const [existing] = await db.select().from(assets).where(and(...conditions)).limit(1)
+
+      // Additive os_info merge: keeps existing scan/SNMP/AI/DHCP fields a passive
+      // scan didn't observe; active scans stay authoritative for ports/products/
+      // versions. `osInfoIncoming` is what we INSERT (so the SQL `||` merge is
+      // correct); `osInfoMerged` mirrors the post-merge row for scoring/baseline.
+      const { incoming: osInfoIncoming, merged: osInfoMerged } = mergeOsInfo(
+        existing?.osInfo as Record<string, unknown> | null,
+        observedOsInfo,
+        isPassive,
+      )
 
       const resolvedDeviceType = (existing?.deviceType && existing.deviceType !== 'unknown')
         ? existing.deviceType : deviceType
@@ -794,7 +817,7 @@ Example:
         isInternetFacing: internetFacing,
         hostname: host.hostname ?? existing?.hostname,
         owner: resolvedOwner,
-        osInfo,
+        osInfo: osInfoMerged,
       }).score
 
       // Insert or update — conflict on (ip_address, tenant_id) → update in place
@@ -806,10 +829,10 @@ Example:
           tenantId: tenantId || null,
           ipAddress: host.ip,
           hostname: host.hostname ?? existing?.hostname ?? null,
-          macAddress: host.mac ?? existing?.macAddress ?? null,
+          macAddress: mac ?? existing?.macAddress ?? null,
           hardwareVendor: hardwareVendor ?? existing?.hardwareVendor ?? null,
           deviceType: resolvedDeviceType,
-          osInfo,
+          osInfo: osInfoIncoming,
           isInternetFacing: internetFacing,
           criticalityScore: critScore,
           source: isPassive ? 'scan_passive' : 'scan_active',
@@ -825,7 +848,7 @@ Example:
             hostname: sql`COALESCE(assets.hostname, EXCLUDED.hostname)`,
             macAddress: sql`COALESCE(EXCLUDED.mac_address, assets.mac_address)`,
             hardwareVendor: sql`COALESCE(EXCLUDED.hardware_vendor, assets.hardware_vendor)`,
-            osInfo: sql`EXCLUDED.os_info`,
+            osInfo: sql`COALESCE(assets.os_info, '{}'::jsonb) || EXCLUDED.os_info`,
             deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
             isInternetFacing: sql`EXCLUDED.is_internet_facing`,
             criticalityScore: sql`EXCLUDED.criticality_score`,
@@ -845,9 +868,9 @@ Example:
         if (!existing?.baselineState) {
           const baseline = buildBaseline({
             ports:            ports.map(p => p.port),
-            osInfo:           osInfo as Record<string, unknown> | null,
+            osInfo:           osInfoMerged as Record<string, unknown> | null,
             hostname:         host.hostname ?? existing?.hostname ?? null,
-            macAddress:       host.mac ?? existing?.macAddress ?? null,
+            macAddress:       mac ?? existing?.macAddress ?? null,
             isInternetFacing: internetFacing,
             deviceType:       resolvedDeviceType,
             autoSet:          true,
@@ -866,7 +889,7 @@ Example:
             severity:  internetFacing ? 'high' : 'medium',
             details:   {
               ip:       host.ip,
-              mac:      host.mac ?? null,
+              mac:      mac ?? null,
               hostname: host.hostname ?? null,
               source:   isPassive ? 'passive_scan' : 'active_scan',
             },

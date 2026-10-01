@@ -1,6 +1,7 @@
 import type { DB } from '../db/client'
 import { assets, events } from '../db/schema'
 import { isNotNull, and, eq, gte, sql } from 'drizzle-orm'
+import { normalizeMac } from '../lib/mac'
 
 // ── Baseline shape stored in assets.baseline_state ────────────────
 export interface AssetBaseline {
@@ -150,7 +151,12 @@ function detectDrift(
   }
 
   // ── MAC address change (potential spoofing / hardware swap) ────
-  if (baseline.mac_address && asset.macAddress && baseline.mac_address !== asset.macAddress) {
+  // Compare normalized forms so legacy mixed-case / dash-format baselines don't
+  // raise false drift against a now-normalized current value. The stored
+  // baseline_state is left untouched; from/to show the actual stored values.
+  const baselineMac = normalizeMac(baseline.mac_address)
+  const currentMac  = normalizeMac(asset.macAddress)
+  if (baselineMac && currentMac && baselineMac !== currentMac) {
     drifts.push({
       type:     'config_change',
       severity: 'high',

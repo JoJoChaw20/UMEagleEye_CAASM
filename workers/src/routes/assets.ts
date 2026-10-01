@@ -8,6 +8,7 @@ import { getDb } from '../db/client'
 import { assets, scanResults, agents } from '../db/schema'
 import { rescoreAssets } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
+import { normalizeMac } from '../lib/mac'
 import { buildBaseline, extractPorts } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -144,6 +145,15 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     const db = getDb(c.env.DATABASE_URL)
     const body = c.req.valid('json')
 
+    // Normalize MAC to canonical lowercase colon form; reject non-empty garbage.
+    let normalizedMac: string | null | undefined = undefined
+    if (body.mac_address != null) {
+      normalizedMac = normalizeMac(body.mac_address)
+      if (body.mac_address.trim() !== '' && normalizedMac === null) {
+        return c.json({ detail: `Invalid mac_address "${body.mac_address}" — expected 12 hex digits, e.g. aa:bb:cc:dd:ee:ff` }, 400)
+      }
+    }
+
     const targetTenantId = (user.role === 'superadmin' && body.tenant_id)
       ? body.tenant_id
       : (user.tenantId ?? null)
@@ -177,7 +187,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         updatedAt: new Date(),
       }
       if (body.hostname != null) updateData.hostname = body.hostname
-      if (body.mac_address != null) updateData.macAddress = body.mac_address
+      if (body.mac_address != null) updateData.macAddress = normalizedMac
       if (body.owner != null) updateData.owner = body.owner
       // Only write device type if upgrading from unknown
       if (body.device_type !== undefined && !existingDeviceKnown) updateData.deviceType = body.device_type
@@ -196,7 +206,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       .values({
         ipAddress: body.ip_address,
         hostname: body.hostname ?? null,
-        macAddress: body.mac_address ?? null,
+        macAddress: normalizedMac ?? null,
         owner: body.owner,
         deviceType,
         hardwareVendor: body.hardware_vendor,
@@ -247,7 +257,13 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     const updateData: Partial<typeof assets.$inferInsert> = { updatedAt: new Date() }
     if (body.ip_address !== undefined) updateData.ipAddress = body.ip_address
     if (body.hostname !== undefined) updateData.hostname = body.hostname
-    if (body.mac_address !== undefined) updateData.macAddress = body.mac_address
+    if (body.mac_address !== undefined) {
+      const nm = normalizeMac(body.mac_address)
+      if (body.mac_address.trim() !== '' && nm === null) {
+        return c.json({ detail: `Invalid mac_address "${body.mac_address}" — expected 12 hex digits, e.g. aa:bb:cc:dd:ee:ff` }, 400)
+      }
+      updateData.macAddress = nm
+    }
     if (body.owner !== undefined) updateData.owner = body.owner
     if (body.device_type !== undefined) updateData.deviceType = body.device_type
     if (body.hardware_vendor !== undefined) updateData.hardwareVendor = body.hardware_vendor
@@ -497,6 +513,19 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         osInfo.ports = row['open_ports'].split(/[\s,]+/).map(p => p.trim()).filter(Boolean)
       }
 
+      // Normalize MAC; a non-empty invalid value is skipped with a per-row
+      // warning rather than failing the whole row.
+      let macAddress: string | undefined = undefined
+      const rawMac = row['mac_address']
+      if (rawMac && rawMac.trim() !== '') {
+        const nm = normalizeMac(rawMac)
+        if (nm === null) {
+          errors.push(`Row ${i + 1}: invalid mac_address "${rawMac}" — skipped`)
+        } else {
+          macAddress = nm
+        }
+      }
+
       const criticalityScore = computeAssetCriticality({
         deviceType,
         isInternetFacing,
@@ -509,7 +538,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         rowNum: i + 1,
         ipAddress,
         hostname: row['hostname'] || undefined,
-        macAddress: row['mac_address'] || undefined,
+        macAddress,
         owner: row['owner'] || undefined,
         deviceType,
         hardwareVendor: row['hardware_vendor'] || undefined,
