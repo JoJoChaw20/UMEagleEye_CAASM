@@ -74,8 +74,11 @@ export const assets = pgTable('assets', {
   assetId: uuid('asset_id').primaryKey().default(newUuid()),
   tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),
   hostname: varchar('hostname', { length: 255 }),
-  ipAddress: varchar('ip_address', { length: 45 }).notNull(),
-  macAddress: varchar('mac_address', { length: 17 }),
+  ipAddress: varchar('ip_address', { length: 45 }).notNull(),      // latest seen
+  macAddress: varchar('mac_address', { length: 17 }),               // latest seen
+  // Stable per-network device identifier: SMB computer name / SNMP sysName,
+  // lowercased. Used by the identity resolver (matching rule 3).
+  hostKey: varchar('host_key', { length: 255 }),
   owner: varchar('owner', { length: 255 }),
   deviceType: deviceTypeEnum('device_type').notNull().default('unknown'),
   hardwareVendor: varchar('hardware_vendor', { length: 255 }),
@@ -88,8 +91,33 @@ export const assets = pgTable('assets', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [
-  uniqueIndex('idx_assets_ip_tenant').on(t.ipAddress, t.tenantId),
+  // Identity is no longer IP-keyed: (ip_address, tenant_id) is a plain lookup
+  // index, NOT unique. Address identity lives in asset_addresses.
+  index('idx_assets_ip_tenant').on(t.tenantId, t.ipAddress),
   index('idx_assets_tenant').on(t.tenantId),
+  index('idx_assets_host_key').on(t.tenantId, t.hostKey),
+])
+
+// ─── Table 3b: Asset Addresses (device/address split) ───────────
+// One asset (device) can have many addresses over time (DHCP reuse, roaming).
+// The current address of a device is the row with ended_at IS NULL.
+export const assetAddresses = pgTable('asset_addresses', {
+  addressId: uuid('address_id').primaryKey().default(newUuid()),
+  assetId: uuid('asset_id').notNull().references(() => assets.assetId, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  networkKey: varchar('network_key', { length: 64 }),              // nullable = unscoped (manual/CSV)
+  ipAddress: varchar('ip_address', { length: 45 }).notNull(),
+  macAddress: varchar('mac_address', { length: 17 }),              // normalized, nullable
+  firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
+  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
+  endedAt: timestamp('ended_at', { withTimezone: true }),          // nullable = current
+}, (t) => [
+  index('idx_addr_tenant_mac').on(t.tenantId, t.macAddress),
+  // Guards the check-then-insert race: at most one current scoped address per
+  // (tenant, network, ip). Unscoped rows (network_key NULL) stay non-unique.
+  uniqueIndex('idx_addr_current').on(t.tenantId, t.networkKey, t.ipAddress)
+    .where(sql`ended_at IS NULL AND network_key IS NOT NULL`),
+  index('idx_addr_asset').on(t.assetId),
 ])
 
 // ─── Table 4: SBOMs ─────────────────────────────────────────────
@@ -252,6 +280,7 @@ export const scanResults = pgTable('scan_results', {
   status: varchar('status', { length: 20 }).notNull().default('completed'),
   hostsDiscovered: integer('hosts_discovered').notNull().default(0),
   rawResults: jsonb('raw_results').notNull().default([]),
+  networkInfo: jsonb('network_info'),   // {subnet, gateway_ip, gateway_mac} from the agent (reference only)
   failureReason: text('failure_reason'),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().default(now()),
   completedAt: timestamp('completed_at', { withTimezone: true }),

@@ -5,10 +5,12 @@ import { eq, and, sql, desc, ne, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { scanResults, agents, assets, events } from '../db/schema'
+import { scanResults, agents, assets, assetAddresses, events } from '../db/schema'
 import { computeCriticality } from '../lib/criticality'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
+import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
+import { chunkPlan, planIngest, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
 
 // ── Ingest helpers ───────────────────────────────────────────────
@@ -98,6 +100,61 @@ function isGatewayIp(ip: string): boolean {
 }
 
 const app = new Hono<{ Bindings: Env }>()
+
+// ── Identity helpers ─────────────────────────────────────────────
+// Postgres unique-violation (SQLSTATE 23505) raised by the partial unique index
+// on asset_addresses when a concurrent ingest records the same current address.
+function isUniqueViolation(e: unknown): boolean {
+  const err = e as { code?: string; cause?: { code?: string }; message?: string }
+  const code = err?.code ?? err?.cause?.code
+  return code === '23505' || /duplicate key value|unique constraint|23505/i.test(String(err?.message ?? ''))
+}
+
+// Record/refresh the current address row for a matched (updated) asset.
+// Handles: same IP (refresh last_seen, fill empty mac/network), IP change / DHCP
+// (end old row + insert new), and first sighting on a new network (insert).
+async function recordMatchedAddress(
+  db: ReturnType<typeof getDb>,
+  p: {
+    assetId: string
+    tenantId: string | null
+    networkKey: string | null
+    ip: string
+    mac: string | null
+    currentAddress: { addressId: string; ipAddress: string; macAddress: string | null; networkKey: string | null } | null
+  },
+): Promise<void> {
+  const seen = new Date()
+  const { currentAddress } = p
+  if (currentAddress) {
+    if (currentAddress.ipAddress === p.ip) {
+      await db.update(assetAddresses).set({
+        lastSeen: seen,
+        macAddress: currentAddress.macAddress ?? p.mac ?? null,       // fill, never clear
+        networkKey: currentAddress.networkKey ?? p.networkKey ?? null,
+      }).where(eq(assetAddresses.addressId, currentAddress.addressId))
+      return
+    }
+    // IP changed (DHCP) on this network — end the old row, open a new current one.
+    try {
+      await db.batch([
+        db.update(assetAddresses).set({ endedAt: seen }).where(eq(assetAddresses.addressId, currentAddress.addressId)),
+        db.insert(assetAddresses).values({
+          assetId: p.assetId, tenantId: p.tenantId, networkKey: p.networkKey,
+          ipAddress: p.ip, macAddress: p.mac, firstSeen: seen, lastSeen: seen,
+        }),
+      ])
+    } catch (e) { if (!isUniqueViolation(e)) throw e }  // lost race → another ingest recorded it
+    return
+  }
+  // No current address on this network (e.g. rule 1 matched by MAC elsewhere).
+  try {
+    await db.insert(assetAddresses).values({
+      assetId: p.assetId, tenantId: p.tenantId, networkKey: p.networkKey,
+      ipAddress: p.ip, macAddress: p.mac, firstSeen: seen, lastSeen: seen,
+    })
+  } catch (e) { if (!isUniqueViolation(e)) throw e }
+}
 
 // ── Helper: SHA-256 hex digest ───────────────────────────────────
 async function sha256Hex(input: string): Promise<string> {
@@ -533,6 +590,13 @@ const ingestSchema = z.object({
   scan_id: z.string().uuid().optional(),   // optional for passive auto-ingest
   scan_type: z.enum(['active', 'passive']).optional().default('active'),
   hosts: z.array(hostSchema),
+  // Optional network metadata, stored on the scan record for reference. NOT used
+  // for identity — the network key is derived from each host IP's /24.
+  network: z.object({
+    subnet: z.string().max(64).nullish(),
+    gateway_ip: z.string().max(45).nullish(),
+    gateway_mac: z.string().max(17).nullish(),
+  }).nullish(),
 })
 
 app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
@@ -548,7 +612,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const incomingKey = authHeader.slice(7)
     const incomingKeyHash = await sha256Hex(incomingKey)
 
-    const { agent_id, scan_id, scan_type, hosts } = c.req.valid('json')
+    const { agent_id, scan_id, scan_type, hosts, network } = c.req.valid('json')
     const isPassive = scan_type === 'passive'
 
     // Fetch agent and verify API key hash
@@ -571,35 +635,36 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
 
     const tenantId = agent.tenantId
 
-    // ── Pre-fetch existing asset records to stabilise LLM context ──
-    // For each discovered host, look up its existing DB record (if any).
-    // We pass existing description/deviceType to the LLM so it doesn't
-    // flip-flop between scans when port data is sparse or missing.
+    // ── Batch identity prefetch (3 queries total, constant per ingest) ──
+    // Collect the batch's MACs / IPs / host_keys, then fetch all candidate
+    // addresses+assets at once. Replaces the old ~3 queries-per-host resolver.
+    const batchMacs = [...new Set(hosts.map(h => classifyMac(h.mac).mac).filter((m): m is string => !!m))]
+    const batchIps = [...new Set(hosts.map(h => h.ip))]
+    const batchHostKeys = [...new Set(hosts.map(h => sanitizeHostKey((h.os as Record<string, unknown> | null)?.['smb_computer_name'])).filter((k): k is string => !!k))]
+    const prefetch = await prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys)
+
+    // LLM context (existing device_type/hostname/owner per IP) — built from the
+    // prefetch, no extra queries. Authoritative identity match happens via planIngest.
+    const assetByIdForCtx = new Map(prefetch.assets.map(a => [a.assetId, a]))
     const existingAssetMap: Map<string, { deviceType: string; hostname: string | null; owner: string | null; hardwareVendor: string | null }> = new Map()
-    for (const host of hosts) {
-      try {
-        const conds = [eq(assets.ipAddress, host.ip)]
-        if (tenantId) conds.push(eq(assets.tenantId, tenantId))
-        const [found] = await getDb(c.env.DATABASE_URL)
-          .select({ deviceType: assets.deviceType, hostname: assets.hostname, owner: assets.owner, hardwareVendor: assets.hardwareVendor })
-          .from(assets)
-          .where(and(...conds))
-          .limit(1)
-        if (found) existingAssetMap.set(host.ip, found)
-      } catch { /* non-fatal */ }
+    for (const addr of prefetch.addresses) {
+      if (existingAssetMap.has(addr.ipAddress)) continue
+      const a = assetByIdForCtx.get(addr.assetId)
+      if (a) existingAssetMap.set(addr.ipAddress, { deviceType: a.deviceType, hostname: a.hostname, owner: a.owner, hardwareVendor: a.hardwareVendor })
     }
 
-    // ── Resolve MAC vendor names in real-time (parallel, non-blocking) ──
-    // Fetches the actual vendor string (e.g. "TP-Link Technologies Co. Ltd.")
-    // from api.macvendors.com for each host. This replaces any static OUI table
-    // and gives the LLM genuine, up-to-date manufacturer context.
+    // ── MAC vendor lookup — deduped by OUI and capped, so subrequests stay
+    // constant regardless of host count (api.macvendors.com is one fetch each). ──
+    const VENDOR_OUI_CAP = 16
+    const ouiOf = (m: string | null): string | null => (m ? m.replace(/:/g, '').slice(0, 6) : null)
+    const uniqueOuis = [...new Set(hosts.map(h => ouiOf(classifyMac(h.mac).mac)).filter((o): o is string => !!o))].slice(0, VENDOR_OUI_CAP)
+    const ouiVendor = new Map<string, string | null>()
+    await Promise.all(uniqueOuis.map(async (oui) => { ouiVendor.set(oui, await fetchMacVendor(oui)) }))
     const macVendorMap: Map<string, string | null> = new Map()
-    await Promise.all(
-      hosts.map(async (h) => {
-        const vendor = await fetchMacVendor(normalizeMac(h.mac))
-        macVendorMap.set(h.ip, vendor)
-      })
-    )
+    for (const h of hosts) {
+      const oui = ouiOf(classifyMac(h.mac).mac)
+      macVendorMap.set(h.ip, oui ? (ouiVendor.get(oui) ?? null) : null)
+    }
 
     // ── LLM Asset Suggestion (DeepSeek via OpenRouter) ──
     let enhancedHosts = [...hosts]
@@ -747,6 +812,7 @@ Example:
           status: 'completed',
           hostsDiscovered: enhancedHosts.length,
           rawResults: enhancedHosts,
+          networkInfo: network ?? null,
           completedAt: new Date(),
         })
         .returning()
@@ -756,17 +822,22 @@ Example:
       return c.json({ detail: 'scan_id is required for active scans' }, 400)
     }
 
-    // Upsert assets — atomic ON CONFLICT so concurrent agents never create duplicates
+    // Upsert assets via the identity resolver (device/address split). Identity is
+    // no longer IP-keyed; the network key is the host IP's /24, derived inside the
+    // resolver (stable across active/passive, independent of gateway presence).
+    // The network.{subnet,gateway_ip,gateway_mac} block is persisted on the scan
+    // record below for reference, but is not used for the key.
     const upsertedAssetIds: string[] = []
-    for (const host of enhancedHosts) {
+    let failedHosts = 0
+
+    // Precompute each host's device type + observed os_info (same logic as before),
+    // producing the PlanHost inputs the pure batch planner consumes.
+    const prepareHost = (host: typeof enhancedHosts[number]): PlanHost => {
       const ports = (host.ports ?? []) as NmapPort[]
       let deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null)
-      // SNMP is a strong, direct signal — check it before the LLM-text fallback,
-      // matching the precedence of the Python classifier (classify_device_type).
       if (deviceType === 'unknown' && isNetworkBySnmp(host.snmp_sysdescr, host.snmp_interfaces)) {
-        deviceType = 'network'
+        deviceType = 'network'   // SNMP is a strong, direct signal (before LLM fallback)
       }
-      // LLM description fallback: if port/OS heuristics couldn't classify, parse the AI's text
       if (deviceType === 'unknown') {
         const llmDesc = String((host as Record<string, unknown>)['description'] ?? '').toLowerCase()
         if (/workstation|laptop|desktop|windows pc/.test(llmDesc)) deviceType = 'workstation'
@@ -774,15 +845,9 @@ Example:
         else if (/router|gateway|switch|access.point/.test(llmDesc)) deviceType = 'network'
         else if (/iot|camera|printer|sensor/.test(llmDesc)) deviceType = 'iot'
       }
-      // Build the os_info this scan observed. Spread into a new object so we
-      // never mutate what buildOsInfo returned (it can return host.os by
-      // reference when os was already non-empty).
       const observedOsInfo: Record<string, unknown> = { ...buildOsInfo(host.os as Record<string, unknown> | null, ports) }
-      // Active scans are authoritative for the port-derived keys even when the
-      // host's os object is non-empty (buildOsInfo returns os as-is in that case
-      // and skips port computation). Force all three from the scanned ports so an
-      // active scan always writes them ([] when none, clearing stale values).
       if (!isPassive) {
+        // Active scans are authoritative for the port-derived keys (even [] clears stale).
         observedOsInfo.ports    = ports.map(p => `${p.port}/${p.protocol ?? 'tcp'}`)
         observedOsInfo.products = [...new Set(ports.map(p => p.product).filter(Boolean))]
         observedOsInfo.versions = [...new Set(ports.map(p => p.version).filter(Boolean))]
@@ -790,110 +855,124 @@ Example:
       if (host.snmp_sysdescr) observedOsInfo.snmp_sysdescr = host.snmp_sysdescr
       if (host.snmp_sysobjectid) observedOsInfo.snmp_sysobjectid = host.snmp_sysobjectid
       if (host.snmp_interfaces) observedOsInfo.snmp_interfaces = host.snmp_interfaces
-      const internetFacing = isGatewayIp(host.ip)
-      const mac = normalizeMac(host.mac)
-
-      // Fetch existing record to preserve owner + stable device type
-      const conditions = [eq(assets.ipAddress, host.ip)]
-      if (tenantId) conditions.push(eq(assets.tenantId, tenantId))
-      const [existing] = await db.select().from(assets).where(and(...conditions)).limit(1)
-
-      // Additive os_info merge: keeps existing scan/SNMP/AI/DHCP fields a passive
-      // scan didn't observe; active scans stay authoritative for ports/products/
-      // versions. `osInfoIncoming` is what we INSERT (so the SQL `||` merge is
-      // correct); `osInfoMerged` mirrors the post-merge row for scoring/baseline.
-      const { incoming: osInfoIncoming, merged: osInfoMerged } = mergeOsInfo(
-        existing?.osInfo as Record<string, unknown> | null,
+      return {
+        ip: host.ip,
+        rawMac: host.mac,
+        hostname: host.hostname ?? null,
+        hostKeyRaw: (host.os as Record<string, unknown> | null)?.['smb_computer_name'],
+        deviceType,
         observedOsInfo,
+        ports: ports.map(p => p.port),
+        hardwareVendor: macVendorMap.get(host.ip) ?? null,
+        internetFacing: isGatewayIp(host.ip),
         isPassive,
-      )
+        tenantId: tenantId ?? null,
+      }
+    }
 
-      const resolvedDeviceType = (existing?.deviceType && existing.deviceType !== 'unknown')
-        ? existing.deviceType : deviceType
-      const resolvedOwner = existing?.owner ?? null
+    const planHosts = enhancedHosts.map(prepareHost)
+    // Resolve the entire batch in memory against the prefetched candidates.
+    const plan = planIngest(planHosts, prefetch)
+    for (const ph of plan.perHost) {
+      if (ph.possibleDuplicateOf) {
+        console.log(`identity: possible_duplicate hint ip=${ph.ip} rule=${ph.rule} relatedAsset=${ph.possibleDuplicateOf}`)
+      }
+    }
+    const planHostByIp = new Map(planHosts.map(p => [p.ip, p]))
+    const rawHostByIp = new Map(enhancedHosts.map(h => [h.ip, h]))
 
-      const critScore = computeCriticality({
-        deviceType: resolvedDeviceType,
-        isInternetFacing: internetFacing,
-        hostname: host.hostname ?? existing?.hostname,
-        owner: resolvedOwner,
-        osInfo: osInfoMerged,
-      }).score
+    // Map a planned op to a Drizzle statement for db.batch.
+    const toStmt = (op: IngestOp): unknown => {
+      switch (op.k) {
+        case 'insertAsset':   return db.insert(assets).values(op.values as typeof assets.$inferInsert)
+        case 'updateAsset':   return db.update(assets).set(op.set as Partial<typeof assets.$inferInsert>).where(eq(assets.assetId, op.assetId))
+        case 'insertAddress': return db.insert(assetAddresses).values(op.values as typeof assetAddresses.$inferInsert)
+        case 'updateAddress': return db.update(assetAddresses).set(op.set as Partial<typeof assetAddresses.$inferInsert>).where(eq(assetAddresses.addressId, op.addressId))
+        case 'endAddress':    return db.update(assetAddresses).set({ endedAt: new Date() }).where(eq(assetAddresses.addressId, op.addressId))
+        case 'insertEvent':   return db.insert(events).values(op.values as typeof events.$inferInsert)
+      }
+    }
 
-      // Insert or update — conflict on (ip_address, tenant_id) → update in place
-      const hardwareVendor = macVendorMap.get(host.ip) ?? null
-
-      const [upserted] = await db
-        .insert(assets)
-        .values({
-          tenantId: tenantId || null,
-          ipAddress: host.ip,
-          hostname: host.hostname ?? existing?.hostname ?? null,
+    // Slow per-host fallback — the proven resolver path, used only when a bulk
+    // chunk hits a unique violation (transactional batch → whole chunk rolled back).
+    const persistHostSlow = async (p: PlanHost, rawMac: unknown): Promise<string | null> => {
+      const resolution = await resolveAssetIdentity(db, {
+        tenantId: tenantId ?? null, ip: p.ip, rawMac, hostKey: p.hostKeyRaw, isManualSource: false,
+      })
+      const mac = resolution.mac
+      const networkKey = resolution.networkKey
+      if (resolution.assetId) {
+        const [existing] = await db.select().from(assets).where(eq(assets.assetId, resolution.assetId)).limit(1)
+        const { merged } = mergeOsInfo(existing?.osInfo as Record<string, unknown> | null, p.observedOsInfo, p.isPassive)
+        const resolvedDeviceType = (existing?.deviceType && existing.deviceType !== 'unknown') ? existing.deviceType : p.deviceType
+        const crit = computeCriticality({ deviceType: resolvedDeviceType, isInternetFacing: p.internetFacing, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged }).score
+        const baselineForUpdate = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? existing?.hostname ?? null, macAddress: mac ?? existing?.macAddress ?? null, isInternetFacing: p.internetFacing, deviceType: resolvedDeviceType, autoSet: true })
+        await db.update(assets).set({
+          ipAddress: p.ip,
+          hostname: existing?.hostname ?? p.hostname ?? null,
           macAddress: mac ?? existing?.macAddress ?? null,
-          hardwareVendor: hardwareVendor ?? existing?.hardwareVendor ?? null,
+          hostKey: existing?.hostKey ?? resolution.hostKey ?? null,
+          hardwareVendor: p.hardwareVendor ?? existing?.hardwareVendor ?? null,
+          osInfo: merged,
           deviceType: resolvedDeviceType,
-          osInfo: osInfoIncoming,
-          isInternetFacing: internetFacing,
-          criticalityScore: critScore,
-          source: isPassive ? 'scan_passive' : 'scan_active',
-          lastScanned: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: tenantId
-            ? [assets.ipAddress, assets.tenantId]
-            : [assets.ipAddress],
-          set: {
-            hostname: sql`COALESCE(assets.hostname, EXCLUDED.hostname)`,
-            macAddress: sql`COALESCE(EXCLUDED.mac_address, assets.mac_address)`,
-            hardwareVendor: sql`COALESCE(EXCLUDED.hardware_vendor, assets.hardware_vendor)`,
-            osInfo: sql`COALESCE(assets.os_info, '{}'::jsonb) || EXCLUDED.os_info`,
-            deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
-            isInternetFacing: sql`EXCLUDED.is_internet_facing`,
-            criticalityScore: sql`EXCLUDED.criticality_score`,
-            source: sql`CASE WHEN assets.source = 'manual' THEN assets.source ELSE EXCLUDED.source END`,
-            lastScanned: sql`EXCLUDED.last_scanned`,
-            updatedAt: sql`now()`,
-          },
-        })
-        .returning({ assetId: assets.assetId })
+          isInternetFacing: p.internetFacing,
+          criticalityScore: crit,
+          source: existing?.source === 'manual' ? 'manual' : (p.isPassive ? 'scan_passive' : 'scan_active'),
+          lastScanned: new Date(), updatedAt: new Date(),
+          ...(existing?.baselineState ? {} : { baselineState: baselineForUpdate }),
+        }).where(eq(assets.assetId, resolution.assetId))
+        await recordMatchedAddress(db, { assetId: resolution.assetId, tenantId: tenantId ?? null, networkKey, ip: p.ip, mac, currentAddress: resolution.currentAddress })
+        return resolution.assetId
+      }
+      const newAssetId = crypto.randomUUID()
+      const { merged } = mergeOsInfo(null, p.observedOsInfo, p.isPassive)
+      const crit = computeCriticality({ deviceType: p.deviceType, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }).score
+      const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: p.deviceType, autoSet: true })
+      const now = new Date()
+      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', lastScanned: now, createdAt: now, updatedAt: now }
+      const addressValues = { assetId: newAssetId, tenantId: tenantId ?? null, networkKey, ipAddress: p.ip, macAddress: mac, firstSeen: now, lastSeen: now }
+      if (resolution.endAddressId) {
+        await db.batch([
+          db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, resolution.endAddressId)),
+          db.insert(assets).values(assetValues),
+          db.insert(assetAddresses).values(addressValues),
+        ])
+      } else {
+        await db.batch([
+          db.insert(assets).values(assetValues),
+          db.insert(assetAddresses).values(addressValues),
+        ])
+      }
+      await db.insert(events).values({ assetId: newAssetId, eventType: 'new_device', severity: p.internetFacing ? 'high' : 'medium', details: { ip: p.ip, mac: mac ?? null, hostname: p.hostname ?? null, source: p.isPassive ? 'passive_scan' : 'active_scan' } })
+      return newAssetId
+    }
 
-      if (upserted?.assetId) {
-        upsertedAssetIds.push(upserted.assetId)
-
-        // ── Auto-baseline on first discovery ──────────────────────
-        // If this asset had no baseline, snapshot the current state immediately.
-        // Future scans will compare against this, enabling drift detection.
-        if (!existing?.baselineState) {
-          const baseline = buildBaseline({
-            ports:            ports.map(p => p.port),
-            osInfo:           osInfoMerged as Record<string, unknown> | null,
-            hostname:         host.hostname ?? existing?.hostname ?? null,
-            macAddress:       mac ?? existing?.macAddress ?? null,
-            isInternetFacing: internetFacing,
-            deviceType:       resolvedDeviceType,
-            autoSet:          true,
-          })
-          await db
-            .update(assets)
-            .set({ baselineState: baseline })
-            .where(eq(assets.assetId, upserted.assetId))
-        }
-
-        // ── New device event — fires only on true first discovery ──
-        if (!existing) {
-          await db.insert(events).values({
-            assetId:   upserted.assetId,
-            eventType: 'new_device',
-            severity:  internetFacing ? 'high' : 'medium',
-            details:   {
-              ip:       host.ip,
-              mac:      mac ?? null,
-              hostname: host.hostname ?? null,
-              source:   isPassive ? 'passive_scan' : 'active_scan',
-            },
-          })
+    // Execute in bulk: each chunk is ONE db.batch (one subrequest), transactional.
+    let slowBudget = 10
+    for (const chunk of chunkPlan(plan.perHost, 100)) {
+      if (chunk.ops.length === 0) {
+        for (const ph of chunk.hosts) upsertedAssetIds.push(ph.assetId)
+        continue
+      }
+      try {
+        await db.batch(chunk.ops.map(toStmt) as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+        for (const ph of chunk.hosts) upsertedAssetIds.push(ph.assetId)
+      } catch (e) {
+        if (!isUniqueViolation(e)) throw e
+        // Chunk rolled back — re-run its hosts via the slow path, capped.
+        for (const ph of chunk.hosts) {
+          const p = planHostByIp.get(ph.ip)
+          const raw = rawHostByIp.get(ph.ip)
+          if (!p || !raw) { failedHosts++; continue }
+          if (slowBudget <= 0) { failedHosts++; console.error(`identity: slow-path cap reached — skipping host ${ph.ip}`); continue }
+          slowBudget--
+          try {
+            const id = await persistHostSlow(p, raw.mac)
+            if (id) upsertedAssetIds.push(id)
+          } catch (err) {
+            failedHosts++
+            console.error(`identity: slow-path failed ip=${ph.ip} mac=${normalizeMac(raw.mac) ?? 'none'} rule=${ph.rule}: ${(err as Error)?.message ?? err}`)
+          }
         }
       }
     }
@@ -906,18 +985,18 @@ Example:
         status: 'completed',
         hostsDiscovered: enhancedHosts.length,
         rawResults: enhancedHosts,
+        ...(network ? { networkInfo: network } : {}),   // store agent network block for reference
         completedAt: new Date(),
       })
       .where(eq(scanResults.scanId, effectiveScanId))
 
-    // Trigger drift check advisory for each asset
-    for (const assetId of upsertedAssetIds) {
-      await c.env.ADVISORY_QUEUE.send({
-        type: 'drift_check',
-        assetId,
-        scanId: effectiveScanId,
-        agentId: agent_id,
-      })
+    // Trigger drift checks — one sendBatch per 100 assets (not one send per asset),
+    // keeping queue subrequests constant.
+    for (let i = 0; i < upsertedAssetIds.length; i += 100) {
+      const slice = upsertedAssetIds.slice(i, i + 100)
+      await c.env.ADVISORY_QUEUE.sendBatch(
+        slice.map(assetId => ({ body: { type: 'drift_check', assetId, scanId: effectiveScanId, agentId: agent_id } })),
+      )
     }
 
     return c.json({
@@ -926,6 +1005,7 @@ Example:
       scan_type: isPassive ? 'passive' : 'active',
       hosts_discovered: hosts.length,
       assets_upserted: upsertedAssetIds.length,
+      failed_hosts: failedHosts,
     })
   } catch (err) {
     console.error('scans POST /ingest error:', err)

@@ -4,11 +4,11 @@
  */
 
 import { Hono } from 'hono'
-import { eq, and, desc, gte, ilike, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, desc, gte, ilike, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { ctiIndicators, assets } from '../db/schema'
+import { ctiIndicators, assets, assetAddresses } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -160,6 +160,8 @@ app.get('/lookup', authMiddleware, async (c) => {
     // Cross-reference against internal assets (IP match only)
     let matched_internal_asset = null
     try {
+      // IP is no longer unique across assets. Prefer the asset whose CURRENT
+      // address row holds this IP, then the most recently scanned — deterministic.
       const [asset] = await db
         .select({
           assetId:         assets.assetId,
@@ -167,9 +169,17 @@ app.get('/lookup', authMiddleware, async (c) => {
           ipAddress:       assets.ipAddress,
           criticalityScore: assets.criticalityScore,
           isInternetFacing: assets.isInternetFacing,
+          hasCurrentAddr:  sql<boolean>`bool_or(${assetAddresses.addressId} IS NOT NULL)`,
         })
         .from(assets)
-        .where(eq(assets.ipAddress, value))
+        .leftJoin(assetAddresses, and(
+          eq(assetAddresses.assetId, assets.assetId),
+          isNull(assetAddresses.endedAt),
+          eq(assetAddresses.ipAddress, value),
+        ))
+        .where(or(eq(assets.ipAddress, value), eq(assetAddresses.ipAddress, value)))
+        .groupBy(assets.assetId)
+        .orderBy(desc(sql`bool_or(${assetAddresses.addressId} IS NOT NULL)`), desc(assets.lastScanned))
         .limit(1)
 
       if (asset) {

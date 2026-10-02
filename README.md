@@ -14,11 +14,12 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 
 ### Asset Management
 - **Asset Inventory (My Assets)** — Manual asset registry with criticality scoring, baseline snapshots, and drift detection
-- **CSV Bulk Import** — Import assets from CSV with OS, port, and criticality data; upserts by IP per tenant
+- **CSV Bulk Import** — Import assets from CSV with OS, port, and criticality data; identity-resolved on import so re-importing the same file does not create duplicates
 - **All Assets** — Combined view of all discovered and manually added assets across the tenant
+- **Duplicate Detection & Merge** — Legacy IP-keyed duplicates are grouped (`SAFE` auto-mergeable vs `REVIEW`) and merged into one survivor from the Asset Inventory "Duplicates" panel; merge moves addresses/events/SBOMs/relationships/topology, merges fields, and writes an audit log — all in one atomic batch ([Asset Identity & Deduplication](#asset-identity--deduplication))
 
 ### Network Discovery
-- **Active Scanning** — EagleEye agent dispatches Nmap (`-sV -T4` + NSE scripts: `smb-os-discovery`, `banner`) on demand; discovered hosts are AI-enriched and upserted as assets
+- **Active Scanning** — EagleEye agent dispatches Nmap (`-sV -T4` + NSE scripts: `smb-os-discovery`, `banner`) on demand; discovered hosts are AI-enriched and upserted as assets. Hosts that are up but expose none of the scanned ports are still reported (no `--open`), so port-less devices (phones, many IoT) appear in active results and a host that closes its last port correctly records `ports: []`
 - **SNMPv3 Device Detection** — When authPriv credentials are configured, the agent polls each active-scan host over UDP 161 for `sysDescr`/`sysObjectID` and walks the interface table; the backend classifies routers/switches (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) as `network` devices — signal Nmap's TCP-only port list cannot see
 - **Passive Scanning (ARP + mDNS/NetBIOS + DHCP)** — Three parallel daemon sniffers on the agent: ARP for host discovery, mDNS/NetBIOS for hostname resolution, DHCP fingerprinting for OS/device classification; no active probing required
 - **Autonomous Passive Flush** — Agent drains the ARP buffer every `--passive-interval` seconds (default 60 s) and auto-creates scan records without dashboard interaction; dashboard-triggered passive scans flush the buffer on demand
@@ -123,7 +124,7 @@ Browser ──HTTPS──► Cloudflare Pages  (React SPA)
                           │
                           ▼ HTTPS /api/v1
                    Cloudflare Workers  (Hono API)
-                    ├── Neon PostgreSQL  (14 tables)
+                    ├── Neon PostgreSQL  (15 tables)
                     ├── Cloudflare KV    (cache / locks)
                     ├── Cloudflare R2    (PDF reports)
                     └── Cloudflare Queues (async jobs)
@@ -151,17 +152,22 @@ UMEagleEye2.0/
 ├── workers/                     # Cloudflare Workers backend
 │   ├── src/
 │   │   ├── db/
-│   │   │   ├── schema.ts        # Drizzle schema (14 tables)
+│   │   │   ├── schema.ts        # Drizzle schema (15 tables, incl. asset_addresses)
 │   │   │   └── client.ts        # Neon + Drizzle client
 │   │   ├── lib/
 │   │   │   ├── auth.ts          # PBKDF2, JWT, TOTP, Google OAuth
 │   │   │   ├── criticality.ts   # Criticality scoring (device type, owner, internet-facing)
+│   │   │   ├── mac.ts           # MAC normalisation (lowercase colon form)
+│   │   │   ├── identity.ts      # Device/address resolver: classifyMac, network key, matching rules, prefetch
+│   │   │   ├── ingest-plan.ts   # Pure batch planner for scan ingest (chunked db.batch)
+│   │   │   ├── duplicates.ts    # Pure duplicate-group detection (union-find; safe/review)
+│   │   │   ├── merge.ts         # Pure merge planner (one atomic db.batch)
 │   │   │   └── permissions.ts   # Centralised RBAC role constants + feature permission groups
 │   │   ├── middleware/
 │   │   │   └── auth.ts          # JWT middleware + requireRoles / requireTenantAccess guards
 │   │   ├── routes/
 │   │   │   ├── auth.ts          # register, login, MFA, Google, change-password, /me
-│   │   │   ├── assets.ts        # Asset CRUD, baseline, CSV import, SBOM trigger, search
+│   │   │   ├── assets.ts        # Asset CRUD, baseline, CSV import, SBOM trigger, search, duplicates + merge
 │   │   │   ├── scans.ts         # Scan dispatch, agent poll, agent ingest (active + passive), auto-expire
 │   │   │   ├── sbom.ts          # SBOM ingest, list, dependencies, stats; CVE ingest + risk scoring
 │   │   │   ├── events.ts        # Security events; acknowledge endpoint re-baselines asset + deletes event
@@ -365,7 +371,7 @@ python eagleeye_agent.py \
   --agent-id <uuid-from-dashboard>
 ```
 
-Polls `GET /scans/pending` every 30 s. For each pending active scan: runs Nmap on the target subnet and POSTs results to `POST /scans/ingest`.
+Polls `GET /scans/pending` every 30 s. For each pending active scan: runs Nmap on the target subnet (no `--open`, so hosts with no open ports are still reported) and POSTs results — plus a `network` block (`subnet`, `gateway_ip`, `gateway_mac`) used for identity scoping — to `POST /scans/ingest`.
 
 ### SNMPv3 polling (active scans)
 
@@ -572,6 +578,37 @@ Assets have a `source` field that controls upsert precedence:
 | `scan_passive` | Passive ARP/mDNS/DHCP scan | Discovered by passive sniffing |
 
 `manual` is **sticky / terminal** — once a human accepts a host into My Assets (via the Discovery scan modal's *Accept* action) or imports it via CSV, later rescans never flip it back to `scan_active`/`scan_passive`, so accepted assets are never silently evicted from My Assets. `scan_active` and `scan_passive` freely update each other on rescans of not-yet-accepted hosts. Accepting an asset also **merges** the incoming `os_info` onto the existing record — scan-derived fields (SNMP `sysDescr`/interfaces, product/version data) are preserved rather than overwritten. The Tenants page asset count shows only `source = 'manual'` assets.
+
+## Asset Identity & Deduplication
+
+Identity is **device-based, not IP-based**. DHCP reuse and randomized MACs mean one IP can host different devices over time and one device can hold many IPs, so assets are keyed by a device/address split:
+
+- **`assets`** = the device (latest-seen `ip_address`/`mac_address`, `host_key`, criticality, baseline).
+- **`asset_addresses`** = every address a device has had; the row with `ended_at IS NULL` is current. A partial unique index `(tenant_id, network_key, ip_address) WHERE ended_at IS NULL` keeps at most one current scoped address per network. `network_key` is the host IP's `/24` (unscoped/NULL for manual & CSV assets).
+
+### Resolver matching (scan ingest)
+
+Each ingested host is resolved to an existing device or a new one, first match wins (MAC classified via the shared `classifyMac`):
+
+| Rule | Match | Result |
+|---|---|---|
+| 1 | Global (burned-in) MAC on any network | same device (unless two `network`/`server` devices share it across different non-null networks → treated as a possible duplicate, not merged) |
+| 2 | Local/random MAC + same network (or unscoped row with same IP) | same device |
+| 3 | `host_key` (SMB computer name) + same network | same device |
+| 4 | No usable MAC, or the matched address has none | same device; fill in MAC/network |
+| 5 | Same network + IP but a different valid MAC | new device; end the old address |
+| 6 | otherwise | new device |
+
+Shared/virtual MACs (VMware, VRRP, HSRP, MS-NLB) and invalid/broadcast/multicast MACs never identify a device. Ingest **prefetches** candidates in 3 queries for the whole batch and writes in chunked `db.batch` calls, so Cloudflare subrequests stay roughly constant regardless of host count.
+
+### Duplicate detection & merge (legacy cleanup)
+
+`GET /assets/duplicates` groups existing duplicates (union-find) and labels each group:
+
+- **SAFE** — same global MAC (any network), or same local MAC on the same network / same unscoped IP. Auto-mergeable.
+- **REVIEW** — `network`/`server` devices sharing a global MAC across different networks, same specific hostname with different MACs, or same `host_key` on different networks. Human decides; never auto-merged.
+
+`POST /assets/merge` (and `POST /assets/duplicates/merge-safe` for up to 4 SAFE groups/request) merge losers into a chosen survivor in one atomic `db.batch`: end colliding current addresses → move `asset_addresses`/`events`/`sboms`/`dependencies` → dedupe & remap `asset_relationships` (honouring the `(source,target,type)` unique index, dropping self-loops) → keep one `topology_nodes` row per asset → merge fields into the survivor (source `manual` if any; latest-seen IP/MAC; max criticality; OR of internet-facing; shallow `os_info` merge) → write one `audit_logs` row per removed asset → delete losers. Both are tenant-scoped and gated to `tenant_superadmin` (same as delete); `?dry_run=true` returns the move counts and resulting fields without writing.
 
 ## UI / UX
 

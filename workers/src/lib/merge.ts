@@ -1,0 +1,207 @@
+/**
+ * merge.ts — PURE planner for merging duplicate assets into one survivor.
+ *
+ * Produces an ordered list of operations that the route maps to Drizzle and runs
+ * in ONE db.batch (atomic on neon-http — no interactive transactions available).
+ * Order matters: end colliding current addresses BEFORE moving them, remap/dedupe
+ * relationships, merge fields into the survivor, then delete the losers last.
+ *
+ * Pure (no DB). Tested by identity-demo.ts.
+ */
+export interface MergeAsset {
+  assetId: string
+  tenantId: string | null
+  hostname: string | null
+  ipAddress: string
+  macAddress: string | null
+  hostKey: string | null
+  owner: string | null
+  deviceType: string
+  hardwareVendor: string | null
+  osInfo: Record<string, unknown> | null
+  criticalityScore: number
+  baselineState: Record<string, unknown> | null
+  isInternetFacing: boolean
+  source: string
+  lastScanned: string | Date | null
+  createdAt: string | Date | null
+}
+export interface MergeAddress {
+  addressId: string
+  assetId: string
+  networkKey: string | null
+  ipAddress: string
+  endedAt: string | Date | null
+  lastSeen: string | Date | null
+}
+export interface MergeRelationship {
+  relationshipId: string
+  sourceAssetId: string
+  targetAssetId: string
+  relationshipType: string
+}
+export interface MergeTopologyNode { nodeId: string; assetId: string }
+
+export interface MergeRelated {
+  addresses: MergeAddress[]
+  relationships: MergeRelationship[]
+  topologyNodes: MergeTopologyNode[]
+}
+
+export type MergeOp =
+  | { k: 'endAddress'; addressId: string }
+  | { k: 'moveAddresses'; loserIds: string[]; survivorId: string }
+  | { k: 'moveEvents'; loserIds: string[]; survivorId: string }
+  | { k: 'moveSboms'; loserIds: string[]; survivorId: string }
+  | { k: 'moveDependencies'; loserIds: string[]; survivorId: string }
+  | { k: 'deleteRelationships'; ids: string[] }
+  | { k: 'updateRelationship'; id: string; sourceAssetId: string; targetAssetId: string }
+  | { k: 'deleteTopologyNodes'; ids: string[] }
+  | { k: 'moveTopologyNode'; nodeId: string; survivorId: string }
+  | { k: 'updateAsset'; assetId: string; set: Record<string, unknown> }
+  | { k: 'insertAudit'; loserId: string; survivorId: string; snapshot: Record<string, unknown> }
+  | { k: 'deleteAssets'; loserIds: string[] }
+
+export interface MergeCounts {
+  addressesMoved: number
+  addressesEnded: number
+  relationshipsMoved: number
+  relationshipsDropped: number
+  topologyMoved: number
+  topologyDropped: number
+}
+export interface MergePlan {
+  ops: MergeOp[]
+  mergedFields: Record<string, unknown>
+  counts: MergeCounts
+}
+
+const ms = (v: string | Date | null | undefined): number => (v ? new Date(v).getTime() : 0)
+const nonEmpty = (v: unknown): boolean => v != null && v !== ''
+
+export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: MergeRelated, now = new Date()): MergePlan {
+  const survivorId = survivor.assetId
+  const loserIds = losers.map(l => l.assetId)
+  const loserSet = new Set(loserIds)
+  const all = [survivor, ...losers]
+  const ops: MergeOp[] = []
+
+  // ── Field merge into survivor ──
+  const byLatest = [...all].sort((a, b) => ms(b.lastScanned) - ms(a.lastScanned))
+  const latest = byLatest[0]!
+  const firstNonEmpty = <K extends keyof MergeAsset>(key: K): unknown =>
+    nonEmpty(survivor[key]) ? survivor[key] : (all.find(a => nonEmpty(a[key]))?.[key] ?? survivor[key])
+
+  // os_info: shallow merge, later last_scanned wins per key.
+  const osByOldest = [...all].sort((a, b) => ms(a.lastScanned) - ms(b.lastScanned))
+  const mergedOsInfo = osByOldest.reduce<Record<string, unknown>>((acc, a) => ({ ...acc, ...(a.osInfo ?? {}) }), {})
+
+  const mergedFields: Record<string, unknown> = {
+    hostname: firstNonEmpty('hostname') ?? null,
+    owner: firstNonEmpty('owner') ?? null,
+    hostKey: firstNonEmpty('hostKey') ?? null,
+    hardwareVendor: firstNonEmpty('hardwareVendor') ?? null,
+    deviceType: (survivor.deviceType && survivor.deviceType !== 'unknown')
+      ? survivor.deviceType
+      : (all.find(a => a.deviceType && a.deviceType !== 'unknown')?.deviceType ?? survivor.deviceType),
+    osInfo: mergedOsInfo,
+    baselineState: survivor.baselineState ?? all.find(a => a.baselineState != null)?.baselineState ?? null,
+    source: all.some(a => a.source === 'manual') ? 'manual' : survivor.source,
+    isInternetFacing: all.some(a => a.isInternetFacing),
+    criticalityScore: Math.max(...all.map(a => a.criticalityScore ?? 0)),
+    lastScanned: byLatest.map(a => a.lastScanned).find(v => v != null) ?? null,
+    createdAt: all.map(a => ms(a.createdAt)).filter(n => n > 0).sort((x, y) => x - y).map(n => new Date(n))[0] ?? survivor.createdAt,
+    ipAddress: latest.ipAddress,            // "latest seen"
+    macAddress: latest.macAddress,          // "latest seen"
+    updatedAt: now,
+  }
+
+  // ── Addresses: end colliding current scoped loser rows, then move all loser rows ──
+  let addressesEnded = 0
+  const currentScoped = related.addresses.filter(a => a.endedAt == null && a.networkKey != null)
+  const byNetIp = new Map<string, MergeAddress[]>()
+  for (const a of currentScoped) {
+    const k = `${a.networkKey}|${a.ipAddress}`
+    const l = byNetIp.get(k) ?? []; l.push(a); byNetIp.set(k, l)
+  }
+  for (const group of byNetIp.values()) {
+    if (group.length < 2) continue
+    const survivorRow = group.find(a => a.assetId === survivorId)
+    const keeper = survivorRow ?? [...group].sort((x, y) => ms(y.lastSeen) - ms(x.lastSeen))[0]!
+    for (const a of group) {
+      if (a.addressId === keeper.addressId) continue
+      if (!loserSet.has(a.assetId)) continue   // never end a survivor row
+      ops.push({ k: 'endAddress', addressId: a.addressId }); addressesEnded++
+    }
+  }
+  const addressesMoved = related.addresses.filter(a => loserSet.has(a.assetId)).length
+  if (loserIds.length) {
+    ops.push({ k: 'moveAddresses', loserIds, survivorId })
+    ops.push({ k: 'moveEvents', loserIds, survivorId })
+    ops.push({ k: 'moveSboms', loserIds, survivorId })
+    ops.push({ k: 'moveDependencies', loserIds, survivorId })
+  }
+
+  // ── Relationships: drop self-loops + duplicates (on survivor edge), remap the rest ──
+  const remap = (id: string) => (loserSet.has(id) ? survivorId : id)
+  const keyOf = (s: string, t: string, ty: string) => `${s}|${t}|${ty}`
+  const kept = new Set<string>()
+  const dropIds: string[] = []
+  const updates: { id: string; s: string; t: string }[] = []
+  // Pass 1: pure survivor edges (no loser endpoint) claim their keys unchanged.
+  for (const r of related.relationships) {
+    if (loserSet.has(r.sourceAssetId) || loserSet.has(r.targetAssetId)) continue
+    if (r.sourceAssetId === survivorId || r.targetAssetId === survivorId) kept.add(keyOf(r.sourceAssetId, r.targetAssetId, r.relationshipType))
+  }
+  // Pass 2: edges touching a loser — remap, drop self-loops/duplicates.
+  for (const r of related.relationships) {
+    if (!loserSet.has(r.sourceAssetId) && !loserSet.has(r.targetAssetId)) continue
+    const s = remap(r.sourceAssetId), t = remap(r.targetAssetId)
+    if (s === t) { dropIds.push(r.relationshipId); continue }         // self-loop
+    const key = keyOf(s, t, r.relationshipType)
+    if (kept.has(key)) { dropIds.push(r.relationshipId); continue }   // duplicate survivor edge
+    kept.add(key)
+    updates.push({ id: r.relationshipId, s, t })
+  }
+  if (dropIds.length) ops.push({ k: 'deleteRelationships', ids: dropIds })
+  for (const u of updates) ops.push({ k: 'updateRelationship', id: u.id, sourceAssetId: u.s, targetAssetId: u.t })
+
+  // ── Topology: one node per asset. Keep survivor's; else move one loser node. ──
+  const survivorHasNode = related.topologyNodes.some(n => n.assetId === survivorId)
+  const loserNodes = related.topologyNodes.filter(n => loserSet.has(n.assetId))
+  let topologyMoved = 0, topologyDropped = 0
+  if (survivorHasNode) {
+    if (loserNodes.length) { ops.push({ k: 'deleteTopologyNodes', ids: loserNodes.map(n => n.nodeId) }); topologyDropped = loserNodes.length }
+  } else if (loserNodes.length) {
+    const [keep, ...rest] = loserNodes
+    ops.push({ k: 'moveTopologyNode', nodeId: keep!.nodeId, survivorId }); topologyMoved = 1
+    if (rest.length) { ops.push({ k: 'deleteTopologyNodes', ids: rest.map(n => n.nodeId) }); topologyDropped = rest.length }
+  }
+
+  // ── Survivor field update, audit rows, delete losers (last) ──
+  ops.push({ k: 'updateAsset', assetId: survivorId, set: mergedFields })
+  for (const l of losers) {
+    ops.push({ k: 'insertAudit', loserId: l.assetId, survivorId, snapshot: loserSnapshot(l) })
+  }
+  if (loserIds.length) ops.push({ k: 'deleteAssets', loserIds })
+
+  return {
+    ops,
+    mergedFields,
+    counts: {
+      addressesMoved, addressesEnded,
+      relationshipsMoved: updates.length, relationshipsDropped: dropIds.length,
+      topologyMoved, topologyDropped,
+    },
+  }
+}
+
+function loserSnapshot(a: MergeAsset): Record<string, unknown> {
+  return {
+    asset_id: a.assetId, tenant_id: a.tenantId, hostname: a.hostname, ip_address: a.ipAddress,
+    mac_address: a.macAddress, host_key: a.hostKey, owner: a.owner, device_type: a.deviceType,
+    hardware_vendor: a.hardwareVendor, os_info: a.osInfo, criticality_score: a.criticalityScore,
+    baseline_state: a.baselineState, is_internet_facing: a.isInternetFacing, source: a.source,
+    last_scanned: a.lastScanned, created_at: a.createdAt,
+  }
+}
