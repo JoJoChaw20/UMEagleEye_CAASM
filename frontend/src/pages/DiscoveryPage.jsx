@@ -4,6 +4,28 @@ import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 
+// ── MAC helpers (frontend copy) ──────────────────────────────────
+// Duplicated from workers/src/lib/mac.ts (normalizeMac) and workers/src/lib/identity.ts
+// (SHARED_VIRTUAL_PATTERNS / isSharedVirtualMac). Keep in sync — no cross-package import.
+function normalizeMac(input) {
+  if (typeof input !== 'string') return null
+  const t = input.trim()
+  if (!t || !/^[0-9a-fA-F:.\-]+$/.test(t)) return null
+  const hex = t.replace(/[:.\-]/g, '').toLowerCase()
+  if (!/^[0-9a-f]{12}$/.test(hex)) return null
+  return hex.match(/.{2}/g).join(':')
+}
+const SHARED_VIRTUAL = [
+  /^02:00:4c:4f:4f:50$/, /^00:50:56:c0:00:0[0-9a-f]$/, /^00:00:5e:00:01:[0-9a-f]{2}$/,
+  /^00:00:0c:07:ac:[0-9a-f]{2}$/, /^02:bf:/,
+]
+// Returns a normalized MAC only when it's a usable (non shared/virtual) identifier.
+function usableMac(raw) {
+  const m = normalizeMac(raw)
+  if (!m || SHARED_VIRTUAL.some((re) => re.test(m))) return null
+  return m
+}
+
 // ── Status badge ──────────────────────────────────────────────────
 function StatusBadge({ status }) {
   const map = {
@@ -202,7 +224,7 @@ function NewScanModal({ onClose, onSubmit, agents }) {
 }
 
 // ── Discovered hosts side panel ────────────────────────────────────
-function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps, readOnly }) {
+function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps, inventoriedMacs, myAssetMacs, readOnly }) {
   const hosts = scan?.rawResults || scan?.raw_results || []
   const [adding, setAdding] = useState({})
   const [accepted, setAccepted] = useState(new Set())
@@ -255,8 +277,11 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps, rea
             hosts.map((host, i) => {
               const ip = host.ip || host.ip_address
               const isAccepted = accepted.has(ip)
-              const isInMyAssets = myAssetIps?.has(ip)
-              const isKnown = inventoriedIps.has(ip) && !isInMyAssets
+              // Match by MAC first (identity is MAC-based now); fall back to IP only
+              // when there's no usable (non shared/virtual) MAC. See workers identity rules.
+              const hostMac = usableMac(host.mac || host.mac_address)
+              const isInMyAssets = hostMac ? myAssetMacs?.has(hostMac) : myAssetIps?.has(ip)
+              const isKnown = (hostMac ? inventoriedMacs?.has(hostMac) : inventoriedIps.has(ip)) && !isInMyAssets
               const isAdding = !!adding[ip]
               const osLabel = formatOs(host.os)
               const portsLabel = formatPorts(host.ports)
@@ -580,8 +605,10 @@ export default function DiscoveryPage() {
   const [showNew, setShowNew] = useState(false)
   const [selectedScan, setSelectedScan] = useState(null)
   const [error, setError] = useState(null)
-  const [inventoriedIps, setInventoriedIps] = useState(new Set())   // all known assets
-  const [myAssetIps, setMyAssetIps] = useState(new Set())           // manually accepted only
+  const [inventoriedIps, setInventoriedIps] = useState(new Set())   // all known assets (by IP)
+  const [myAssetIps, setMyAssetIps] = useState(new Set())           // manual assets (by IP)
+  const [inventoriedMacs, setInventoriedMacs] = useState(new Set()) // all known assets (by normalized MAC)
+  const [myAssetMacs, setMyAssetMacs] = useState(new Set())         // manual assets (by normalized MAC)
   const intervalRef = useRef(null)
   const [statusFilter, setStatusFilter] = useState('')
   const [scanTypeFilter, setScanTypeFilter] = useState('')
@@ -602,8 +629,13 @@ export default function DiscoveryPage() {
       setScans(scansRes.data.scans || scansRes.data.items || [])
       setAgents(agentsRes.data.agents || [])
       setTenants(tenantsRes.data.tenants || [])
-      setInventoriedIps(new Set((allAssetsRes.data.items || []).map(a => a.ipAddress)))
-      setMyAssetIps(new Set((myAssetsRes.data.items || []).map(a => a.ipAddress)))
+      const allItems = allAssetsRes.data.items || []
+      const myItems = myAssetsRes.data.items || []
+      const macOf = (a) => usableMac(a.macAddress || a.mac_address)
+      setInventoriedIps(new Set(allItems.map(a => a.ipAddress)))
+      setMyAssetIps(new Set(myItems.map(a => a.ipAddress)))
+      setInventoriedMacs(new Set(allItems.map(macOf).filter(Boolean)))
+      setMyAssetMacs(new Set(myItems.map(macOf).filter(Boolean)))
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load data')
     } finally {
@@ -866,6 +898,8 @@ export default function DiscoveryPage() {
           readOnly={isSuperadmin}
           inventoriedIps={inventoriedIps}
           myAssetIps={myAssetIps}
+          inventoriedMacs={inventoriedMacs}
+          myAssetMacs={myAssetMacs}
         />
       )}
 

@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Server, Search, Shield, Bookmark, Target, CheckCircle, RefreshCw } from 'lucide-react'
+import { Server, Search, Shield, Bookmark, Target, CheckCircle, RefreshCw, Layers } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
+import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import TenantSelector from '../components/common/TenantSelector'
 
 const PAGE_SIZE = 25
@@ -22,6 +23,8 @@ export default function AssetsPage() {
   const [rescoring, setRescoring] = useState(false)
   const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
   const [sbomScans, setSbomScans] = useState({})
+  const [showDuplicates, setShowDuplicates] = useState(false)
+  const [dupCount, setDupCount] = useState(0)
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -37,7 +40,16 @@ export default function AssetsPage() {
     finally { setLoading(false) }
   }, [page, search, deviceTypeFilter, tenantFilter])
 
+  const loadDupCount = useCallback(async () => {
+    try {
+      const params = tenantFilter ? { tenant_id: tenantFilter } : {}
+      const res = await client.get('/assets/duplicates', { params })
+      setDupCount(res.data.count || 0)
+    } catch { setDupCount(0) }
+  }, [tenantFilter])
+
   useEffect(() => { loadAssets() }, [loadAssets])
+  useEffect(() => { if (!isBusinessOwner) loadDupCount() }, [loadDupCount, isBusinessOwner])
 
   const promoteToMyAssets = async (asset) => {
     try {
@@ -148,17 +160,34 @@ export default function AssetsPage() {
           <h1 className="text-2xl font-bold text-white">Asset Inventory</h1>
           <p className="text-dark-400 text-sm mt-1">{total} assets discovered</p>
         </div>
-        {!isSuperadmin && !isBusinessOwner && (
-          <button
-            onClick={rescoreAssets}
-            disabled={rescoring}
-            className="btn-secondary flex items-center gap-2 text-sm"
-            title="Recalculate criticality scores for all assets"
-          >
-            <RefreshCw className={`w-4 h-4 ${rescoring ? 'animate-spin' : ''}`} />
-            {rescoring ? 'Rescoring…' : 'Rescore Criticality'}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {!isBusinessOwner && (
+            <button
+              onClick={() => setShowDuplicates(true)}
+              className="btn-secondary flex items-center gap-2 text-sm relative"
+              title="Review and merge duplicate assets"
+            >
+              <Layers className="w-4 h-4" />
+              Duplicates
+              {dupCount > 0 && (
+                <span className="ml-0.5 text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/40">
+                  {dupCount}
+                </span>
+              )}
+            </button>
+          )}
+          {!isSuperadmin && !isBusinessOwner && (
+            <button
+              onClick={rescoreAssets}
+              disabled={rescoring}
+              className="btn-secondary flex items-center gap-2 text-sm"
+              title="Recalculate criticality scores for all assets"
+            >
+              <RefreshCw className={`w-4 h-4 ${rescoring ? 'animate-spin' : ''}`} />
+              {rescoring ? 'Rescoring…' : 'Rescore Criticality'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filters */}
@@ -329,6 +358,15 @@ export default function AssetsPage() {
         <BlastRadiusModal
           assetId={blastRadiusAssetId}
           onClose={() => setBlastRadiusAssetId(null)}
+        />
+      )}
+
+      {showDuplicates && (
+        <DuplicatesPanel
+          tenantId={tenantFilter}
+          canMerge={user?.role === 'tenant_superadmin'}
+          onClose={() => setShowDuplicates(false)}
+          onMerged={() => { loadAssets(); loadDupCount() }}
         />
       )}
     </div>

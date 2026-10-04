@@ -120,7 +120,7 @@ def run_nmap(subnet: str) -> list[dict[str, Any]]:
         nm.scan(
             hosts=subnet,
             arguments=(
-                "-sV -T4 --open "
+                "-sV -T4 "
                 "-p 22,23,80,139,161,443,445,3389,8080,8443,3306,5432,6379,27017 "
                 "--script smb-os-discovery,banner "
                 "--script-timeout 10s"
@@ -787,19 +787,56 @@ def _local_ip() -> str:
 
 
 def _default_gateway() -> Optional[str]:
-    """Return the IPv4 default gateway, or None when it cannot be determined.
-
-    The backend uses this to decide which discovered host is the internet edge
-    (internet-facing) instead of guessing from a .1/.254 address.
-    """
+    """Best-effort default-gateway IPv4 lookup. Returns None on any failure."""
     try:
-        from scapy.all import conf  # type: ignore
-        gw = conf.route.route("0.0.0.0")[2]
-        if gw and gw != "0.0.0.0":
-            return gw
+        if platform.system() == "Windows":
+            out = subprocess.run(
+                ["route", "print", "-4", "0.0.0.0"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                # "0.0.0.0  0.0.0.0  <gateway>  <iface>  <metric>"
+                if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                    return parts[2]
+        else:
+            out = subprocess.run(
+                ["ip", "route"], capture_output=True, text=True, timeout=5,
+            ).stdout
+            m = re.search(r"default via ([\d.]+)", out)
+            if m:
+                return m.group(1)
     except Exception:
-        pass
+        return None
     return None
+
+
+def build_network_info(subnet: Optional[str], hosts: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Build the `network` block sent with each ingest so the backend can scope
+    identity resolution: {subnet, gateway_ip, gateway_mac}.
+
+    - subnet      : the scanned CIDR (active); for passive, derived as the local
+                    /24 when not supplied.
+    - gateway_ip  : default gateway, best-effort (None on failure).
+    - gateway_mac : the gateway's MAC, only when the gateway appears among the
+                    discovered hosts (so we never guess it).
+    """
+    gateway_ip  = _default_gateway()
+    gateway_mac: Optional[str] = None
+    if gateway_ip:
+        for h in hosts:
+            if h.get("ip") == gateway_ip and h.get("mac"):
+                gateway_mac = h.get("mac")
+                break
+
+    net_subnet = subnet
+    if not net_subnet:
+        ip = _local_ip()
+        if ip and ip.count(".") == 3:
+            net_subnet = ".".join(ip.split(".")[:3]) + ".0/24"
+
+    return {"subnet": net_subnet, "gateway_ip": gateway_ip, "gateway_mac": gateway_mac}
 
 
 # ── API client ────────────────────────────────────────────────────────────────
@@ -881,7 +918,8 @@ class AgentClient:
         except Exception as e:
             log.warning(f"Could not mark scan {scan_id[:8]}… as failed: {e}")
 
-    def ingest_results(self, scan_id: str, hosts: list[dict]) -> bool:
+    def ingest_results(self, scan_id: str, hosts: list[dict],
+                       network: Optional[dict] = None) -> bool:
         """Ingest results for an active scan dispatched from the dashboard."""
         payload = {
             "agent_id":  self.agent_id,
@@ -889,9 +927,12 @@ class AgentClient:
             "scan_type": "active",
             "hosts":     hosts,
         }
+        if network:
+            payload["network"] = network
         return self._post_ingest(payload, label=f"active scan {scan_id[:8]}…", scan_id=scan_id)
 
-    def ingest_passive(self, hosts: list[dict], scan_id: Optional[str] = None) -> bool:
+    def ingest_passive(self, hosts: list[dict], scan_id: Optional[str] = None,
+                       network: Optional[dict] = None) -> bool:
         """Ingest passively discovered hosts.
         If scan_id is given (dashboard-triggered), links results to that record.
         If scan_id is None (autonomous flush), backend auto-creates the scan record.
@@ -904,6 +945,8 @@ class AgentClient:
             "scan_type": "passive",
             "hosts":     hosts,
         }
+        if network:
+            payload["network"] = network
         if scan_id:
             payload["scan_id"] = scan_id
         label = f"passive scan {scan_id[:8]}…" if scan_id else f"passive ({len(hosts)} host(s))"
@@ -1012,7 +1055,8 @@ def run_active_scan(
                 except Exception as e:
                     log.warning(f"SNMPv3 enrichment failed for {host_ip}: {e}")
 
-        client.ingest_results(scan_id, hosts)
+        network = build_network_info(subnet, hosts)
+        client.ingest_results(scan_id, hosts, network=network)
     except Exception as e:
         reason = f"Active Nmap scan failed: {e}"
         log.error(reason, exc_info=True)
@@ -1384,7 +1428,7 @@ def main():
                                 )
                             # Always POST so the dashboard record closes as Completed, not Failed.
                             # ingest_passive handles empty hosts gracefully when scan_id is set.
-                            client.ingest_passive(hosts, scan_id=scan_id)
+                            client.ingest_passive(hosts, scan_id=scan_id, network=build_network_info(None, hosts))
                             if hosts:
                                 last_passive_flush = time.time()  # reset autonomous timer only when data flushed
                         else:
@@ -1433,7 +1477,7 @@ def main():
                             f"[AUTO] Flushing {len(hosts)} passive host(s) "
                             f"(interval={args.passive_interval}s)"
                         )
-                        client.ingest_passive(hosts)
+                        client.ingest_passive(hosts, network=build_network_info(None, hosts))
                     else:
                         log.debug("[AUTO] Passive flush: ARP buffer empty, nothing to ingest")
                     last_passive_flush = time.time()

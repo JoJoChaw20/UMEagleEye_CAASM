@@ -1,13 +1,17 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, isNull, desc, ilike, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, inArray, desc, ilike, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, scanResults, agents } from '../db/schema'
+import { assets, assetAddresses, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
 import { rescoreAssets } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
+import { normalizeMac } from '../lib/mac'
+import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
+import { findDuplicateGroups, type DupAsset, type DupAddress } from '../lib/duplicates'
+import { planMerge, type MergeAsset, type MergeOp, type MergeRelated } from '../lib/merge'
 import { buildBaseline, extractPorts } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -15,6 +19,53 @@ const app = new Hono<{ Bindings: Env }>()
 const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
 const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin']
 const DELETE_ROLES = ['tenant_superadmin']
+const MERGE_ROLES  = ['tenant_superadmin']   // same guard as delete (destructive, irreversible)
+
+// Map a pure MergeOp to a Drizzle statement for one db.batch. userId/tenantId are
+// supplied here (the pure planner has no request context).
+function mergeOpToStmt(db: ReturnType<typeof getDb>, op: MergeOp, ctx: { userId: string; tenantId: string | null }): unknown {
+  switch (op.k) {
+    case 'endAddress':        return db.update(assetAddresses).set({ endedAt: new Date() }).where(eq(assetAddresses.addressId, op.addressId))
+    case 'moveAddresses':     return db.update(assetAddresses).set({ assetId: op.survivorId }).where(inArray(assetAddresses.assetId, op.loserIds))
+    case 'moveEvents':        return db.update(events).set({ assetId: op.survivorId }).where(inArray(events.assetId, op.loserIds))
+    case 'moveSboms':         return db.update(sboms).set({ assetId: op.survivorId }).where(inArray(sboms.assetId, op.loserIds))
+    case 'moveDependencies':  return db.update(dependencies).set({ assetId: op.survivorId }).where(inArray(dependencies.assetId, op.loserIds))
+    case 'deleteRelationships': return db.delete(assetRelationships).where(inArray(assetRelationships.relationshipId, op.ids))
+    case 'updateRelationship': return db.update(assetRelationships).set({ sourceAssetId: op.sourceAssetId, targetAssetId: op.targetAssetId }).where(eq(assetRelationships.relationshipId, op.id))
+    case 'deleteTopologyNodes': return db.delete(topologyNodes).where(inArray(topologyNodes.nodeId, op.ids))
+    case 'moveTopologyNode':  return db.update(topologyNodes).set({ assetId: op.survivorId }).where(eq(topologyNodes.nodeId, op.nodeId))
+    case 'updateAsset':       return db.update(assets).set(op.set as Partial<typeof assets.$inferInsert>).where(eq(assets.assetId, op.assetId))
+    case 'insertAudit':       return db.insert(auditLogs).values({ userId: ctx.userId, tenantId: ctx.tenantId, actionType: 'asset.merge', targetEntity: op.loserId, previousState: op.snapshot, newState: { survivor_id: op.survivorId } })
+    case 'deleteAssets':      return db.delete(assets).where(inArray(assets.assetId, op.loserIds))
+  }
+}
+
+// Record/refresh an asset's current address for the manual write paths (POST,
+// PATCH, CSV import). Updates the most-recently-seen current address in place —
+// so an IP/MAC edit moves it — else inserts a new unscoped (network_key NULL)
+// row. Never clears a stored MAC.
+async function recordManualAddress(
+  db: ReturnType<typeof getDb>,
+  p: { assetId: string; tenantId: string | null; ip: string; mac: string | null },
+): Promise<void> {
+  const now = new Date()
+  const [current] = await db
+    .select({ addressId: assetAddresses.addressId, macAddress: assetAddresses.macAddress })
+    .from(assetAddresses)
+    .where(and(eq(assetAddresses.assetId, p.assetId), isNull(assetAddresses.endedAt)))
+    .orderBy(desc(assetAddresses.lastSeen))
+    .limit(1)
+  if (current) {
+    await db.update(assetAddresses).set({
+      ipAddress: p.ip, lastSeen: now, macAddress: current.macAddress ?? p.mac ?? null,
+    }).where(eq(assetAddresses.addressId, current.addressId))
+  } else {
+    await db.insert(assetAddresses).values({
+      assetId: p.assetId, tenantId: p.tenantId, networkKey: null,
+      ipAddress: p.ip, macAddress: p.mac ?? null, firstSeen: now, lastSeen: now,
+    })
+  }
+}
 
 function computeAssetCriticality(input: {
   deviceType: string
@@ -99,6 +150,169 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   }
 })
 
+// ── GET /duplicates ─── detect legacy duplicate asset groups (tenant-scoped) ──
+// Subrequests: 2 (tenant assets, tenant addresses).
+app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') ?? null) : (user.tenantId ?? null)
+    const tCond = tenantId ? eq(assets.tenantId, tenantId) : undefined
+
+    const assetRows = await db.select({
+      assetId: assets.assetId, hostname: assets.hostname, ipAddress: assets.ipAddress, macAddress: assets.macAddress,
+      source: assets.source, deviceType: assets.deviceType, lastScanned: assets.lastScanned, createdAt: assets.createdAt, hostKey: assets.hostKey,
+    }).from(assets).where(tCond)
+
+    const ids = assetRows.map(a => a.assetId)
+    const addrRows = ids.length
+      ? await db.select({
+          addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+          ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt,
+        }).from(assetAddresses).where(inArray(assetAddresses.assetId, ids))
+      : []
+
+    const groups = findDuplicateGroups(assetRows as DupAsset[], addrRows as DupAddress[])
+    return c.json({ groups, count: groups.length, safe_count: groups.filter(g => g.confidence === 'safe').length })
+  } catch (err) {
+    console.error('assets GET /duplicates error:', err)
+    return c.json({ detail: 'Failed to detect duplicates' }, 500)
+  }
+})
+
+// ── POST /merge ─── merge losers into a survivor (one db.batch) ──
+// Subrequests: 4 reads (assets, addresses, relationships, topology) + 1 batch;
+// dry_run: those 4 reads + 3 count reads (events/sboms/deps), no writes.
+const mergeSchema = z.object({
+  survivor_id: z.string().uuid(),
+  loser_ids: z.array(z.string().uuid()).min(1).max(10),
+  dry_run: z.boolean().optional(),
+})
+app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('json', mergeSchema), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { survivor_id, loser_ids, dry_run } = c.req.valid('json')
+
+    if (loser_ids.includes(survivor_id)) return c.json({ detail: 'survivor_id cannot be in loser_ids' }, 400)
+    const uniqueLosers = [...new Set(loser_ids)]
+    const allIds = [survivor_id, ...uniqueLosers]
+
+    const assetRows = await db.select().from(assets).where(inArray(assets.assetId, allIds))
+    const survivor = assetRows.find(a => a.assetId === survivor_id)
+    if (!survivor) return c.json({ detail: 'Survivor not found' }, 404)
+    const tenantId = survivor.tenantId
+    if (user.role !== 'superadmin' && user.tenantId && tenantId !== user.tenantId) return c.json({ detail: 'Survivor not found' }, 404)
+    if (assetRows.length !== allIds.length) return c.json({ detail: 'One or more ids not found' }, 400)
+    if (assetRows.some(a => a.tenantId !== tenantId)) return c.json({ detail: 'All assets must belong to the same tenant' }, 400)
+
+    const losers = uniqueLosers.map(id => assetRows.find(a => a.assetId === id)!)
+
+    const addrRows = await db.select({
+      addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+      ipAddress: assetAddresses.ipAddress, endedAt: assetAddresses.endedAt, lastSeen: assetAddresses.lastSeen,
+    }).from(assetAddresses).where(inArray(assetAddresses.assetId, allIds))
+    const relRows = await db.select({
+      relationshipId: assetRelationships.relationshipId, sourceAssetId: assetRelationships.sourceAssetId,
+      targetAssetId: assetRelationships.targetAssetId, relationshipType: assetRelationships.relationshipType,
+    }).from(assetRelationships).where(or(inArray(assetRelationships.sourceAssetId, allIds), inArray(assetRelationships.targetAssetId, allIds)))
+    const topoRows = await db.select({ nodeId: topologyNodes.nodeId, assetId: topologyNodes.assetId })
+      .from(topologyNodes).where(inArray(topologyNodes.assetId, allIds))
+
+    const related: MergeRelated = { addresses: addrRows, relationships: relRows, topologyNodes: topoRows.filter((n): n is { nodeId: string; assetId: string } => n.assetId != null) }
+    const plan = planMerge(survivor as MergeAsset, losers as MergeAsset[], related)
+
+    if (dry_run) {
+      const [ev] = await db.select({ n: sql<number>`count(*)::int` }).from(events).where(inArray(events.assetId, uniqueLosers))
+      const [sb] = await db.select({ n: sql<number>`count(*)::int` }).from(sboms).where(inArray(sboms.assetId, uniqueLosers))
+      const [dp] = await db.select({ n: sql<number>`count(*)::int` }).from(dependencies).where(inArray(dependencies.assetId, uniqueLosers))
+      return c.json({
+        dry_run: true, survivor_id, loser_ids: uniqueLosers,
+        counts: { ...plan.counts, eventsMoved: ev?.n ?? 0, sbomsMoved: sb?.n ?? 0, dependenciesMoved: dp?.n ?? 0 },
+        merged_fields: plan.mergedFields,
+      })
+    }
+
+    const stmts = plan.ops.map(op => mergeOpToStmt(db, op, { userId: user.userId, tenantId }))
+    await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+    return c.json({ merged: true, survivor_id, removed: uniqueLosers, counts: plan.counts })
+  } catch (err) {
+    console.error('assets POST /merge error:', err)
+    return c.json({ detail: 'Failed to merge assets' }, 500)
+  }
+})
+
+// ── POST /duplicates/merge-safe ─── auto-merge up to 4 SAFE groups ──
+// Groups are RECOMPUTED server-side (client group contents are never trusted).
+// Subrequests: 2 (assets, addresses) + 2 (relationships, topology) + up to 4 batches = ~8.
+const mergeSafeSchema = z.object({ group_ids: z.array(z.string()).optional(), dry_run: z.boolean().optional() })
+app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('json', mergeSafeSchema), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { group_ids, dry_run } = c.req.valid('json')
+    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') ?? null) : (user.tenantId ?? null)
+    const tCond = tenantId ? eq(assets.tenantId, tenantId) : undefined
+
+    const assetRows = await db.select().from(assets).where(tCond)
+    const assetById = new Map(assetRows.map(a => [a.assetId, a]))
+    const allAssetIds = assetRows.map(a => a.assetId)
+    const addrRows = allAssetIds.length
+      ? await db.select({
+          addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+          ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt, lastSeen: assetAddresses.lastSeen,
+        }).from(assetAddresses).where(inArray(assetAddresses.assetId, allAssetIds))
+      : []
+
+    let groups = findDuplicateGroups(assetRows as unknown as DupAsset[], addrRows as DupAddress[])
+      .filter(g => g.confidence === 'safe')
+    if (group_ids && group_ids.length) groups = groups.filter(g => group_ids.includes(g.groupId))
+
+    const CAP = 4
+    const toProcess = groups.slice(0, CAP)
+    const remaining = Math.max(0, groups.length - toProcess.length)
+
+    // Prefetch relationships + topology for all assets across the groups to process.
+    const groupAssetIds = [...new Set(toProcess.flatMap(g => g.assets.map(a => a.assetId)))]
+    const relRows = groupAssetIds.length
+      ? await db.select({ relationshipId: assetRelationships.relationshipId, sourceAssetId: assetRelationships.sourceAssetId, targetAssetId: assetRelationships.targetAssetId, relationshipType: assetRelationships.relationshipType })
+          .from(assetRelationships).where(or(inArray(assetRelationships.sourceAssetId, groupAssetIds), inArray(assetRelationships.targetAssetId, groupAssetIds)))
+      : []
+    const topoRows = groupAssetIds.length
+      ? await db.select({ nodeId: topologyNodes.nodeId, assetId: topologyNodes.assetId }).from(topologyNodes).where(inArray(topologyNodes.assetId, groupAssetIds))
+      : []
+
+    const merged: { group_id: string; survivor_id: string; removed: string[] }[] = []
+    const failed: { group_id: string; error: string }[] = []
+
+    for (const g of toProcess) {
+      const survivorId = g.suggestedSurvivorId
+      const survivor = assetById.get(survivorId)!
+      const losers = g.assets.map(a => a.assetId).filter(id => id !== survivorId).map(id => assetById.get(id)!)
+      const ids = new Set(g.assets.map(a => a.assetId))
+      const related: MergeRelated = {
+        addresses: addrRows.filter(a => ids.has(a.assetId)),
+        relationships: relRows.filter(r => ids.has(r.sourceAssetId) || ids.has(r.targetAssetId)),
+        topologyNodes: topoRows.filter((n): n is { nodeId: string; assetId: string } => n.assetId != null && ids.has(n.assetId)),
+      }
+      const plan = planMerge(survivor as MergeAsset, losers as MergeAsset[], related)
+      if (dry_run) { merged.push({ group_id: g.groupId, survivor_id: survivorId, removed: losers.map(l => l.assetId) }); continue }
+      try {
+        const stmts = plan.ops.map(op => mergeOpToStmt(db, op, { userId: user.userId, tenantId: survivor.tenantId }))
+        await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+        merged.push({ group_id: g.groupId, survivor_id: survivorId, removed: losers.map(l => l.assetId) })
+      } catch (e) {
+        failed.push({ group_id: g.groupId, error: (e as Error)?.message ?? 'merge failed' })
+      }
+    }
+
+    return c.json({ dry_run: dry_run ?? false, merged, remaining, failed })
+  } catch (err) {
+    console.error('assets POST /duplicates/merge-safe error:', err)
+    return c.json({ detail: 'Failed to merge safe duplicates' }, 500)
+  }
+})
+
 // ── GET /:assetId ────────────────────────────────────────────────
 app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
@@ -144,18 +358,31 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     const db = getDb(c.env.DATABASE_URL)
     const body = c.req.valid('json')
 
+    // Normalize MAC to canonical lowercase colon form; reject non-empty garbage.
+    let normalizedMac: string | null | undefined = undefined
+    if (body.mac_address != null) {
+      normalizedMac = normalizeMac(body.mac_address)
+      if (body.mac_address.trim() !== '' && normalizedMac === null) {
+        return c.json({ detail: `Invalid mac_address "${body.mac_address}" — expected 12 hex digits, e.g. aa:bb:cc:dd:ee:ff` }, 400)
+      }
+    }
+
     const targetTenantId = (user.role === 'superadmin' && body.tenant_id)
       ? body.tenant_id
       : (user.tenantId ?? null)
 
-    // Upsert: find existing asset by IP + tenant to avoid duplicates
-    const ipConditions = [eq(assets.ipAddress, body.ip_address)]
-    if (targetTenantId) {
-      ipConditions.push(eq(assets.tenantId, targetTenantId))
-    } else {
-      ipConditions.push(isNull(assets.tenantId))
-    }
-    const [existing] = await db.select().from(assets).where(and(...ipConditions)).limit(1)
+    // Identity resolver (unscoped: manual assets carry no network scope). Matching
+    // by MAC (rule 1) then IP (rule 4) makes re-POSTing / re-importing idempotent.
+    const resolution = await resolveAssetIdentity(db, {
+      tenantId: targetTenantId,
+      ip: body.ip_address,
+      rawMac: body.mac_address,
+      hostKey: null,
+      isManualSource: true,
+    })
+    const [existing] = resolution.assetId
+      ? await db.select().from(assets).where(eq(assets.assetId, resolution.assetId)).limit(1)
+      : []
 
     // Preserve scanned device type — only override if existing is unknown or absent
     const existingDeviceKnown = existing?.deviceType && existing.deviceType !== 'unknown'
@@ -177,24 +404,30 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         updatedAt: new Date(),
       }
       if (body.hostname != null) updateData.hostname = body.hostname
-      if (body.mac_address != null) updateData.macAddress = body.mac_address
+      if (body.mac_address != null) updateData.macAddress = normalizedMac
       if (body.owner != null) updateData.owner = body.owner
       // Only write device type if upgrading from unknown
       if (body.device_type !== undefined && !existingDeviceKnown) updateData.deviceType = body.device_type
       if (body.hardware_vendor != null) updateData.hardwareVendor = body.hardware_vendor
-      if (body.os_info !== undefined) updateData.osInfo = body.os_info
+      if (body.os_info !== undefined) {
+        updateData.osInfo = { ...(existing.osInfo as Record<string, unknown> ?? {}), ...body.os_info }
+      }
       if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
       const [updated] = await db.update(assets).set(updateData).where(eq(assets.assetId, existing.assetId)).returning()
+      await recordManualAddress(db, { assetId: existing.assetId, tenantId: targetTenantId, ip: body.ip_address, mac: normalizedMac ?? null })
       return c.json(updated, 200)
     }
 
-    // Create new
+    // Create new (rule 6, or rule 5 where a reused unscoped IP had a different MAC)
+    if (resolution.endAddressId) {
+      await db.update(assetAddresses).set({ endedAt: new Date() }).where(eq(assetAddresses.addressId, resolution.endAddressId))
+    }
     const [asset] = await db
       .insert(assets)
       .values({
         ipAddress: body.ip_address,
         hostname: body.hostname ?? null,
-        macAddress: body.mac_address ?? null,
+        macAddress: normalizedMac ?? null,
         owner: body.owner,
         deviceType,
         hardwareVendor: body.hardware_vendor,
@@ -206,6 +439,9 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       })
       .returning()
 
+    if (asset) {
+      await recordManualAddress(db, { assetId: asset.assetId, tenantId: targetTenantId, ip: body.ip_address, mac: normalizedMac ?? null })
+    }
     return c.json(asset, 201)
   } catch (err) {
     console.error('assets POST / error:', err)
@@ -247,7 +483,13 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     const updateData: Partial<typeof assets.$inferInsert> = { updatedAt: new Date() }
     if (body.ip_address !== undefined) updateData.ipAddress = body.ip_address
     if (body.hostname !== undefined) updateData.hostname = body.hostname
-    if (body.mac_address !== undefined) updateData.macAddress = body.mac_address
+    if (body.mac_address !== undefined) {
+      const nm = normalizeMac(body.mac_address)
+      if (body.mac_address.trim() !== '' && nm === null) {
+        return c.json({ detail: `Invalid mac_address "${body.mac_address}" — expected 12 hex digits, e.g. aa:bb:cc:dd:ee:ff` }, 400)
+      }
+      updateData.macAddress = nm
+    }
     if (body.owner !== undefined) updateData.owner = body.owner
     if (body.device_type !== undefined) updateData.deviceType = body.device_type
     if (body.hardware_vendor !== undefined) updateData.hardwareVendor = body.hardware_vendor
@@ -289,6 +531,16 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
 
     if (!updated) {
       return c.json({ detail: 'Asset not found after update' }, 404)
+    }
+
+    // Keep the current address in sync when IP or MAC changes.
+    if (body.ip_address !== undefined || body.mac_address !== undefined) {
+      await recordManualAddress(db, {
+        assetId: existing.assetId,
+        tenantId: existing.tenantId,
+        ip: updated.ipAddress,
+        mac: updated.macAddress ?? null,
+      })
     }
 
     return c.json(updated)
@@ -506,6 +758,19 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         osInfo.ports = row['open_ports'].split(/[\s,]+/).map(p => p.trim()).filter(Boolean)
       }
 
+      // Normalize MAC; a non-empty invalid value is skipped with a per-row
+      // warning rather than failing the whole row.
+      let macAddress: string | undefined = undefined
+      const rawMac = row['mac_address']
+      if (rawMac && rawMac.trim() !== '') {
+        const nm = normalizeMac(rawMac)
+        if (nm === null) {
+          errors.push(`Row ${i + 1}: invalid mac_address "${rawMac}" — skipped`)
+        } else {
+          macAddress = nm
+        }
+      }
+
       const criticalityScore = computeAssetCriticality({
         deviceType,
         isInternetFacing,
@@ -518,7 +783,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         rowNum: i + 1,
         ipAddress,
         hostname: row['hostname'] || undefined,
-        macAddress: row['mac_address'] || undefined,
+        macAddress,
         owner: row['owner'] || undefined,
         deviceType,
         hardwareVendor: row['hardware_vendor'] || undefined,
@@ -532,50 +797,36 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       return c.json({ imported: 0, updated: 0, errors })
     }
 
-    const allIps = parsed.map(r => r.ipAddress)
-    const ipInList = sql`${assets.ipAddress} = ANY(${sql.raw(`ARRAY[${allIps.map(ip => `'${ip.replace(/'/g, "''")}'`).join(',')}]`)})`
+    // Batched identity resolution (prefetch → resolve in memory → db.batch), so a
+    // large CSV stays within the Worker subrequest limit instead of ~3 queries per
+    // row. Unscoped (manual): match by MAC (rule 1) then IP (rule 4); idempotent on
+    // re-import. The in-memory working store lets duplicate rows in one CSV dedupe.
+    const csvMacs = [...new Set(parsed.map(r => classifyMac(r.macAddress ?? null).mac).filter((m): m is string => !!m))]
+    const csvIps = [...new Set(parsed.map(r => r.ipAddress))]
+    const prefetch = await prefetchIdentity(db, targetTenantId, csvMacs, csvIps, [])
 
-    const tenantConditions = targetTenantId
-      ? and(ipInList, or(eq(assets.tenantId, targetTenantId), isNull(assets.tenantId)))
-      : ipInList
-
-    const existingRows = await db
-      .select({ assetId: assets.assetId, ipAddress: assets.ipAddress })
-      .from(assets)
-      .where(tenantConditions)
-
-    const existingMap = new Map(existingRows.map(r => [r.ipAddress, r.assetId]))
-
-    const toInsert = parsed.filter(r => !existingMap.has(r.ipAddress))
-    const toUpdate = parsed.filter(r => existingMap.has(r.ipAddress))
-
-    if (toInsert.length > 0) {
-      try {
-        await db.insert(assets).values(
-          toInsert.map(r => ({
-            ipAddress: r.ipAddress,
-            hostname: r.hostname,
-            macAddress: r.macAddress,
-            owner: r.owner,
-            deviceType: r.deviceType,
-            hardwareVendor: r.hardwareVendor,
-            osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {},
-            criticalityScore: r.criticalityScore,
-            isInternetFacing: r.isInternetFacing,
-            source: 'manual' as const,
-            tenantId: targetTenantId,
-          }))
-        )
-      } catch (insertErr) {
-        toInsert.forEach(r => errors.push(`Row ${r.rowNum} (${r.ipAddress}): ${(insertErr as Error).message}`))
-        toInsert.length = 0
-      }
+    type WAddr = CandidateAddress & { ended: boolean }
+    const workAddrs: WAddr[] = prefetch.addresses.map(a => ({
+      addressId: a.addressId, assetId: a.assetId, networkKey: a.networkKey,
+      ipAddress: a.ipAddress, macAddress: a.macAddress, assetDeviceType: a.deviceType, ended: false,
+    }))
+    const isUniqueViolation = (e: unknown): boolean => {
+      const err = e as { code?: string; cause?: { code?: string }; message?: string }
+      return (err?.code ?? err?.cause?.code) === '23505' || /duplicate key value|unique constraint|23505/i.test(String(err?.message ?? ''))
     }
 
-    for (const r of toUpdate) {
-      const assetId = existingMap.get(r.ipAddress)!
-      try {
-        await db.update(assets).set({
+    // Build per-row statement groups against the in-memory working store.
+    const perRow: { row: typeof parsed[number]; kind: 'insert' | 'update'; stmts: unknown[] }[] = []
+    for (const r of parsed) {
+      const now = new Date()
+      const { mac, macClass } = classifyMac(r.macAddress ?? null)
+      const usableMac = macClass === 'global' || macClass === 'local'
+      const macAddresses = (usableMac && mac) ? workAddrs.filter(w => !w.ended && w.macAddress === mac) : []
+      const netIpAddresses = workAddrs.filter(w => !w.ended && w.ipAddress === r.ipAddress && w.networkKey === null)
+      const decision = matchAsset({ macClass, mac, ip: r.ipAddress, hostKey: null, networkKey: null }, { macAddresses, hostKeyAssetIds: [], netIpAddresses })
+      const stmts: unknown[] = []
+      if (decision.assetId) {
+        stmts.push(db.update(assets).set({
           ...(r.hostname ? { hostname: r.hostname } : {}),
           ...(r.macAddress ? { macAddress: r.macAddress } : {}),
           ...(r.owner ? { owner: r.owner } : {}),
@@ -585,15 +836,62 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           criticalityScore: r.criticalityScore,
           isInternetFacing: r.isInternetFacing,
           ...(targetTenantId ? { tenantId: targetTenantId } : {}),
-          updatedAt: new Date(),
-        }).where(eq(assets.assetId, assetId))
-      } catch (updateErr) {
-        errors.push(`Row ${r.rowNum} (${r.ipAddress}): ${(updateErr as Error).message}`)
-        toUpdate.splice(toUpdate.indexOf(r), 1)
+          ipAddress: r.ipAddress,
+          updatedAt: now,
+        }).where(eq(assets.assetId, decision.assetId)))
+        const curAddr = workAddrs.find(w => !w.ended && w.assetId === decision.assetId && w.networkKey === null)
+        if (curAddr) {
+          const filledMac = curAddr.macAddress ?? r.macAddress ?? null
+          stmts.push(db.update(assetAddresses).set({ ipAddress: r.ipAddress, lastSeen: now, macAddress: filledMac }).where(eq(assetAddresses.addressId, curAddr.addressId)))
+          curAddr.ipAddress = r.ipAddress; curAddr.macAddress = filledMac
+        } else {
+          const nid = crypto.randomUUID()
+          stmts.push(db.insert(assetAddresses).values({ addressId: nid, assetId: decision.assetId, tenantId: targetTenantId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, firstSeen: now, lastSeen: now }))
+          workAddrs.unshift({ addressId: nid, assetId: decision.assetId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, assetDeviceType: r.deviceType, ended: false })
+        }
+        perRow.push({ row: r, kind: 'update', stmts })
+      } else {
+        const newAssetId = crypto.randomUUID()
+        if (decision.rule === 5) {
+          stmts.push(db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, decision.endAddressId)))
+          const w = workAddrs.find(x => !x.ended && x.addressId === decision.endAddressId); if (w) w.ended = true
+        }
+        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, isInternetFacing: r.isInternetFacing, source: 'manual' as const, tenantId: targetTenantId }))
+        const nid = crypto.randomUUID()
+        stmts.push(db.insert(assetAddresses).values({ addressId: nid, assetId: newAssetId, tenantId: targetTenantId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, firstSeen: now, lastSeen: now }))
+        workAddrs.unshift({ addressId: nid, assetId: newAssetId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, assetDeviceType: r.deviceType, ended: false })
+        perRow.push({ row: r, kind: 'insert', stmts })
       }
     }
 
-    return c.json({ imported: toInsert.length, updated: toUpdate.length, errors })
+    // Execute in chunks of ~100 statements (one db.batch = one subrequest), without
+    // splitting a row. On a chunk failure, retry its rows individually for isolation.
+    let imported = 0
+    let updated = 0
+    const commit = (g: typeof perRow[number]) => { if (g.kind === 'insert') imported++; else updated++ }
+    const flush = async (groups: typeof perRow) => {
+      if (groups.length === 0) return
+      const stmts = groups.flatMap(g => g.stmts)
+      try {
+        await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+        for (const g of groups) commit(g)
+      } catch (e) {
+        if (!isUniqueViolation(e)) { for (const g of groups) errors.push(`Row ${g.row.rowNum} (${g.row.ipAddress}): ${(e as Error).message}`); return }
+        for (const g of groups) {
+          try { await db.batch(g.stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0]); commit(g) }
+          catch (err) { errors.push(`Row ${g.row.rowNum} (${g.row.ipAddress}): ${(err as Error).message}`) }
+        }
+      }
+    }
+    let curGroups: typeof perRow = []
+    let curCount = 0
+    for (const g of perRow) {
+      if (curCount > 0 && curCount + g.stmts.length > 100) { await flush(curGroups); curGroups = []; curCount = 0 }
+      curGroups.push(g); curCount += g.stmts.length
+    }
+    await flush(curGroups)
+
+    return c.json({ imported, updated, errors })
   } catch (err) {
     console.error('assets POST /import error:', err)
     return c.json({ detail: 'Failed to import assets' }, 500)
