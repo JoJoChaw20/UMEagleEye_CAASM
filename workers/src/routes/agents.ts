@@ -8,6 +8,7 @@ import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
 import { agents } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
+import { isIPv4 } from '../lib/exposure'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -188,7 +189,9 @@ router.post(
   zValidator('json', z.object({
     version: z.string().optional(),
     gateway_ip: z.string().optional(),
-    default_gateway: z.string().ip().optional(),
+    // Lenient on purpose: a bad value must never reject the whole heartbeat
+    // (that would mark the agent offline). Validated below before storing.
+    default_gateway: z.string().max(45).optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -220,7 +223,7 @@ router.post(
     if (gateway_ip) updateData.gatewayIp = gateway_ip
     // gateway_ip has always carried the agent's own LAN IP, so the real default
     // gateway goes in config where scan ingest reads it for internet exposure.
-    if (default_gateway) {
+    if (default_gateway && isIPv4(default_gateway)) {
       updateData.config = { ...((agent.config ?? {}) as Record<string, unknown>), default_gateway }
     }
 

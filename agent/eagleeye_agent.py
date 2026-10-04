@@ -797,7 +797,10 @@ def _default_gateway() -> Optional[str]:
             for line in out.splitlines():
                 parts = line.split()
                 # "0.0.0.0  0.0.0.0  <gateway>  <iface>  <metric>"
-                if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                # VPN/virtual adapters can list "On-link" here — skip to a real IP.
+                if (len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0"
+                        and re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", parts[2])
+                        and parts[2] != "0.0.0.0"):
                     return parts[2]
         else:
             out = subprocess.run(

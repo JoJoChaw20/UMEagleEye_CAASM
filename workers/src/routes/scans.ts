@@ -12,7 +12,7 @@ import { mergeOsInfo } from '../lib/osInfo'
 import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
 import { chunkPlan, planIngest, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
-import { resolveInternetFacing } from '../lib/exposure'
+import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 
 // ── Ingest helpers ───────────────────────────────────────────────
 type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
@@ -838,9 +838,13 @@ Example:
 
     // Gateway for internet-exposure inference: the agent's current default
     // gateway from this ingest, else the last one it reported on heartbeat.
-    const defaultGateway = network?.gateway_ip
-      ?? (((agent.config ?? {}) as Record<string, unknown>).default_gateway as string | undefined)
-      ?? undefined
+    // Anything that isn't a real IPv4 ("On-link", blank) is ignored so it can't
+    // switch off the fallback inference.
+    const reportedGateways = [
+      network?.gateway_ip,
+      ((agent.config ?? {}) as Record<string, unknown>).default_gateway as string | undefined,
+    ]
+    const defaultGateway = reportedGateways.find(isIPv4)
 
     // Precompute each host's device type + observed os_info (same logic as before),
     // producing the PlanHost inputs the pure batch planner consumes.

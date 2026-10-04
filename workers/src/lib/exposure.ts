@@ -53,6 +53,11 @@ export function compareVersions(a: string, b: string): number {
   return 0
 }
 
+export function isIPv4(v: string | null | undefined): v is string {
+  if (!v || !/^\d{1,3}(\.\d{1,3}){3}$/.test(v) || v === '0.0.0.0') return false
+  return v.split('.').every(o => Number(o) <= 255)
+}
+
 // Internet exposure: an analyst override always wins; otherwise the host is
 // treated as exposed only when it is the agent's reported gateway. The old
 // ".1 / .254" guess is used only when the agent never reported a gateway.
