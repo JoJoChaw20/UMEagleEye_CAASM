@@ -269,12 +269,13 @@ const DRIFT_TYPES: EventType[] = [
 // occurrences on its open alert instead of raising a new one. An open drift
 // alert whose condition is gone (port closed again, hostname reverted) is
 // auto-resolved. A condition an analyst marked false positive stays quiet.
-export async function runDriftAudit(db: DB, tenantId?: string | null): Promise<number> {
-  const query = tenantId
-    ? db.select().from(assets).where(and(isNotNull(assets.baselineState), eq(assets.tenantId, tenantId)))
-    : db.select().from(assets).where(isNotNull(assets.baselineState))
-
-  const assetRows = await query
+export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?: string[]): Promise<number> {
+  if (assetIds && assetIds.length === 0) return 0
+  const assetRows = await db.select().from(assets).where(and(
+    isNotNull(assets.baselineState),
+    tenantId ? eq(assets.tenantId, tenantId) : undefined,
+    assetIds ? inArray(assets.assetId, assetIds) : undefined,
+  ))
 
   let driftCount = 0
   const now = new Date()
@@ -298,10 +299,18 @@ export async function runDriftAudit(db: DB, tenantId?: string | null): Promise<n
 
     const openByKey  = new Map<string, string>()
     const suppressed = new Set<string>()
+    const duplicates: string[] = []   // e.g. two copies after merging duplicate assets
     for (const e of existing) {
       const key = driftKey(e.eventType, (e.details ?? {}) as Record<string, unknown>)
       if (e.status === 'false_positive') suppressed.add(key)
+      else if (openByKey.has(key)) duplicates.push(e.eventId)
       else openByKey.set(key, e.eventId)
+    }
+    if (duplicates.length > 0) {
+      await db.update(events)
+        .set({ status: 'resolved', resolvedAt: now, updatedAt: now,
+               resolutionNote: 'Merged into an identical open alert on the same asset' })
+        .where(inArray(events.eventId, duplicates))
     }
 
     const currentKeys = new Set<string>()

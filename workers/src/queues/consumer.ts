@@ -5,6 +5,7 @@ import { isOpenEvent } from '../lib/eventStatus'
 import { generateAdvisory } from '../services/advisory'
 import { savePostureSnapshot } from '../services/posture'
 import { ingestAllFeeds } from '../services/cti'
+import { runDriftAudit } from '../services/drift'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, or, sql } from 'drizzle-orm'
 
@@ -26,6 +27,13 @@ interface ReportJob {
 interface CtiIngestJob {
   type: 'cti_ingest'
   triggeredBy?: string
+}
+
+interface DriftCheckJob {
+  type: 'drift_check'
+  assetId: string
+  scanId?: string
+  agentId?: string
 }
 
 type Job = AdvisoryJob | ReportJob | CtiIngestJob
@@ -161,8 +169,25 @@ async function buildReportPdf(
 export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
   const db = getDb(env.DATABASE_URL)
 
+  // Drift checks queued by scan ingest: run them together right away so a new
+  // risky port or MAC change becomes an alert minutes after the scan, not at
+  // the next 15-minute cron.
+  const driftMsgs = batch.messages.filter(m => (m.body as { type?: string })?.type === 'drift_check')
+  if (driftMsgs.length > 0) {
+    const ids = [...new Set(driftMsgs.map(m => (m.body as DriftCheckJob).assetId).filter(Boolean))]
+    try {
+      const created = await runDriftAudit(db, null, ids)
+      console.log(`[drift_check] ${ids.length} asset(s) checked, ${created} new alert(s)`)
+      for (const m of driftMsgs) m.ack()
+    } catch (err) {
+      console.error('[drift_check] failed:', err)
+      for (const m of driftMsgs) m.retry()
+    }
+  }
+
   for (const message of batch.messages) {
     const job = message.body as Job
+    if ((job as { type?: string })?.type === 'drift_check') continue
 
     try {
       if (job.type === 'advisory') {
