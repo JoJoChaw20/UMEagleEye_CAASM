@@ -1,13 +1,16 @@
 import { Hono } from 'hono'
-import { eq, and, desc, gte, lte, sql } from 'drizzle-orm'
+import { eq, and, desc, gte, sql, isNull, or, ne, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, events } from '../db/schema'
+import { isOpenEvent, postureScore } from '../lib/eventStatus'
 
 const app = new Hono<{ Bindings: Env }>()
 
 // ── GET /current ─────────────────────────────────────────────────
+// Counts OPEN critical/high alerts (open + in_progress) — the same definition
+// the Alerts page, /history and the nightly snapshot use.
 app.get('/current', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
@@ -19,7 +22,6 @@ app.get('/current', authMiddleware, async (c) => {
       : (user.tenantId ?? undefined)
     const tenantCondition = effectiveTenantId ? eq(assets.tenantId, effectiveTenantId) : undefined
 
-    // Fetch assets
     const assetRows = await db
       .select({
         assetId: assets.assetId,
@@ -32,25 +34,20 @@ app.get('/current', authMiddleware, async (c) => {
     const total_critical_assets = assetRows.filter((a) => (a.criticalityScore ?? 0) >= 8).length
     const highCriticalityPercent = total_assets > 0 ? total_critical_assets / total_assets : 0
 
-    // Fetch open events for those assets
-    const assetIds = assetRows.map((a) => a.assetId)
-
     let criticalCount = 0
     let highCount = 0
     let topRisks: Array<{ event_id: string; severity: string; event_type: string; asset_id: string }> = []
 
-    if (assetIds.length > 0) {
-      const assetFilter = sql`${events.assetId} = ANY(ARRAY[${sql.join(assetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
+    if (total_assets > 0) {
+      const scoped = and(tenantCondition, isOpenEvent())
 
-      const [critResult, highResult, topRiskRows] = await Promise.all([
+      const [sevRows, topRiskRows] = await Promise.all([
         db
-          .select({ count: sql<number>`count(*)::int` })
+          .select({ severity: events.severity, count: sql<number>`count(*)::int` })
           .from(events)
-          .where(and(assetFilter, eq(events.severity, 'critical'))),
-        db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(events)
-          .where(and(assetFilter, eq(events.severity, 'high'))),
+          .innerJoin(assets, eq(events.assetId, assets.assetId))
+          .where(and(scoped, inArray(events.severity, ['critical', 'high'])))
+          .groupBy(events.severity),
         db
           .select({
             eventId: events.eventId,
@@ -59,13 +56,14 @@ app.get('/current', authMiddleware, async (c) => {
             assetId: events.assetId,
           })
           .from(events)
-          .where(and(assetFilter, eq(events.severity, 'critical')))
-          .orderBy(desc(events.timestamp))
+          .innerJoin(assets, eq(events.assetId, assets.assetId))
+          .where(and(scoped, eq(events.severity, 'critical')))
+          .orderBy(desc(events.lastSeen))
           .limit(5),
       ])
 
-      criticalCount = critResult[0]?.count ?? 0
-      highCount = highResult[0]?.count ?? 0
+      criticalCount = sevRows.find(r => r.severity === 'critical')?.count ?? 0
+      highCount = sevRows.find(r => r.severity === 'high')?.count ?? 0
       topRisks = topRiskRows.map((r) => ({
         event_id: r.eventId,
         severity: r.severity,
@@ -74,22 +72,22 @@ app.get('/current', authMiddleware, async (c) => {
       }))
     }
 
-    // Score algorithm
-    let score = 100
-    const critDeduction = Math.min(criticalCount * 5, 40)
-    const highDeduction = Math.min(highCount * 2, 20)
-    score -= critDeduction
-    score -= highDeduction
-    if (highCriticalityPercent > 0.2) {
-      score -= 10
-    }
-    score = Math.max(0, Math.min(100, score))
+    const score = postureScore(criticalCount, highCount, total_assets, total_critical_assets)
+
+    // What is pulling the score down, so an analyst can explain the number
+    const score_drivers = [
+      { label: `${criticalCount} open critical alert${criticalCount === 1 ? '' : 's'}`, impact: -Math.min(criticalCount * 5, 40) },
+      { label: `${highCount} open high alert${highCount === 1 ? '' : 's'}`, impact: -Math.min(highCount * 2, 20) },
+      { label: `${Math.round(highCriticalityPercent * 100)}% of assets are high-criticality (limit 20%)`, impact: highCriticalityPercent > 0.2 ? -10 : 0 },
+    ].filter(d => d.impact < 0)
 
     return c.json({
       overall_score: score,
       total_assets,
       total_critical_assets,
       open_critical_events: criticalCount,
+      open_high_events: highCount,
+      score_drivers,
       top_risks: topRisks,
     })
   } catch (err) {
@@ -114,72 +112,53 @@ app.get('/history', authMiddleware, async (c) => {
     const effectiveTenantId = user.role === 'superadmin'
       ? (tenantIdParam ?? undefined)
       : (user.tenantId ?? undefined)
+    const tenantCondition = effectiveTenantId ? eq(assets.tenantId, effectiveTenantId) : undefined
 
-    // Resolve asset IDs for tenant scoping
-    let tenantAssetIds: string[] | null = null
-    if (effectiveTenantId) {
-      const rows = await db
-        .select({ assetId: assets.assetId })
-        .from(assets)
-        .where(eq(assets.tenantId, effectiveTenantId))
-      tenantAssetIds = rows.map(r => r.assetId)
-    }
-
-    // An explicitly selected tenant with no assets must produce an empty
-    // result, not an invalid `ANY(ARRAY[])` SQL expression.  The latter
-    // makes the whole dashboard request fail and the frontend retains the
-    // previously selected tenant's data.
-    const assetFilter = tenantAssetIds === null
-      ? sql`1=1`
-      : tenantAssetIds.length === 0
-        ? sql`1=0`
-        : sql`${assets.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
-    const eventAssetFilter = tenantAssetIds === null
-      ? sql`1=1`
-      : tenantAssetIds.length === 0
-        ? sql`1=0`
-        : sql`${events.assetId} = ANY(ARRAY[${sql.join(tenantAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`
-
-    // 3 bulk queries — no per-day loops
-    const [allAssets, critEvents, highEvents] = await Promise.all([
+    // 2 bulk queries — no per-day loops. An alert counts on a day if it was
+    // open at that day's end (raised by then, not yet closed); false positives
+    // never count.
+    const [allAssets, seriousEvents] = await Promise.all([
       db.select({ criticalityScore: assets.criticalityScore, createdAt: assets.createdAt })
         .from(assets)
-        .where(assetFilter),
-      db.select({ timestamp: events.timestamp })
+        .where(tenantCondition),
+      db.select({ severity: events.severity, firstSeen: events.firstSeen, resolvedAt: events.resolvedAt })
         .from(events)
-        .where(and(eventAssetFilter, eq(events.severity, 'critical'), gte(events.timestamp, since))),
-      db.select({ timestamp: events.timestamp })
-        .from(events)
-        .where(and(eventAssetFilter, eq(events.severity, 'high'), gte(events.timestamp, since))),
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(
+          tenantCondition,
+          inArray(events.severity, ['critical', 'high']),
+          ne(events.status, 'false_positive'),
+          or(isNull(events.resolvedAt), gte(events.resolvedAt, since)),
+        )),
     ])
+
+    const openAt = (sev: 'critical' | 'high', t: number) => seriousEvents.filter(e =>
+      e.severity === sev
+      && new Date(e.firstSeen).getTime() <= t
+      && (!e.resolvedAt || new Date(e.resolvedAt).getTime() > t)).length
 
     const items = []
     for (let i = limit - 1; i >= 0; i--) {
       const dayEnd = new Date(now)
       dayEnd.setDate(dayEnd.getDate() - i)
       dayEnd.setHours(23, 59, 59, 999)
-      const dayEndMs = dayEnd.getTime()
+      const dayEndMs = Math.min(dayEnd.getTime(), now.getTime())
 
       const dayAssets   = allAssets.filter(a => a.createdAt && new Date(a.createdAt).getTime() <= dayEndMs)
       const totalAssets = dayAssets.length
       const totalCriticalAssets = dayAssets.filter(a => (a.criticalityScore ?? 0) >= 8).length
-      const critCount   = critEvents.filter(e => new Date(e.timestamp).getTime() <= dayEndMs).length
-      const highCount   = highEvents.filter(e => new Date(e.timestamp).getTime() <= dayEndMs).length
-
-      let score = 100
-      score -= Math.min(critCount * 5, 40)
-      score -= Math.min(highCount * 2, 20)
-      if (totalAssets > 0 && totalCriticalAssets / totalAssets > 0.2) score -= 10
-      score = Math.max(0, Math.min(100, score))
+      const critCount   = openAt('critical', dayEndMs)
+      const highCount   = openAt('high', dayEndMs)
 
       items.push({
-        snapshot_id:         '00000000-0000-0000-0000-000000000000',
-        overall_score:       Math.round(score),
-        total_assets:        totalAssets,
+        snapshot_id:           '00000000-0000-0000-0000-000000000000',
+        overall_score:         postureScore(critCount, highCount, totalAssets, totalCriticalAssets),
+        total_assets:          totalAssets,
         total_critical_assets: totalCriticalAssets,
-        open_critical_events: critCount + highCount,
-        top_risks:           [],
-        timestamp:           dayEnd.toISOString(),
+        open_critical_events:  critCount,
+        open_high_events:      highCount,
+        top_risks:             [],
+        timestamp:             dayEnd.toISOString(),
       })
     }
 

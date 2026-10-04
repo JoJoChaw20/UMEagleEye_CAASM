@@ -21,6 +21,11 @@ export const eventTypeEnum = pgEnum('event_type', [
   'cve_detected', 'new_device', 'config_change', 'new_package',
   'removed_package', 'cti_match'
 ])
+// Alert triage lifecycle. open/in_progress count as "open" everywhere
+// (see lib/eventStatus.ts); the other three close the alert.
+export const eventStatusEnum = pgEnum('event_status', [
+  'open', 'in_progress', 'resolved', 'false_positive', 'accepted_risk'
+])
 export const indicatorTypeEnum = pgEnum('indicator_type', [
   'ip', 'domain', 'hash', 'url', 'email'
 ])
@@ -83,6 +88,8 @@ export const assets = pgTable('assets', {
   criticalityScore: smallint('criticality_score').notNull().default(5),
   baselineState: jsonb('baseline_state'),
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
+  // Analyst-confirmed exposure. NULL = not confirmed, so scans keep inferring it.
+  internetFacingOverride: boolean('internet_facing_override'),
   source: assetSourceEnum('source').notNull().default('manual'),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
@@ -126,7 +133,21 @@ export const events = pgTable('events', {
   details: jsonb('details').notNull().default({}),
   compositeRiskScore: numeric('composite_risk_score', { precision: 8, scale: 2 }),
   timestamp: timestamp('timestamp', { withTimezone: true }).notNull().default(now()),
-}, (t) => [index('idx_events_timestamp').on(t.timestamp)])
+  // ── Triage lifecycle ──
+  status: eventStatusEnum('status').notNull().default('open'),
+  assignedTo: uuid('assigned_to').references(() => users.userId, { onDelete: 'set null' }),
+  firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
+  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
+  occurrences: integer('occurrences').notNull().default(1),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: uuid('resolved_by').references(() => users.userId, { onDelete: 'set null' }),
+  resolutionNote: text('resolution_note'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  index('idx_events_timestamp').on(t.timestamp),
+  index('idx_events_status').on(t.status),
+  index('idx_events_asset_status').on(t.assetId, t.status),
+])
 
 // ─── Table 7: CTI Indicators ────────────────────────────────────
 export const ctiIndicators = pgTable('cti_indicators', {

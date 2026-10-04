@@ -540,21 +540,23 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
 
     // Fetch all existing cve_detected events for this asset in ONE query for dedup
     const existingRows = await db
-      .select({ eventId: events.eventId, details: events.details })
+      .select({ eventId: events.eventId, details: events.details, status: events.status })
       .from(events)
       .where(and(
         eq(events.assetId, assetId),
         eq(events.eventType, 'cve_detected'),
       ))
 
-    // Build dedup map: "cve_id::package_name" → { eventId, details }
-    type ExistingEvent = { eventId: string; details: Record<string, unknown> }
+    // Build dedup map: "cve_id::package_name" → { eventId, details, status }
+    type ExistingEvent = { eventId: string; details: Record<string, unknown>; status: string }
     const existingMap = new Map<string, ExistingEvent>()
     for (const row of existingRows) {
       const d = (row.details ?? {}) as Record<string, unknown>
       const key = `${d.cve_id}::${d.package_name}`
-      existingMap.set(key, { eventId: row.eventId, details: d })
+      existingMap.set(key, { eventId: row.eventId, details: d, status: row.status })
     }
+    const seenKeys = new Set<string>()
+    const now = new Date()
 
     let eventsCreated = 0
     let eventsUpdated = 0
@@ -571,6 +573,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
       const riskScore = computeRiskScore(cvss_base_score, epss, criticality, ctiMatch)
       const dedupKey  = `${cve_id}::${package_name}`
       const existing  = existingMap.get(dedupKey)
+      seenKeys.add(dedupKey)
 
       if (existing) {
         // Refresh all scored fields plus the freshest data from this scan
@@ -584,12 +587,19 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
           cwe_ids,
         }
         try {
+          // Still vulnerable after being marked resolved → the fix didn't take,
+          // so reopen. False positives and accepted risks stay closed.
+          const reopen = existing.status === 'resolved'
           await db.update(events)
             .set({
-              timestamp:          new Date(),
+              lastSeen:           now,
+              occurrences:        sql`${events.occurrences} + 1`,
               severity,
               compositeRiskScore: String(riskScore),
               details:            mergedDetails,
+              updatedAt:          now,
+              ...(reopen ? { status: 'open' as const, resolvedAt: null, resolvedBy: null,
+                             resolutionNote: 'Reopened: CVE still present in latest SBOM scan' } : {}),
             })
             .where(eq(events.eventId, existing.eventId))
           eventsUpdated++
@@ -628,7 +638,19 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
       }
     }
 
-    return c.json({ events_created: eventsCreated, events_updated: eventsUpdated }, 201)
+    // CVEs the latest scan no longer reports were patched or the package was
+    // removed — close their open alerts so the queue reflects reality.
+    const fixedIds = [...existingMap.entries()]
+      .filter(([key, e]) => !seenKeys.has(key) && (e.status === 'open' || e.status === 'in_progress'))
+      .map(([, e]) => e.eventId)
+    if (fixedIds.length > 0) {
+      await db.update(events)
+        .set({ status: 'resolved', resolvedAt: now, updatedAt: now,
+               resolutionNote: 'Auto-resolved: CVE no longer present in latest SBOM scan' })
+        .where(inArray(events.eventId, fixedIds))
+    }
+
+    return c.json({ events_created: eventsCreated, events_updated: eventsUpdated, events_resolved: fixedIds.length }, 201)
   } catch (err) {
     console.error('cve ingest error:', err)
     return c.json({ detail: 'Failed to ingest CVE findings' }, 500)

@@ -224,6 +224,8 @@ const updateAssetSchema = z.object({
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
+  // null = stop overriding and let scans infer exposure again
+  internet_facing_override: z.boolean().nullable().optional(),
   source: z.enum(['manual', 'scan_active', 'scan_passive']).optional(),
 })
 
@@ -250,7 +252,16 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     if (body.device_type !== undefined) updateData.deviceType = body.device_type
     if (body.hardware_vendor !== undefined) updateData.hardwareVendor = body.hardware_vendor
     if (body.os_info !== undefined) updateData.osInfo = body.os_info
-    if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
+    // An analyst setting exposure by hand is a confirmation: pin it so the next
+    // scan's gateway inference does not flip it back.
+    if (body.is_internet_facing !== undefined) {
+      updateData.isInternetFacing = body.is_internet_facing
+      updateData.internetFacingOverride = body.is_internet_facing
+    }
+    if (body.internet_facing_override !== undefined) {
+      updateData.internetFacingOverride = body.internet_facing_override
+      if (body.internet_facing_override !== null) updateData.isInternetFacing = body.internet_facing_override
+    }
     if (body.source !== undefined) updateData.source = body.source
 
     // Recompute criticality unless caller explicitly sets it
@@ -260,7 +271,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
       const mergedDeviceType = body.device_type ?? existing.deviceType
       const mergedHostname = body.hostname ?? existing.hostname
       const mergedOsInfo = (body.os_info ?? existing.osInfo ?? {}) as Record<string, unknown>
-      const mergedInternetFacing = body.is_internet_facing ?? existing.isInternetFacing
+      const mergedInternetFacing = updateData.isInternetFacing ?? existing.isInternetFacing
       updateData.criticalityScore = computeAssetCriticality({
         deviceType: mergedDeviceType,
         isInternetFacing: mergedInternetFacing,

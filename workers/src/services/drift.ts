@@ -1,6 +1,8 @@
 import type { DB } from '../db/client'
 import { assets, events } from '../db/schema'
-import { isNotNull, and, eq, gte, sql } from 'drizzle-orm'
+import { isNotNull, and, eq, inArray, sql } from 'drizzle-orm'
+import { OPEN_STATUSES } from '../lib/eventStatus'
+import { compareVersions, newPortSeverity } from '../lib/exposure'
 
 // ── Baseline shape stored in assets.baseline_state ────────────────
 export interface AssetBaseline {
@@ -11,8 +13,10 @@ export interface AssetBaseline {
   mac_address?:       string | null
   is_internet_facing?: boolean
   device_type?:       string
+  snmp_sysdescr?:     string | null        // network-device firmware/model string
   captured_at?:       string
   auto_set?:          boolean              // true when set automatically on first scan
+  ports_known?:       boolean              // false when captured by a passive scan (no port visibility)
 }
 
 type DriftSeverity = 'low' | 'medium' | 'high' | 'critical'
@@ -28,7 +32,7 @@ interface DriftEvent {
 // Accepts both integer (22) and string ("22/tcp") port representations.
 function parsePort(p: unknown): number {
   if (typeof p === 'number') return p
-  if (typeof p === 'string') return parseInt(p.split('/')[0], 10)
+  if (typeof p === 'string') return parseInt(p.split('/')[0] ?? '', 10)
   return NaN
 }
 
@@ -42,6 +46,11 @@ export function extractOsVersion(osInfo: Record<string, unknown> | null | undefi
   const v = (osInfo as Record<string, unknown>).os_version
          ?? (osInfo as Record<string, unknown>).version
          ?? (osInfo as Record<string, unknown>).osVersion
+  return typeof v === 'string' && v ? v : null
+}
+
+function extractSnmpDescr(osInfo: Record<string, unknown> | null | undefined): string | null {
+  const v = osInfo?.snmp_sysdescr
   return typeof v === 'string' && v ? v : null
 }
 
@@ -65,6 +74,7 @@ export function buildBaseline(params: {
   isInternetFacing: boolean
   deviceType:       string
   autoSet?:         boolean
+  portsKnown?:      boolean
 }): AssetBaseline {
   return {
     ports:             params.ports,
@@ -74,8 +84,10 @@ export function buildBaseline(params: {
     mac_address:       params.macAddress ?? null,
     is_internet_facing: params.isInternetFacing,
     device_type:       params.deviceType,
+    snmp_sysdescr:     extractSnmpDescr(params.osInfo),
     captured_at:       new Date().toISOString(),
     auto_set:          params.autoSet ?? false,
+    ports_known:       params.portsKnown ?? true,
   }
 }
 
@@ -88,21 +100,25 @@ function detectDrift(
   const osInfo = asset.osInfo as Record<string, unknown> | null
 
   // ── Open ports ─────────────────────────────────────────────────
-  const basePorts = new Set(baseline.ports ?? [])
-  const curPorts  = new Set(extractPorts(osInfo))
+  // Skipped until an active scan has seen the host (ports_known === false),
+  // and when the asset has no port data at all.
+  if (baseline.ports_known !== false && Array.isArray(osInfo?.ports)) {
+    const basePorts = new Set(baseline.ports ?? [])
+    const curPorts  = new Set(extractPorts(osInfo))
 
-  for (const p of curPorts) {
-    if (!basePorts.has(p)) {
-      drifts.push({
-        type:     'port_opened',
-        severity: p < 1024 ? 'high' : 'medium',
-        details:  { port: p, protocol: 'tcp' },
-      })
+    for (const p of curPorts) {
+      if (!basePorts.has(p)) {
+        drifts.push({
+          type:     'port_opened',
+          severity: newPortSeverity(p, asset.isInternetFacing),
+          details:  { port: p, protocol: 'tcp' },
+        })
+      }
     }
-  }
-  for (const p of basePorts) {
-    if (!curPorts.has(p)) {
-      drifts.push({ type: 'port_closed', severity: 'low', details: { port: p } })
+    for (const p of basePorts) {
+      if (!curPorts.has(p)) {
+        drifts.push({ type: 'port_closed', severity: 'low', details: { port: p } })
+      }
     }
   }
 
@@ -110,7 +126,7 @@ function detectDrift(
   const baseVer = baseline.os_version ?? null
   const curVer  = extractOsVersion(osInfo)
   if (baseVer && curVer && baseVer !== curVer) {
-    const isDowngrade = baseVer > curVer
+    const isDowngrade = compareVersions(curVer, baseVer) < 0
     drifts.push({
       type:     isDowngrade ? 'version_downgrade' : 'version_upgrade',
       severity: isDowngrade ? 'high' : 'low',
@@ -126,7 +142,7 @@ function detectDrift(
     if (!(pkg in basePkgs)) {
       drifts.push({ type: 'new_package', severity: 'low', details: { package: pkg, version: ver } })
     } else if (basePkgs[pkg] !== ver) {
-      const isDowngrade = (basePkgs[pkg] ?? '') > ver
+      const isDowngrade = compareVersions(ver, basePkgs[pkg] ?? '') < 0
       drifts.push({
         type:     isDowngrade ? 'version_downgrade' : 'version_upgrade',
         severity: isDowngrade ? 'medium' : 'low',
@@ -189,6 +205,17 @@ function detectDrift(
     })
   }
 
+  // ── Network-device firmware / model change (SNMP sysDescr) ─────
+  const baseSnmp = baseline.snmp_sysdescr ?? null
+  const curSnmp  = extractSnmpDescr(osInfo)
+  if (baseSnmp && curSnmp && baseSnmp !== curSnmp) {
+    drifts.push({
+      type:     'config_change',
+      severity: 'medium',
+      details:  { changed_attribute: 'firmware', from: baseSnmp.slice(0, 200), to: curSnmp.slice(0, 200) },
+    })
+  }
+
   return drifts
 }
 
@@ -213,66 +240,29 @@ function dedupFilter(drift: DriftEvent): DedupFilter {
   return { kind: 'simple', eventType: drift.type }
 }
 
-async function isDuplicate(
-  db:      DB,
-  assetId: string,
-  drift:   DriftEvent,
-  cutoff:  Date,
-): Promise<boolean> {
-  const f = dedupFilter(drift)
-  let rows: { eventId: string }[]
-
-  if (f.kind === 'port') {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, f.eventType),
-        sql`${events.details}->>'port' = ${String(f.port)}`,
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  } else if (f.kind === 'config') {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, 'config_change'),
-        sql`${events.details}->>'changed_attribute' = ${f.attribute}`,
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  } else if (f.kind === 'pkg') {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, f.eventType),
-        sql`${events.details}->>'package' = ${f.pkg}`,
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  } else {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, f.eventType),
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  }
-
-  return rows.length > 0
+// Stable identity of a drift finding, so the same condition maps to one alert.
+function driftKey(type: EventType, details: Record<string, unknown>): string {
+  const f = dedupFilter({ type, severity: 'low', details })
+  if (f.kind === 'port')   return `${type}::port:${f.port}`
+  if (f.kind === 'config') return `${type}::attr:${f.attribute}`
+  if (f.kind === 'pkg')    return `${type}::pkg:${f.pkg}`
+  // OS and each package version change are separate conditions
+  return `${type}::${String(details.package ?? 'os')}`
 }
+
+const DRIFT_TYPES: EventType[] = [
+  'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
+  'config_change', 'new_package', 'removed_package',
+]
 
 // ── Main audit runner ─────────────────────────────────────────────
 // Called by the every-15-min cron and by POST /scans/drift-audit.
 // Optional tenantId scopes the audit to a single tenant.
+//
+// One alert per condition: a drift that is still present bumps last_seen and
+// occurrences on its open alert instead of raising a new one. An open drift
+// alert whose condition is gone (port closed again, hostname reverted) is
+// auto-resolved. A condition an analyst marked false positive stays quiet.
 export async function runDriftAudit(db: DB, tenantId?: string | null): Promise<number> {
   const query = tenantId
     ? db.select().from(assets).where(and(isNotNull(assets.baselineState), eq(assets.tenantId, tenantId)))
@@ -281,7 +271,7 @@ export async function runDriftAudit(db: DB, tenantId?: string | null): Promise<n
   const assetRows = await query
 
   let driftCount = 0
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
+  const now = new Date()
 
   for (const asset of assetRows) {
     if (!asset.baselineState) continue
@@ -289,16 +279,66 @@ export async function runDriftAudit(db: DB, tenantId?: string | null): Promise<n
     const baseline = asset.baselineState as AssetBaseline
     const drifts   = detectDrift(baseline, asset)
 
+    // Drift alerts that still matter for this asset: open ones (to update or
+    // auto-resolve) and false positives (to keep suppressed).
+    const existing = await db
+      .select({ eventId: events.eventId, eventType: events.eventType, details: events.details, status: events.status })
+      .from(events)
+      .where(and(
+        eq(events.assetId, asset.assetId),
+        inArray(events.eventType, DRIFT_TYPES),
+        inArray(events.status, [...OPEN_STATUSES, 'false_positive']),
+      ))
+
+    const openByKey  = new Map<string, string>()
+    const suppressed = new Set<string>()
+    for (const e of existing) {
+      const key = driftKey(e.eventType, (e.details ?? {}) as Record<string, unknown>)
+      if (e.status === 'false_positive') suppressed.add(key)
+      else openByKey.set(key, e.eventId)
+    }
+
+    const currentKeys = new Set<string>()
     for (const drift of drifts) {
-      if (await isDuplicate(db, asset.assetId, drift, cutoff)) continue
+      const key = driftKey(drift.type, drift.details)
+      currentKeys.add(key)
+      if (suppressed.has(key)) continue
+
+      const openId = openByKey.get(key)
+      if (openId) {
+        await db.update(events)
+          .set({
+            lastSeen:    now,
+            occurrences: sql`${events.occurrences} + 1`,
+            severity:    drift.severity,
+            details:     drift.details,
+            updatedAt:   now,
+          })
+          .where(eq(events.eventId, openId))
+        continue
+      }
 
       await db.insert(events).values({
         assetId:   asset.assetId,
         eventType: drift.type,
         severity:  drift.severity,
         details:   drift.details,
+        firstSeen: now,
+        lastSeen:  now,
       })
       driftCount++
+    }
+
+    const gone = [...openByKey.entries()].filter(([key]) => !currentKeys.has(key)).map(([, id]) => id)
+    if (gone.length > 0) {
+      await db.update(events)
+        .set({
+          status:         'resolved',
+          resolvedAt:     now,
+          resolutionNote: 'Auto-resolved: condition no longer detected by drift audit',
+          updatedAt:      now,
+        })
+        .where(inArray(events.eventId, gone))
     }
   }
 

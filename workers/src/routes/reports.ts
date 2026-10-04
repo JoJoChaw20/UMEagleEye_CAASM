@@ -5,6 +5,7 @@ import { eq, and, gte, sql, or, desc } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
+import { isOpenEvent } from '../lib/eventStatus'
 import { assets, events, postureMetrics, advisories, ctiIndicators, scanResults, sboms } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -49,13 +50,13 @@ app.get('/data', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       // Event severity counts (join assets for tenant isolation)
       db.select({ count: sql<number>`count(*)::int` }).from(events)
         .innerJoin(assets, eq(events.assetId, assets.assetId))
-        .where(af ? and(af, eq(events.severity, 'critical')) : eq(events.severity, 'critical')),
+        .where(af ? and(af, isOpenEvent(), eq(events.severity, 'critical')) : and(isOpenEvent(), eq(events.severity, 'critical'))),
       db.select({ count: sql<number>`count(*)::int` }).from(events)
         .innerJoin(assets, eq(events.assetId, assets.assetId))
-        .where(af ? and(af, eq(events.severity, 'high')) : eq(events.severity, 'high')),
+        .where(af ? and(af, isOpenEvent(), eq(events.severity, 'high')) : and(isOpenEvent(), eq(events.severity, 'high'))),
       db.select({ count: sql<number>`count(*)::int` }).from(events)
         .innerJoin(assets, eq(events.assetId, assets.assetId))
-        .where(af ? and(af, eq(events.severity, 'medium')) : eq(events.severity, 'medium')),
+        .where(af ? and(af, isOpenEvent(), eq(events.severity, 'medium')) : and(isOpenEvent(), eq(events.severity, 'medium'))),
       // Event type breakdown (top 6, tenant-scoped)
       db.select({ eventType: events.eventType, count: sql<number>`count(*)::int` })
         .from(events)
@@ -88,7 +89,7 @@ app.get('/data', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
         compositeRiskScore: events.compositeRiskScore, timestamp: events.timestamp })
         .from(events)
         .innerJoin(assets, eq(events.assetId, assets.assetId))
-        .where(af ? and(af, eq(events.eventType, 'cve_detected')) : eq(events.eventType, 'cve_detected'))
+        .where(af ? and(af, isOpenEvent(), eq(events.eventType, 'cve_detected')) : and(isOpenEvent(), eq(events.eventType, 'cve_detected')))
         .orderBy(desc(events.compositeRiskScore)).limit(8),
       // CTI summary (global — intentional)
       db.select({ source: ctiIndicators.source, count: sql<number>`count(*)::int` })
@@ -371,11 +372,11 @@ app.post('/snapshot', authMiddleware, requireRoles(...SNAPSHOT_ROLES), async (c)
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(events)
-          .where(and(assetFilter, eq(events.severity, 'critical'))),
+          .where(and(assetFilter, isOpenEvent(), eq(events.severity, 'critical'))),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(events)
-          .where(and(assetFilter, eq(events.severity, 'high'))),
+          .where(and(assetFilter, isOpenEvent(), eq(events.severity, 'high'))),
         db
           .select({
             eventId: events.eventId,
@@ -384,7 +385,7 @@ app.post('/snapshot', authMiddleware, requireRoles(...SNAPSHOT_ROLES), async (c)
             assetId: events.assetId,
           })
           .from(events)
-          .where(and(assetFilter, eq(events.severity, 'critical')))
+          .where(and(assetFilter, isOpenEvent(), eq(events.severity, 'critical')))
           .limit(5),
       ])
 

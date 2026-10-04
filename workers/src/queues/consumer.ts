@@ -1,11 +1,12 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import type { Env } from '../types'
 import { getDb } from '../db/client'
+import { isOpenEvent } from '../lib/eventStatus'
 import { generateAdvisory } from '../services/advisory'
 import { savePostureSnapshot } from '../services/posture'
 import { ingestAllFeeds } from '../services/cti'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
-import { desc, eq, or, sql } from 'drizzle-orm'
+import { and, desc, eq, or, sql } from 'drizzle-orm'
 
 interface AdvisoryJob {
   type: 'advisory'
@@ -41,7 +42,9 @@ async function buildReportPdf(
   const [postureRows, assetRows, critEventRows, openAdvRows] = await Promise.all([
     db.select().from(postureMetrics).where(tenantFilter).orderBy(desc(postureMetrics.timestamp)).limit(1),
     db.select({ count: sql<number>`count(*)::int` }).from(assets).where(assetFilter),
-    db.select({ count: sql<number>`count(*)::int` }).from(events).where(eq(events.severity, 'critical')),
+    db.select({ count: sql<number>`count(*)::int` }).from(events)
+      .innerJoin(assets, eq(events.assetId, assets.assetId))
+      .where(and(assetFilter, isOpenEvent(), eq(events.severity, 'critical'))),
     db.select({ summary: advisories.summary, status: advisories.status, createdAt: advisories.createdAt })
       .from(advisories)
       .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged')))

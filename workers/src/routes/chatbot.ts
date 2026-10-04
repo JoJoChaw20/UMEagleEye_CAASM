@@ -5,6 +5,7 @@ import { desc, eq, and, or, sql, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
+import { isOpenEvent } from '../lib/eventStatus'
 import { assets, events, advisories, postureMetrics, ctiIndicators } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -76,14 +77,14 @@ async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
   let critCount = 0
   if (!tenantId) {
     const [r] = await db.select({ count: sql<number>`count(*)::int` }).from(events)
-      .where(eq(events.severity, 'critical'))
+      .where(and(isOpenEvent(), eq(events.severity, 'critical')))
     critCount = r?.count ?? 0
   } else {
     const assetIds = (await db.select({ assetId: assets.assetId }).from(assets).where(af))
       .map(a => a.assetId)
     if (assetIds.length > 0) {
       const [r] = await db.select({ count: sql<number>`count(*)::int` }).from(events)
-        .where(and(inArray(events.assetId, assetIds), eq(events.severity, 'critical')))
+        .where(and(inArray(events.assetId, assetIds), isOpenEvent(), eq(events.severity, 'critical')))
       critCount = r?.count ?? 0
     }
   }
@@ -120,7 +121,7 @@ async function queryAlerts(db: ReturnType<typeof getDb>, tenantId?: string) {
     if (assetIds.length === 0) return []
   }
 
-  const severityFilter = or(eq(events.severity, 'critical'), eq(events.severity, 'high'))
+  const severityFilter = and(isOpenEvent(), or(eq(events.severity, 'critical'), eq(events.severity, 'high')))
   const where = assetIds ? and(inArray(events.assetId, assetIds), severityFilter) : severityFilter
 
   const rows = await db.select({

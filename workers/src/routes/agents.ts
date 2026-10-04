@@ -188,11 +188,12 @@ router.post(
   zValidator('json', z.object({
     version: z.string().optional(),
     gateway_ip: z.string().optional(),
+    default_gateway: z.string().ip().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const { agentId } = c.req.param()
-    const { version, gateway_ip } = c.req.valid('json')
+    const { version, gateway_ip, default_gateway } = c.req.valid('json')
 
     // Extract API key from Authorization header
     const authHeader = c.req.header('Authorization')
@@ -217,6 +218,11 @@ router.post(
     }
     if (version) updateData.version = version
     if (gateway_ip) updateData.gatewayIp = gateway_ip
+    // gateway_ip has always carried the agent's own LAN IP, so the real default
+    // gateway goes in config where scan ingest reads it for internet exposure.
+    if (default_gateway) {
+      updateData.config = { ...((agent.config ?? {}) as Record<string, unknown>), default_gateway }
+    }
 
     await db.update(agents).set(updateData).where(eq(agents.agentId, agentId))
 

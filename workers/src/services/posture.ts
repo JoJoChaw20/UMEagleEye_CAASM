@@ -1,6 +1,7 @@
 import type { DB } from '../db/client'
 import { assets, events, advisories, postureMetrics } from '../db/schema'
-import { eq, and, gte, count, sql } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
+import { isOpenEvent, postureScore } from '../lib/eventStatus'
 
 interface PostureResult {
   overallScore: number
@@ -23,39 +24,17 @@ export async function computePosture(db: DB, tenantId?: string): Promise<Posture
   const criticalAssets = allAssets.filter(a => (a.criticalityScore ?? 0) >= 8)
   const totalCriticalAssets = criticalAssets.length
 
-  // Open critical events in last 7 days
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-  const criticalEventRows = await db
-    .select({ eventId: events.eventId, assetId: events.assetId })
+  // Open critical/high alerts — same definition as /posture/current
+  const sevRows = await db
+    .select({ severity: events.severity, count: sql<number>`count(*)::int` })
     .from(events)
-    .where(and(
-      eq(events.severity, 'critical'),
-      gte(events.timestamp, sevenDaysAgo)
-    ))
+    .innerJoin(assets, eq(events.assetId, assets.assetId))
+    .where(and(assetFilter, isOpenEvent(), inArray(events.severity, ['critical', 'high'])))
+    .groupBy(events.severity)
+  const openCriticalEvents = sevRows.find(r => r.severity === 'critical')?.count ?? 0
+  const openHighEvents     = sevRows.find(r => r.severity === 'high')?.count ?? 0
 
-  // Filter to this tenant's assets
-  const tenantAssetIds = new Set(allAssets.map(a => a.assetId))
-  const openCritical = criticalEventRows.filter(e => tenantAssetIds.has(e.assetId))
-  const openCriticalEvents = openCritical.length
-
-  // High events in last 7 days
-  const highEventRows = await db
-    .select({ eventId: events.eventId })
-    .from(events)
-    .where(and(eq(events.severity, 'high'), gte(events.timestamp, sevenDaysAgo)))
-
-  const openHighEvents = highEventRows.filter(e =>
-    'assetId' in e ? tenantAssetIds.has((e as { assetId: string }).assetId) : false
-  ).length
-
-  // Score calculation
-  let score = 100
-  score -= Math.min(openCriticalEvents * 5, 40)   // -5 per critical, max -40
-  score -= Math.min(openHighEvents * 2, 20)         // -2 per high, max -20
-  if (totalAssets > 0 && totalCriticalAssets / totalAssets > 0.2) {
-    score -= 10  // >20% assets are high-criticality
-  }
-  score = Math.max(0, Math.min(100, score))
+  const score = postureScore(openCriticalEvents, openHighEvents, totalAssets, totalCriticalAssets)
 
   // Top risks: assets with most recent critical events
   const topRisks = criticalAssets.slice(0, 5).map(a => ({
@@ -66,7 +45,7 @@ export async function computePosture(db: DB, tenantId?: string): Promise<Posture
   }))
 
   return {
-    overallScore: Math.round(score),
+    overallScore: score,
     totalAssets,
     totalCriticalAssets,
     openCriticalEvents,

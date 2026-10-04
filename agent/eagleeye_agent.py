@@ -786,6 +786,22 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
+def _default_gateway() -> Optional[str]:
+    """Return the IPv4 default gateway, or None when it cannot be determined.
+
+    The backend uses this to decide which discovered host is the internet edge
+    (internet-facing) instead of guessing from a .1/.254 address.
+    """
+    try:
+        from scapy.all import conf  # type: ignore
+        gw = conf.route.route("0.0.0.0")[2]
+        if gw and gw != "0.0.0.0":
+            return gw
+    except Exception:
+        pass
+    return None
+
+
 # ── API client ────────────────────────────────────────────────────────────────
 
 class AgentClient:
@@ -802,6 +818,9 @@ class AgentClient:
 
     def send_heartbeat(self) -> bool:
         payload = {"version": VERSION, "gateway_ip": _local_ip()}
+        default_gateway = _default_gateway()
+        if default_gateway:
+            payload["default_gateway"] = default_gateway
         for attempt in range(2):
             try:
                 resp = self.session.post(

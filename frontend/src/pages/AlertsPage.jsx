@@ -1,99 +1,48 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useSearchParams, Link } from 'react-router-dom'
 import {
-  Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter,
-  RefreshCw, Activity, CheckCircle2, Server, ExternalLink, Check,
+  Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter, RefreshCw, CheckCircle2,
+  Server, ExternalLink, Search, X, Globe, Clock, User, ChevronLeft, ChevronRight,
+  Timer, Lightbulb, History, Link2, Crosshair,
 } from 'lucide-react'
 import {
   PieChart, Pie, Cell, AreaChart, Area, BarChart, Bar,
-  ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import {
+  SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
+  StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS,
+} from '../components/common/alertMeta'
 
-// ── Colour maps ───────────────────────────────────────────────
-const SEVERITY_COLORS = {
-  critical: '#ff5252',
-  high:     '#ff9800',
-  medium:   '#ffc400',
-  low:      '#00e676',
+const PAGE_SIZE = 20
+const LAST_VISIT_KEY = 'alerts_last_visit'
+const DRIFT_CSV = [...DRIFT_TYPES].join(',')
+
+// Saved views — each is a work queue with its own filter + sort
+const VIEWS = [
+  { id: 'open',      label: 'All open',                 params: { status: 'open' } },
+  { id: 'mine',      label: 'My queue',                 params: { status: 'open', assigned_to: 'me' } },
+  { id: 'exposed',   label: 'Critical & internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
+  { id: 'ports',     label: 'Exposed services',         params: { status: 'open', event_type: 'port_opened' } },
+  { id: 'devices',   label: 'New devices',              params: { status: 'open', event_type: 'new_device' } },
+  { id: 'drift',     label: 'Drift to review',          params: { status: 'open', event_type: DRIFT_CSV } },
+  { id: 'cve',       label: 'CVEs',                     params: { status: 'open', event_type: 'cve_detected' } },
+  { id: 'threat',    label: 'Threat intel',             params: { status: 'open', event_type: 'cti_match' } },
+  { id: 'closed',    label: 'Closed (audit)',           params: { status: 'closed' }, sort: 'time' },
+]
+
+const CLOSE_STATUSES = new Set(['resolved', 'false_positive', 'accepted_risk'])
+const ACTION_LABELS = {
+  in_progress:    'Start work',
+  resolved:       'Resolve',
+  false_positive: 'Mark false positive',
+  accepted_risk:  'Accept risk',
+  open:           'Reopen',
 }
 
-const EVENT_TYPE_LABELS = {
-  cve_detected:      'CVE Detected',
-  cti_match:         'Threat Intel Match',
-  port_opened:       'Port Opened',
-  port_closed:       'Port Closed',
-  version_downgrade: 'Version Downgrade',
-  version_upgrade:   'Version Upgrade',
-  config_change:     'Config Change',
-  new_package:       'New Package',
-  removed_package:   'Removed Package',
-  new_device:        'New Device',
-}
-
-// Derive a more specific label for config_change events based on changed_attribute
-function configChangeLabel(attr) {
-  const labels = {
-    hostname:       'Hostname Changed',
-    mac_address:    'MAC Address Changed',
-    internet_facing:'Exposure Changed',
-    device_type:    'Device Type Changed',
-    availability:   'Asset Offline',
-    os_version:     'OS Version Changed',
-    package_version:'Package Updated',
-  }
-  return labels[attr] ?? 'Config Change'
-}
-
-// Render a human-readable summary for the Detail column
-function renderDetail(e) {
-  const d = e.details ?? {}
-  if (d.cve_id) return d.cve_id
-  if (d.indicator_value) return d.indicator_value
-  if (e.event_type === 'config_change') {
-    if (d.changed_attribute === 'internet_facing') {
-      return `${d.from ? 'Internal' : 'Internet-facing'} → ${d.to ? 'Internet-facing' : 'Internal'}`
-    }
-    return d.from != null && d.to != null
-      ? `${d.from} → ${d.to}`
-      : (d.changed_attribute ?? '—')
-  }
-  if (e.event_type === 'port_opened' || e.event_type === 'port_closed') {
-    return `Port ${d.port}${d.protocol ? `/${d.protocol}` : ''}`
-  }
-  if (e.event_type === 'version_downgrade' || e.event_type === 'version_upgrade') {
-    const target = d.package ?? 'OS'
-    return d.from && d.to ? `${target}: ${d.from} → ${d.to}` : target
-  }
-  if (e.event_type === 'new_package')     return `+${d.package ?? ''}${d.version ? ` ${d.version}` : ''}`
-  if (e.event_type === 'removed_package') return `-${d.package ?? ''}`
-  if (e.event_type === 'new_device')      return `New: ${d.ip ?? ''}${d.mac ? ` (${d.mac})` : ''}`
-  return d.changed_attribute ?? '—'
-}
-
-// Whether an event is drift-type (eligible for acknowledge)
-const DRIFT_TYPES = new Set([
-  'port_opened','port_closed','version_downgrade','version_upgrade',
-  'config_change','new_package','removed_package','new_device',
-])
-
-// ── Severity badge ────────────────────────────────────────────
-function SevBadge({ sev }) {
-  const cls = {
-    critical: 'bg-red-500/20 text-red-400 border-red-500/30',
-    high:     'bg-orange-500/20 text-orange-400 border-orange-500/30',
-    medium:   'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-    low:      'bg-green-500/20 text-green-400 border-green-500/30',
-  }[sev] ?? 'bg-dark-700 text-dark-300 border-dark-600'
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold uppercase tracking-wide ${cls}`}>
-      {sev}
-    </span>
-  )
-}
-
-// ── Toast-style feedback (simple inline) ──────────────────────
 function useToast() {
   const [toast, setToast] = useState(null)
   const show = (msg, type = 'success') => {
@@ -103,80 +52,139 @@ function useToast() {
   return { toast, show }
 }
 
+function readLastVisit() {
+  try { return localStorage.getItem(LAST_VISIT_KEY) } catch { return null }
+}
+function writeLastVisit(v) {
+  try { localStorage.setItem(LAST_VISIT_KEY, v) } catch { /* private mode */ }
+}
+
 export default function AlertsPage() {
   const { user } = useAuth()
   const isSuperadmin    = user?.role === 'superadmin'
   const isBusinessOwner = user?.role === 'business_owner'
-  const canManageAlerts = !isSuperadmin && !isBusinessOwner
-  const [events,          setEvents]          = useState([])
-  const [stats,           setStats]           = useState(null)
-  const [loading,         setLoading]         = useState(true)
-  const [total,           setTotal]           = useState(0)
-  const [page,            setPage]            = useState(1)
-  const [severityFilter,  setSeverityFilter]  = useState('')
-  const [typeFilter,      setTypeFilter]      = useState('')
-  const [tenantFilter,    setTenantFilter]    = useState('')
-  const [advisoryLoading,     setAdvisoryLoading]     = useState({}) // eventId → bool
-  const [acknowledgeLoading,  setAcknowledgeLoading]  = useState({}) // eventId → bool
+  const canManage       = !isSuperadmin && !isBusinessOwner
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const [view,         setView]         = useState(() => VIEWS.find(v => v.id === searchParams.get('view'))?.id ?? 'open')
+  const [search,       setSearch]       = useState(searchParams.get('q') ?? '')
+  const [debounced,    setDebounced]    = useState(search)
+  const [severity,     setSeverity]     = useState('')
+  const [typeFilter,   setTypeFilter]   = useState('')
+  const [deviceType,   setDeviceType]   = useState('')
+  const [onlyExposed,  setOnlyExposed]  = useState(false)
+  const [onlyNew,      setOnlyNew]      = useState(false)
+  const [sort,         setSort]         = useState('priority')
+  const [tenantFilter, setTenantFilter] = useState('')
+  const [page,         setPage]         = useState(1)
+
+  const [events,    setEvents]    = useState([])
+  const [total,     setTotal]     = useState(0)
+  const [stats,     setStats]     = useState(null)
+  const [loading,   setLoading]   = useState(true)
+  const [selected,  setSelected]  = useState(new Set())
+  const [assignees, setAssignees] = useState([])
+  const [detailId,  setDetailId]  = useState(searchParams.get('event'))
+  const [action,    setAction]    = useState(null)   // { ids, status }
   const { toast, show: showToast } = useToast()
 
-  const PAGE_SIZE = 15
+  // "New since my last visit" is relative to the previous visit, captured once
+  const lastVisit = useRef(readLastVisit())
+  useEffect(() => { writeLastVisit(new Date().toISOString()) }, [])
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const activeView = VIEWS.find(v => v.id === view) ?? VIEWS[0]
+
+  const queryParams = useMemo(() => {
+    const p = { page, page_size: PAGE_SIZE, sort: activeView.sort ?? sort, ...activeView.params }
+    if (severity) p.severity = severity
+    if (typeFilter && !activeView.params.event_type) p.event_type = typeFilter
+    if (deviceType) p.device_type = deviceType
+    if (onlyExposed) p.internet_facing = 'true'
+    if (onlyNew && lastVisit.current) p.since = lastVisit.current
+    if (debounced) p.q = debounced
+    if (tenantFilter) p.tenant_id = tenantFilter
+    return p
+  }, [page, sort, activeView, severity, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
 
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const params = { page, page_size: PAGE_SIZE }
-      if (severityFilter) params.severity = severityFilter
-      if (typeFilter) params.event_type = typeFilter
-      if (tenantFilter) params.tenant_id = tenantFilter
-
+      const tParam = tenantFilter ? { tenant_id: tenantFilter } : {}
       const [eventsRes, statsRes] = await Promise.all([
-        client.get('/events', { params }),
-        client.get('/events/stats/summary', { params: tenantFilter ? { tenant_id: tenantFilter } : {} }),
+        client.get('/events', { params: queryParams }),
+        client.get('/events/stats/summary', { params: tParam }),
       ])
-
       setEvents(eventsRes.data.items || [])
       setTotal(eventsRes.data.total || 0)
       setStats(statsRes.data)
+      setSelected(new Set())
     } catch (err) {
       console.error('Alerts load error:', err)
     } finally {
       setLoading(false)
     }
-  }, [page, severityFilter, typeFilter, tenantFilter])
+  }, [queryParams, tenantFilter])
 
   useEffect(() => { loadData() }, [loadData])
 
+  useEffect(() => {
+    if (!canManage) return
+    client.get('/events/assignees', { params: tenantFilter ? { tenant_id: tenantFilter } : {} })
+      .then(r => setAssignees(r.data.items || []))
+      .catch(() => setAssignees([]))
+  }, [canManage, tenantFilter])
+
+  // Keep view / search / open drawer in the URL so a link reproduces the queue
+  useEffect(() => {
+    const next = {}
+    if (view !== 'open') next.view = view
+    if (debounced) next.q = debounced
+    if (detailId) next.event = detailId
+    setSearchParams(next, { replace: true })
+  }, [view, debounced, detailId, setSearchParams])
+
+  const resetPage = (fn) => (v) => { fn(v); setPage(1) }
+
   // ── Actions ──────────────────────────────────────────────────
-  const triggerAdvisory = async (eventId) => {
-    setAdvisoryLoading(s => ({ ...s, [eventId]: true }))
+  const runUpdate = async (ids, body) => {
     try {
-      await client.post(`/events/${eventId}/advisory`)
-      showToast('AI Advisory generation queued — check Advisories page shortly.', 'success')
-    } catch {
-      showToast('Failed to trigger advisory generation.', 'error')
-    } finally {
-      setAdvisoryLoading(s => ({ ...s, [eventId]: false }))
+      if (ids.length === 1) await client.patch(`/events/${ids[0]}`, body)
+      else await client.post('/events/bulk', { event_ids: ids, ...body })
+      showToast(ids.length === 1 ? 'Alert updated.' : `${ids.length} alerts updated.`)
+      await loadData()
+      return true
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Update failed.', 'error')
+      return false
     }
   }
 
-  const acknowledgeEvent = async (eventId) => {
-    setAcknowledgeLoading(s => ({ ...s, [eventId]: true }))
+  const requestStatus = (ids, status) => {
+    // Closing needs a reason on record; starting/reopening does not
+    if (CLOSE_STATUSES.has(status)) setAction({ ids, status })
+    else runUpdate(ids, { status })
+  }
+
+  const assign = (ids, assignedTo) => runUpdate(ids, { assigned_to: assignedTo || null })
+
+  const triggerAdvisory = async (ids) => {
     try {
-      await client.post(`/events/${eventId}/acknowledge`)
-      showToast('Event acknowledged — baseline updated to current state.', 'success')
-      loadData()
+      await Promise.all(ids.map(id => client.post(`/events/${id}/advisory`)))
+      showToast(`AI advisory queued for ${ids.length} alert${ids.length === 1 ? '' : 's'} — check Advisories shortly.`)
     } catch {
-      showToast('Failed to acknowledge event.', 'error')
-    } finally {
-      setAcknowledgeLoading(s => ({ ...s, [eventId]: false }))
+      showToast('Failed to queue advisory generation.', 'error')
     }
   }
 
   const triggerDriftAudit = async () => {
     try {
       await client.post('/scans/drift-audit')
-      showToast('Drift audit triggered.', 'success')
+      showToast('Drift audit triggered.')
       setTimeout(loadData, 2000)
     } catch {
       showToast('Failed to trigger drift audit.', 'error')
@@ -184,37 +192,37 @@ export default function AlertsPage() {
   }
 
   // ── Chart data ───────────────────────────────────────────────
-  const severityData = stats ? [
-    { name: 'Critical', value: stats.by_severity?.critical || 0, color: SEVERITY_COLORS.critical },
-    { name: 'High',     value: stats.by_severity?.high     || 0, color: SEVERITY_COLORS.high },
-    { name: 'Medium',   value: stats.by_severity?.medium   || 0, color: SEVERITY_COLORS.medium },
-    { name: 'Low',      value: stats.by_severity?.low      || 0, color: SEVERITY_COLORS.low },
-  ] : []
-
+  const severityData = stats ? ['critical', 'high', 'medium', 'low'].map(s => ({
+    name: s[0].toUpperCase() + s.slice(1), key: s, value: stats.by_severity?.[s] || 0, color: SEVERITY_COLORS[s],
+  })) : []
   const trendData = stats?.daily_trend || []
-
   const typeData = stats
-    ? Object.entries(stats.by_type || {}).map(([key, value]) => ({
-        name: EVENT_TYPE_LABELS[key] || key.replace(/_/g, ' '),
-        count: value,
-      }))
+    ? Object.entries(stats.by_type || {}).map(([key, value]) => ({ key, name: EVENT_TYPE_LABELS[key] || key.replace(/_/g, ' '), count: value }))
+        .sort((a, b) => b.count - a.count)
     : []
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
+  const allOnPageSelected = events.length > 0 && events.every(e => selected.has(e.event_id))
+  const toggleAll = () => setSelected(allOnPageSelected ? new Set() : new Set(events.map(e => e.event_id)))
+  const toggleOne = (id) => setSelected(s => {
+    const n = new Set(s)
+    n.has(id) ? n.delete(id) : n.add(id)
+    return n
+  })
 
-  // ── Render ───────────────────────────────────────────────────
+  const filtersActive = severity || typeFilter || deviceType || onlyExposed || onlyNew || search
+  const clearFilters = () => {
+    setSeverity(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
+  }
+
   return (
     <div className="space-y-6">
-
-      {/* ── Toast ── */}
       {toast && (
-        <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium transition-all
+        <div className={`fixed top-4 right-4 z-[60] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium
           ${toast.type === 'success'
             ? 'bg-green-900/90 text-green-200 border border-green-700'
             : 'bg-red-900/90 text-red-200 border border-red-700'}`}>
-          {toast.type === 'success'
-            ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-            : <AlertTriangle className="w-4 h-4 flex-shrink-0" />}
+          {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> : <AlertTriangle className="w-4 h-4 flex-shrink-0" />}
           {toast.msg}
         </div>
       )}
@@ -224,16 +232,13 @@ export default function AlertsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Alerts</h1>
           <p className="text-dark-400 text-sm mt-1">
-            Unified view of CVE detections, drift events, and CTI matches
+            Triage queue for CVEs, drift, new devices and threat-intel matches — highest priority first
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
-          {!isSuperadmin && !isBusinessOwner && (
-            <button
-              onClick={triggerDriftAudit}
-              className="btn-secondary flex items-center gap-2 text-sm"
-            >
+          <TenantSelector value={tenantFilter} onChange={resetPage(setTenantFilter)} />
+          {canManage && (
+            <button onClick={triggerDriftAudit} className="btn-secondary flex items-center gap-2 text-sm">
               <RefreshCw className="w-4 h-4" />
               Run Drift Audit
             </button>
@@ -242,166 +247,174 @@ export default function AlertsPage() {
       </div>
 
       {/* ── Summary cards ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="stat-card">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-dark-400 text-sm">Total Alerts</span>
-            <div className="w-8 h-8 rounded-lg bg-eagle-500/20 flex items-center justify-center">
-              <Bell className="w-4 h-4 text-eagle-400" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-white">{stats?.total_alerts ?? 0}</p>
-          <p className="text-xs text-dark-400 mt-1">all security events</p>
-        </div>
-
-        <div className="stat-card">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-dark-400 text-sm">Critical</span>
-            <div className="w-8 h-8 rounded-lg bg-accent-red/20 flex items-center justify-center">
-              <AlertTriangle className="w-4 h-4 text-accent-red" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-accent-red">{stats?.by_severity?.critical ?? 0}</p>
-          <p className="text-xs text-dark-400 mt-1">requires immediate action</p>
-        </div>
-
-        <div className="stat-card">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-dark-400 text-sm">Resolution Rate</span>
-            <div className="w-8 h-8 rounded-lg bg-accent-green/20 flex items-center justify-center">
-              <Shield className="w-4 h-4 text-accent-green" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-accent-green">{stats?.resolution_rate ?? 100}%</p>
-          <p className="text-xs text-dark-400 mt-1">advisories resolved</p>
-        </div>
-
-        <div className="stat-card">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-dark-400 text-sm">Avg Risk Score</span>
-            <div className="w-8 h-8 rounded-lg bg-accent-amber/20 flex items-center justify-center">
-              <Activity className="w-4 h-4 text-accent-amber" />
-            </div>
-          </div>
-          <p className="text-3xl font-bold text-accent-amber">{stats?.avg_risk_score ?? 0}</p>
-          <p className="text-xs text-dark-400 mt-1">CVE events only (EPSS-weighted)</p>
-        </div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <StatCard icon={Bell} tone="eagle" label="Open alerts" value={stats?.open_total ?? 0}
+          sub={`${stats?.by_status?.in_progress ?? 0} in progress`} />
+        <StatCard icon={AlertTriangle} tone="red" label="Critical open" value={stats?.by_severity?.critical ?? 0}
+          sub={`${stats?.by_severity?.high ?? 0} high`} valueClass="text-accent-red" />
+        <StatCard icon={Timer} tone="amber" label="Past SLA" value={stats?.sla_breaches ?? 0}
+          sub="critical >72h · high >7d" valueClass={(stats?.sla_breaches ?? 0) > 0 ? 'text-accent-amber' : 'text-white'} />
+        <StatCard icon={TrendingUp} tone="cyan" label="New / resolved (7d)"
+          value={<span>{stats?.new_7d ?? 0}<span className="text-dark-500 text-xl"> / </span><span className="text-accent-green">{stats?.resolved_7d ?? 0}</span></span>}
+          sub={(stats?.new_7d ?? 0) > (stats?.resolved_7d ?? 0) ? 'backlog growing' : 'backlog shrinking'} />
+        <StatCard icon={Clock} tone="green" label="Mean time to resolve"
+          value={stats?.mttr_hours != null ? `${stats.mttr_hours < 48 ? stats.mttr_hours + 'h' : Math.round(stats.mttr_hours / 24) + 'd'}` : '—'}
+          sub="resolved in last 30d" />
       </div>
 
       {/* ── Charts ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Severity donut */}
         <div className="glass-card p-5">
           <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <Shield className="w-4 h-4 text-accent-red" />
-            Severity Breakdown
+            <Shield className="w-4 h-4 text-accent-red" /> Open by severity
           </h3>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={180}>
             <PieChart>
-              <Pie
-                data={severityData.filter(d => d.value > 0)}
-                cx="50%" cy="50%"
-                innerRadius={50} outerRadius={75}
-                paddingAngle={4}
-                dataKey="value"
-              >
-                {severityData.filter(d => d.value > 0).map((entry, idx) => (
-                  <Cell key={idx} fill={entry.color} />
-                ))}
+              <Pie data={severityData.filter(d => d.value > 0)} cx="50%" cy="50%" innerRadius={48} outerRadius={72}
+                paddingAngle={4} dataKey="value" onClick={(d) => { setSeverity(d.key); setPage(1) }} className="cursor-pointer">
+                {severityData.filter(d => d.value > 0).map((entry, idx) => <Cell key={idx} fill={entry.color} />)}
               </Pie>
-              <Tooltip contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
             </PieChart>
           </ResponsiveContainer>
           <div className="flex flex-wrap justify-center gap-3 mt-2">
             {severityData.map(s => (
-              <div key={s.name} className="flex items-center gap-1.5 text-xs text-dark-300">
+              <button key={s.name} onClick={() => { setSeverity(s.key); setPage(1) }}
+                className="flex items-center gap-1.5 text-xs text-dark-300 hover:text-white">
                 <span className="w-2.5 h-2.5 rounded-full" style={{ background: s.color }} />
                 {s.name}: {s.value}
-              </div>
+              </button>
             ))}
           </div>
         </div>
 
-        {/* Trend area chart */}
         <div className="glass-card p-5">
           <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <TrendingUp className="w-4 h-4 text-eagle-400" />
-            Alerts Over Time (7d)
+            <TrendingUp className="w-4 h-4 text-eagle-400" /> New vs resolved (7d)
           </h3>
-          <ResponsiveContainer width="100%" height={230}>
+          <ResponsiveContainer width="100%" height={210}>
             <AreaChart data={trendData}>
               <defs>
-                <linearGradient id="alertGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#3393ff" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3393ff" stopOpacity={0} />
+                <linearGradient id="newGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#ff9800" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#ff9800" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="resGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#00e676" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#00e676" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
               <XAxis dataKey="date" tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <YAxis tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <Tooltip contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }} />
-              <Area type="monotone" dataKey="count" stroke="#3393ff" fill="url(#alertGradient)" strokeWidth={2} />
+              <YAxis allowDecimals={false} tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Area type="monotone" name="New" dataKey="new" stroke="#ff9800" fill="url(#newGradient)" strokeWidth={2} />
+              <Area type="monotone" name="Resolved" dataKey="resolved" stroke="#00e676" fill="url(#resGradient)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Alert type bar chart */}
         <div className="glass-card p-5">
           <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <Filter className="w-4 h-4 text-accent-cyan" />
-            Alert Types
+            <Filter className="w-4 h-4 text-accent-cyan" /> Open by type
           </h3>
-          <ResponsiveContainer width="100%" height={230}>
+          <ResponsiveContainer width="100%" height={210}>
             <BarChart data={typeData} layout="vertical" margin={{ left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-              <XAxis type="number" tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
+              <XAxis type="number" allowDecimals={false} tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
               <YAxis dataKey="name" type="category" tick={{ fill: '#7b7f87', fontSize: 10 }} axisLine={{ stroke: '#1e2028' }} width={110} />
-              <Tooltip contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }} />
-              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} className="cursor-pointer"
+                onClick={(d) => { setView('open'); setTypeFilter(d.key); setPage(1) }} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
+      {/* ── Saved views ── */}
+      <div className="flex gap-1 overflow-x-auto border-b border-dark-700 -mb-2">
+        {VIEWS.filter(v => canManage || v.id !== 'mine').map(v => (
+          <button key={v.id} onClick={() => { setView(v.id); setPage(1) }}
+            className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 transition-colors ${view === v.id
+              ? 'border-eagle-500 text-eagle-400 font-medium'
+              : 'border-transparent text-dark-400 hover:text-dark-200'}`}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
       {/* ── Filters ── */}
       <div className="flex items-center gap-3 flex-wrap">
-        <select
-          value={severityFilter}
-          onChange={e => { setSeverityFilter(e.target.value); setPage(1) }}
-          className="input-field text-sm py-1.5 w-40"
-          id="severity-filter"
-        >
-          <option value="">All Severities</option>
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-dark-400" />
+          <input value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
+            placeholder="Host, IP, CVE or package…" className="input-field text-sm py-1.5 pl-9 w-64" />
+        </div>
+        <select value={severity} onChange={e => resetPage(setSeverity)(e.target.value)} className="input-field text-sm py-1.5 w-36">
+          <option value="">All severities</option>
           <option value="critical">Critical</option>
           <option value="high">High</option>
           <option value="medium">Medium</option>
           <option value="low">Low</option>
         </select>
-
-        <select
-          value={typeFilter}
-          onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
-          className="input-field text-sm py-1.5 w-48"
-          id="type-filter"
-        >
-          <option value="">All Types</option>
-          {Object.entries(EVENT_TYPE_LABELS).map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
+        {!activeView.params.event_type && (
+          <select value={typeFilter} onChange={e => resetPage(setTypeFilter)(e.target.value)} className="input-field text-sm py-1.5 w-44">
+            <option value="">All types</option>
+            {Object.entries(EVENT_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        )}
+        <select value={deviceType} onChange={e => resetPage(setDeviceType)(e.target.value)} className="input-field text-sm py-1.5 w-36">
+          <option value="">All devices</option>
+          <option value="server">Server</option>
+          <option value="workstation">Workstation</option>
+          <option value="network">Network</option>
+          <option value="iot">IoT</option>
+          <option value="unknown">Unknown</option>
         </select>
-
-        <button
-          onClick={() => { setSeverityFilter(''); setTypeFilter(''); setPage(1) }}
-          className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
-        >
-          Clear filters
-        </button>
-
-        <span className="text-dark-400 text-sm ml-auto">{total} total alerts</span>
+        <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer">
+          <input type="checkbox" checked={onlyExposed} onChange={e => resetPage(setOnlyExposed)(e.target.checked)} />
+          <Globe className="w-3.5 h-3.5" /> Internet-facing
+        </label>
+        {lastVisit.current && (
+          <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer" title={`Since ${new Date(lastVisit.current).toLocaleString()}`}>
+            <input type="checkbox" checked={onlyNew} onChange={e => resetPage(setOnlyNew)(e.target.checked)} />
+            New since last visit
+          </label>
+        )}
+        {filtersActive && (
+          <button onClick={clearFilters} className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2">Clear</button>
+        )}
+        <div className="ml-auto flex items-center gap-3">
+          {!activeView.sort && (
+            <select value={sort} onChange={e => resetPage(setSort)(e.target.value)} className="input-field text-sm py-1.5 w-40">
+              <option value="priority">Sort: priority</option>
+              <option value="time">Sort: last seen</option>
+            </select>
+          )}
+          <span className="text-dark-400 text-sm">{total} alert{total === 1 ? '' : 's'}</span>
+        </div>
       </div>
 
-      {/* ── Events table ── */}
-      <div className="glass-card overflow-hidden">
+      {/* ── Bulk action bar ── */}
+      {canManage && selected.size > 0 && (
+        <div className="glass-card px-4 py-2.5 flex items-center gap-2 flex-wrap border-eagle-500/40">
+          <span className="text-sm text-dark-200 font-medium mr-2">{selected.size} selected</span>
+          <AssignSelect assignees={assignees} value="" onChange={(v) => assign([...selected], v)} placeholder="Assign to…" />
+          {['in_progress', 'resolved', 'false_positive', 'accepted_risk'].map(s => (
+            <button key={s} onClick={() => requestStatus([...selected], s)} className="btn-secondary text-xs py-1.5 px-3">
+              {ACTION_LABELS[s]}
+            </button>
+          ))}
+          <button onClick={() => triggerAdvisory([...selected])} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1">
+            <Zap className="w-3.5 h-3.5" /> Advisory
+          </button>
+          <button onClick={() => setSelected(new Set())} className="ml-auto text-xs text-dark-400 hover:text-dark-200">Clear selection</button>
+        </div>
+      )}
+
+      {/* ── Queue ── */}
+      <div className="glass-card overflow-x-auto">
         {loading ? (
           <div className="flex justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
@@ -410,166 +423,428 @@ export default function AlertsPage() {
           <table className="data-table">
             <thead>
               <tr>
+                {canManage && <th className="w-8"><input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} aria-label="Select all" /></th>}
+                <th title="Triage priority: risk × exposure × criticality">Priority</th>
                 <th>Severity</th>
-                <th>Type</th>
-                <th>Detail</th>
+                <th>Alert</th>
+                <th>Evidence</th>
                 <th>Asset</th>
-                <th>CVSS</th>
-                <th>EPSS</th>
-                <th>Risk Score</th>
-                <th>Time</th>
-                {canManageAlerts && <th>Actions</th>}
+                <th>CVSS / EPSS</th>
+                <th>Seen</th>
+                <th>Status</th>
+                <th>Owner</th>
               </tr>
             </thead>
             <tbody>
               {events.map(e => (
-                <tr key={e.event_id}>
+                <tr key={e.event_id} onClick={() => setDetailId(e.event_id)}
+                  className={`cursor-pointer ${detailId === e.event_id ? 'bg-eagle-500/5' : ''}`}>
+                  {canManage && (
+                    <td onClick={ev => ev.stopPropagation()}>
+                      <input type="checkbox" checked={selected.has(e.event_id)} onChange={() => toggleOne(e.event_id)} aria-label="Select alert" />
+                    </td>
+                  )}
+                  <td><PriorityPill score={e.priority_score} /></td>
                   <td><SevBadge sev={e.severity} /></td>
-
-                  <td className="text-dark-300 text-xs">
-                    {e.event_type === 'config_change'
-                      ? configChangeLabel(e.details?.changed_attribute)
-                      : (EVENT_TYPE_LABELS[e.event_type] || e.event_type)}
-                  </td>
-
-                  <td className="font-mono text-sm text-accent-cyan max-w-xs truncate">
-                    {e.details?.cve_id
-                      ? <a
-                          href={`https://nvd.nist.gov/vuln/detail/${e.details.cve_id}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={ev => ev.stopPropagation()}
-                          className="hover:text-eagle-300 flex items-center gap-1 group"
-                          title="View on NVD"
-                        >
-                          {e.details.cve_id}
-                          <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-70 transition-opacity" />
-                        </a>
-                      : renderDetail(e)}
-                  </td>
-
-                  {/* Asset: prefer hostname, fall back to IP, then UUID */}
-                  <td>
+                  <td className="text-dark-200 text-xs">
                     <div className="flex items-center gap-1.5">
-                      <Server className="w-3.5 h-3.5 text-dark-400 flex-shrink-0" />
-                      <div>
-                        {e.asset_hostname
-                          ? <span className="text-sm text-dark-200">{e.asset_hostname}</span>
-                          : e.asset_ip
-                            ? <span className="font-mono text-xs text-accent-cyan">{e.asset_ip}</span>
-                            : <span className="font-mono text-xs text-dark-500">
-                                {e.asset_id?.slice(0, 8)}…
-                              </span>}
-                        {e.asset_hostname && e.asset_ip && (
-                          <p className="font-mono text-xs text-dark-500">{e.asset_ip}</p>
-                        )}
-                        {/* Package info below asset */}
-                        {e.details?.package_name && (
-                          <p className="text-xs text-dark-400 mt-0.5">
-                            {e.details.package_name}
-                            {e.details.package_version && ` ${e.details.package_version}`}
-                          </p>
-                        )}
+                      {(e.event_type === 'cti_match' || e.details?.has_cti_match) && <Crosshair className="w-3.5 h-3.5 text-accent-red" title="Threat-intel match" />}
+                      {alertLabel(e)}
+                    </div>
+                    {e.has_advisory && <span className="text-[10px] text-accent-green">● advisory ready</span>}
+                  </td>
+                  <td className="font-mono text-xs text-accent-cyan max-w-[220px] truncate">
+                    {e.details?.cve_id ? (
+                      <a href={`https://nvd.nist.gov/vuln/detail/${e.details.cve_id}`} target="_blank" rel="noreferrer"
+                        onClick={ev => ev.stopPropagation()} className="hover:text-eagle-300 inline-flex items-center gap-1" title="View on NVD">
+                        {e.details.cve_id}<ExternalLink className="w-3 h-3 opacity-60" />
+                      </a>
+                    ) : renderDetail(e)}
+                    {e.details?.package_name && (
+                      <p className="text-dark-400 font-sans">{e.details.package_name}{e.details.package_version ? ` ${e.details.package_version}` : ''}</p>
+                    )}
+                  </td>
+                  <td>
+                    <div className="flex items-start gap-1.5">
+                      <Server className="w-3.5 h-3.5 text-dark-400 flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1">
+                          <span className="text-sm text-dark-200 truncate max-w-[140px]">{e.asset_hostname || e.asset_ip || e.asset_id?.slice(0, 8)}</span>
+                          {e.asset_internet_facing && <Globe className="w-3.5 h-3.5 text-accent-amber flex-shrink-0" title="Internet-facing" />}
+                        </div>
+                        <p className="font-mono text-[11px] text-dark-500">
+                          {e.asset_hostname ? e.asset_ip : ''} {e.asset_device_type && <span className="capitalize font-sans">· {e.asset_device_type}</span>}
+                          {e.asset_criticality != null && <span className={`font-sans ${e.asset_criticality >= 8 ? 'text-accent-red' : ''}`}> · crit {e.asset_criticality}</span>}
+                        </p>
                       </div>
                     </div>
                   </td>
-
-                  <td className="font-mono text-sm">
+                  <td className="font-mono text-xs whitespace-nowrap">
                     {e.details?.cvss_base_score != null
-                      ? <span style={{ color: e.details.cvss_base_score >= 9 ? '#ff5252' : e.details.cvss_base_score >= 7 ? '#ff9800' : e.details.cvss_base_score >= 4 ? '#ffc400' : '#00e676' }}>
-                          {e.details.cvss_base_score}
-                        </span>
+                      ? <span style={{ color: e.details.cvss_base_score >= 9 ? '#ff5252' : e.details.cvss_base_score >= 7 ? '#ff9800' : e.details.cvss_base_score >= 4 ? '#ffc400' : '#00e676' }}>{e.details.cvss_base_score}</span>
                       : '—'}
+                    <span className="text-dark-500"> / </span>
+                    {e.details?.epss_score != null ? `${(e.details.epss_score * 100).toFixed(1)}%` : '—'}
                   </td>
-
-                  <td className="font-mono text-sm">
-                    {e.details?.epss_score != null
-                      ? `${(e.details.epss_score * 100).toFixed(1)}%`
-                      : '—'}
+                  <td className="text-xs text-dark-400 whitespace-nowrap">
+                    <div title={`First seen ${new Date(e.first_seen).toLocaleString()}`}>{timeAgo(e.last_seen)}</div>
+                    {e.occurrences > 1 && <div className="text-dark-500">×{e.occurrences} · since {timeAgo(e.first_seen)}</div>}
                   </td>
-
-                  <td className="font-mono text-sm font-semibold">
-                    <span style={{
-                      color: (e.composite_risk_score ?? 0) >= 50 ? '#ff5252'
-                           : (e.composite_risk_score ?? 0) >= 25 ? '#ffc400'
-                           : '#00e676',
-                    }}>
-                      {e.composite_risk_score ?? '—'}
-                    </span>
+                  <td><StatusBadge status={e.status} /></td>
+                  <td className="text-xs text-dark-300 whitespace-nowrap">
+                    {e.assignee_name ? <span className="inline-flex items-center gap-1"><User className="w-3 h-3" />{e.assignee_name}</span> : <span className="text-dark-500">Unassigned</span>}
                   </td>
-
-                  <td className="text-dark-400 text-xs whitespace-nowrap">
-                    {new Date(e.timestamp).toLocaleString()}
-                  </td>
-
-                  {canManageAlerts && <td>
-                    <div className="flex items-center gap-1">
-                      <button
-                          onClick={() => triggerAdvisory(e.event_id)}
-                          disabled={advisoryLoading[e.event_id]}
-                          className={`relative p-1.5 rounded transition-colors disabled:opacity-40 ${
-                            e.has_advisory
-                              ? 'hover:bg-accent-green/10 text-accent-green'
-                              : 'hover:bg-eagle-500/10 text-eagle-400'
-                          }`}
-                          title={e.has_advisory ? 'Advisory exists — regenerate?' : 'Generate AI Advisory'}
-                        >
-                          {advisoryLoading[e.event_id]
-                            ? <RefreshCw className="w-4 h-4 animate-spin" />
-                            : <Zap className="w-4 h-4" />}
-                          {e.has_advisory && !advisoryLoading[e.event_id] && (
-                            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent-green" />
-                          )}
-                      </button>
-                      {DRIFT_TYPES.has(e.event_type) && (
-                        <button
-                          onClick={() => acknowledgeEvent(e.event_id)}
-                          disabled={acknowledgeLoading[e.event_id]}
-                          className="p-1.5 hover:bg-green-500/10 rounded text-green-500 transition-colors disabled:opacity-40"
-                          title="Accept change — updates baseline and removes alert"
-                        >
-                          {acknowledgeLoading[e.event_id]
-                            ? <RefreshCw className="w-4 h-4 animate-spin" />
-                            : <Check className="w-4 h-4" />}
-                        </button>
-                      )}
-                    </div>
-                  </td>}
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
           <div className="text-center py-20 text-dark-400">
-            <Bell className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p className="text-lg font-medium mb-2">No alerts detected</p>
+            <CheckCircle2 className="w-16 h-16 mx-auto mb-4 opacity-20" />
+            <p className="text-lg font-medium mb-2">{view === 'closed' ? 'No closed alerts yet' : 'Queue is clear'}</p>
             <p className="text-sm">
-              Generate SBOMs or run drift audits to start detecting security events.
+              {filtersActive ? 'No alerts match these filters.' : 'Nothing needs attention in this view. Run scans, SBOMs or a drift audit to detect new issues.'}
             </p>
           </div>
         )}
       </div>
 
-      {/* ── Pagination ── */}
       {totalPages > 1 && (
         <div className="flex items-center justify-center gap-2">
-          <button
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
-          >
-            Previous
-          </button>
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Previous</button>
           <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
-          <button
-            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
-          >
-            Next
-          </button>
+          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Next</button>
         </div>
       )}
+
+      {detailId && (
+        <AlertDrawer
+          eventId={detailId}
+          canManage={canManage}
+          assignees={assignees}
+          onClose={() => setDetailId(null)}
+          onStatus={(status) => requestStatus([detailId], status)}
+          onAssign={(v) => assign([detailId], v)}
+          onAdvisory={() => triggerAdvisory([detailId])}
+          onNavigate={(dir) => {
+            const i = events.findIndex(e => e.event_id === detailId)
+            const next = events[i + dir]
+            if (next) setDetailId(next.event_id)
+          }}
+          reloadKey={events}
+        />
+      )}
+
+      {action && (
+        <CloseDialog
+          count={action.ids.length}
+          status={action.status}
+          onCancel={() => setAction(null)}
+          onConfirm={async (note) => {
+            const ok = await runUpdate(action.ids, { status: action.status, note })
+            if (ok) setAction(null)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+// ── Small pieces ───────────────────────────────────────────────
+function StatCard({ icon: Icon, tone, label, value, sub, valueClass = 'text-white' }) {
+  const tones = {
+    eagle: 'bg-eagle-500/20 text-eagle-400', red: 'bg-accent-red/20 text-accent-red',
+    amber: 'bg-accent-amber/20 text-accent-amber', cyan: 'bg-accent-cyan/20 text-accent-cyan',
+    green: 'bg-accent-green/20 text-accent-green',
+  }
+  return (
+    <div className="stat-card">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-dark-400 text-sm">{label}</span>
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tones[tone]}`}><Icon className="w-4 h-4" /></div>
+      </div>
+      <p className={`text-3xl font-bold ${valueClass}`}>{value}</p>
+      <p className="text-xs text-dark-400 mt-1">{sub}</p>
+    </div>
+  )
+}
+
+function PriorityPill({ score }) {
+  if (score == null) return <span className="text-dark-500">—</span>
+  const cls = score >= 200 ? 'bg-red-600/30 text-red-300 border-red-500/50'
+    : score >= 90 ? 'bg-red-500/15 text-red-400 border-red-500/30'
+    : score >= 60 ? 'bg-orange-500/15 text-orange-400 border-orange-500/30'
+    : score >= 35 ? 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
+    : 'bg-dark-700 text-dark-300 border-dark-600'
+  return <span className={`font-mono text-xs px-2 py-0.5 rounded border ${cls}`}>{Math.round(score)}</span>
+}
+
+function AssignSelect({ assignees, value, onChange, placeholder = 'Unassigned' }) {
+  return (
+    <select value={value ?? ''} onChange={e => onChange(e.target.value)} onClick={e => e.stopPropagation()}
+      className="input-field text-xs py-1.5 px-2 w-40">
+      <option value="">{placeholder}</option>
+      {assignees.map(a => <option key={a.user_id} value={a.user_id}>{a.username}</option>)}
+    </select>
+  )
+}
+
+function CloseDialog({ count, status, onCancel, onConfirm }) {
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const hints = {
+    resolved:       'What was done? e.g. "Upgraded openssl to 3.0.14, verified with rescan"',
+    false_positive: 'Why is the detection wrong? e.g. "Port 8080 is the scanner\'s own proxy"',
+    accepted_risk:  'Who approved it and why? e.g. "RDP required for vendor support, approved by IT lead, firewall-restricted"',
+  }
+  return (
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-[55] bg-black/60 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="glass-card p-5 w-full max-w-md bg-dark-800" onClick={e => e.stopPropagation()}>
+        <h3 className="text-white font-semibold mb-1">{ACTION_LABELS[status]}{count > 1 ? ` — ${count} alerts` : ''}</h3>
+        <p className="text-xs text-dark-400 mb-3">
+          {status === 'accepted_risk'
+            ? 'The current state becomes the approved baseline for drift alerts. This is recorded in the audit log.'
+            : 'A note is required and is recorded in the audit log.'}
+        </p>
+        <textarea value={note} onChange={e => setNote(e.target.value)} rows={4} autoFocus
+          placeholder={hints[status]} className="input-field w-full text-sm" />
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onCancel} className="btn-secondary text-sm py-1.5">Cancel</button>
+          <button disabled={note.trim().length < 3 || busy}
+            onClick={async () => { setBusy(true); await onConfirm(note.trim()); setBusy(false) }}
+            className="btn-primary text-sm py-1.5 disabled:opacity-40">
+            {busy ? 'Saving…' : 'Confirm'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Detail drawer: everything needed to decide, without leaving the queue ──
+function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssign, onAdvisory, onNavigate, reloadKey }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    client.get(`/events/${eventId}`)
+      .then(r => { if (!cancelled) setData(r.data) })
+      .catch(() => { if (!cancelled) setError('Could not load this alert.') })
+    return () => { cancelled = true }
+  }, [eventId, reloadKey])
+
+  useEffect(() => {
+    const onKey = (e) => {
+      // Don't hijack typing in the note dialog or filters
+      if (e.target.closest?.('input, textarea, select, [role="dialog"]')) return
+      if (e.key === 'Escape') onClose()
+      if (e.key === 'j' || e.key === 'ArrowDown') onNavigate(1)
+      if (e.key === 'k' || e.key === 'ArrowUp') onNavigate(-1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, onNavigate])
+
+  const e = data && data.event_id === eventId ? data : null
+  const guide = e ? playbook({ ...e, asset_internet_facing: e.asset?.is_internet_facing }) : null
+  const isOpen = e && (e.status === 'open' || e.status === 'in_progress')
+  const d = e?.details ?? {}
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <aside className="relative w-full max-w-xl h-full overflow-y-auto bg-dark-900 border-l border-dark-700 shadow-2xl"
+        onClick={ev => ev.stopPropagation()}>
+        <div className="sticky top-0 z-10 bg-dark-900/95 backdrop-blur border-b border-dark-700 px-5 py-3 flex items-center gap-2">
+          <button onClick={() => onNavigate(-1)} className="p-1 rounded hover:bg-dark-700 text-dark-400" title="Previous (k)"><ChevronLeft className="w-4 h-4" /></button>
+          <button onClick={() => onNavigate(1)} className="p-1 rounded hover:bg-dark-700 text-dark-400" title="Next (j)"><ChevronRight className="w-4 h-4" /></button>
+          <span className="text-xs text-dark-500 ml-1">j / k to move · Esc to close</span>
+          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-dark-700 text-dark-400" aria-label="Close"><X className="w-5 h-5" /></button>
+        </div>
+
+        {error && <p className="p-5 text-accent-red text-sm">{error}</p>}
+        {!e && !error && (
+          <div className="flex justify-center py-20">
+            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+          </div>
+        )}
+
+        {e && (
+          <div className="p-5 space-y-5">
+            {/* Title */}
+            <div>
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <SevBadge sev={e.severity} />
+                <StatusBadge status={e.status} />
+                {e.asset?.is_internet_facing && (
+                  <span className="text-xs px-2 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400 inline-flex items-center gap-1">
+                    <Globe className="w-3 h-3" />internet-facing{e.asset.internet_facing_confirmed ? '' : ' (inferred)'}
+                  </span>
+                )}
+              </div>
+              <h2 className="text-lg font-semibold text-white">{alertLabel(e)} — <span className="font-mono text-accent-cyan">{renderDetail(e)}</span></h2>
+              <p className="text-xs text-dark-400 mt-1">
+                First seen {new Date(e.first_seen).toLocaleString()} · last seen {timeAgo(e.last_seen)}
+                {e.occurrences > 1 ? ` · detected ${e.occurrences}×` : ''}
+              </p>
+            </div>
+
+            {/* Next step */}
+            {guide && (
+              <div className="rounded-lg border border-eagle-500/30 bg-eagle-500/5 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-eagle-300 mb-1">
+                  <Lightbulb className="w-4 h-4" /> Next step
+                  <span className="ml-auto text-[11px] font-mono px-1.5 py-0.5 rounded bg-dark-800 text-dark-200">{guide.urgency}</span>
+                </div>
+                <p className="text-sm text-dark-200">{guide.text}</p>
+              </div>
+            )}
+
+            {/* Actions */}
+            {canManage && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <AssignSelect assignees={assignees} value={e.assigned_to} onChange={onAssign} />
+                {isOpen ? (
+                  <>
+                    {e.status === 'open' && <button onClick={() => onStatus('in_progress')} className="btn-secondary text-xs py-1.5 px-3">Start work</button>}
+                    <button onClick={() => onStatus('resolved')} className="btn-primary text-xs py-1.5 px-3">Resolve</button>
+                    <button onClick={() => onStatus('false_positive')} className="btn-secondary text-xs py-1.5 px-3">False positive</button>
+                    <button onClick={() => onStatus('accepted_risk')} className="btn-secondary text-xs py-1.5 px-3">
+                      {DRIFT_TYPES.has(e.event_type) ? 'Accept change' : 'Accept risk'}
+                    </button>
+                  </>
+                ) : (
+                  <button onClick={() => onStatus('open')} className="btn-secondary text-xs py-1.5 px-3">Reopen</button>
+                )}
+              </div>
+            )}
+            {e.resolution_note && (
+              <p className="text-xs text-dark-300 bg-dark-800 rounded p-2"><span className="text-dark-500">Note: </span>{e.resolution_note}</p>
+            )}
+
+            {/* Evidence */}
+            <Section icon={Shield} title="Evidence">
+              <KV rows={[
+                d.cve_id && ['CVE', <a href={`https://nvd.nist.gov/vuln/detail/${d.cve_id}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">{d.cve_id}</a>],
+                d.package_name && ['Package', `${d.package_name} ${d.package_version ?? ''}`],
+                Array.isArray(d.fix_versions) && d.fix_versions.length > 0 && ['Fixed in', d.fix_versions.join(', ')],
+                d.cvss_base_score != null && ['CVSS', d.cvss_base_score],
+                d.epss_score != null && ['EPSS', `${(d.epss_score * 100).toFixed(1)}% chance of exploitation in 30 days`],
+                e.composite_risk_score != null && ['Risk score', e.composite_risk_score],
+                d.port != null && ['Port', `${d.port}/${d.protocol ?? 'tcp'}${RISKY_PORTS[d.port] ? ` — ${RISKY_PORTS[d.port]}` : ''}`],
+                d.port != null && serviceOn(e.asset, d.port) && ['Service', serviceOn(e.asset, d.port)],
+                d.from != null && ['Before', String(d.from)],
+                d.to != null && ['After', String(d.to)],
+                d.mac && ['MAC', d.mac],
+                d.source && ['Detected by', d.source.replace('_', ' ')],
+              ]} />
+              {d.description && <p className="text-xs text-dark-400 mt-2 leading-relaxed">{d.description}</p>}
+            </Section>
+
+            {/* Asset */}
+            {e.asset && (
+              <Section icon={Server} title="Asset">
+                <KV rows={[
+                  ['Host', `${e.asset.hostname ?? '—'} (${e.asset.ip_address})`],
+                  ['Type', <span className="capitalize">{e.asset.device_type}</span>],
+                  ['Criticality', `${e.asset.criticality_score} / 10`],
+                  e.asset.owner && ['Owner', e.asset.owner],
+                  (e.asset.os_name || e.asset.os_version) && ['OS', `${e.asset.os_name ?? ''} ${e.asset.os_version ?? ''}`],
+                  (e.asset.mac_address || e.asset.hardware_vendor) && ['Hardware', `${e.asset.hardware_vendor ?? 'Unknown vendor'} ${e.asset.mac_address ? `· ${e.asset.mac_address}` : ''}`],
+                  e.asset.snmp_sysdescr && ['SNMP', `${String(e.asset.snmp_sysdescr).slice(0, 120)}${e.asset.snmp_interfaces ? ` · ${e.asset.snmp_interfaces} interfaces` : ''}`],
+                  ['Open ports', e.asset.ports.length ? (
+                    <span className="font-mono">{e.asset.ports.map(p => (
+                      <span key={p} className={RISKY_PORTS[p] ? 'text-accent-amber' : ''}>{p}{RISKY_PORTS[p] ? `(${RISKY_PORTS[p]})` : ''} </span>
+                    ))}</span>) : '—'],
+                  ['Last scanned', e.asset.last_scanned ? `${timeAgo(e.asset.last_scanned)} (${e.asset.source?.replace('scan_', '')})` : 'never'],
+                ]} />
+              </Section>
+            )}
+
+            {/* Blast radius */}
+            <Section icon={Link2} title={`Related assets (${e.related_assets.length})`}>
+              {e.related_assets.length === 0
+                ? <p className="text-xs text-dark-500">No mapped relationships. Check the topology view if this host is shared infrastructure.</p>
+                : <ul className="space-y-1">{e.related_assets.map((r, i) => (
+                    <li key={i} className="text-xs text-dark-300 flex items-center gap-2">
+                      <span className="text-dark-500 w-16">{r.direction === 'outbound' ? '→' : '←'} {r.relationship.replace(/_/g, ' ')}</span>
+                      <span>{r.hostname ?? r.ip}</span><span className="text-dark-500 capitalize">{r.device_type}</span>
+                    </li>
+                  ))}</ul>}
+            </Section>
+
+            {/* Threat intel */}
+            {e.cti_indicators.length > 0 && (
+              <Section icon={Crosshair} title="Threat intelligence">
+                <ul className="space-y-1.5">{e.cti_indicators.map((i, n) => (
+                  <li key={n} className="text-xs text-dark-300">
+                    <span className="font-mono text-accent-red">{i.value}</span> <span className="text-dark-500">({i.type}, {i.source})</span>
+                    {(i.tactic || i.technique) && <div className="text-dark-400">ATT&CK: {[i.tactic, i.technique].filter(Boolean).join(' / ')}</div>}
+                  </li>
+                ))}</ul>
+              </Section>
+            )}
+
+            {/* Advisory */}
+            <Section icon={Zap} title="AI advisory">
+              {e.advisory ? (
+                <div className="space-y-2">
+                  <p className="text-sm text-dark-200">{e.advisory.summary}</p>
+                  <p className="text-xs text-dark-300 whitespace-pre-line">{e.advisory.recommended_action}</p>
+                  <Link to="/advisories" className="text-xs text-eagle-400 hover:underline">Open in Advisories →</Link>
+                </div>
+              ) : canManage ? (
+                <button onClick={onAdvisory} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Generate advisory</button>
+              ) : <p className="text-xs text-dark-500">No advisory yet.</p>}
+            </Section>
+
+            {/* Audit trail */}
+            {e.history.length > 0 && (
+              <Section icon={History} title="Activity">
+                <ul className="space-y-1.5">{e.history.map((h, i) => (
+                  <li key={i} className="text-xs text-dark-400">
+                    <span className="text-dark-200">{h.by ?? 'system'}</span> changed {h.previous?.status} → <span className="text-dark-200">{h.next?.status}</span>
+                    {h.next?.note && <span className="text-dark-300"> — “{h.next.note}”</span>}
+                    <span className="text-dark-500"> · {timeAgo(h.at)}</span>
+                  </li>
+                ))}</ul>
+              </Section>
+            )}
+          </div>
+        )}
+      </aside>
+    </div>
+  )
+}
+
+function serviceOn(asset, port) {
+  const s = asset?.services?.find(x => Number(x.port) === Number(port))
+  if (!s) return null
+  return [s.service, s.product, s.version].filter(Boolean).join(' ') || null
+}
+
+function Section({ icon: Icon, title, children }) {
+  return (
+    <section>
+      <h3 className="text-xs uppercase tracking-wide text-dark-400 font-semibold flex items-center gap-1.5 mb-2">
+        <Icon className="w-3.5 h-3.5" />{title}
+      </h3>
+      {children}
+    </section>
+  )
+}
+
+function KV({ rows }) {
+  return (
+    <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1 text-xs">
+      {rows.filter(Boolean).map(([k, v], i) => (
+        <div key={i} className="contents">
+          <dt className="text-dark-500">{k}</dt>
+          <dd className="text-dark-200 break-words">{v}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }

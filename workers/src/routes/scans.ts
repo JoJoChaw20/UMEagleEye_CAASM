@@ -7,7 +7,8 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, events } from '../db/schema'
 import { computeCriticality } from '../lib/criticality'
-import { buildBaseline, runDriftAudit } from '../services/drift'
+import { buildBaseline, runDriftAudit, type AssetBaseline } from '../services/drift'
+import { resolveInternetFacing } from '../lib/exposure'
 
 // ── Ingest helpers ───────────────────────────────────────────────
 type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
@@ -56,8 +57,10 @@ function inferDeviceType(
   ports: NmapPort[],
   ip?: string,
   os?: Record<string, unknown> | null,
+  defaultGateway?: string,
 ): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
   if (ip) {
+    if (defaultGateway && ip === defaultGateway) return 'network'
     const last = ip.split('.').pop()
     if (last === '1' || last === '254') return 'network'
   }
@@ -80,19 +83,22 @@ function inferDeviceType(
   return 'unknown'
 }
 
-function buildOsInfo(os: Record<string, unknown> | null | undefined, ports: NmapPort[]): Record<string, unknown> {
-  if (os && Object.keys(os).length > 0) return os
-  if (ports.length === 0) return {}
-  return {
-    ports: ports.map(p => `${p.port}/${p.protocol ?? 'tcp'}`),
-    products: [...new Set(ports.map(p => p.product).filter(Boolean))],
-    versions: [...new Set(ports.map(p => p.version).filter(Boolean))],
+// Port facts from this scan. Active scans always write `ports` (even when empty)
+// so a port that closed is noticed; passive scans have no port visibility, so
+// they return OS facts only and the upsert merge keeps the last active-scan
+// ports instead of wiping them.
+function buildOsInfo(os: Record<string, unknown> | null | undefined, ports: NmapPort[], isPassive: boolean): Record<string, unknown> {
+  const info: Record<string, unknown> = { ...(os ?? {}) }
+  if (!isPassive) {
+    info.ports    = ports.map(p => `${p.port}/${p.protocol ?? 'tcp'}`)
+    info.products = [...new Set(ports.map(p => p.product).filter(Boolean))]
+    info.versions = [...new Set(ports.map(p => p.version).filter(Boolean))]
+    info.services = ports.map(p => ({
+      port: p.port, protocol: p.protocol ?? 'tcp',
+      service: p.service ?? null, product: p.product ?? null, version: p.version ?? null,
+    }))
   }
-}
-
-function isGatewayIp(ip: string): boolean {
-  const last = ip.split('.').pop()
-  return last === '1' || last === '254'
+  return info
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -756,9 +762,10 @@ Example:
 
     // Upsert assets — atomic ON CONFLICT so concurrent agents never create duplicates
     const upsertedAssetIds: string[] = []
+    const defaultGateway = ((agent.config ?? {}) as Record<string, unknown>).default_gateway as string | undefined
     for (const host of enhancedHosts) {
       const ports = (host.ports ?? []) as NmapPort[]
-      let deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null)
+      let deviceType = inferDeviceType(ports, host.ip, host.os as Record<string, unknown> | null, defaultGateway)
       // SNMP is a strong, direct signal — check it before the LLM-text fallback,
       // matching the precedence of the Python classifier (classify_device_type).
       if (deviceType === 'unknown' && isNetworkBySnmp(host.snmp_sysdescr, host.snmp_interfaces)) {
@@ -772,18 +779,20 @@ Example:
         else if (/router|gateway|switch|access.point/.test(llmDesc)) deviceType = 'network'
         else if (/iot|camera|printer|sensor/.test(llmDesc)) deviceType = 'iot'
       }
-      // Spread into a new object so we never mutate what buildOsInfo returned
-      // (it can return host.os by reference when os was already non-empty).
-      const osInfo: Record<string, unknown> = { ...buildOsInfo(host.os as Record<string, unknown> | null, ports) }
+      const osInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports, isPassive)
       if (host.snmp_sysdescr) osInfo.snmp_sysdescr = host.snmp_sysdescr
       if (host.snmp_sysobjectid) osInfo.snmp_sysobjectid = host.snmp_sysobjectid
       if (host.snmp_interfaces) osInfo.snmp_interfaces = host.snmp_interfaces
-      const internetFacing = isGatewayIp(host.ip)
 
       // Fetch existing record to preserve owner + stable device type
       const conditions = [eq(assets.ipAddress, host.ip)]
       if (tenantId) conditions.push(eq(assets.tenantId, tenantId))
       const [existing] = await db.select().from(assets).where(and(...conditions)).limit(1)
+
+      const internetFacing = resolveInternetFacing(host.ip, defaultGateway, existing?.internetFacingOverride)
+      // What the asset will hold after the merge below — criticality and the
+      // baseline must see the full picture, not just this scan's slice.
+      const mergedOsInfo: Record<string, unknown> = { ...((existing?.osInfo ?? {}) as Record<string, unknown>), ...osInfo }
 
       const resolvedDeviceType = (existing?.deviceType && existing.deviceType !== 'unknown')
         ? existing.deviceType : deviceType
@@ -794,7 +803,7 @@ Example:
         isInternetFacing: internetFacing,
         hostname: host.hostname ?? existing?.hostname,
         owner: resolvedOwner,
-        osInfo,
+        osInfo: mergedOsInfo,
       }).score
 
       // Insert or update — conflict on (ip_address, tenant_id) → update in place
@@ -825,7 +834,9 @@ Example:
             hostname: sql`COALESCE(assets.hostname, EXCLUDED.hostname)`,
             macAddress: sql`COALESCE(EXCLUDED.mac_address, assets.mac_address)`,
             hardwareVendor: sql`COALESCE(EXCLUDED.hardware_vendor, assets.hardware_vendor)`,
-            osInfo: sql`EXCLUDED.os_info`,
+            // Merge rather than replace: passive scans must not wipe active-scan
+            // ports, and neither scan type may drop SBOM package data.
+            osInfo: sql`COALESCE(assets.os_info, '{}'::jsonb) || EXCLUDED.os_info`,
             deviceType: sql`CASE WHEN assets.device_type = 'unknown' THEN EXCLUDED.device_type ELSE assets.device_type END`,
             isInternetFacing: sql`EXCLUDED.is_internet_facing`,
             criticalityScore: sql`EXCLUDED.criticality_score`,
@@ -845,17 +856,38 @@ Example:
         if (!existing?.baselineState) {
           const baseline = buildBaseline({
             ports:            ports.map(p => p.port),
-            osInfo:           osInfo as Record<string, unknown> | null,
+            osInfo:           mergedOsInfo,
             hostname:         host.hostname ?? existing?.hostname ?? null,
             macAddress:       host.mac ?? existing?.macAddress ?? null,
             isInternetFacing: internetFacing,
             deviceType:       resolvedDeviceType,
             autoSet:          true,
+            // A passive first sighting sees no ports; the first active scan fills
+            // them in instead of raising "port opened" for every service.
+            portsKnown:       !isPassive,
           })
           await db
             .update(assets)
             .set({ baselineState: baseline })
             .where(eq(assets.assetId, upserted.assetId))
+        } else if (!isPassive) {
+          // Complete a baseline that was captured before we could see ports or
+          // SNMP — learning a fact for the first time is not drift.
+          const baseline = existing.baselineState as AssetBaseline
+          const patch: Partial<AssetBaseline> = {}
+          if (baseline.ports_known === false) {
+            patch.ports = ports.map(p => p.port)
+            patch.ports_known = true
+          }
+          if (!baseline.snmp_sysdescr && typeof mergedOsInfo.snmp_sysdescr === 'string') {
+            patch.snmp_sysdescr = mergedOsInfo.snmp_sysdescr
+          }
+          if (Object.keys(patch).length > 0) {
+            await db
+              .update(assets)
+              .set({ baselineState: { ...baseline, ...patch } })
+              .where(eq(assets.assetId, upserted.assetId))
+          }
         }
 
         // ── New device event — fires only on true first discovery ──
