@@ -6,33 +6,39 @@ import {
   Timer, Lightbulb, History, Link2, Crosshair,
 } from 'lucide-react'
 import {
-  PieChart, Pie, Cell, AreaChart, Area, BarChart, Bar,
-  ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  BarChart, Bar, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
-  StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS,
+  StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons,
 } from '../components/common/alertMeta'
+import {
+  ConcernCard, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
+} from '../components/common/triageViz'
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
 const DRIFT_CSV = [...DRIFT_TYPES].join(',')
 
-// Saved views — each is a work queue with its own filter + sort
+// Saved views — each is a work queue with its own filter + sort. Concern views
+// are picked from the cards at the top; the rest are tabs.
 const VIEWS = [
-  { id: 'open',      label: 'All open',                 params: { status: 'open' } },
-  { id: 'mine',      label: 'My queue',                 params: { status: 'open', assigned_to: 'me' } },
-  { id: 'exposed',   label: 'Critical & internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
-  { id: 'ports',     label: 'Exposed services',         params: { status: 'open', event_type: 'port_opened' } },
-  { id: 'devices',   label: 'New devices',              params: { status: 'open', event_type: 'new_device' } },
-  { id: 'drift',     label: 'Drift to review',          params: { status: 'open', event_type: DRIFT_CSV } },
-  { id: 'cve',       label: 'CVEs',                     params: { status: 'open', event_type: 'cve_detected' } },
-  { id: 'threat',    label: 'Threat intel',             params: { status: 'open', event_type: 'cti_match' } },
-  { id: 'closed',    label: 'Closed (audit)',           params: { status: 'closed' }, sort: 'time' },
+  { id: 'open',      label: 'All open',                   params: { status: 'open' } },
+  { id: 'mine',      label: 'My queue',                   params: { status: 'open', assigned_to: 'me' } },
+  { id: 'overdue',   label: 'Past SLA',                   params: { status: 'open', overdue: 'true' } },
+  { id: 'exposed',   label: 'Critical on internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
+  { id: 'drift',     label: 'Drift to review',            params: { status: 'open', event_type: DRIFT_CSV } },
+  { id: 'cve',       label: 'All CVEs',                   params: { status: 'open', event_type: 'cve_detected' } },
+  { id: 'closed',    label: 'Closed (audit)',             params: { status: 'closed' }, sort: 'time' },
+  ...CONCERNS.map(c => ({ id: c.id, label: c.title, params: { status: 'open', concern: c.id }, concern: true })),
 ]
+// Older links (bookmarks, other pages) used these ids
+const LEGACY_VIEWS = { ports: 'exposed_services', devices: 'new_devices', threat: 'threat_intel' }
+const resolveView = (id) => VIEWS.find(v => v.id === (LEGACY_VIEWS[id] ?? id))?.id ?? 'open'
+const AGE_LABELS = { lt1d: 'open < 1 day', d1_3: 'open 1–3 days', d3_7: 'open 3–7 days', d7_30: 'open 7–30 days', gt30: 'open > 30 days' }
 
 const CLOSE_STATUSES = new Set(['resolved', 'false_positive', 'accepted_risk'])
 const ACTION_LABELS = {
@@ -66,10 +72,11 @@ export default function AlertsPage() {
   const canManage       = !isSuperadmin && !isBusinessOwner
   const [searchParams, setSearchParams] = useSearchParams()
 
-  const [view,         setView]         = useState(() => VIEWS.find(v => v.id === searchParams.get('view'))?.id ?? 'open')
+  const [view,         setView]         = useState(() => resolveView(searchParams.get('view')))
   const [search,       setSearch]       = useState(searchParams.get('q') ?? '')
   const [debounced,    setDebounced]    = useState(search)
-  const [severity,     setSeverity]     = useState('')
+  const [severity,     setSeverity]     = useState(() => searchParams.get('severity') ?? '')
+  const [age,          setAge]          = useState('')
   const [typeFilter,   setTypeFilter]   = useState('')
   const [deviceType,   setDeviceType]   = useState('')
   const [onlyExposed,  setOnlyExposed]  = useState(false)
@@ -102,14 +109,15 @@ export default function AlertsPage() {
   const queryParams = useMemo(() => {
     const p = { page, page_size: PAGE_SIZE, sort: activeView.sort ?? sort, ...activeView.params }
     if (severity) p.severity = severity
-    if (typeFilter && !activeView.params.event_type) p.event_type = typeFilter
+    if (age) p.age = age
+    if (typeFilter && !activeView.params.event_type && !activeView.params.concern) p.event_type = typeFilter
     if (deviceType) p.device_type = deviceType
     if (onlyExposed) p.internet_facing = 'true'
     if (onlyNew && lastVisit.current) p.since = lastVisit.current
     if (debounced) p.q = debounced
     if (tenantFilter) p.tenant_id = tenantFilter
     return p
-  }, [page, sort, activeView, severity, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
+  }, [page, sort, activeView, severity, age, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -191,15 +199,9 @@ export default function AlertsPage() {
     }
   }
 
-  // ── Chart data ───────────────────────────────────────────────
-  const severityData = stats ? ['critical', 'high', 'medium', 'low'].map(s => ({
-    name: s[0].toUpperCase() + s.slice(1), key: s, value: stats.by_severity?.[s] || 0, color: SEVERITY_COLORS[s],
-  })) : []
   const trendData = stats?.daily_trend || []
-  const typeData = stats
-    ? Object.entries(stats.by_type || {}).map(([key, value]) => ({ key, name: EVENT_TYPE_LABELS[key] || key.replace(/_/g, ' '), count: value }))
-        .sort((a, b) => b.count - a.count)
-    : []
+  const pickView = (id) => { setView(id); setPage(1) }
+  const pickCell = (sev, bucket) => { setView('open'); setSeverity(sev); setAge(bucket); setPage(1) }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const allOnPageSelected = events.length > 0 && events.every(e => selected.has(e.event_id))
@@ -210,9 +212,9 @@ export default function AlertsPage() {
     return n
   })
 
-  const filtersActive = severity || typeFilter || deviceType || onlyExposed || onlyNew || search
+  const filtersActive = severity || age || typeFilter || deviceType || onlyExposed || onlyNew || search
   const clearFilters = () => {
-    setSeverity(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
+    setSeverity(''); setAge(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
   }
 
   return (
@@ -230,9 +232,9 @@ export default function AlertsPage() {
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Alerts</h1>
+          <h1 className="text-2xl font-bold text-dark-50">Alerts</h1>
           <p className="text-dark-400 text-sm mt-1">
-            Triage queue for CVEs, drift, new devices and threat-intel matches — highest priority first
+            Start with the categories at the top, then work the queue from P1 down
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -246,102 +248,92 @@ export default function AlertsPage() {
         </div>
       </div>
 
-      {/* ── Summary cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard icon={Bell} tone="eagle" label="Open alerts" value={stats?.open_total ?? 0}
-          sub={`${stats?.by_status?.in_progress ?? 0} in progress`} />
-        <StatCard icon={AlertTriangle} tone="red" label="Critical open" value={stats?.by_severity?.critical ?? 0}
-          sub={`${stats?.by_severity?.high ?? 0} high`} valueClass="text-accent-red" />
-        <StatCard icon={Timer} tone="amber" label="Past SLA" value={stats?.sla_breaches ?? 0}
-          sub="critical >72h · high >7d" valueClass={(stats?.sla_breaches ?? 0) > 0 ? 'text-accent-amber' : 'text-white'} />
-        <StatCard icon={TrendingUp} tone="cyan" label="New / resolved (7d)"
-          value={<span>{stats?.new_7d ?? 0}<span className="text-dark-500 text-xl"> / </span><span className="text-accent-green">{stats?.resolved_7d ?? 0}</span></span>}
-          sub={(stats?.new_7d ?? 0) > (stats?.resolved_7d ?? 0) ? 'backlog growing' : 'backlog shrinking'} />
-        <StatCard icon={Clock} tone="green" label="Mean time to resolve"
-          value={stats?.mttr_hours != null ? `${stats.mttr_hours < 48 ? stats.mttr_hours + 'h' : Math.round(stats.mttr_hours / 24) + 'd'}` : '—'}
-          sub="resolved in last 30d" />
-      </div>
+      {/* ── Start here: concern categories ── */}
+      <section>
+        <div className="flex items-baseline gap-3 flex-wrap mb-3">
+          <h2 className="text-base font-semibold text-dark-100">Start here</h2>
+          <span className="text-xs text-dark-500">
+            {stats ? <>{fmtNum(stats.open_total)} open alerts in total. These categories are the ones attackers use first. Click one to filter the queue.</> : 'Loading…'}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+          {CONCERNS.map(meta => (
+            <ConcernCard key={meta.id} meta={meta} loading={!stats} count={stats?.concerns?.[meta.id] ?? 0}
+              active={view === meta.id} onOpen={() => pickView(view === meta.id ? 'open' : meta.id)} />
+          ))}
+        </div>
+      </section>
 
-      {/* ── Charts ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <Shield className="w-4 h-4 text-accent-red" /> Open by severity
+      {/* ── Backlog shape ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="glass-card p-5 xl:col-span-2">
+          <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2">
+            <Timer className="w-4 h-4 text-eagle-400" /> How long has open work been waiting?
           </h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <PieChart>
-              <Pie data={severityData.filter(d => d.value > 0)} cx="50%" cy="50%" innerRadius={48} outerRadius={72}
-                paddingAngle={4} dataKey="value" onClick={(d) => { setSeverity(d.key); setPage(1) }} className="cursor-pointer">
-                {severityData.filter(d => d.value > 0).map((entry, idx) => <Cell key={idx} fill={entry.color} />)}
-              </Pie>
-              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="flex flex-wrap justify-center gap-3 mt-2">
-            {severityData.map(s => (
-              <button key={s.name} onClick={() => { setSeverity(s.key); setPage(1) }}
-                className="flex items-center gap-1.5 text-xs text-dark-300 hover:text-white">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ background: s.color }} />
-                {s.name}: {s.value}
-              </button>
-            ))}
-          </div>
+          <p className="text-xs text-dark-500 mt-1 mb-4">
+            Rows are severity, columns are time since first detection. Old critical and high alerts are the SLA breaches.
+            {stats?.sla_breaches > 0 && <> <button onClick={() => pickView('overdue')} className="text-red-400 hover:underline">{fmtNum(stats.sla_breaches)} past SLA →</button></>}
+          </p>
+          <AgingHeatmap aging={stats?.aging} onCell={pickCell} />
         </div>
 
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <TrendingUp className="w-4 h-4 text-eagle-400" /> New vs resolved (7d)
+        <div className="glass-card p-5 flex flex-col">
+          <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-eagle-400" /> Is the team keeping up?
           </h3>
-          <ResponsiveContainer width="100%" height={210}>
-            <AreaChart data={trendData}>
-              <defs>
-                <linearGradient id="newGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#ff9800" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#ff9800" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="resGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#00e676" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#00e676" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-              <XAxis dataKey="date" tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <YAxis allowDecimals={false} tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Area type="monotone" name="New" dataKey="new" stroke="#ff9800" fill="url(#newGradient)" strokeWidth={2} />
-              <Area type="monotone" name="Resolved" dataKey="resolved" stroke="#00e676" fill="url(#resGradient)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-4">
-            <Filter className="w-4 h-4 text-accent-cyan" /> Open by type
-          </h3>
-          <ResponsiveContainer width="100%" height={210}>
-            <BarChart data={typeData} layout="vertical" margin={{ left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-              <XAxis type="number" allowDecimals={false} tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <YAxis dataKey="name" type="category" tick={{ fill: '#7b7f87', fontSize: 10 }} axisLine={{ stroke: '#1e2028' }} width={110} />
-              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
-              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} className="cursor-pointer"
-                onClick={(d) => { setView('open'); setTypeFilter(d.key); setPage(1) }} />
-            </BarChart>
-          </ResponsiveContainer>
+          {(() => {
+            const net = stats ? (stats.new_7d ?? 0) - (stats.resolved_7d ?? 0) : null
+            const mttr = stats?.mttr_hours
+            return (
+              <>
+                <div className="flex items-baseline gap-2 mt-3">
+                  <span className={`text-4xl font-bold ${net > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>
+                    {net == null ? '—' : `${net > 0 ? '+' : ''}${fmtNum(net)}`}
+                  </span>
+                  <span className="text-sm text-dark-300">{net == null ? '' : net > 0 ? 'backlog grew in 7 days' : net < 0 ? 'backlog shrank in 7 days' : 'backlog unchanged'}</span>
+                </div>
+                <p className="text-xs text-dark-500 mt-1">
+                  {stats ? <>{fmtNum(stats.new_7d)} new · {fmtNum(stats.resolved_7d)} closed · {fmtNum(stats.by_status?.in_progress)} in progress
+                    {mttr != null && <> · fixes take {mttr < 48 ? `${mttr}h` : `${Math.round(mttr / 24)}d`} on average</>}</> : ''}
+                </p>
+                <div className="mt-4 flex-1 min-h-[160px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={trendData} barGap={2} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                      <CartesianGrid vertical={false} stroke="rgb(var(--dark-700))" />
+                      <XAxis dataKey="date" tick={{ fill: 'rgb(var(--dark-400))', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis allowDecimals={false} tick={{ fill: 'rgb(var(--dark-400))', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: 'rgb(var(--dark-700) / 0.3)' }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} iconType="square" iconSize={9} />
+                      <Bar name="New" dataKey="new" fill="#ff9800" radius={[4, 4, 0, 0]} maxBarSize={14} />
+                      <Bar name="Closed" dataKey="resolved" fill="#00e676" radius={[4, 4, 0, 0]} maxBarSize={14} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )
+          })()}
         </div>
       </div>
 
       {/* ── Saved views ── */}
       <div className="flex gap-1 overflow-x-auto border-b border-dark-700 -mb-2">
-        {VIEWS.filter(v => canManage || v.id !== 'mine').map(v => (
+        {VIEWS.filter(v => !v.concern && (canManage || v.id !== 'mine')).map(v => (
           <button key={v.id} onClick={() => { setView(v.id); setPage(1) }}
             className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 transition-colors ${view === v.id
               ? 'border-eagle-500 text-eagle-400 font-medium'
               : 'border-transparent text-dark-400 hover:text-dark-200'}`}>
             {v.label}
+            {v.id === 'overdue' && (stats?.sla_breaches ?? 0) > 0 && (
+              <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300">{fmtNum(stats.sla_breaches)}</span>
+            )}
           </button>
         ))}
+        {activeView.concern && (
+          <span className="px-3 py-2 text-sm whitespace-nowrap border-b-2 border-eagle-500 text-eagle-400 font-medium inline-flex items-center gap-1.5">
+            {activeView.label}
+            <button onClick={() => pickView('open')} aria-label="Back to all open" className="text-dark-400 hover:text-dark-100"><X className="w-3.5 h-3.5" /></button>
+          </span>
+        )}
       </div>
 
       {/* ── Filters ── */}
@@ -358,7 +350,13 @@ export default function AlertsPage() {
           <option value="medium">Medium</option>
           <option value="low">Low</option>
         </select>
-        {!activeView.params.event_type && (
+        {age && (
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
+            {AGE_LABELS[age]}
+            <button onClick={() => resetPage(setAge)('')} aria-label="Remove age filter"><X className="w-3 h-3" /></button>
+          </span>
+        )}
+        {!activeView.params.event_type && !activeView.params.concern && (
           <select value={typeFilter} onChange={e => resetPage(setTypeFilter)(e.target.value)} className="input-field text-sm py-1.5 w-44">
             <option value="">All types</option>
             {Object.entries(EVENT_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -424,13 +422,12 @@ export default function AlertsPage() {
             <thead>
               <tr>
                 {canManage && <th className="w-8"><input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} aria-label="Select all" /></th>}
-                <th title="Triage priority: risk × exposure × criticality">Priority</th>
-                <th>Severity</th>
-                <th>Alert</th>
+                <th title="P1 urgent → P4 low. Score = risk × internet exposure × asset criticality (+ threat intel)">Priority</th>
+                <th>Alert &amp; why it matters</th>
                 <th>Evidence</th>
                 <th>Asset</th>
                 <th>CVSS / EPSS</th>
-                <th>Seen</th>
+                <th>Seen / due</th>
                 <th>Status</th>
                 <th>Owner</th>
               </tr>
@@ -440,17 +437,22 @@ export default function AlertsPage() {
                 <tr key={e.event_id} onClick={() => setDetailId(e.event_id)}
                   className={`cursor-pointer ${detailId === e.event_id ? 'bg-eagle-500/5' : ''}`}>
                   {canManage && (
-                    <td onClick={ev => ev.stopPropagation()}>
+                    <td onClick={ev => ev.stopPropagation()} style={{ boxShadow: `inset 3px 0 0 ${SEVERITY_COLORS[e.severity]}` }}>
                       <input type="checkbox" checked={selected.has(e.event_id)} onChange={() => toggleOne(e.event_id)} aria-label="Select alert" />
                     </td>
                   )}
-                  <td><PriorityPill score={e.priority_score} /></td>
-                  <td><SevBadge sev={e.severity} /></td>
-                  <td className="text-dark-200 text-xs">
-                    <div className="flex items-center gap-1.5">
+                  <td style={canManage ? undefined : { boxShadow: `inset 3px 0 0 ${SEVERITY_COLORS[e.severity]}` }}>
+                    <div className="flex flex-col items-start gap-1">
+                      <PriorityTier score={e.priority_score} />
+                      <SevBadge sev={e.severity} />
+                    </div>
+                  </td>
+                  <td className="text-dark-200 text-xs min-w-[300px]">
+                    <div className="flex items-center gap-1.5 text-sm text-dark-100 font-medium">
                       {(e.event_type === 'cti_match' || e.details?.has_cti_match) && <Crosshair className="w-3.5 h-3.5 text-accent-red" title="Threat-intel match" />}
                       {alertLabel(e)}
                     </div>
+                    <div className="mt-1"><ReasonChips reasons={riskReasons(e)} max={4} /></div>
                     {e.has_advisory && <span className="text-[10px] text-accent-green">● advisory ready</span>}
                   </td>
                   <td className="font-mono text-xs text-accent-cyan max-w-[220px] truncate">
@@ -489,6 +491,7 @@ export default function AlertsPage() {
                   <td className="text-xs text-dark-400 whitespace-nowrap">
                     <div title={`First seen ${new Date(e.first_seen).toLocaleString()}`}>{timeAgo(e.last_seen)}</div>
                     {e.occurrences > 1 && <div className="text-dark-500">×{e.occurrences} · since {timeAgo(e.first_seen)}</div>}
+                    {(e.status === 'open' || e.status === 'in_progress') && <div className="mt-0.5"><DueLabel e={e} /></div>}
                   </td>
                   <td><StatusBadge status={e.status} /></td>
                   <td className="text-xs text-dark-300 whitespace-nowrap">
@@ -551,34 +554,6 @@ export default function AlertsPage() {
 }
 
 // ── Small pieces ───────────────────────────────────────────────
-function StatCard({ icon: Icon, tone, label, value, sub, valueClass = 'text-white' }) {
-  const tones = {
-    eagle: 'bg-eagle-500/20 text-eagle-400', red: 'bg-accent-red/20 text-accent-red',
-    amber: 'bg-accent-amber/20 text-accent-amber', cyan: 'bg-accent-cyan/20 text-accent-cyan',
-    green: 'bg-accent-green/20 text-accent-green',
-  }
-  return (
-    <div className="stat-card">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-dark-400 text-sm">{label}</span>
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tones[tone]}`}><Icon className="w-4 h-4" /></div>
-      </div>
-      <p className={`text-3xl font-bold ${valueClass}`}>{value}</p>
-      <p className="text-xs text-dark-400 mt-1">{sub}</p>
-    </div>
-  )
-}
-
-function PriorityPill({ score }) {
-  if (score == null) return <span className="text-dark-500">—</span>
-  const cls = score >= 200 ? 'bg-red-600/30 text-red-300 border-red-500/50'
-    : score >= 90 ? 'bg-red-500/15 text-red-400 border-red-500/30'
-    : score >= 60 ? 'bg-orange-500/15 text-orange-400 border-orange-500/30'
-    : score >= 35 ? 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
-    : 'bg-dark-700 text-dark-300 border-dark-600'
-  return <span className={`font-mono text-xs px-2 py-0.5 rounded border ${cls}`}>{Math.round(score)}</span>
-}
-
 function AssignSelect({ assignees, value, onChange, placeholder = 'Unassigned' }) {
   return (
     <select value={value ?? ''} onChange={e => onChange(e.target.value)} onClick={e => e.stopPropagation()}

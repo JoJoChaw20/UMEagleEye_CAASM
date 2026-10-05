@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  Shield, AlertTriangle, TrendingUp, TrendingDown, Globe, Radio, Server, Timer, Crosshair,
+  Shield, AlertTriangle, TrendingUp, TrendingDown, Globe, Radio, Server,
   ChevronRight, Network, HelpCircle, Clock, PackageSearch, Fingerprint, Sparkles, Minus,
+  Target, Wrench, ShieldAlert, ShieldCheck, ArrowRight,
 } from 'lucide-react'
 import { AreaChart, Area, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 import client from '../api/client'
 import TenantSelector from '../components/common/TenantSelector'
 import {
   SevBadge, StatusBadge, alertLabel, renderDetail, playbook, timeAgo, CHART_TOOLTIP_STYLE,
+  CONCERNS, riskReasons, SEVERITY_COLORS,
 } from '../components/common/alertMeta'
+import {
+  ConcernCard, SeverityStack, ReasonChips, PriorityTier, DueLabel, fmtNum,
+} from '../components/common/triageViz'
 
 const DEVICE_COLORS = { server: '#3393ff', workstation: '#22d3ee', network: '#a78bfa', iot: '#f59e0b', unknown: '#6b7280' }
 
@@ -76,8 +81,8 @@ export default function DashboardPage() {
       {/* ── Header + collection health ── */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Security Posture Dashboard</h1>
-          <p className="text-dark-400 text-sm mt-1">What needs attention now, and why</p>
+          <h1 className="text-2xl font-bold text-dark-50">Security Overview</h1>
+          <p className="text-dark-400 text-sm mt-1">What is dangerous right now, why, and what to do first</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
@@ -101,93 +106,78 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── Headline numbers ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="stat-card">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-dark-400 text-sm">Posture Score</span>
-            <Delta value={scoreDelta} goodWhenUp />
+      {/* ── Verdict ── */}
+      <SituationBanner loading={loading} summary={summary} stats={stats}
+        score={score} scoreColor={scoreColor} scoreDelta={scoreDelta} drivers={posture?.score_drivers}
+        onOpen={openAlerts} />
+
+      {/* ── What to worry about ── */}
+      <section>
+        <SectionTitle title="Needs attention" hint="Each card counts open alerts in one category. Click a card to open exactly those alerts." />
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+          {CONCERNS.map(meta => {
+            const c = summary?.concerns?.find(x => x.id === meta.id)
+            return (
+              <ConcernCard key={meta.id} meta={meta} loading={loading} count={c?.count ?? 0} examples={c?.examples}
+                onOpen={() => openAlerts({ view: meta.id })} />
+            )
+          })}
+        </div>
+      </section>
+
+      {/* ── Do these first + where the risk sits ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="glass-card p-5 xl:col-span-2">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-eagle-400" /> Do these first
+            </h3>
+            <Link to="/alerts" className="text-xs text-eagle-400 hover:underline flex items-center gap-0.5">Full queue <ChevronRight className="w-3.5 h-3.5" /></Link>
           </div>
-          <p className="text-3xl font-bold" style={{ color: scoreColor }}>{score ?? '—'}<span className="text-sm text-dark-400 font-normal"> / 100</span></p>
-          {posture?.score_drivers?.length > 0 ? (
-            <ul className="mt-2 space-y-0.5">
-              {posture.score_drivers.map((d, i) => (
-                <li key={i} className="text-xs text-dark-400 flex justify-between gap-2">
-                  <span className="truncate">{d.label}</span><span className="font-mono text-accent-red">{d.impact}</span>
+          <p className="text-xs text-dark-500 mb-4">Top 5 open alerts. The chips show why each one is ranked this high.</p>
+          {loading ? <Skeleton rows={5} /> : summary?.priority_actions?.length > 0 ? (
+            <ol className="space-y-2.5">
+              {summary.priority_actions.map((a, i) => <ActionRow key={a.event_id} a={a} rank={i + 1} onClick={() => navigate(`/alerts?event=${a.event_id}`)} />)}
+            </ol>
+          ) : (
+            <div className="text-center py-8 text-dark-400">
+              <Shield className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p className="text-sm">No open alerts. {col?.agents_total === 0 ? 'Deploy an agent and run your first scan.' : 'Keep scans and SBOMs current to stay that way.'}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="glass-card p-5">
+          <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2 mb-1">
+            <Target className="w-4 h-4 text-accent-red" /> Most at-risk assets
+          </h3>
+          <p className="text-xs text-dark-500 mb-4">Ranked by their worst open alert, then by how many critical and high alerts they carry.</p>
+          {loading ? <Skeleton rows={6} /> : summary?.risky_assets?.length ? (
+            <ul className="space-y-3.5">
+              {summary.risky_assets.map(a => (
+                <li key={a.asset_id}>
+                  <button onClick={() => openAlerts({ q: a.ip || a.hostname })} className="w-full text-left group">
+                    <div className="flex items-center gap-2 text-sm min-w-0">
+                      <PriorityTier score={a.top_priority} />
+                      <span className="text-dark-100 font-medium truncate group-hover:text-eagle-300">{a.hostname || a.ip}</span>
+                      {a.internet_facing && <Globe className="w-3.5 h-3.5 text-accent-amber flex-shrink-0" title="Internet-facing" />}
+                      <span className="ml-auto text-xs text-dark-400 whitespace-nowrap">{fmtNum(a.open)} open</span>
+                    </div>
+                    <p className="text-[11px] text-dark-500 mt-0.5 mb-1.5">
+                      <span className="capitalize">{a.device_type}</span>{a.hostname && a.ip ? ` · ${a.ip}` : ''} · criticality {a.criticality}/10
+                      {a.by_severity.critical > 0 && <span className="text-red-400"> · {fmtNum(a.by_severity.critical)} critical</span>}
+                    </p>
+                    <SeverityStack counts={a.by_severity} height={6} legend={false} />
+                  </button>
                 </li>
               ))}
             </ul>
-          ) : <p className="text-xs text-dark-400 mt-1">{score === 100 ? 'No open critical or high alerts' : 'out of 100'}</p>}
+          ) : <Empty text="No assets with open alerts." />}
         </div>
-
-        <HeadlineCard
-          icon={AlertTriangle} tone="red" label="Open critical / high"
-          value={<><span className="text-accent-red">{stats?.by_severity?.critical ?? 0}</span><span className="text-dark-500 text-xl"> / </span><span className="text-orange-400">{stats?.by_severity?.high ?? 0}</span></>}
-          sub={`${stats?.open_total ?? 0} open alerts in total`}
-          onClick={() => openAlerts({ view: 'open' })}
-        />
-        <HeadlineCard
-          icon={TrendingUp} tone="cyan" label="This week"
-          value={<><span>{stats?.new_7d ?? 0}</span><span className="text-dark-500 text-base font-normal"> new · </span><span className="text-accent-green">{stats?.resolved_7d ?? 0}</span><span className="text-dark-500 text-base font-normal"> closed</span></>}
-          sub={stats ? ((stats.new_7d ?? 0) > (stats.resolved_7d ?? 0) ? 'Backlog is growing — prioritise closing' : 'Backlog is shrinking') : ''}
-        />
-        <HeadlineCard
-          icon={Timer} tone="amber" label="Past SLA"
-          value={<span className={(stats?.sla_breaches ?? 0) > 0 ? 'text-accent-amber' : 'text-white'}>{stats?.sla_breaches ?? 0}</span>}
-          sub={`critical >72h · high >7d${stats?.mttr_hours != null ? ` · MTTR ${stats.mttr_hours < 48 ? stats.mttr_hours + 'h' : Math.round(stats.mttr_hours / 24) + 'd'}` : ''}`}
-          onClick={() => openAlerts({ view: 'exposed' })}
-        />
       </div>
 
-      {/* ── Priority actions ── */}
-      <div className="glass-card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-eagle-400" /> Priority actions
-            <span className="text-xs text-dark-500 font-normal">ranked by risk × internet exposure × asset criticality</span>
-          </h3>
-          <Link to="/alerts" className="text-xs text-eagle-400 hover:underline flex items-center gap-0.5">Open queue <ChevronRight className="w-3.5 h-3.5" /></Link>
-        </div>
-        {loading ? <Skeleton rows={3} /> : summary?.priority_actions?.length > 0 ? (
-          <ol className="space-y-2">
-            {summary.priority_actions.map((a, i) => {
-              const guide = playbook(a)
-              const cti = a.event_type === 'cti_match' || a.details?.has_cti_match
-              return (
-                <li key={a.event_id}>
-                  <button onClick={() => navigate(`/alerts?event=${a.event_id}`)}
-                    className="w-full text-left rounded-lg border border-dark-700 hover:border-eagle-500/40 hover:bg-dark-700/20 px-3 py-2.5 transition-colors">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-dark-500 font-mono text-xs w-4">{i + 1}</span>
-                      <SevBadge sev={a.severity} />
-                      {cti && <span className="text-[11px] text-accent-red inline-flex items-center gap-0.5"><Crosshair className="w-3 h-3" />threat intel</span>}
-                      <span className="text-sm text-white font-medium">{alertLabel(a)}</span>
-                      <span className="font-mono text-xs text-accent-cyan">{renderDetail(a)}</span>
-                      <span className="text-xs text-dark-400">on</span>
-                      <span className="text-sm text-dark-200">{a.asset.hostname || a.asset.ip}</span>
-                      {a.asset.internet_facing && <Globe className="w-3.5 h-3.5 text-accent-amber" />}
-                      {a.details?.epss_score >= 0.01 && <span className="text-xs text-dark-400">EPSS {(a.details.epss_score * 100).toFixed(0)}%</span>}
-                      <span className="ml-auto flex items-center gap-2">
-                        <StatusBadge status={a.status} />
-                        <span className="text-xs text-dark-500">{timeAgo(a.first_seen)}</span>
-                      </span>
-                    </div>
-                    <p className="text-xs text-dark-300 mt-1 pl-6">
-                      <span className="font-mono text-eagle-300 mr-1.5">[{guide.urgency}]</span>
-                      {a.recommended_action ? a.recommended_action.split('\n')[0] : guide.text}
-                    </p>
-                  </button>
-                </li>
-              )
-            })}
-          </ol>
-        ) : (
-          <div className="text-center py-8 text-dark-400">
-            <Shield className="w-10 h-10 mx-auto mb-2 opacity-30" />
-            <p className="text-sm">No open alerts. {col?.agents_total === 0 ? 'Deploy an agent and run your first scan.' : 'Keep scans and SBOMs current to stay that way.'}</p>
-          </div>
-        )}
-      </div>
+      {/* ── Patch plan ── */}
+      <PatchBacklog loading={loading} data={summary?.patch_backlog} onOpen={openAlerts} />
 
       {/* ── Attack surface ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -199,7 +189,7 @@ export default function DashboardPage() {
                 {surface.risky_services.slice(0, 8).map(r => (
                   <tr key={r.port} className="border-t border-dark-700/50 hover:bg-dark-700/20 cursor-pointer"
                     title={r.hosts.map(h => h.hostname || h.ip).join(', ')}
-                    onClick={() => r.hosts.length === 1 ? openAlerts({ q: r.hosts[0].ip }) : openAlerts({ view: 'ports' })}>
+                    onClick={() => r.hosts.length === 1 ? openAlerts({ q: r.hosts[0].ip }) : openAlerts({ view: 'exposed_services' })}>
                     <td className="py-1.5 text-dark-200">{r.service} <span className="text-dark-500 font-mono">{r.port}</span></td>
                     <td className="text-dark-200">{r.host_count}</td>
                     <td className={r.internet_facing ? 'text-accent-red font-semibold' : 'text-dark-500'}>{r.internet_facing || '—'}</td>
@@ -308,7 +298,7 @@ export default function DashboardPage() {
           <HygieneCard icon={Fingerprint} title="New devices (7d)" data={hygiene?.new_devices_7d} loading={loading}
             advice="Confirm each has an owner. Unclaimed after 24h → isolate."
             render={a => <>{a.hostname || a.ip}<span className="text-dark-500"> · {a.vendor ?? 'unknown vendor'}</span></>}
-            onClick={() => openAlerts({ view: 'devices' })} />
+            onClick={() => openAlerts({ view: 'new_devices' })} />
           <HygieneCard icon={HelpCircle} title="Unidentified" data={hygiene?.unidentified} loading={loading}
             advice="No type, vendor or hostname. Label them so risk is scored correctly."
             render={a => <>{a.ip}<span className="text-dark-500"> · {a.mac ?? 'no MAC'}</span></>}
@@ -323,7 +313,7 @@ export default function DashboardPage() {
             to="/sbom" />
         </div>
         {hygiene?.identity_changes_open > 0 && (
-          <button onClick={() => openAlerts({ view: 'drift' })}
+          <button onClick={() => openAlerts({ view: 'identity' })}
             className="mt-3 text-xs text-accent-amber hover:underline inline-flex items-center gap-1">
             <AlertTriangle className="w-3.5 h-3.5" />
             {hygiene.identity_changes_open} open MAC/hostname change{hygiene.identity_changes_open === 1 ? '' : 's'} — possible spoofing or hardware swap. Review →
@@ -365,18 +355,231 @@ function Delta({ value, goodWhenUp }) {
   )
 }
 
-function HeadlineCard({ icon: Icon, tone, label, value, sub, onClick }) {
-  const tones = { red: 'bg-accent-red/20 text-accent-red', cyan: 'bg-accent-cyan/20 text-accent-cyan', amber: 'bg-accent-amber/20 text-accent-amber' }
+function SectionTitle({ title, hint }) {
+  return (
+    <div className="flex items-baseline gap-3 flex-wrap mb-3">
+      <h2 className="text-base font-semibold text-dark-100">{title}</h2>
+      {hint && <span className="text-xs text-dark-500">{hint}</span>}
+    </div>
+  )
+}
+
+// One sentence that answers "how bad is it right now?", plus the three numbers
+// that back it up. Wording is driven by the concern counts, worst first.
+function SituationBanner({ loading, summary, stats, score, scoreColor, scoreDelta, drivers, onOpen }) {
+  const count = (id) => summary?.concerns?.find(c => c.id === id)?.count ?? 0
+  const first = (id) => summary?.concerns?.find(c => c.id === id)?.examples?.[0]
+  const cti = count('threat_intel'), exposed = count('exposed_services'), identity = count('identity')
+  const exploitable = count('exploitable'), devices = count('new_devices')
+  const today = exposed + identity
+  const plural = (n, word) => `${fmtNum(n)} ${word}${n === 1 ? '' : 's'}`
+
+  let tone, Icon, headline, detail, cta
+  if (loading || !summary) {
+    tone = 'neutral'; Icon = Shield; headline = 'Assessing your environment…'; detail = ''
+  } else if (cti > 0) {
+    tone = 'critical'; Icon = ShieldAlert
+    headline = `Possible active compromise: ${cti} threat-intel match${cti === 1 ? '' : 'es'}`
+    detail = 'A live threat feed matched something on your network. Isolate the affected hosts and escalate before anything else.'
+    cta = { label: 'Open threat-intel alerts', q: { view: 'threat_intel' } }
+  } else if (today > 0) {
+    tone = 'critical'; Icon = ShieldAlert
+    headline = `${plural(today, 'issue')} need${today === 1 ? 's' : ''} action today`
+    const parts = []
+    if (exposed) parts.push(`${plural(exposed, 'risky service')} opened`)
+    if (identity) parts.push(plural(identity, 'device identity change'))
+    const ex = first(exposed ? 'exposed_services' : 'identity')
+    detail = parts.join(' and ') + (ex
+      ? `. Worst: ${alertLabel(ex)}, ${renderDetail(ex)} on ${ex.asset.hostname || ex.asset.ip}${ex.asset.internet_facing ? ' (internet-facing)' : ''}.`
+      : '.')
+    cta = { label: 'Review now', q: { view: exposed ? 'exposed_services' : 'identity' } }
+  } else if (exploitable > 0) {
+    tone = 'serious'; Icon = ShieldAlert
+    headline = `No live incidents. ${plural(exploitable, 'likely-exploited CVE')} to patch this week`
+    detail = 'These vulnerabilities are being exploited in the wild or sit on internet-facing hosts. Patch them before the general backlog.'
+    cta = { label: 'Open exploitable CVEs', q: { view: 'exploitable' } }
+  } else {
+    tone = 'good'; Icon = ShieldCheck
+    headline = 'Nothing urgent right now'
+    detail = devices > 0
+      ? `${plural(devices, 'new device')} still need an owner. Otherwise, keep scans and SBOMs current.`
+      : 'Keep scans and SBOMs current to stay that way.'
+  }
+
+  const toneCls = {
+    critical: 'border-red-500/50 bg-red-500/[0.07]', serious: 'border-orange-500/40 bg-orange-500/[0.06]',
+    good: 'border-emerald-500/40 bg-emerald-500/[0.05]', neutral: '',
+  }[tone]
+  const iconCls = { critical: 'text-red-400', serious: 'text-orange-400', good: 'text-emerald-400', neutral: 'text-dark-400' }[tone]
+  const net = stats ? (stats.new_7d ?? 0) - (stats.resolved_7d ?? 0) : null
+  const label = score == null ? '' : score >= 80 ? 'Good' : score >= 50 ? 'Fair' : 'Poor'
+
+  return (
+    <div className={`glass-card ${toneCls} p-5 grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-5`}>
+      <div className="flex gap-4 min-w-0">
+        <Icon className={`w-10 h-10 flex-shrink-0 ${iconCls}`} />
+        <div className="min-w-0">
+          <p className="text-xl font-bold text-dark-50 leading-snug">{headline}</p>
+          {detail && <p className="text-sm text-dark-300 mt-1.5 leading-relaxed">{detail}</p>}
+          {cta && (
+            <button onClick={() => onOpen(cta.q)} className="btn-primary text-sm py-1.5 px-3 mt-3 inline-flex items-center gap-1.5">
+              {cta.label} <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:w-[480px]">
+        <Metric label="Posture score" title={drivers?.length ? drivers.map(d => `${d.label}: ${d.impact}`).join('\n') : undefined}
+          value={<span style={{ color: scoreColor }}>{score ?? '—'}<span className="text-sm text-dark-500 font-normal">/100</span></span>}
+          sub={<span className="inline-flex items-center gap-1.5">{label}<Delta value={scoreDelta} goodWhenUp /></span>}>
+          <div className="h-1.5 rounded bg-dark-700 mt-2 overflow-hidden">
+            <div className="h-full rounded" style={{ width: `${score ?? 0}%`, background: scoreColor }} />
+          </div>
+        </Metric>
+        <Metric label="Past SLA" onClick={() => onOpen({ view: 'overdue' })}
+          value={<span className={(stats?.sla_breaches ?? 0) > 0 ? 'text-red-400' : 'text-dark-50'}>{stats ? fmtNum(stats.sla_breaches) : '—'}</span>}
+          sub="critical > 3 days, high > 7 days" />
+        <Metric label="Backlog this week"
+          value={net == null ? '—' : <span className={net > 0 ? 'text-orange-400' : 'text-emerald-400'}>{net > 0 ? '+' : ''}{fmtNum(net)}</span>}
+          sub={stats ? `${fmtNum(stats.new_7d)} new · ${fmtNum(stats.resolved_7d)} closed` : ''} />
+      </div>
+    </div>
+  )
+}
+
+function Metric({ label, value, sub, title, onClick, children }) {
   const Tag = onClick ? 'button' : 'div'
   return (
-    <Tag onClick={onClick} className="stat-card text-left w-full">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-dark-400 text-sm">{label}</span>
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tones[tone]}`}><Icon className="w-4 h-4" /></div>
-      </div>
-      <p className="text-3xl font-bold text-white">{value}</p>
-      <p className="text-xs text-dark-400 mt-1">{sub}</p>
+    <Tag onClick={onClick} title={title}
+      className={`text-left rounded-lg bg-dark-900/50 border border-dark-700/60 px-3 py-2.5 ${onClick ? 'hover:border-eagle-500/40' : ''}`}>
+      <p className="text-[11px] uppercase tracking-wide text-dark-500 font-semibold">{label}</p>
+      <p className="text-2xl font-bold text-dark-50 mt-0.5">{value}</p>
+      <div className="text-[11px] text-dark-400 mt-0.5">{sub}</div>
+      {children}
     </Tag>
+  )
+}
+
+// One ranked action: what, where, why it ranks, what to do, and by when.
+function ActionRow({ a, rank, onClick }) {
+  const guide = playbook(a)
+  return (
+    <li>
+      <button onClick={onClick}
+        className="w-full text-left rounded-lg border border-dark-700 border-l-4 hover:bg-dark-700/20 hover:border-eagle-500/40 px-3 py-3 transition-colors flex gap-3"
+        style={{ borderLeftColor: SEVERITY_COLORS[a.severity] }}>
+        <span className="text-2xl font-bold text-dark-500 w-6 text-center leading-none pt-0.5">{rank}</span>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <PriorityTier score={a.priority_score} />
+            <span className="text-sm text-dark-50 font-semibold">{alertLabel(a)}</span>
+            <span className="font-mono text-xs text-accent-cyan">{renderDetail(a)}</span>
+            <span className="ml-auto"><StatusBadge status={a.status} /></span>
+          </div>
+          <p className="text-xs text-dark-400">
+            on <span className="text-dark-100 font-medium">{a.asset.hostname || a.asset.ip}</span>
+            {a.asset.hostname && a.asset.ip ? <span className="font-mono"> ({a.asset.ip})</span> : ''}
+            <span className="capitalize"> · {a.asset.device_type}</span> · first seen {timeAgo(a.first_seen)}
+            {a.occurrences > 1 ? ` · seen ${a.occurrences}×` : ''}
+          </p>
+          <ReasonChips reasons={riskReasons(a)} />
+          <div className="flex items-start gap-3 rounded bg-dark-900/50 px-2.5 py-1.5">
+            <p className="text-xs text-dark-200 flex-1">
+              <span className="text-eagle-300 font-semibold">Next: </span>{a.recommended_action ? a.recommended_action.split('\n')[0] : guide.text}
+            </p>
+            <DueLabel e={a} />
+          </div>
+        </div>
+      </button>
+    </li>
+  )
+}
+
+// "Which upgrades clear the most CVE alerts": turns a large backlog into a
+// short patch plan.
+function PatchBacklog({ loading, data, onOpen }) {
+  if (!loading && !data?.total) return null
+  const top = data?.packages?.[0]
+  const share = (n) => data?.total ? Math.round((n / data.total) * 100) : 0
+  const maxAlerts = Math.max(1, ...(data?.packages ?? []).map(p => p.alerts))
+  return (
+    <div className="glass-card p-5">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+        <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2">
+          <Wrench className="w-4 h-4 text-eagle-400" /> CVE backlog: patch plan
+        </h3>
+        <button onClick={() => onOpen({ view: 'cve' })} className="text-xs text-eagle-400 hover:underline flex items-center gap-0.5">
+          All CVE alerts <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <p className="text-xs text-dark-500 mb-4">Known vulnerabilities from SBOM scans, grouped by package. Upgrading the top rows clears the most alerts.</p>
+      {loading || !data ? <Skeleton rows={5} /> : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+            <Fact value={fmtNum(data.total)} label={`open CVE alerts on ${data.hosts} host${data.hosts === 1 ? '' : 's'}`} />
+            <Fact value={`${share(data.fixable)}%`} label={`already have a fixed version (${fmtNum(data.fixable)} alerts)`} tone="good" />
+            {top && <Fact value={`${share(top.alerts)}%`} tone="serious"
+              label={<>come from one package: <span className="font-mono text-dark-100">{top.package}</span></>} />}
+          </div>
+          <div className="mb-5">
+            <p className="text-xs text-dark-400 mb-1.5">Backlog by severity (click to filter)</p>
+            <SeverityStack counts={data.by_severity} onSelect={(sev) => onOpen({ view: 'cve', severity: sev })} />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-dark-500 text-left border-b border-dark-700">
+                  <th className="py-2 font-medium">Package</th>
+                  <th className="py-2 font-medium">Installed → upgrade to</th>
+                  <th className="py-2 font-medium text-right">Hosts</th>
+                  <th className="py-2 font-medium pl-4 w-[34%]">Alerts this upgrade clears</th>
+                  <th className="py-2 font-medium text-right">Critical</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.packages.map(p => (
+                  <tr key={p.package} onClick={() => onOpen({ view: 'cve', q: p.package })}
+                    className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer">
+                    <td className="py-2.5 font-mono text-dark-100 whitespace-nowrap">{p.package}
+                      {p.max_epss >= 0.1 && (
+                        <span className="ml-2 font-sans text-[10px] px-1.5 py-0.5 rounded border border-orange-500/30 text-orange-300 bg-orange-500/10">exploited in the wild</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 font-mono text-xs text-dark-300 whitespace-nowrap">
+                      {p.installed.slice(0, 2).join(', ')}{p.installed.length > 2 ? '…' : ''}
+                      {p.upgrade_to && <> <span className="text-dark-500">→</span> <span className="text-emerald-400">≥ {p.upgrade_to}</span></>}
+                    </td>
+                    <td className="py-2.5 text-right tabular-nums text-dark-200">{p.hosts}</td>
+                    <td className="py-2.5 pl-4">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 rounded bg-dark-700/50 overflow-hidden">
+                          <div className="h-full rounded" style={{ width: `${(p.alerts / maxAlerts) * 100}%`, background: '#3393ff' }} />
+                        </div>
+                        <span className="text-xs tabular-nums text-dark-100 w-24 text-right">
+                          {fmtNum(p.alerts)} <span className="text-dark-500">({share(p.alerts)}%)</span>
+                        </span>
+                      </div>
+                    </td>
+                    <td className={`py-2.5 text-right tabular-nums font-semibold ${p.critical ? 'text-red-400' : 'text-dark-500'}`}>{p.critical}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function Fact({ value, label, tone }) {
+  const cls = { good: 'text-emerald-400', serious: 'text-orange-400' }[tone] ?? 'text-dark-50'
+  return (
+    <div className="rounded-lg bg-dark-900/50 border border-dark-700/60 px-4 py-3">
+      <p className={`text-3xl font-bold ${cls}`}>{value}</p>
+      <p className="text-xs text-dark-400 mt-1">{label}</p>
+    </div>
   )
 }
 

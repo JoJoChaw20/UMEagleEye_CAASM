@@ -14,7 +14,8 @@ import { getDb } from '../db/client'
 import { assets, agents, scanResults, sboms, events, advisories } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
-import { RISKY_PORTS } from '../lib/exposure'
+import { RISKY_PORTS, compareVersions } from '../lib/exposure'
+import { CONCERN_IDS, concernCondition, concernCountColumns } from '../lib/concerns'
 import { extractPorts } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -23,6 +24,7 @@ const DAY = 86400000
 const AGENT_STALE_MS = 10 * 60 * 1000   // heartbeat older than this = offline
 const ASSET_STALE_DAYS = 7
 const SEV_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 }
+const PATCH_TOP = 6
 
 app.get('/summary', authMiddleware, async (c) => {
   try {
@@ -33,7 +35,13 @@ app.get('/summary', authMiddleware, async (c) => {
     const assetScope = tenantId ? eq(assets.tenantId, tenantId) : undefined
     const now = Date.now()
 
-    const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows] = await Promise.all([
+    const openScope = and(assetScope, isOpenEvent())
+    const sevCount = (sev: string) => sql<number>`count(*) filter (where ${events.severity} = ${sev})::int`
+    const isCve = eq(events.eventType, 'cve_detected')
+    const pkgName = sql<string>`${events.details}->>'package_name'`
+
+    const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows,
+           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows] = await Promise.all([
       db.select({ agentId: agents.agentId, name: agents.name, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
         .from(agents).where(tenantId ? eq(agents.tenantId, tenantId) : undefined),
       db.select({
@@ -71,6 +79,57 @@ app.get('/summary', authMiddleware, async (c) => {
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(assetScope, isOpenEvent(), eq(events.eventType, 'config_change'),
           sql`${events.details}->>'changed_attribute' IN ('mac_address','hostname')`)),
+      db.select(concernCountColumns)
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(openScope),
+      // Top 3 examples per concern, highest priority first
+      Promise.all(CONCERN_IDS.map(id => db.select({
+          eventId: events.eventId, eventType: events.eventType, severity: events.severity, details: events.details,
+          firstSeen: events.firstSeen, hostname: assets.hostname, ip: assets.ipAddress,
+          internetFacing: assets.isInternetFacing, criticality: assets.criticalityScore,
+        })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(openScope, concernCondition(id)))
+        .orderBy(desc(priorityExpr), desc(events.lastSeen)).limit(3))),
+      // CVE backlog shape
+      db.select({
+          total: sql<number>`count(*)::int`,
+          fixable: sql<number>`count(*) filter (where jsonb_typeof(${events.details}->'fix_versions') = 'array'
+            and jsonb_array_length(${events.details}->'fix_versions') > 0)::int`,
+          critical: sevCount('critical'), high: sevCount('high'), medium: sevCount('medium'), low: sevCount('low'),
+          hosts: sql<number>`count(distinct ${events.assetId})::int`,
+        })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(and(openScope, isCve)),
+      // Packages behind the most open CVEs
+      db.select({
+          pkg: pkgName,
+          alerts: sql<number>`count(*)::int`,
+          hosts: sql<number>`count(distinct ${events.assetId})::int`,
+          critical: sevCount('critical'), high: sevCount('high'),
+          maxEpss: sql<number>`max(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number'
+            THEN (${events.details}->>'epss_score')::float ELSE 0 END)`,
+          installed: sql<string[]>`(array_agg(distinct ${events.details}->>'package_version'))[1:4]`,
+          fixes: sql<string[]>`array_remove(array_agg(distinct CASE WHEN jsonb_typeof(${events.details}->'fix_versions') = 'array'
+            THEN ${events.details}->'fix_versions'->>(jsonb_array_length(${events.details}->'fix_versions') - 1) END), NULL)`,
+        })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(openScope, isCve, sql`${pkgName} IS NOT NULL`))
+        .groupBy(pkgName)
+        .orderBy(desc(sql`count(*)`)).limit(PATCH_TOP),
+      // Assets carrying the most risk: worst single alert, plus a dampened
+      // bonus for volume so a host with dozens of criticals still ranks
+      db.select({
+          assetId: assets.assetId, hostname: assets.hostname, ip: assets.ipAddress, deviceType: assets.deviceType,
+          internetFacing: assets.isInternetFacing, criticality: assets.criticalityScore,
+          open: sql<number>`count(*)::int`,
+          critical: sevCount('critical'), high: sevCount('high'), medium: sevCount('medium'), low: sevCount('low'),
+          topPriority: sql<number>`max(${priorityExpr})`,
+          nonCve: sql<number>`count(*) filter (where ${events.eventType} <> 'cve_detected')::int`,
+        })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(openScope)
+        .groupBy(assets.assetId)
+        .orderBy(desc(sql`max(${priorityExpr}) + 10 * ln(1 + ${sevCount('critical')}) + 3 * ln(1 + ${sevCount('high')})`))
+        .limit(6),
     ])
 
     // ── Collection health ──────────────────────────────────────────
@@ -175,6 +234,45 @@ app.get('/summary', authMiddleware, async (c) => {
 
     const listOf = <T,>(rows: T[], map: (r: T) => unknown) => ({ count: rows.length, items: rows.slice(0, 8).map(map) })
 
+    // ── Concerns, patch backlog, at-risk assets ────────────────────
+    const counts = (concernCounts[0] ?? {}) as Record<string, number>
+    const concerns = CONCERN_IDS.map((id, i) => ({
+      id,
+      count: counts[id] ?? 0,
+      examples: concernTops[i]!.map(r => ({
+        event_id: r.eventId, event_type: r.eventType, severity: r.severity, details: r.details, first_seen: r.firstSeen,
+        asset: { hostname: r.hostname, ip: r.ip, internet_facing: r.internetFacing, criticality: r.criticality },
+      })),
+    }))
+
+    const cve = cveTotals[0]
+    // Highest fix version per package = the upgrade target that clears all its
+    // CVEs. Prefer stable releases; fall back to a pre-release only if that's all.
+    const PRERELEASE = /(rc|alpha|beta|dev|pre)|\d(a|b)\d/i
+    const highest = (vs: string[]) => {
+      const all = vs.filter(Boolean)
+      const stable = all.filter(v => !PRERELEASE.test(v))
+      return (stable.length ? stable : all).sort(compareVersions).at(-1) ?? null
+    }
+    const patch_backlog = {
+      total: cve?.total ?? 0,
+      fixable: cve?.fixable ?? 0,
+      hosts: cve?.hosts ?? 0,
+      by_severity: { critical: cve?.critical ?? 0, high: cve?.high ?? 0, medium: cve?.medium ?? 0, low: cve?.low ?? 0 },
+      packages: pkgRows.map(p => ({
+        package: p.pkg, alerts: p.alerts, hosts: p.hosts, critical: p.critical, high: p.high,
+        max_epss: p.maxEpss, installed: (p.installed ?? []).filter(Boolean), upgrade_to: highest(p.fixes ?? []),
+      })),
+    }
+
+    const risky_assets = riskyAssetRows.map(a => ({
+      asset_id: a.assetId, hostname: a.hostname, ip: a.ip, device_type: a.deviceType,
+      internet_facing: a.internetFacing, criticality: a.criticality, open: a.open,
+      by_severity: { critical: a.critical, high: a.high, medium: a.medium, low: a.low },
+      top_priority: a.topPriority != null ? Number(a.topPriority) : null,
+      non_cve: a.nonCve,
+    }))
+
     return c.json({
       generated_at: new Date(now).toISOString(),
       collection: {
@@ -186,6 +284,9 @@ app.get('/summary', authMiddleware, async (c) => {
         recent_failures:   recentFailures.map(s => ({ scan_id: s.scanId, scan_type: s.scanType, subnet: s.subnet, reason: s.failureReason, started_at: s.startedAt })),
       },
       priority_actions,
+      concerns,
+      patch_backlog,
+      risky_assets,
       attack_surface: {
         risky_services: [...risky.values()]
           .sort((x, y) => y.internet_facing - x.internet_facing || y.hosts.length - x.hosts.length)

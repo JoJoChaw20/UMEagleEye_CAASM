@@ -1,5 +1,6 @@
 // Shared alert vocabulary for the Dashboard and Alerts pages: labels, detail
 // rendering, status badges and the junior-analyst playbook.
+import { Crosshair, Radio, Fingerprint, Bug, MonitorSmartphone } from 'lucide-react'
 
 export const SEVERITY_COLORS = {
   critical: '#ff5252',
@@ -69,14 +70,100 @@ export function renderDetail(e) {
   return d.changed_attribute ?? '—'
 }
 
+// The alert categories to look at before the general backlog. Ids and meaning
+// must match workers/src/lib/concerns.ts — the backend does the counting.
+export const CONCERNS = [
+  {
+    id: 'threat_intel', title: 'Threat-intel matches', icon: Crosshair, tone: 'critical',
+    why: 'A live threat feed flagged something on your asset. Possible active compromise.',
+    action: 'Isolate and escalate now',
+  },
+  {
+    id: 'exposed_services', title: 'Risky services opened', icon: Radio, tone: 'critical',
+    why: 'Newly opened ports attackers scan for first (SMB, RDP, databases…), or a host newly reachable from the internet.',
+    action: 'Close or firewall within 24h',
+  },
+  {
+    id: 'identity', title: 'Device identity changed', icon: Fingerprint, tone: 'serious',
+    why: 'Same IP now answers with a different MAC or hostname. Spoofing, or an unrecorded hardware swap.',
+    action: 'Verify within 24h',
+  },
+  {
+    id: 'exploitable', title: 'Likely-exploited CVEs', icon: Bug, tone: 'serious',
+    why: '≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
+    action: 'Patch within 72h',
+  },
+  {
+    id: 'new_devices', title: 'Unclaimed new devices', icon: MonitorSmartphone, tone: 'warning',
+    why: 'Devices that joined the network and nobody has confirmed yet.',
+    action: 'Find the owner or isolate',
+  },
+]
+
+export const TONE = {
+  critical: { text: 'text-red-400',    bg: 'bg-red-500/10',    border: 'border-red-500/40',    bar: '#ff5252' },
+  serious:  { text: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/40', bar: '#ff9800' },
+  warning:  { text: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', bar: '#ffc400' },
+  good:     { text: 'text-emerald-400', bg: 'bg-emerald-500/5', border: 'border-dark-700/50',  bar: '#00e676' },
+}
+
+// Priority score (backend lib/priority.ts) → a tier a human can act on.
+// ≥100 needs internet exposure, a critical asset or a threat-intel hit on top
+// of a severe finding, so P1 stays rare.
+export function priorityTier(score) {
+  if (score == null) return null
+  if (score >= 100) return { tier: 'P1', label: 'Urgent',   cls: 'bg-red-500/20 text-red-300 border-red-500/50' }
+  if (score >= 75)  return { tier: 'P2', label: 'High',     cls: 'bg-orange-500/15 text-orange-300 border-orange-500/40' }
+  if (score >= 45)  return { tier: 'P3', label: 'Normal',   cls: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30' }
+  return              { tier: 'P4', label: 'Low',      cls: 'bg-dark-700 text-dark-300 border-dark-600' }
+}
+
+// The facts that pushed an alert up the queue, as short chips. `e` may be a
+// queue row (asset_* fields) or a dashboard item (nested asset).
+export function riskReasons(e) {
+  const d = e.details ?? {}
+  const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
+  const crit = e.asset_criticality ?? e.asset?.criticality
+  const out = []
+  if (e.event_type === 'cti_match' || d.has_cti_match) out.push({ label: 'Threat intel hit', tone: 'critical' })
+  if (exposed) out.push({ label: 'Internet-facing', tone: 'critical' })
+  if (d.port != null && RISKY_PORTS[d.port]) out.push({ label: `${RISKY_PORTS[d.port]} is a common attack target`, tone: 'serious' })
+  if (d.epss_score >= 0.1) out.push({ label: `${Math.round(d.epss_score * 100)}% exploit chance`, tone: 'serious' })
+  if (d.cvss_base_score >= 9) out.push({ label: `CVSS ${d.cvss_base_score}`, tone: 'serious' })
+  if (crit >= 8) out.push({ label: `Critical asset ${crit}/10`, tone: 'serious' })
+  if (Array.isArray(d.fix_versions) && d.fix_versions.length) out.push({ label: 'Fix available', tone: 'good' })
+  return out
+}
+
+// Deadline from the playbook urgency, measured from first_seen.
+export function dueInfo(e) {
+  const hours = playbook(e).hours
+  if (hours == null || !e.first_seen) return null
+  if (hours === 0) return { label: 'Act now', overdue: true }
+  const left = new Date(e.first_seen).getTime() + hours * 3600000 - Date.now()
+  const fmt = (ms) => {
+    const h = Math.abs(ms) / 3600000
+    return h < 48 ? `${Math.max(1, Math.round(h))}h` : `${Math.round(h / 24)}d`
+  }
+  return left < 0 ? { label: `Overdue ${fmt(left)}`, overdue: true } : { label: `Due in ${fmt(left)}`, overdue: false }
+}
+
 export const DRIFT_TYPES = new Set([
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'config_change', 'new_package', 'removed_package',
 ])
 
+// Response window per playbook urgency, in hours (0 = immediately)
+const URGENCY_HOURS = { 'Now': 0, '≤24h': 24, '≤72h': 72, '≤3d': 72, 'Patch cycle': 720, 'Review': 168 }
+
 // First step for a junior analyst, per alert kind. Static on purpose: fast,
 // consistent, and available even when no AI advisory has been generated.
 export function playbook(e) {
+  const p = basePlaybook(e)
+  return { ...p, hours: URGENCY_HOURS[p.urgency] ?? null }
+}
+
+function basePlaybook(e) {
   const d = e.details ?? {}
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
   if (e.event_type === 'cti_match' || d.has_cti_match) {

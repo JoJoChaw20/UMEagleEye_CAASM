@@ -21,6 +21,7 @@ import {
 import { buildBaseline, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
+import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -39,6 +40,33 @@ const DRIFT_TYPES = new Set([
 
 // Response-time targets for open alerts, by severity (hours).
 const SLA_HOURS = { critical: 72, high: 168 } as const
+
+// How long an alert has been open, by first_seen. Bucket edges line up with the
+// SLA targets so a severity × age grid shows overdue work as whole cells.
+const AGE_BUCKETS = [
+  { id: 'lt1d',  minH: 0,   maxH: 24 },
+  { id: 'd1_3',  minH: 24,  maxH: 72 },
+  { id: 'd3_7',  minH: 72,  maxH: 168 },
+  { id: 'd7_30', minH: 168, maxH: 720 },
+  { id: 'gt30',  minH: 720, maxH: null },
+] as const
+
+function ageCondition(id: string | undefined, now: number) {
+  const b = AGE_BUCKETS.find(x => x.id === id)
+  if (!b) return undefined
+  return and(
+    sql`${events.firstSeen} <= ${new Date(now - b.minH * 3600000)}`,
+    b.maxH != null ? sql`${events.firstSeen} > ${new Date(now - b.maxH * 3600000)}` : undefined,
+  )
+}
+
+// Open critical/high alerts older than their SLA target
+function overdueCondition(now: number) {
+  return or(
+    and(eq(events.severity, 'critical'), sql`${events.firstSeen} < ${new Date(now - SLA_HOURS.critical * 3600000)}`),
+    and(eq(events.severity, 'high'), sql`${events.firstSeen} < ${new Date(now - SLA_HOURS.high * 3600000)}`),
+  )
+}
 
 type User = { userId: string; role: string; tenantId?: string }
 
@@ -64,7 +92,8 @@ function statusCondition(raw: string | undefined) {
 // ── GET / ────────────────────────────────────────────────────────
 // Query: page, page_size, status, severity (csv), event_type, asset_id,
 //        assigned_to (me|unassigned|<uuid>), internet_facing=true,
-//        device_type, q (host/IP/CVE/package), since (ISO), sort (priority|time)
+//        device_type, q (host/IP/CVE/package), since (ISO), sort (priority|time),
+//        concern (see lib/concerns), age (lt1d|d1_3|d3_7|d7_30|gt30), overdue=true
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user') as User
@@ -81,6 +110,8 @@ app.get('/', authMiddleware, async (c) => {
     const assignedTo = q('assigned_to')
     const search     = q('q')?.trim()
     const since      = q('since') ? new Date(q('since')!) : null
+    const concern    = q('concern')
+    const now        = Date.now()
 
     const conditions = [
       tenantId ? eq(assets.tenantId, tenantId) : undefined,
@@ -91,6 +122,9 @@ app.get('/', authMiddleware, async (c) => {
       q('internet_facing') === 'true' ? eq(assets.isInternetFacing, true) : undefined,
       q('device_type') ? eq(assets.deviceType, q('device_type') as typeof assets.$inferSelect['deviceType']) : undefined,
       since && !isNaN(since.getTime()) ? gte(events.firstSeen, since) : undefined,
+      isConcernId(concern) ? concernCondition(concern) : undefined,
+      ageCondition(q('age'), now),
+      q('overdue') === 'true' ? and(isOpenEvent(), overdueCondition(now)) : undefined,
       assignedTo === 'me' ? eq(events.assignedTo, user.userId)
         : assignedTo === 'unassigned' ? isNull(events.assignedTo)
         : assignedTo && z.string().uuid().safeParse(assignedTo).success ? eq(events.assignedTo, assignedTo)
@@ -225,12 +259,16 @@ app.get('/stats/summary', authMiddleware, async (c) => {
     const now     = Date.now()
     const days7   = new Date(now - 7 * 86400000)
     const days30  = new Date(now - 30 * 86400000)
-    const critSla = new Date(now - SLA_HOURS.critical * 3600000)
-    const highSla = new Date(now - SLA_HOURS.high * 3600000)
+    const ageCase = sql.join([
+      sql`CASE`,
+      ...AGE_BUCKETS.filter(b => b.maxH != null).map(b =>
+        sql`WHEN ${events.firstSeen} > ${new Date(now - b.maxH! * 3600000)} THEN ${b.id}`),
+      sql`ELSE 'gt30' END`,
+    ], sql` `)
 
     const [
       byStatus, bySeverity, byType, avgRisk, newCount, resolvedCount,
-      mttr, recent30, slaBreaches, dailyNew, dailyResolved,
+      mttr, recent30, slaBreaches, dailyNew, dailyResolved, agingRows, concernRows,
     ] = await Promise.all([
       db.select({ status: events.status, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
@@ -255,10 +293,7 @@ app.get('/stats/summary', authMiddleware, async (c) => {
         })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, gte(events.firstSeen, days30))),
-      base().where(and(tenantCond, isOpenEvent(), or(
-        and(eq(events.severity, 'critical'), sql`${events.firstSeen} < ${critSla}`),
-        and(eq(events.severity, 'high'), sql`${events.firstSeen} < ${highSla}`),
-      ))),
+      base().where(and(tenantCond, isOpenEvent(), overdueCondition(now))),
       db.select({ day: sql<string>`date_trunc('day', ${events.firstSeen})::date::text`, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, gte(events.firstSeen, days7)))
@@ -267,6 +302,13 @@ app.get('/stats/summary', authMiddleware, async (c) => {
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, inArray(events.status, CLOSED_STATUSES), gte(events.resolvedAt, days7)))
         .groupBy(sql`date_trunc('day', ${events.resolvedAt})`),
+      db.select({ severity: events.severity, bucket: sql<string>`${ageCase}`, count: sql<number>`count(*)::int` })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(tenantCond, isOpenEvent()))
+        .groupBy(events.severity, sql`2`),
+      db.select(concernCountColumns)
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(tenantCond, isOpenEvent())),
     ])
 
     const by_status: Record<string, number> = { open: 0, in_progress: 0, resolved: 0, false_positive: 0, accepted_risk: 0 }
@@ -285,6 +327,11 @@ app.get('/stats/summary', authMiddleware, async (c) => {
       const key = new Date(now - i * 86400000).toISOString().slice(0, 10)
       daily_trend.push({ date: key.slice(5), count: newMap[key] ?? 0, new: newMap[key] ?? 0, resolved: resMap[key] ?? 0 })
     }
+
+    // aging[severity][bucket] = open alerts of that severity first seen in that window
+    const aging: Record<string, Record<string, number>> = {}
+    for (const sev of SEVERITY_VALUES) aging[sev] = Object.fromEntries(AGE_BUCKETS.map(b => [b.id, 0]))
+    for (const r of agingRows) aging[r.severity]![r.bucket] = r.count
 
     const total30  = recent30[0]?.total ?? 0
     const closed30 = recent30[0]?.closed ?? 0
@@ -305,6 +352,9 @@ app.get('/stats/summary', authMiddleware, async (c) => {
       sla_hours:        SLA_HOURS,
       resolution_rate:  total30 > 0 ? Math.round((closed30 / total30) * 100) : 100,
       daily_trend,
+      aging,
+      age_buckets:      AGE_BUCKETS,
+      concerns:         concernRows[0] ?? null,
     })
   } catch (err) {
     console.error('events GET stats/summary error:', err)

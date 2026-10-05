@@ -228,3 +228,9 @@ html.light .btn-primary {
 html.light .nav-link:hover {
   color: rgb(var(--dark-100));
 }
+/* Pale status text is tuned for dark surfaces; darken it on white so severity,
+   priority and urgency labels stay readable */
+html.light .text-red-300, html.light .text-red-400 { color: #c81e1e; }
+html.light .text-orange-300, html.light .text-orange-400 { color: #c2410c; }
+html.light .text-yellow-300, html.light .text-yellow-400 { color: #a16207; }
+html.light .text-emerald-300, html.light .text-emerald-400 { color: #047857; }
