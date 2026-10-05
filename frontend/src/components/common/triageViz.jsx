@@ -2,7 +2,7 @@
 // here carries a meaning (severity or urgency) and is always paired with a text
 // label, so nothing is readable by color alone.
 import { ChevronRight, Clock, CheckCircle2, Globe } from 'lucide-react'
-import { SEVERITY_COLORS, TONE, priorityTier, dueInfo, alertLabel, renderDetail } from './alertMeta'
+import { SEVERITY_COLORS, TONE, CONCERNS, priorityTier, dueInfo, alertLabel, renderDetail } from './alertMeta'
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low']
 const cap = (s) => s[0].toUpperCase() + s.slice(1)
@@ -82,6 +82,36 @@ export function ConcernCard({ meta, count, examples = [], loading, onOpen, activ
         </span>
       )}
     </button>
+  )
+}
+
+// Compact one-row version of the concern cards, used as quick filters on the
+// Alerts page (the Dashboard carries the full explanations).
+export function ConcernFilterBar({ counts, loading, active, onPick }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-dark-500 mr-1">Quick filters</span>
+      {CONCERNS.map(meta => {
+        const Icon = meta.icon
+        const n = counts?.[meta.id] ?? 0
+        const clear = !loading && n === 0
+        const t = TONE[meta.tone]
+        const on = active === meta.id
+        return (
+          <button key={meta.id} type="button" onClick={() => onPick(meta.id)} title={`${meta.why} ${meta.action}.`}
+            aria-pressed={on}
+            className={`inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg border text-[13px] transition-colors
+              ${on ? 'border-eagle-500 bg-eagle-500/10 text-dark-50' : 'border-dark-700 bg-dark-800/60 text-dark-200 hover:border-dark-500'}`}>
+            <Icon className={`w-4 h-4 ${clear ? 'text-emerald-400' : t.text}`} />
+            {meta.short ?? meta.title}
+            <span className={`text-xs font-bold tabular-nums px-1.5 py-0.5 rounded min-w-[1.75rem] text-center
+              ${clear ? 'bg-dark-700/60 text-dark-400' : `${t.bg} ${t.text}`}`}>
+              {loading ? '…' : fmtNum(n)}
+            </span>
+          </button>
+        )
+      })}
+    </div>
   )
 }
 

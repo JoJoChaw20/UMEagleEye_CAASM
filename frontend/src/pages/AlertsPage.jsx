@@ -16,7 +16,7 @@ import {
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons,
 } from '../components/common/alertMeta'
 import {
-  ConcernCard, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
+  ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
 } from '../components/common/triageViz'
 
 const PAGE_SIZE = 20
@@ -234,7 +234,7 @@ export default function AlertsPage() {
         <div>
           <h1 className="text-2xl font-bold text-dark-50">Alerts</h1>
           <p className="text-dark-400 text-sm mt-1">
-            Start with the categories at the top, then work the queue from P1 down
+            {stats ? `${fmtNum(stats.open_total)} open. ` : ''}Pick a quick filter or work the queue from P1 down
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -248,21 +248,9 @@ export default function AlertsPage() {
         </div>
       </div>
 
-      {/* ── Start here: concern categories ── */}
-      <section>
-        <div className="flex items-baseline gap-3 flex-wrap mb-3">
-          <h2 className="text-base font-semibold text-dark-100">Start here</h2>
-          <span className="text-xs text-dark-500">
-            {stats ? <>{fmtNum(stats.open_total)} open alerts in total. These categories are the ones attackers use first. Click one to filter the queue.</> : 'Loading…'}
-          </span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-          {CONCERNS.map(meta => (
-            <ConcernCard key={meta.id} meta={meta} loading={!stats} count={stats?.concerns?.[meta.id] ?? 0}
-              active={view === meta.id} onOpen={() => pickView(view === meta.id ? 'open' : meta.id)} />
-          ))}
-        </div>
-      </section>
+      {/* ── Quick filters (the dashboard explains each category) ── */}
+      <ConcernFilterBar counts={stats?.concerns} loading={!stats} active={view}
+        onPick={(id) => pickView(view === id ? 'open' : id)} />
 
       {/* ── Backlog shape ── */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">

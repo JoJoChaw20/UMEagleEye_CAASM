@@ -295,6 +295,8 @@ app.get('/summary', authMiddleware, async (c) => {
           .sort((x, y) => (SEV_RANK[y.worst_open_severity ?? ''] ?? 0) - (SEV_RANK[x.worst_open_severity ?? ''] ?? 0))
           .slice(0, 10),
         internet_facing_total: internetFacing.length,
+        internet_facing_risky: internetFacing.filter(a => a.ports.some(p => RISKY_PORTS[p])).length,
+        internet_facing_inferred: internetFacing.filter(a => !a.confirmed).length,
         device_mix: deviceMix,
         top_os: [...osCounts.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6).map(([name, count]) => ({ name, count })),
         network_devices: networkDevices.slice(0, 12),

@@ -10,13 +10,11 @@ import client from '../api/client'
 import TenantSelector from '../components/common/TenantSelector'
 import {
   SevBadge, StatusBadge, alertLabel, renderDetail, playbook, timeAgo, CHART_TOOLTIP_STYLE,
-  CONCERNS, riskReasons, SEVERITY_COLORS,
+  CONCERNS, riskReasons, SEVERITY_COLORS, RISKY_PORTS,
 } from '../components/common/alertMeta'
 import {
   ConcernCard, SeverityStack, ReasonChips, PriorityTier, DueLabel, fmtNum,
 } from '../components/common/triageViz'
-
-const DEVICE_COLORS = { server: '#3393ff', workstation: '#22d3ee', network: '#a78bfa', iot: '#f59e0b', unknown: '#6b7280' }
 
 export default function DashboardPage() {
   const navigate = useNavigate()
@@ -180,146 +178,171 @@ export default function DashboardPage() {
       <PatchBacklog loading={loading} data={summary?.patch_backlog} onOpen={openAlerts} />
 
       {/* ── Attack surface ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Panel icon={Radio} title="Exposed risky services" hint="from latest active scans">
-          {loading ? <Skeleton rows={4} /> : surface?.risky_services?.length ? (
-            <table className="w-full text-xs">
-              <thead><tr className="text-dark-500 text-left"><th className="py-1 font-medium">Service</th><th className="font-medium">Hosts</th><th className="font-medium">Internet</th></tr></thead>
-              <tbody>
+      <section>
+        <SectionTitle title="Attack surface" hint="What an attacker can reach, from the latest scans. Click a row to see its alerts." />
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="glass-card p-5 xl:col-span-2">
+            <PanelHead icon={Globe} title="Internet-facing assets" sub="Reachable from outside your network, so they get attacked first." />
+            {loading ? <Skeleton rows={5} /> : surface?.internet_facing?.length ? (
+              <>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <SummaryPill value={surface.internet_facing_total} label="reachable from the internet" />
+                  <SummaryPill value={surface.internet_facing_risky ?? 0} label="expose a risky service" tone={surface.internet_facing_risky ? 'bad' : 'ok'} />
+                  <SummaryPill value={surface.internet_facing_inferred ?? 0} label="inferred, not confirmed" tone="muted"
+                    title="Inferred from the agent's default gateway. Confirm or correct the exposure in Assets." />
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-dark-500 text-left border-b border-dark-700">
+                        <th className="py-2 font-medium">Asset</th>
+                        <th className="py-2 font-medium">Open ports</th>
+                        <th className="py-2 font-medium">Open alerts</th>
+                        <th className="py-2 font-medium text-right">Exposure</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surface.internet_facing.map(a => (
+                        <tr key={a.asset_id} onClick={() => openAlerts({ q: a.ip })}
+                          className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer align-top">
+                          <td className="py-2.5 pr-3">
+                            <p className="text-dark-100 font-medium">{a.hostname || a.ip}</p>
+                            <p className="text-[11px] text-dark-500"><span className="capitalize">{a.device_type}</span>{a.hostname ? <span className="font-mono"> · {a.ip}</span> : ''}</p>
+                          </td>
+                          <td className="py-2.5 pr-3"><PortChips ports={a.ports} /></td>
+                          <td className="py-2.5 pr-3 whitespace-nowrap">
+                            {a.open_alerts > 0
+                              ? <span className="inline-flex items-center gap-2"><SevBadge sev={a.worst_open_severity} /><span className="text-xs text-dark-300">{a.open_alerts} open</span></span>
+                              : <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5" />None</span>}
+                          </td>
+                          <td className="py-2.5 text-right">
+                            <span className={`text-[11px] px-2 py-0.5 rounded-full border whitespace-nowrap ${a.confirmed ? 'border-eagle-500/40 text-eagle-300' : 'border-dark-600 text-dark-400'}`}
+                              title={a.confirmed ? 'Confirmed by an analyst' : "Inferred from the agent's gateway"}>
+                              {a.confirmed ? 'Confirmed' : 'Inferred'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {surface.internet_facing_total > surface.internet_facing.length && (
+                  <Link to="/assets" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+                    {surface.internet_facing_total - surface.internet_facing.length} more in Assets <ChevronRight className="w-3.5 h-3.5" />
+                  </Link>
+                )}
+              </>
+            ) : <Empty text="No internet-facing assets identified." />}
+          </div>
+
+          <div className="glass-card p-5">
+            <PanelHead icon={Radio} title="Risky services on the network" sub="Services attackers scan for first. Each should have a reason to be open." />
+            {loading ? <Skeleton rows={5} /> : surface?.risky_services?.length ? (
+              <ul className="divide-y divide-dark-700/50">
                 {surface.risky_services.slice(0, 8).map(r => (
-                  <tr key={r.port} className="border-t border-dark-700/50 hover:bg-dark-700/20 cursor-pointer"
-                    title={r.hosts.map(h => h.hostname || h.ip).join(', ')}
-                    onClick={() => r.hosts.length === 1 ? openAlerts({ q: r.hosts[0].ip }) : openAlerts({ view: 'exposed_services' })}>
-                    <td className="py-1.5 text-dark-200">{r.service} <span className="text-dark-500 font-mono">{r.port}</span></td>
-                    <td className="text-dark-200">{r.host_count}</td>
-                    <td className={r.internet_facing ? 'text-accent-red font-semibold' : 'text-dark-500'}>{r.internet_facing || '—'}</td>
-                  </tr>
+                  <li key={r.port}>
+                    <button onClick={() => r.hosts.length === 1 ? openAlerts({ q: r.hosts[0].ip }) : openAlerts({ view: 'exposed_services' })}
+                      title={r.hosts.map(h => h.hostname || h.ip).join(', ')}
+                      className="w-full text-left flex items-center gap-3 py-2.5 hover:bg-dark-700/20 rounded px-1">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-dark-100 font-medium">{r.service} <span className="font-mono text-xs text-dark-500">port {r.port}</span></p>
+                        <p className="text-[11px] text-dark-500">on {r.host_count} host{r.host_count === 1 ? '' : 's'}</p>
+                      </div>
+                      {r.internet_facing > 0
+                        ? <span className="text-[11px] px-2 py-0.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-300 whitespace-nowrap">{r.internet_facing} internet-facing</span>
+                        : <span className="text-[11px] text-dark-500 whitespace-nowrap">internal only</span>}
+                    </button>
+                  </li>
                 ))}
-              </tbody>
-            </table>
-          ) : <Empty text="No risky services (Telnet, SMB, RDP, databases…) seen in scans." />}
-        </Panel>
+              </ul>
+            ) : <Empty text="No risky services (Telnet, SMB, RDP, databases…) seen in scans." />}
+          </div>
+        </div>
+      </section>
 
-        <Panel icon={Globe} title={`Internet-facing assets (${surface?.internet_facing_total ?? 0})`} hint="edge devices get attacked first">
-          {loading ? <Skeleton rows={4} /> : surface?.internet_facing?.length ? (
-            <ul className="space-y-1.5">
-              {surface.internet_facing.map(a => (
-                <li key={a.asset_id}>
-                  <button onClick={() => openAlerts({ q: a.ip })} className="w-full text-left flex items-center gap-2 text-xs hover:bg-dark-700/20 rounded px-1 py-0.5">
-                    <span className="text-dark-200 truncate">{a.hostname || a.ip}</span>
-                    {!a.confirmed && <span className="text-[10px] text-dark-500" title="Inferred from the agent's gateway — confirm in Assets">inferred</span>}
-                    <span className="font-mono text-dark-500 truncate">{a.ports.slice(0, 5).join(',')}{a.ports.length > 5 ? '…' : ''}</span>
-                    <span className="ml-auto">{a.worst_open_severity ? <SevBadge sev={a.worst_open_severity} /> : <span className="text-dark-500">clean</span>}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : <Empty text="No internet-facing assets identified." />}
-        </Panel>
+      {/* ── Network devices + asset mix ── */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="glass-card p-5 xl:col-span-2">
+          <PanelHead icon={Network} title="Network devices" sub="Routers, switches and firewalls. Their firmware is checked over SNMPv3." />
+          {loading ? <Skeleton rows={5} /> : surface?.network_devices?.length ? (
+            <NetworkDevices surface={surface} onOpen={openAlerts} />
+          ) : <Empty text="No routers or switches identified yet." />}
+        </div>
 
-        <Panel icon={Server} title="Asset mix" hint={`${Object.values(surface?.device_mix ?? {}).reduce((s, n) => s + n, 0)} assets`}>
-          {loading ? <Skeleton rows={4} /> : surface ? (
-            <div className="space-y-2">
-              {Object.entries(surface.device_mix).map(([type, n]) => {
+        <div className="glass-card p-5">
+          <PanelHead icon={Server} title="Asset mix" sub={`${fmtNum(Object.values(surface?.device_mix ?? {}).reduce((s, n) => s + n, 0))} assets by type`} />
+          {loading ? <Skeleton rows={5} /> : surface ? (
+            <div className="space-y-3">
+              {Object.entries(surface.device_mix).sort((x, y) => y[1] - x[1]).map(([type, n]) => {
                 const totalAssets = Object.values(surface.device_mix).reduce((s, x) => s + x, 0) || 1
                 return (
-                  <div key={type} className="text-xs">
-                    <div className="flex justify-between text-dark-300 mb-0.5">
-                      <span className="capitalize">{type}</span><span className="font-mono">{n}</span>
+                  <div key={type}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="capitalize text-dark-200">{type === 'iot' ? 'IoT' : type}</span>
+                      <span className="tabular-nums text-dark-100 font-semibold">{n}</span>
                     </div>
-                    <div className="h-1.5 rounded bg-dark-700 overflow-hidden">
-                      <div className="h-full rounded" style={{ width: `${(n / totalAssets) * 100}%`, background: DEVICE_COLORS[type] }} />
+                    <div className="h-2 rounded bg-dark-700/50 overflow-hidden">
+                      <div className="h-full rounded" style={{ width: `${(n / totalAssets) * 100}%`, background: '#3393ff' }} />
                     </div>
                   </div>
                 )
               })}
-              {surface.top_os?.length > 0 && (
-                <p className="text-[11px] text-dark-500 pt-1">
-                  Top OS: {surface.top_os.slice(0, 3).map(o => `${o.name} (${o.count})`).join(' · ')}
+              {surface.device_mix.unknown > 0 && (
+                <p className="text-xs text-dark-400 pt-1">
+                  {surface.device_mix.unknown} unknown device{surface.device_mix.unknown === 1 ? '' : 's'} can't be risk-scored properly. Label them in <Link to="/assets" className="text-eagle-400 hover:underline">Assets</Link>.
                 </p>
               )}
             </div>
           ) : null}
-        </Panel>
+        </div>
       </div>
 
-      {/* ── Network devices + trend ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Panel icon={Network} title={`Network devices (${surface?.network_devices_total ?? 0})`}
-          hint={surface?.network_devices_unmanaged ? `${surface.network_devices_unmanaged} not answering SNMP` : 'model & firmware via SNMPv3'}>
-          {loading ? <Skeleton rows={4} /> : surface?.network_devices?.length ? (
-            <ul className="space-y-2">
-              {surface.network_devices.map(n => (
-                <li key={n.asset_id} className="text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="text-dark-200">{n.hostname || n.ip}</span>
-                    <span className="font-mono text-dark-500">{n.hostname ? n.ip : ''}</span>
-                    {n.open_alerts > 0 && <span className="ml-auto text-accent-amber">{n.open_alerts} open</span>}
-                  </div>
-                  <p className={`truncate ${n.snmp_managed ? 'text-dark-400' : 'text-dark-500 italic'}`} title={n.snmp_sysdescr ?? ''}>
-                    {n.snmp_managed ? `${n.snmp_sysdescr}${n.interfaces ? ` · ${n.interfaces} ifaces` : ''}` : `No SNMP response${n.vendor ? ` · ${n.vendor}` : ''} — can't verify firmware`}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          ) : <Empty text="No routers or switches identified yet." />}
-        </Panel>
-
-        <div className="glass-card p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-eagle-400" /> Posture score trend
-            </h3>
-            <span className="text-xs text-dark-400">Last 30 days · open alerts at each day's end</span>
-          </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={trendData}>
-              <defs>
-                <linearGradient id="scoreGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3393ff" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3393ff" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-              <XAxis dataKey="day" tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <YAxis domain={[0, 100]} tick={{ fill: '#7b7f87', fontSize: 11 }} axisLine={{ stroke: '#1e2028' }} />
-              <Tooltip contentStyle={CHART_TOOLTIP_STYLE}
-                formatter={(v, name) => [v, name === 'score' ? 'Score' : 'Open critical']} />
-              <Area type="monotone" dataKey="score" stroke="#3393ff" fill="url(#scoreGradient)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+      {/* ── Trend ── */}
+      <div className="glass-card p-5">
+        <PanelHead icon={TrendingUp} title="Posture score, last 30 days" sub="Recalculated at the end of each day from open critical and high alerts. Higher is better." />
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={trendData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+            <defs>
+              <linearGradient id="scoreGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#3393ff" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#3393ff" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid vertical={false} stroke="rgb(var(--dark-700))" />
+            <XAxis dataKey="day" tick={{ fill: 'rgb(var(--dark-400))', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={24} />
+            <YAxis domain={[0, 100]} ticks={[0, 50, 80, 100]} tick={{ fill: 'rgb(var(--dark-400))', fontSize: 11 }} axisLine={false} tickLine={false} />
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v, name) => [v, name === 'score' ? 'Posture score' : 'Open critical']} />
+            <Area type="monotone" dataKey="score" stroke="#3393ff" fill="url(#scoreGradient)" strokeWidth={2} />
+          </AreaChart>
+        </ResponsiveContainer>
       </div>
 
       {/* ── Hygiene work queues ── */}
-      <div>
-        <h3 className="text-sm font-semibold text-dark-200 mb-3">Hygiene — things that quietly weaken coverage</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <HygieneCard icon={Fingerprint} title="New devices (7d)" data={hygiene?.new_devices_7d} loading={loading}
-            advice="Confirm each has an owner. Unclaimed after 24h → isolate."
-            render={a => <>{a.hostname || a.ip}<span className="text-dark-500"> · {a.vendor ?? 'unknown vendor'}</span></>}
+      <section>
+        <SectionTitle title="Coverage gaps" hint="Not attacks, but each one hides attacks from you. Clear them so the numbers above stay true." />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <HygieneCard icon={Fingerprint} title="New devices this week" data={hygiene?.new_devices_7d} loading={loading}
+            why="Joined the network in the last 7 days."
+            action="Confirm an owner; isolate if unclaimed after 24h"
+            row={a => [a.hostname || a.ip, a.vendor ?? 'Unknown vendor']}
             onClick={() => openAlerts({ view: 'new_devices' })} />
-          <HygieneCard icon={HelpCircle} title="Unidentified" data={hygiene?.unidentified} loading={loading}
-            advice="No type, vendor or hostname. Label them so risk is scored correctly."
-            render={a => <>{a.ip}<span className="text-dark-500"> · {a.mac ?? 'no MAC'}</span></>}
+          <HygieneCard icon={HelpCircle} title="Unidentified devices" data={hygiene?.unidentified} loading={loading}
+            why="No type, vendor or hostname, so their risk can't be scored."
+            action="Label them in Assets"
+            row={a => [a.ip, a.mac ?? 'No MAC']}
             to="/assets" />
-          <HygieneCard icon={Clock} title={`Not seen in ${hygiene?.stale_after_days ?? 7}d`} data={hygiene?.stale_assets} loading={loading}
-            advice="Decommissioned, moved, or outside scan coverage. Verify or retire."
-            render={a => <>{a.hostname || a.ip}<span className="text-dark-500"> · {a.last_scanned ? timeAgo(a.last_scanned) : 'never scanned'}</span></>}
+          <HygieneCard icon={Clock} title={`Not seen in ${hygiene?.stale_after_days ?? 7} days`} data={hygiene?.stale_assets} loading={loading}
+            why="No scan has reached them recently. Moved, retired, or out of coverage."
+            action="Verify, then retire or fix scan coverage"
+            row={a => [a.hostname || a.ip, a.last_scanned ? `last seen ${timeAgo(a.last_scanned)}` : 'never scanned']}
             to="/assets" />
-          <HygieneCard icon={PackageSearch} title="Servers/PCs without SBOM" data={hygiene?.no_sbom} loading={loading}
-            advice="CVE detection is blind on these hosts until an SBOM scan runs."
-            render={a => <>{a.hostname || a.ip}<span className="text-dark-500 capitalize"> · {a.device_type}</span></>}
+          <HygieneCard icon={PackageSearch} title="Servers & PCs without SBOM" data={hygiene?.no_sbom} loading={loading}
+            why="No software inventory, so their CVEs are invisible."
+            action="Run an SBOM scan on them"
+            row={a => [a.hostname || a.ip, a.device_type]}
             to="/sbom" />
         </div>
-        {hygiene?.identity_changes_open > 0 && (
-          <button onClick={() => openAlerts({ view: 'identity' })}
-            className="mt-3 text-xs text-accent-amber hover:underline inline-flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            {hygiene.identity_changes_open} open MAC/hostname change{hygiene.identity_changes_open === 1 ? '' : 's'} — possible spoofing or hardware swap. Review →
-          </button>
-        )}
-      </div>
+      </section>
     </div>
   )
 }
@@ -583,36 +606,143 @@ function Fact({ value, label, tone }) {
   )
 }
 
-function Panel({ icon: Icon, title, hint, children }) {
+function PanelHead({ icon: Icon, title, sub }) {
   return (
-    <div className="glass-card p-5">
-      <div className="flex items-baseline justify-between gap-2 mb-3">
-        <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2"><Icon className="w-4 h-4 text-eagle-400" />{title}</h3>
-        {hint && <span className="text-[11px] text-dark-500 text-right">{hint}</span>}
-      </div>
-      {children}
+    <div className="mb-4">
+      <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2"><Icon className="w-4 h-4 text-eagle-400" />{title}</h3>
+      {sub && <p className="text-xs text-dark-500 mt-1">{sub}</p>}
     </div>
   )
 }
 
-function HygieneCard({ icon: Icon, title, data, loading, advice, render, onClick, to }) {
-  const count = data?.count ?? 0
-  const body = (
+function SummaryPill({ value, label, tone, title }) {
+  const cls = {
+    bad:   'border-red-500/40 bg-red-500/10 text-red-300',
+    ok:    'border-emerald-500/30 bg-emerald-500/5 text-emerald-300',
+    muted: 'border-dark-600 text-dark-300',
+  }[tone] ?? 'border-dark-600 bg-dark-900/50 text-dark-100'
+  return (
+    <span title={title} className={`inline-flex items-baseline gap-1.5 text-xs px-2.5 py-1 rounded-full border ${cls}`}>
+      <span className="text-sm font-bold tabular-nums">{fmtNum(value)}</span>{label}
+    </span>
+  )
+}
+
+// Open ports as chips; commonly attacked services are named and highlighted.
+function PortChips({ ports, max = 6 }) {
+  if (!ports?.length) return <span className="text-xs text-dark-500">none seen</span>
+  const sorted = [...ports].sort((a, b) => (RISKY_PORTS[b] ? 1 : 0) - (RISKY_PORTS[a] ? 1 : 0) || a - b)
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {sorted.slice(0, max).map(p => RISKY_PORTS[p]
+        ? <span key={p} className="text-[11px] px-1.5 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-300 whitespace-nowrap">{RISKY_PORTS[p]} {p}</span>
+        : <span key={p} className="text-[11px] px-1.5 py-0.5 rounded border border-dark-600 text-dark-300 font-mono">{p}</span>)}
+      {sorted.length > max && <span className="text-[11px] text-dark-500 self-center">+{sorted.length - max}</span>}
+    </span>
+  )
+}
+
+function NetworkDevices({ surface, onOpen }) {
+  const total = surface.network_devices_total
+  const unmanaged = surface.network_devices_unmanaged
+  const managed = total - unmanaged
+  const shown = surface.network_devices.slice(0, 8)
+  return (
     <>
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-sm text-dark-200 flex items-center gap-1.5"><Icon className="w-4 h-4 text-dark-400" />{title}</span>
-        <span className={`text-xl font-bold ${count > 0 ? 'text-accent-amber' : 'text-dark-500'}`}>{loading ? '…' : count}</span>
+      <div className="rounded-lg bg-dark-900/50 border border-dark-700/60 p-3 mb-4">
+        <div className="flex items-baseline justify-between gap-3 flex-wrap mb-2">
+          <p className="text-sm text-dark-100">
+            <span className="font-bold text-emerald-400">{managed}</span> of {total} verified over SNMP
+            {unmanaged > 0 && <span className="text-dark-400"> · <span className="font-semibold text-dark-200">{unmanaged}</span> unverified</span>}
+          </p>
+        </div>
+        <div className="flex h-2 gap-[2px] rounded overflow-hidden bg-dark-700/40">
+          {managed > 0 && <span className="block h-full" style={{ width: `${(managed / total) * 100}%`, background: '#00e676' }} />}
+          {unmanaged > 0 && <span className="block h-full bg-dark-500" style={{ width: `${(unmanaged / total) * 100}%` }} />}
+        </div>
+        {unmanaged > 0 && (
+          <p className="text-xs text-dark-400 mt-2">
+            Unverified devices didn't answer SNMP, so their model and firmware can't be checked for known vulnerabilities. Enable SNMPv3 on them.
+          </p>
+        )}
       </div>
-      <p className="text-[11px] text-dark-500 mb-2">{advice}</p>
-      {count > 0 && (
-        <ul className="space-y-0.5">
-          {data.items.slice(0, 4).map((a, i) => <li key={a.asset_id ?? i} className="text-xs text-dark-300 truncate">{render(a)}</li>)}
-          {count > 4 && <li className="text-xs text-eagle-400">+{count - 4} more →</li>}
-        </ul>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-dark-500 text-left border-b border-dark-700">
+              <th className="py-2 font-medium">Device</th>
+              <th className="py-2 font-medium">Vendor / model</th>
+              <th className="py-2 font-medium">Firmware check</th>
+              <th className="py-2 font-medium text-right">Open alerts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map(n => (
+              <tr key={n.asset_id} onClick={() => onOpen({ q: n.ip })} className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer">
+                <td className="py-2.5 pr-3 max-w-[220px]">
+                  <p className="text-dark-100 font-medium truncate" title={n.hostname || n.ip}>{n.hostname || n.ip}</p>
+                  {n.hostname && <p className="text-[11px] text-dark-500 font-mono">{n.ip}</p>}
+                </td>
+                <td className="py-2.5 pr-3 max-w-[260px]">
+                  <p className={`text-xs truncate ${n.snmp_managed || n.vendor ? 'text-dark-300' : 'text-dark-500'}`} title={n.snmp_sysdescr ?? n.vendor ?? ''}>
+                    {n.snmp_managed ? n.snmp_sysdescr : (n.vendor ?? 'Unknown vendor')}
+                  </p>
+                  {n.snmp_managed && n.interfaces > 0 && <p className="text-[11px] text-dark-500">{n.interfaces} interfaces</p>}
+                </td>
+                <td className="py-2.5 pr-3">
+                  {n.snmp_managed
+                    ? <span className="text-[11px] px-2 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 inline-flex items-center gap-1 whitespace-nowrap"><ShieldCheck className="w-3 h-3" />Verified</span>
+                    : <span className="text-[11px] px-2 py-0.5 rounded-full border border-dark-600 text-dark-400 whitespace-nowrap">No SNMP</span>}
+                </td>
+                <td className={`py-2.5 text-right tabular-nums ${n.open_alerts ? 'text-orange-400 font-semibold' : 'text-dark-500'}`}>{n.open_alerts || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {total > shown.length && (
+        <Link to="/assets" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+          {total - shown.length} more in Assets <ChevronRight className="w-3.5 h-3.5" />
+        </Link>
       )}
     </>
   )
-  const cls = 'glass-card p-4 block text-left w-full hover:border-eagle-500/40 transition-colors'
+}
+
+function HygieneCard({ icon: Icon, title, data, loading, why, action, row, onClick, to }) {
+  const count = data?.count ?? 0
+  const clear = !loading && count === 0
+  const body = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-dark-100 flex items-center gap-2"><Icon className="w-4 h-4 text-dark-400 flex-shrink-0" />{title}</p>
+          <p className="text-xs text-dark-400 mt-1">{why}</p>
+        </div>
+        <span className={`text-3xl font-bold leading-none ${clear ? 'text-dark-500' : 'text-yellow-400'}`}>{loading ? '…' : fmtNum(count)}</span>
+      </div>
+      {clear ? (
+        <p className="text-xs text-emerald-400 mt-4 inline-flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5" />Nothing to do</p>
+      ) : !loading && (
+        <>
+          <ul className="mt-4 divide-y divide-dark-700/50 border-y border-dark-700/50">
+            {data.items.slice(0, 3).map((a, i) => {
+              const [primary, secondary] = row(a)
+              return (
+                <li key={a.asset_id ?? i} className="flex items-center justify-between gap-3 py-1.5 text-xs">
+                  <span className="text-dark-200 truncate" title={primary}>{primary}</span>
+                  <span className="text-dark-500 truncate text-right first-letter:uppercase" title={secondary}>{secondary}</span>
+                </li>
+              )
+            })}
+          </ul>
+          <p className="text-xs text-dark-300 mt-3"><span className="text-eagle-300 font-semibold">Do: </span>{action}</p>
+          <span className="text-xs text-eagle-400 inline-flex items-center gap-0.5 mt-2">View all {fmtNum(count)} <ChevronRight className="w-3.5 h-3.5" /></span>
+        </>
+      )}
+    </>
+  )
+  const cls = 'glass-card p-5 flex flex-col text-left w-full hover:border-eagle-500/40 transition-colors'
   if (to) return <Link to={to} className={cls}>{body}</Link>
   return <button onClick={onClick} className={cls}>{body}</button>
 }

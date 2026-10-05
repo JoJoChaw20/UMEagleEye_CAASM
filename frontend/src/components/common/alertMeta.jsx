@@ -74,27 +74,27 @@ export function renderDetail(e) {
 // must match workers/src/lib/concerns.ts — the backend does the counting.
 export const CONCERNS = [
   {
-    id: 'threat_intel', title: 'Threat-intel matches', icon: Crosshair, tone: 'critical',
+    id: 'threat_intel', title: 'Threat-intel matches', short: 'Threat intel', icon: Crosshair, tone: 'critical',
     why: 'A live threat feed flagged something on your asset. Possible active compromise.',
     action: 'Isolate and escalate now',
   },
   {
-    id: 'exposed_services', title: 'Risky services opened', icon: Radio, tone: 'critical',
+    id: 'exposed_services', title: 'Risky services opened', short: 'Risky services', icon: Radio, tone: 'critical',
     why: 'Newly opened ports attackers scan for first (SMB, RDP, databases…), or a host newly reachable from the internet.',
     action: 'Close or firewall within 24h',
   },
   {
-    id: 'identity', title: 'Device identity changed', icon: Fingerprint, tone: 'serious',
+    id: 'identity', title: 'Device identity changed', short: 'Identity changes', icon: Fingerprint, tone: 'serious',
     why: 'Same IP now answers with a different MAC or hostname. Spoofing, or an unrecorded hardware swap.',
     action: 'Verify within 24h',
   },
   {
-    id: 'exploitable', title: 'Likely-exploited CVEs', icon: Bug, tone: 'serious',
+    id: 'exploitable', title: 'Likely-exploited CVEs', short: 'Exploitable CVEs', icon: Bug, tone: 'serious',
     why: '≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
     action: 'Patch within 72h',
   },
   {
-    id: 'new_devices', title: 'Unclaimed new devices', icon: MonitorSmartphone, tone: 'warning',
+    id: 'new_devices', title: 'Unclaimed new devices', short: 'New devices', icon: MonitorSmartphone, tone: 'warning',
     why: 'Devices that joined the network and nobody has confirmed yet.',
     action: 'Find the owner or isolate',
   },
