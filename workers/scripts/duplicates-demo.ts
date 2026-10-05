@@ -16,7 +16,7 @@ function check(label: string, actual: unknown, expected: unknown) {
 let seq = 0
 const A = (over: Partial<DupAsset>): DupAsset => ({
   assetId: over.assetId ?? `a${seq++}`, hostname: null, ipAddress: '0.0.0.0', macAddress: null,
-  source: 'scan_active', deviceType: 'workstation', lastScanned: '2026-01-01', createdAt: '2026-01-01',
+  source: 'scan_active', inMyAssets: false, deviceType: 'workstation', lastScanned: '2026-01-01', createdAt: '2026-01-01',
   hostKey: null, ...over,
 })
 const AD = (assetId: string, mac: string | null, net: string | null, ip: string): DupAddress => ({
@@ -29,10 +29,11 @@ const VMWARE = '00:50:56:c0:00:08'   // VMware shared/virtual
 
 console.log('=== findDuplicateGroups ===')
 
-// (a) 4 assets, same GLOBAL MAC, 4 different networks, one manual → SAFE, manual survivor.
+// (a) 4 assets, same GLOBAL MAC, 4 different networks, one in My Assets → SAFE,
+//     the My Assets member is the suggested survivor.
 {
   const assets = [
-    A({ assetId: 'm', source: 'manual', ipAddress: '10.0.0.10' }),
+    A({ assetId: 'm', source: 'manual', inMyAssets: true, ipAddress: '10.0.0.10' }),
     A({ assetId: 's1', ipAddress: '10.1.0.10' }),
     A({ assetId: 's2', ipAddress: '10.2.0.10' }),
     A({ assetId: 's3', ipAddress: '10.3.0.10' }),
@@ -47,7 +48,7 @@ console.log('=== findDuplicateGroups ===')
   check('(a) one group', g.length, 1)
   check('(a) confidence safe', g[0]?.confidence, 'safe')
   check('(a) 4 assets', g[0]?.assets.length, 4)
-  check('(a) survivor = manual', g[0]?.suggestedSurvivorId, 'm')
+  check('(a) survivor = My Assets member', g[0]?.suggestedSurvivorId, 'm')
 }
 
 // (b) two assets, same LOCAL MAC, same /24 → SAFE.
@@ -120,8 +121,8 @@ console.log('\n=== planMerge ===')
 // (h) merge plan: duplicate survivor edge dropped, survivor<->loser self-loop dropped,
 //     remaining edge remapped, and loser current address at same (net,ip) ended first.
 {
-  const survivor: MergeAsset = { assetId: 'S', tenantId: 't', hostname: 'srv', ipAddress: '10.0.0.5', macAddress: GLOBAL, hostKey: null, owner: null, deviceType: 'server', hardwareVendor: null, osInfo: { a: 1 }, criticalityScore: 5, baselineState: null, isInternetFacing: false, source: 'scan_active', lastScanned: '2026-01-01', createdAt: '2026-01-01' }
-  const loser: MergeAsset = { assetId: 'L', tenantId: 't', hostname: null, ipAddress: '10.0.0.5', macAddress: LOCAL, hostKey: null, owner: 'bob', deviceType: 'unknown', hardwareVendor: null, osInfo: { b: 2 }, criticalityScore: 7, baselineState: null, isInternetFacing: true, source: 'manual', lastScanned: '2026-06-01', createdAt: '2025-12-01' }
+  const survivor: MergeAsset = { assetId: 'S', tenantId: 't', hostname: 'srv', ipAddress: '10.0.0.5', macAddress: GLOBAL, hostKey: null, owner: null, deviceType: 'server', hardwareVendor: null, osInfo: { a: 1 }, criticalityScore: 5, baselineState: null, isInternetFacing: false, source: 'scan_active', inMyAssets: false, lastScanned: '2026-01-01', createdAt: '2026-01-01' }
+  const loser: MergeAsset = { assetId: 'L', tenantId: 't', hostname: null, ipAddress: '10.0.0.5', macAddress: LOCAL, hostKey: null, owner: 'bob', deviceType: 'unknown', hardwareVendor: null, osInfo: { b: 2 }, criticalityScore: 7, baselineState: null, isInternetFacing: true, source: 'manual', inMyAssets: true, lastScanned: '2026-06-01', createdAt: '2025-12-01' }
   const related: MergeRelated = {
     addresses: [
       { addressId: 'sa', assetId: 'S', networkKey: '10.0.0.0/24', ipAddress: '10.0.0.5', endedAt: null, lastSeen: '2026-01-01', firstSeen: '2026-01-01' },
@@ -149,7 +150,9 @@ console.log('\n=== planMerge ===')
   check('(h) deletes losers last', plan.ops[plan.ops.length - 1]?.k, 'deleteAssets')
 
   // (i) field merge outcomes.
-  check('(i) source manual if any', plan.mergedFields.source, 'manual')
+  // source = latest-scanned non-manual (loser is manual+newest, survivor scan_active) → scan_active.
+  check('(i) source = latest non-manual', plan.mergedFields.source, 'scan_active')
+  check('(i) inMyAssets OR (loser was a member)', plan.mergedFields.inMyAssets, true)
   check('(i) hostname coalesce (survivor non-empty wins)', plan.mergedFields.hostname, 'srv')
   check('(i) latest ip from newest last_scanned (loser)', plan.mergedFields.ipAddress, '10.0.0.5')
   check('(i) latest mac from newest last_scanned (loser)', plan.mergedFields.macAddress, LOCAL)
@@ -164,7 +167,7 @@ console.log('\n=== planMerge: keep exactly ONE current address ===')
   const mAsset = (id: string, over: Partial<MergeAsset> = {}): MergeAsset => ({
     assetId: id, tenantId: 't', hostname: null, ipAddress: '0.0.0.0', macAddress: null, hostKey: null,
     owner: null, deviceType: 'workstation', hardwareVendor: null, osInfo: {}, criticalityScore: 1,
-    baselineState: null, isInternetFacing: false, source: 'scan_active', lastScanned: '2026-01-01', createdAt: '2026-01-01', ...over,
+    baselineState: null, isInternetFacing: false, source: 'scan_active', inMyAssets: false, lastScanned: '2026-01-01', createdAt: '2026-01-01', ...over,
   })
   const mAddr = (o: Partial<import('../src/lib/merge').MergeAddress> & { addressId: string; assetId: string }): import('../src/lib/merge').MergeAddress => ({
     networkKey: null, ipAddress: '0.0.0.0', endedAt: null, lastSeen: '2026-01-01', firstSeen: '2026-01-01', ...o,

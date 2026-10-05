@@ -86,7 +86,13 @@ export const assets = pgTable('assets', {
   criticalityScore: smallint('criticality_score').notNull().default(5),
   baselineState: jsonb('baseline_state'),
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
+  // source = the LAST observation method only (manual = created by hand/CSV and
+  // never scanned since). My Assets membership is a separate flag below.
   source: assetSourceEnum('source').notNull().default('manual'),
+  // My Assets membership: true = tracked in the user's inventory + relationship
+  // graph. Decoupled from source so "remove from My Assets" never loses how the
+  // asset was last observed, and a rescan can't flip membership.
+  inMyAssets: boolean('in_my_assets').notNull().default(false),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
@@ -96,6 +102,8 @@ export const assets = pgTable('assets', {
   index('idx_assets_ip_tenant').on(t.tenantId, t.ipAddress),
   index('idx_assets_tenant').on(t.tenantId),
   index('idx_assets_host_key').on(t.tenantId, t.hostKey),
+  // Partial index for My Assets list/graph filters (eq in_my_assets = true).
+  index('idx_assets_in_my_assets').on(t.tenantId).where(sql`in_my_assets`),
 ])
 
 // ─── Table 3b: Asset Addresses (device/address split) ───────────

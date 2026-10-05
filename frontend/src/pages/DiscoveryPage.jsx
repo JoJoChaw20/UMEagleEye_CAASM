@@ -606,9 +606,9 @@ export default function DiscoveryPage() {
   const [selectedScan, setSelectedScan] = useState(null)
   const [error, setError] = useState(null)
   const [inventoriedIps, setInventoriedIps] = useState(new Set())   // all known assets (by IP)
-  const [myAssetIps, setMyAssetIps] = useState(new Set())           // manual assets (by IP)
+  const [myAssetIps, setMyAssetIps] = useState(new Set())           // My Assets members (by IP)
   const [inventoriedMacs, setInventoriedMacs] = useState(new Set()) // all known assets (by normalized MAC)
-  const [myAssetMacs, setMyAssetMacs] = useState(new Set())         // manual assets (by normalized MAC)
+  const [myAssetMacs, setMyAssetMacs] = useState(new Set())         // My Assets members (by normalized MAC)
   const intervalRef = useRef(null)
   const [statusFilter, setStatusFilter] = useState('')
   const [scanTypeFilter, setScanTypeFilter] = useState('')
@@ -623,7 +623,7 @@ export default function DiscoveryPage() {
         client.get('/scans', { params: scanParams }),
         client.get('/agents'),
         client.get('/assets', { params: { limit: 200 } }),
-        client.get('/assets', { params: { source: 'manual', limit: 200 } }),
+        client.get('/assets', { params: { in_my_assets: true, limit: 200 } }),
         client.get('/tenants').catch(() => ({ data: { tenants: [] } })),
       ])
       setScans(scansRes.data.scans || scansRes.data.items || [])

@@ -917,7 +917,7 @@ Example:
           deviceType: resolvedDeviceType,
           isInternetFacing: p.internetFacing,
           criticalityScore: crit,
-          source: existing?.source === 'manual' ? 'manual' : (p.isPassive ? 'scan_passive' : 'scan_active'),
+          source: p.isPassive ? 'scan_passive' : 'scan_active',
           lastScanned: new Date(), updatedAt: new Date(),
           ...(existing?.baselineState ? {} : { baselineState: baselineForUpdate }),
         }).where(eq(assets.assetId, resolution.assetId))
@@ -929,7 +929,7 @@ Example:
       const crit = computeCriticality({ deviceType: p.deviceType, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }).score
       const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: p.deviceType, autoSet: true })
       const now = new Date()
-      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', lastScanned: now, createdAt: now, updatedAt: now }
+      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
       const addressValues = { assetId: newAssetId, tenantId: tenantId ?? null, networkKey, ipAddress: p.ip, macAddress: mac, firstSeen: now, lastSeen: now }
       if (resolution.endAddressId) {
         await db.batch([

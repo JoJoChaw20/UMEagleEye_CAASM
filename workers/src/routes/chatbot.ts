@@ -66,7 +66,7 @@ async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
   const [totalAssetCnt, myAssetCnt, advisoryCnt, ctiCnt] = await Promise.all([
     db.select({ count: sql<number>`count(*)::int` }).from(assets).where(af),
     db.select({ count: sql<number>`count(*)::int` }).from(assets)
-      .where(af ? and(af, eq(assets.source, 'manual')) : eq(assets.source, 'manual')),
+      .where(af ? and(af, eq(assets.inMyAssets, true)) : eq(assets.inMyAssets, true)),
     db.select({ count: sql<number>`count(*)::int` }).from(advisories)
       .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress'))),
     db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators),

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, Search, Trash2, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, GitBranch } from 'lucide-react'
+import { Plus, Search, MinusCircle, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, GitBranch } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
@@ -518,13 +518,12 @@ export default function MyAssetsPage() {
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [graphBlastId, setGraphBlastId] = useState(null)
   const isReadOnly = ['business_owner', 'superadmin'].includes(user?.role)
-  const canDelete = user?.role === 'tenant_superadmin'
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const params = { source: 'manual', page, page_size: PAGE_SIZE }
+      const params = { in_my_assets: true, page, page_size: PAGE_SIZE }
       if (search) params.search = search
       if (deviceTypeFilter) params.device_type = deviceTypeFilter
       if (tenantFilter) params.tenant_id = tenantFilter
@@ -586,13 +585,18 @@ export default function MyAssetsPage() {
     }
   }
 
-  const handleDelete = async (assetId) => {
-    if (!confirm('Delete this asset permanently?')) return
+  const handleRemove = async (assetId) => {
+    if (!confirm(
+      'Remove this asset from My Assets?\n\n' +
+      '• It stays in All Assets with its history, owner and criticality.\n' +
+      '• It will be hidden from the relationship graph.\n' +
+      '• You can add it back at any time.'
+    )) return
     try {
-      await client.delete(`/assets/${assetId}`)
-      setAssets(prev => prev.filter(a => a.assetId !== assetId))
+      await client.patch(`/assets/${assetId}`, { in_my_assets: false })
+      await loadAssets()
     } catch (err) {
-      alert(err?.response?.data?.detail || 'Failed to delete asset')
+      alert(err?.response?.data?.detail || 'Failed to remove asset')
     }
   }
 
@@ -793,13 +797,13 @@ export default function MyAssetsPage() {
                               <Bookmark className="w-4 h-4" />
                             </button>
                           )}
-                          {canDelete && (
+                          {!isReadOnly && (
                             <button
-                              onClick={() => handleDelete(a.assetId)}
+                              onClick={() => handleRemove(a.assetId)}
                               className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                              title="Delete Asset"
+                              title="Remove from My Assets"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <MinusCircle className="w-4 h-4" />
                             </button>
                           )}
                         </div>

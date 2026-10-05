@@ -23,6 +23,7 @@ export interface MergeAsset {
   baselineState: Record<string, unknown> | null
   isInternetFacing: boolean
   source: string
+  inMyAssets: boolean
   lastScanned: string | Date | null
   createdAt: string | Date | null
 }
@@ -108,7 +109,15 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
       : (all.find(a => a.deviceType && a.deviceType !== 'unknown')?.deviceType ?? survivor.deviceType),
     osInfo: mergedOsInfo,
     baselineState: survivor.baselineState ?? all.find(a => a.baselineState != null)?.baselineState ?? null,
-    source: all.some(a => a.source === 'manual') ? 'manual' : survivor.source,
+    // source = the latest-scanned asset's observation method. 'manual' only when
+    // EVERY merged asset is manual (never scanned); otherwise fall back to the
+    // most-recently-scanned non-manual source (byLatest keeps the survivor first on ties).
+    source: all.every(a => a.source === 'manual')
+      ? 'manual'
+      : (byLatest.find(a => a.source !== 'manual')?.source ?? survivor.source),
+    // Membership is the OR of survivor + losers: if any was in My Assets, the
+    // merged device stays in My Assets.
+    inMyAssets: all.some(a => a.inMyAssets),
     isInternetFacing: all.some(a => a.isInternetFacing),
     criticalityScore: Math.max(...all.map(a => a.criticalityScore ?? 0)),
     lastScanned: byLatest.map(a => a.lastScanned).find(v => v != null) ?? null,
@@ -229,6 +238,6 @@ function loserSnapshot(a: MergeAsset): Record<string, unknown> {
     mac_address: a.macAddress, host_key: a.hostKey, owner: a.owner, device_type: a.deviceType,
     hardware_vendor: a.hardwareVendor, os_info: a.osInfo, criticality_score: a.criticalityScore,
     baseline_state: a.baselineState, is_internet_facing: a.isInternetFacing, source: a.source,
-    last_scanned: a.lastScanned, created_at: a.createdAt,
+    in_my_assets: a.inMyAssets, last_scanned: a.lastScanned, created_at: a.createdAt,
   }
 }

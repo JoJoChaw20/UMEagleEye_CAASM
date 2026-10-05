@@ -97,6 +97,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     const hostname = c.req.query('hostname')
     const search = c.req.query('search')
     const source = c.req.query('source')
+    const inMyAssetsParam = c.req.query('in_my_assets')
     const tenant_id_param = c.req.query('tenant_id')
 
     const conditions = []
@@ -127,8 +128,15 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       if (searchCondition) conditions.push(searchCondition)
     }
 
-    if (source && ['manual', 'scan_active', 'scan_passive'].includes(source)) {
-      conditions.push(eq(assets.source, source as 'manual' | 'scan_active' | 'scan_passive'))
+    // My Assets membership filter (new canonical param).
+    if (inMyAssetsParam === 'true') conditions.push(eq(assets.inMyAssets, true))
+    else if (inMyAssetsParam === 'false') conditions.push(eq(assets.inMyAssets, false))
+
+    // `source` filters by the LAST observation method only (manual = hand/CSV and
+    // never scanned since). This is NOT My Assets membership — use in_my_assets for
+    // that. Unknown values are ignored (no filter), matching prior behavior.
+    if (source === 'manual' || source === 'scan_active' || source === 'scan_passive') {
+      conditions.push(eq(assets.source, source))
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
@@ -162,7 +170,7 @@ app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) =>
 
     const assetRows = await db.select({
       assetId: assets.assetId, hostname: assets.hostname, ipAddress: assets.ipAddress, macAddress: assets.macAddress,
-      source: assets.source, deviceType: assets.deviceType, lastScanned: assets.lastScanned, createdAt: assets.createdAt, hostKey: assets.hostKey,
+      source: assets.source, inMyAssets: assets.inMyAssets, deviceType: assets.deviceType, lastScanned: assets.lastScanned, createdAt: assets.createdAt, hostKey: assets.hostKey,
     }).from(assets).where(tCond)
 
     const ids = assetRows.map(a => a.assetId)
@@ -398,9 +406,10 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       : computeAssetCriticality({ deviceType, isInternetFacing, hostname, owner: body.owner ?? existing?.owner, osInfo })
 
     if (existing) {
-      // Promote to manual and update provided fields
+      // Adopt into My Assets. Leave `source` (last observation method) untouched —
+      // a scanned asset keeps showing scan_active/scan_passive after being adopted.
       const updateData: Record<string, unknown> = {
-        source: body.source ?? 'manual',
+        inMyAssets: true,
         criticalityScore: computedScore,
         updatedAt: new Date(),
       }
@@ -436,6 +445,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         criticalityScore: computedScore,
         isInternetFacing,
         source: body.source ?? 'manual',
+        inMyAssets: true,              // created by hand → a My Assets member
         tenantId: targetTenantId,
       })
       .returning()
@@ -462,6 +472,7 @@ const updateAssetSchema = z.object({
   criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
   source: z.enum(['manual', 'scan_active', 'scan_passive']).optional(),
+  in_my_assets: z.boolean().optional(),
 })
 
 app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', updateAssetSchema), async (c) => {
@@ -495,6 +506,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     if (body.os_info !== undefined) updateData.osInfo = body.os_info
     if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
     if (body.source !== undefined) updateData.source = body.source
+    if (body.in_my_assets !== undefined) updateData.inMyAssets = body.in_my_assets
 
     // Recompute criticality unless caller explicitly sets it
     if (body.criticality_score !== undefined) {
@@ -530,6 +542,18 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
         tenantId: existing.tenantId,
         ip: updated.ipAddress,
         mac: updated.macAddress ?? null,
+      })
+    }
+
+    // Audit My Assets add/remove (one row, only when the flag actually changes).
+    if (body.in_my_assets !== undefined && body.in_my_assets !== existing.inMyAssets) {
+      await db.insert(auditLogs).values({
+        userId: user.userId,
+        tenantId: existing.tenantId,
+        actionType: body.in_my_assets ? 'asset.my_assets_add' : 'asset.my_assets_remove',
+        targetEntity: assetId,
+        previousState: { in_my_assets: existing.inMyAssets },
+        newState: { in_my_assets: body.in_my_assets },
       })
     }
 
@@ -826,6 +850,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           ...(Object.keys(r.osInfo).length > 0 ? { osInfo: r.osInfo } : {}),
           criticalityScore: r.criticalityScore,
           isInternetFacing: r.isInternetFacing,
+          inMyAssets: true,          // adopt the matched asset; leave source alone
           ...(targetTenantId ? { tenantId: targetTenantId } : {}),
           ipAddress: r.ipAddress,
           updatedAt: now,
@@ -847,7 +872,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           stmts.push(db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, decision.endAddressId)))
           const w = workAddrs.find(x => !x.ended && x.addressId === decision.endAddressId); if (w) w.ended = true
         }
-        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, isInternetFacing: r.isInternetFacing, source: 'manual' as const, tenantId: targetTenantId }))
+        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, isInternetFacing: r.isInternetFacing, source: 'manual' as const, inMyAssets: true, tenantId: targetTenantId }))
         const nid = crypto.randomUUID()
         stmts.push(db.insert(assetAddresses).values({ addressId: nid, assetId: newAssetId, tenantId: targetTenantId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, firstSeen: now, lastSeen: now }))
         workAddrs.unshift({ addressId: nid, assetId: newAssetId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, assetDeviceType: r.deviceType, ended: false })

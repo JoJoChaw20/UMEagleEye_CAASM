@@ -337,7 +337,7 @@ router.post(
         const tenantAssets = await db.select().from(assets).where(
           and(
             eq(assets.tenantId, tenant.tenantId),
-            eq(assets.source, 'manual')
+            eq(assets.inMyAssets, true)
           )
         )
         const count = await inferForTenant(db, tenantAssets, tenant.tenantId)
@@ -350,7 +350,7 @@ router.post(
       const tenantAssets = await db.select().from(assets).where(
         and(
           eq(assets.tenantId, user.tenantId!),
-          eq(assets.source, 'manual')
+          eq(assets.inMyAssets, true)
         )
       )
       totalNodes = await inferForTenant(db, tenantAssets, user.tenantId!)

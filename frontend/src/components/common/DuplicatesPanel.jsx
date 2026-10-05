@@ -151,7 +151,7 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged 
                         <td className="px-2 py-1.5 text-dark-100">{a.hostname || <span className="text-dark-500">—</span>}</td>
                         <td className="px-2 py-1.5 font-mono text-accent-cyan">{a.ipAddress}</td>
                         <td className="px-2 py-1.5 font-mono text-dark-300">{a.macAddress || '—'}</td>
-                        <td className="px-2 py-1.5">{a.source === 'manual'
+                        <td className="px-2 py-1.5">{a.inMyAssets
                           ? <span className="text-green-500">My Assets</span>
                           : <span className="text-dark-400">{a.source?.replace('scan_', '') || 'scan'}</span>}</td>
                         <td className="px-2 py-1.5 text-dark-400">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
