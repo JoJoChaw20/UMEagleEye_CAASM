@@ -93,7 +93,8 @@ function statusCondition(raw: string | undefined) {
 // Query: page, page_size, status, severity (csv), event_type, asset_id,
 //        assigned_to (me|unassigned|<uuid>), internet_facing=true,
 //        device_type, q (host/IP/CVE/package), since (ISO), sort (priority|time),
-//        concern (see lib/concerns), age (lt1d|d1_3|d3_7|d7_30|gt30), overdue=true
+//        concern (see lib/concerns), age (lt1d|d1_3|d3_7|d7_30|gt30), overdue=true,
+//        package (exact CVE package name)
 app.get('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user') as User
@@ -118,11 +119,12 @@ app.get('/', authMiddleware, async (c) => {
       statusCondition(q('status')),
       severities.length ? inArray(events.severity, severities) : undefined,
       eventType.length ? inArray(events.eventType, eventType) : undefined,
-      q('asset_id') ? eq(events.assetId, q('asset_id')!) : undefined,
+      q('asset_id') && z.string().uuid().safeParse(q('asset_id')).success ? eq(events.assetId, q('asset_id')!) : undefined,
       q('internet_facing') === 'true' ? eq(assets.isInternetFacing, true) : undefined,
       q('device_type') ? eq(assets.deviceType, q('device_type') as typeof assets.$inferSelect['deviceType']) : undefined,
       since && !isNaN(since.getTime()) ? gte(events.firstSeen, since) : undefined,
       isConcernId(concern) ? concernCondition(concern) : undefined,
+      q('package') ? sql`${events.details}->>'package_name' = ${q('package')}` : undefined,
       ageCondition(q('age'), now),
       q('overdue') === 'true' ? and(isOpenEvent(), overdueCondition(now)) : undefined,
       assignedTo === 'me' ? eq(events.assignedTo, user.userId)

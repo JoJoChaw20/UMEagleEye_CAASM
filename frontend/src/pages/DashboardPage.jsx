@@ -73,6 +73,10 @@ export default function DashboardPage() {
   const surface = summary?.attack_surface
   const hygiene = summary?.hygiene
   const openAlerts = (q) => navigate(`/alerts?${new URLSearchParams(q).toString()}`)
+  const openAssets = (q) => navigate(`/assets?${new URLSearchParams(q).toString()}`)
+  // Exact-asset links (never a text search: "192.168.0.1" would also match .10–.19)
+  const assetAlerts = (a) => openAlerts({ asset_id: a.asset_id, label: a.hostname || a.ip })
+  const assetPage = (a) => openAssets({ asset_id: a.asset_id, label: a.hostname || a.ip })
 
   return (
     <div className="space-y-6">
@@ -117,7 +121,7 @@ export default function DashboardPage() {
             const c = summary?.concerns?.find(x => x.id === meta.id)
             return (
               <ConcernCard key={meta.id} meta={meta} loading={loading} count={c?.count ?? 0} examples={c?.examples}
-                onOpen={() => openAlerts({ view: meta.id })} />
+                onOpen={() => openAlerts({ view: meta.id })} onExample={(e) => openAlerts({ event: e.event_id })} />
             )
           })}
         </div>
@@ -135,7 +139,10 @@ export default function DashboardPage() {
           <p className="text-xs text-dark-500 mb-4">Top 5 open alerts. The chips show why each one is ranked this high.</p>
           {loading ? <Skeleton rows={5} /> : summary?.priority_actions?.length > 0 ? (
             <ol className="space-y-2.5">
-              {summary.priority_actions.map((a, i) => <ActionRow key={a.event_id} a={a} rank={i + 1} onClick={() => navigate(`/alerts?event=${a.event_id}`)} />)}
+              {summary.priority_actions.map((a, i) => (
+                <ActionRow key={a.event_id} a={a} rank={i + 1} onClick={() => openAlerts({ event: a.event_id })}
+                  onAdvisory={() => navigate('/advisories', { state: { openAdvisoryId: a.advisory_id } })} />
+              ))}
             </ol>
           ) : (
             <div className="text-center py-8 text-dark-400">
@@ -154,7 +161,7 @@ export default function DashboardPage() {
             <ul className="space-y-3.5">
               {summary.risky_assets.map(a => (
                 <li key={a.asset_id}>
-                  <button onClick={() => openAlerts({ q: a.ip || a.hostname })} className="w-full text-left group">
+                  <button onClick={() => assetAlerts(a)} className="w-full text-left group" title="Open this asset's alerts">
                     <div className="flex items-center gap-2 text-sm min-w-0">
                       <PriorityTier score={a.top_priority} />
                       <span className="text-dark-100 font-medium truncate group-hover:text-eagle-300">{a.hostname || a.ip}</span>
@@ -186,7 +193,7 @@ export default function DashboardPage() {
             {loading ? <Skeleton rows={5} /> : surface?.internet_facing?.length ? (
               <>
                 <div className="flex flex-wrap gap-2 mb-4">
-                  <SummaryPill value={surface.internet_facing_total} label="reachable from the internet" />
+                  <SummaryPill value={surface.internet_facing_total} label="reachable from the internet" onClick={() => openAssets({ internet_facing: 'true' })} />
                   <SummaryPill value={surface.internet_facing_risky ?? 0} label="expose a risky service" tone={surface.internet_facing_risky ? 'bad' : 'ok'} />
                   <SummaryPill value={surface.internet_facing_inferred ?? 0} label="inferred, not confirmed" tone="muted"
                     title="Inferred from the agent's default gateway. Confirm or correct the exposure in Assets." />
@@ -203,7 +210,7 @@ export default function DashboardPage() {
                     </thead>
                     <tbody>
                       {surface.internet_facing.map(a => (
-                        <tr key={a.asset_id} onClick={() => openAlerts({ q: a.ip })}
+                        <tr key={a.asset_id} onClick={() => assetPage(a)} title="Open this asset"
                           className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer align-top">
                           <td className="py-2.5 pr-3">
                             <p className="text-dark-100 font-medium">{a.hostname || a.ip}</p>
@@ -212,7 +219,8 @@ export default function DashboardPage() {
                           <td className="py-2.5 pr-3"><PortChips ports={a.ports} /></td>
                           <td className="py-2.5 pr-3 whitespace-nowrap">
                             {a.open_alerts > 0
-                              ? <span className="inline-flex items-center gap-2"><SevBadge sev={a.worst_open_severity} /><span className="text-xs text-dark-300">{a.open_alerts} open</span></span>
+                              ? <button onClick={(ev) => { ev.stopPropagation(); assetAlerts(a) }} title="Open this asset's alerts"
+                                  className="inline-flex items-center gap-2 hover:underline text-dark-300"><SevBadge sev={a.worst_open_severity} /><span className="text-xs">{a.open_alerts} open →</span></button>
                               : <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5" />None</span>}
                           </td>
                           <td className="py-2.5 text-right">
@@ -227,7 +235,7 @@ export default function DashboardPage() {
                   </table>
                 </div>
                 {surface.internet_facing_total > surface.internet_facing.length && (
-                  <Link to="/assets" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+                  <Link to="/assets?internet_facing=true" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
                     {surface.internet_facing_total - surface.internet_facing.length} more in Assets <ChevronRight className="w-3.5 h-3.5" />
                   </Link>
                 )}
@@ -241,8 +249,8 @@ export default function DashboardPage() {
               <ul className="divide-y divide-dark-700/50">
                 {surface.risky_services.slice(0, 8).map(r => (
                   <li key={r.port}>
-                    <button onClick={() => r.hosts.length === 1 ? openAlerts({ q: r.hosts[0].ip }) : openAlerts({ view: 'exposed_services' })}
-                      title={r.hosts.map(h => h.hostname || h.ip).join(', ')}
+                    <button onClick={() => openAssets({ port: r.port })}
+                      title={`Show the ${r.host_count} host${r.host_count === 1 ? '' : 's'} with ${r.service} open: ${r.hosts.map(h => h.hostname || h.ip).join(', ')}`}
                       className="w-full text-left flex items-center gap-3 py-2.5 hover:bg-dark-700/20 rounded px-1">
                       <div className="min-w-0 flex-1">
                         <p className="text-sm text-dark-100 font-medium">{r.service} <span className="font-mono text-xs text-dark-500">port {r.port}</span></p>
@@ -265,7 +273,7 @@ export default function DashboardPage() {
         <div className="glass-card p-5 xl:col-span-2">
           <PanelHead icon={Network} title="Network devices" sub="Routers, switches and firewalls. Their firmware is checked over SNMPv3." />
           {loading ? <Skeleton rows={5} /> : surface?.network_devices?.length ? (
-            <NetworkDevices surface={surface} onOpen={openAlerts} />
+            <NetworkDevices surface={surface} onAsset={assetPage} onAlerts={assetAlerts} />
           ) : <Empty text="No routers or switches identified yet." />}
         </div>
 
@@ -276,7 +284,8 @@ export default function DashboardPage() {
               {Object.entries(surface.device_mix).sort((x, y) => y[1] - x[1]).map(([type, n]) => {
                 const totalAssets = Object.values(surface.device_mix).reduce((s, x) => s + x, 0) || 1
                 return (
-                  <div key={type}>
+                  <button key={type} onClick={() => openAssets({ device_type: type })} title={`Show ${n} ${type} assets`}
+                    className="block w-full text-left rounded hover:bg-dark-700/20 -mx-1 px-1 py-0.5">
                     <div className="flex justify-between text-sm mb-1">
                       <span className="capitalize text-dark-200">{type === 'iot' ? 'IoT' : type}</span>
                       <span className="tabular-nums text-dark-100 font-semibold">{n}</span>
@@ -284,12 +293,12 @@ export default function DashboardPage() {
                     <div className="h-2 rounded bg-dark-700/50 overflow-hidden">
                       <div className="h-full rounded" style={{ width: `${(n / totalAssets) * 100}%`, background: '#3393ff' }} />
                     </div>
-                  </div>
+                  </button>
                 )
               })}
               {surface.device_mix.unknown > 0 && (
                 <p className="text-xs text-dark-400 pt-1">
-                  {surface.device_mix.unknown} unknown device{surface.device_mix.unknown === 1 ? '' : 's'} can't be risk-scored properly. Label them in <Link to="/assets" className="text-eagle-400 hover:underline">Assets</Link>.
+                  {surface.device_mix.unknown} unknown device{surface.device_mix.unknown === 1 ? '' : 's'} can't be risk-scored properly. Label them in <Link to="/assets?device_type=unknown" className="text-eagle-400 hover:underline">Assets</Link>.
                 </p>
               )}
             </div>
@@ -325,22 +334,22 @@ export default function DashboardPage() {
             why="Joined the network in the last 7 days."
             action="Confirm an owner; isolate if unclaimed after 24h"
             row={a => [a.hostname || a.ip, a.vendor ?? 'Unknown vendor']}
-            onClick={() => openAlerts({ view: 'new_devices' })} />
+            onOpen={() => openAssets({ gap: 'new_7d' })} onItem={assetPage} />
           <HygieneCard icon={HelpCircle} title="Unidentified devices" data={hygiene?.unidentified} loading={loading}
             why="No type, vendor or hostname, so their risk can't be scored."
             action="Label them in Assets"
             row={a => [a.ip, a.mac ?? 'No MAC']}
-            to="/assets" />
+            onOpen={() => openAssets({ gap: 'unidentified' })} onItem={assetPage} />
           <HygieneCard icon={Clock} title={`Not seen in ${hygiene?.stale_after_days ?? 7} days`} data={hygiene?.stale_assets} loading={loading}
             why="No scan has reached them recently. Moved, retired, or out of coverage."
             action="Verify, then retire or fix scan coverage"
             row={a => [a.hostname || a.ip, a.last_scanned ? `last seen ${timeAgo(a.last_scanned)}` : 'never scanned']}
-            to="/assets" />
+            onOpen={() => openAssets({ gap: 'stale' })} onItem={assetPage} />
           <HygieneCard icon={PackageSearch} title="Servers & PCs without SBOM" data={hygiene?.no_sbom} loading={loading}
             why="No software inventory, so their CVEs are invisible."
             action="Run an SBOM scan on them"
             row={a => [a.hostname || a.ip, a.device_type]}
-            to="/sbom" />
+            onOpen={() => openAssets({ gap: 'no_sbom' })} onItem={assetPage} />
         </div>
       </section>
     </div>
@@ -485,12 +494,14 @@ function Metric({ label, value, sub, title, onClick, children }) {
 }
 
 // One ranked action: what, where, why it ranks, what to do, and by when.
-function ActionRow({ a, rank, onClick }) {
+// The whole row opens the alert; "Open advisory" opens its AI advisory.
+function ActionRow({ a, rank, onClick, onAdvisory }) {
   const guide = playbook(a)
   return (
     <li>
-      <button onClick={onClick}
-        className="w-full text-left rounded-lg border border-dark-700 border-l-4 hover:bg-dark-700/20 hover:border-eagle-500/40 px-3 py-3 transition-colors flex gap-3"
+      <div role="button" tabIndex={0} onClick={onClick} onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onClick() } }}
+        title="Open this alert"
+        className="w-full text-left rounded-lg border border-dark-700 border-l-4 hover:bg-dark-700/20 hover:border-eagle-500/40 px-3 py-3 transition-colors flex gap-3 cursor-pointer focus:outline-none focus:ring-2 focus:ring-eagle-500/60"
         style={{ borderLeftColor: SEVERITY_COLORS[a.severity] }}>
         <span className="text-2xl font-bold text-dark-500 w-6 text-center leading-none pt-0.5">{rank}</span>
         <div className="min-w-0 flex-1 space-y-1.5">
@@ -510,11 +521,16 @@ function ActionRow({ a, rank, onClick }) {
           <div className="flex items-start gap-3 rounded bg-dark-900/50 px-2.5 py-1.5">
             <p className="text-xs text-dark-200 flex-1">
               <span className="text-eagle-300 font-semibold">Next: </span>{a.recommended_action ? a.recommended_action.split('\n')[0] : guide.text}
+              {a.advisory_id && (
+                <button onClick={(ev) => { ev.stopPropagation(); onAdvisory() }} className="ml-2 text-eagle-400 hover:underline whitespace-nowrap">
+                  Open AI advisory →
+                </button>
+              )}
             </p>
             <DueLabel e={a} />
           </div>
         </div>
-      </button>
+      </div>
     </li>
   )
 }
@@ -562,7 +578,7 @@ function PatchBacklog({ loading, data, onOpen }) {
               </thead>
               <tbody>
                 {data.packages.map(p => (
-                  <tr key={p.package} onClick={() => onOpen({ view: 'cve', q: p.package })}
+                  <tr key={p.package} onClick={() => onOpen({ view: 'cve', package: p.package })} title={`Open the ${fmtNum(p.alerts)} ${p.package} CVE alerts`}
                     className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer">
                     <td className="py-2.5 font-mono text-dark-100 whitespace-nowrap">{p.package}
                       {p.max_epss >= 0.1 && (
@@ -615,16 +631,18 @@ function PanelHead({ icon: Icon, title, sub }) {
   )
 }
 
-function SummaryPill({ value, label, tone, title }) {
+function SummaryPill({ value, label, tone, title, onClick }) {
   const cls = {
     bad:   'border-red-500/40 bg-red-500/10 text-red-300',
     ok:    'border-emerald-500/30 bg-emerald-500/5 text-emerald-300',
     muted: 'border-dark-600 text-dark-300',
   }[tone] ?? 'border-dark-600 bg-dark-900/50 text-dark-100'
+  const Tag = onClick ? 'button' : 'span'
   return (
-    <span title={title} className={`inline-flex items-baseline gap-1.5 text-xs px-2.5 py-1 rounded-full border ${cls}`}>
-      <span className="text-sm font-bold tabular-nums">{fmtNum(value)}</span>{label}
-    </span>
+    <Tag onClick={onClick} title={title}
+      className={`inline-flex items-baseline gap-1.5 text-xs px-2.5 py-1 rounded-full border ${cls} ${onClick ? 'hover:border-eagle-500/60' : ''}`}>
+      <span className="text-sm font-bold tabular-nums">{fmtNum(value)}</span>{label}{onClick && ' →'}
+    </Tag>
   )
 }
 
@@ -642,7 +660,7 @@ function PortChips({ ports, max = 6 }) {
   )
 }
 
-function NetworkDevices({ surface, onOpen }) {
+function NetworkDevices({ surface, onAsset, onAlerts }) {
   const total = surface.network_devices_total
   const unmanaged = surface.network_devices_unmanaged
   const managed = total - unmanaged
@@ -678,7 +696,7 @@ function NetworkDevices({ surface, onOpen }) {
           </thead>
           <tbody>
             {shown.map(n => (
-              <tr key={n.asset_id} onClick={() => onOpen({ q: n.ip })} className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer">
+              <tr key={n.asset_id} onClick={() => onAsset(n)} title="Open this device" className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer">
                 <td className="py-2.5 pr-3 max-w-[220px]">
                   <p className="text-dark-100 font-medium truncate" title={n.hostname || n.ip}>{n.hostname || n.ip}</p>
                   {n.hostname && <p className="text-[11px] text-dark-500 font-mono">{n.ip}</p>}
@@ -694,14 +712,19 @@ function NetworkDevices({ surface, onOpen }) {
                     ? <span className="text-[11px] px-2 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 inline-flex items-center gap-1 whitespace-nowrap"><ShieldCheck className="w-3 h-3" />Verified</span>
                     : <span className="text-[11px] px-2 py-0.5 rounded-full border border-dark-600 text-dark-400 whitespace-nowrap">No SNMP</span>}
                 </td>
-                <td className={`py-2.5 text-right tabular-nums ${n.open_alerts ? 'text-orange-400 font-semibold' : 'text-dark-500'}`}>{n.open_alerts || '—'}</td>
+                <td className="py-2.5 text-right tabular-nums">
+                  {n.open_alerts
+                    ? <button onClick={(ev) => { ev.stopPropagation(); onAlerts(n) }} title="Open this device's alerts"
+                        className="text-orange-400 font-semibold hover:underline">{n.open_alerts} →</button>
+                    : <span className="text-dark-500">—</span>}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       {total > shown.length && (
-        <Link to="/assets" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+        <Link to="/assets?device_type=network" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
           {total - shown.length} more in Assets <ChevronRight className="w-3.5 h-3.5" />
         </Link>
       )}
@@ -709,18 +732,22 @@ function NetworkDevices({ surface, onOpen }) {
   )
 }
 
-function HygieneCard({ icon: Icon, title, data, loading, why, action, row, onClick, to }) {
+function HygieneCard({ icon: Icon, title, data, loading, why, action, row, onOpen, onItem }) {
   const count = data?.count ?? 0
   const clear = !loading && count === 0
-  const body = (
-    <>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-dark-100 flex items-center gap-2"><Icon className="w-4 h-4 text-dark-400 flex-shrink-0" />{title}</p>
-          <p className="text-xs text-dark-400 mt-1">{why}</p>
+  return (
+    <div className="glass-card p-5 flex flex-col">
+      <button onClick={onOpen} disabled={clear || loading} className="text-left group">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-dark-100 flex items-center gap-2 group-hover:text-eagle-300">
+              <Icon className="w-4 h-4 text-dark-400 flex-shrink-0" />{title}
+            </p>
+            <p className="text-xs text-dark-400 mt-1">{why}</p>
+          </div>
+          <span className={`text-3xl font-bold leading-none ${clear ? 'text-dark-500' : 'text-yellow-400'}`}>{loading ? '…' : fmtNum(count)}</span>
         </div>
-        <span className={`text-3xl font-bold leading-none ${clear ? 'text-dark-500' : 'text-yellow-400'}`}>{loading ? '…' : fmtNum(count)}</span>
-      </div>
+      </button>
       {clear ? (
         <p className="text-xs text-emerald-400 mt-4 inline-flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5" />Nothing to do</p>
       ) : !loading && (
@@ -729,22 +756,24 @@ function HygieneCard({ icon: Icon, title, data, loading, why, action, row, onCli
             {data.items.slice(0, 3).map((a, i) => {
               const [primary, secondary] = row(a)
               return (
-                <li key={a.asset_id ?? i} className="flex items-center justify-between gap-3 py-1.5 text-xs">
-                  <span className="text-dark-200 truncate" title={primary}>{primary}</span>
-                  <span className="text-dark-500 truncate text-right first-letter:uppercase" title={secondary}>{secondary}</span>
+                <li key={a.asset_id ?? i}>
+                  <button onClick={() => onItem(a)} title="Open this asset"
+                    className="w-full flex items-center justify-between gap-3 py-1.5 text-xs hover:bg-dark-700/20 rounded px-1 -mx-1">
+                    <span className="text-dark-200 truncate" title={primary}>{primary}</span>
+                    <span className="text-dark-500 truncate text-right first-letter:uppercase" title={secondary}>{secondary}</span>
+                  </button>
                 </li>
               )
             })}
           </ul>
           <p className="text-xs text-dark-300 mt-3"><span className="text-eagle-300 font-semibold">Do: </span>{action}</p>
-          <span className="text-xs text-eagle-400 inline-flex items-center gap-0.5 mt-2">View all {fmtNum(count)} <ChevronRight className="w-3.5 h-3.5" /></span>
+          <button onClick={onOpen} className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-2 self-start">
+            View all {fmtNum(count)} <ChevronRight className="w-3.5 h-3.5" />
+          </button>
         </>
       )}
-    </>
+    </div>
   )
-  const cls = 'glass-card p-5 flex flex-col text-left w-full hover:border-eagle-500/40 transition-colors'
-  if (to) return <Link to={to} className={cls}>{body}</Link>
-  return <button onClick={onClick} className={cls}>{body}</button>
 }
 
 function Empty({ text }) {

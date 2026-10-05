@@ -1,12 +1,35 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Server, Search, Shield, Bookmark, Target, CheckCircle, MinusCircle, Trash2, RefreshCw, Layers } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Server, Search, Shield, Bookmark, Target, CheckCircle, MinusCircle, Trash2, RefreshCw, Layers, Filter, X } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
 import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import TenantSelector from '../components/common/TenantSelector'
+import { RISKY_PORTS } from '../components/common/alertMeta'
 
 const PAGE_SIZE = 25
+
+// Exact filters that other pages link to (dashboard panels, alert drawer)
+const LINK_FILTER_KEYS = ['asset_id', 'gap', 'port', 'internet_facing']
+const GAP_LABELS = {
+  new_7d:       'New devices this week',
+  unidentified: 'Unidentified devices (no type, vendor or hostname)',
+  stale:        'Not seen by a scan in 7 days',
+  no_sbom:      'Servers & PCs without an SBOM',
+}
+
+function readLinkFilter(sp) {
+  const params = {}
+  for (const k of LINK_FILTER_KEYS) { const v = sp.get(k); if (v) params[k] = v }
+  if (!Object.keys(params).length) return null
+  const parts = []
+  if (params.asset_id) parts.push(sp.get('label') ? `Asset ${sp.get('label')}` : 'One asset')
+  if (params.gap) parts.push(GAP_LABELS[params.gap] ?? params.gap)
+  if (params.port) parts.push(`${RISKY_PORTS[params.port] ? `${RISKY_PORTS[params.port]} ` : ''}port ${params.port} open`)
+  if (params.internet_facing) parts.push('Internet-facing')
+  return { params, label: parts.join(' · ') }
+}
 
 export default function AssetsPage() {
   const { user } = useAuth()
@@ -17,8 +40,10 @@ export default function AssetsPage() {
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [search, setSearch] = useState('')
-  const [deviceTypeFilter, setDeviceTypeFilter] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [search, setSearch] = useState(() => searchParams.get('q') ?? '')
+  const [deviceTypeFilter, setDeviceTypeFilter] = useState(() => searchParams.get('device_type') ?? '')
+  const [linkFilter, setLinkFilter] = useState(() => readLinkFilter(searchParams))
   const [tenantFilter, setTenantFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [rescoring, setRescoring] = useState(false)
@@ -34,12 +59,24 @@ export default function AssetsPage() {
       if (search) params.search = search
       if (deviceTypeFilter) params.device_type = deviceTypeFilter
       if (tenantFilter) params.tenant_id = tenantFilter
+      Object.assign(params, linkFilter?.params)
       const res = await client.get('/assets', { params })
       setAssets(res.data.items || [])
       setTotal(res.data.total || 0)
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
-  }, [page, search, deviceTypeFilter, tenantFilter])
+  }, [page, search, deviceTypeFilter, tenantFilter, linkFilter])
+
+  // Follow in-app links that change the query while this page is open
+  useEffect(() => {
+    const next = readLinkFilter(searchParams)
+    setLinkFilter(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next)
+    setSearch(searchParams.get('q') ?? '')
+    setDeviceTypeFilter(searchParams.get('device_type') ?? '')
+    setPage(1)
+  }, [searchParams])
+
+  const clearLinkFilter = () => { setLinkFilter(null); setSearchParams({}, { replace: true }); setPage(1) }
 
   const loadDupCount = useCallback(async () => {
     try {
@@ -216,6 +253,17 @@ export default function AssetsPage() {
         </div>
       </div>
 
+      {linkFilter && (
+        <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-eagle-500/40">
+          <Filter className="w-4 h-4 text-eagle-400" />
+          <span className="text-dark-400">Showing</span>
+          <span className="text-dark-100 font-medium">{linkFilter.label}</span>
+          <button onClick={clearLinkFilter} className="ml-auto inline-flex items-center gap-1 text-xs text-dark-400 hover:text-dark-100">
+            <X className="w-3.5 h-3.5" /> Show all assets
+          </button>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
@@ -243,7 +291,7 @@ export default function AssetsPage() {
           <option value="unknown">Unknown</option>
         </select>
         <button
-          onClick={() => { setSearch(''); setDeviceTypeFilter(''); setPage(1) }}
+          onClick={() => { setSearch(''); setDeviceTypeFilter(''); clearLinkFilter() }}
           className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
         >
           Clear filters

@@ -99,6 +99,9 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     const source = c.req.query('source')
     const inMyAssetsParam = c.req.query('in_my_assets')
     const tenant_id_param = c.req.query('tenant_id')
+    const assetIdParam = c.req.query('asset_id')
+    const gap = c.req.query('gap')
+    const portParam = c.req.query('port')
 
     const conditions = []
 
@@ -126,6 +129,34 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
         ilike(assets.ipAddress, `%${search}%`),
       )
       if (searchCondition) conditions.push(searchCondition)
+    }
+
+    // Exact asset (deep links from the dashboard / alert drawer)
+    if (assetIdParam && z.string().uuid().safeParse(assetIdParam).success) {
+      conditions.push(eq(assets.assetId, assetIdParam))
+    }
+
+    if (c.req.query('internet_facing') === 'true') conditions.push(eq(assets.isInternetFacing, true))
+
+    // Hosts with this port open in their latest scan (ports stored as 22 or "22/tcp")
+    if (portParam && /^\d{1,5}$/.test(portParam)) {
+      conditions.push(sql`jsonb_typeof(${assets.osInfo}->'ports') = 'array' AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(${assets.osInfo}->'ports') p WHERE split_part(p, '/', 1) = ${portParam})`)
+    }
+
+    // Coverage gaps — same rules as the dashboard's hygiene cards, so the
+    // card count equals the list it opens.
+    const weekAgo = new Date(Date.now() - 7 * 86400000)
+    if (gap === 'new_7d') {
+      conditions.push(sql`${assets.source} <> 'manual' AND ${assets.createdAt} >= ${weekAgo}`)
+    } else if (gap === 'unidentified') {
+      conditions.push(sql`(${assets.deviceType} = 'unknown'
+        OR (COALESCE(${assets.hardwareVendor}, '') = '' AND COALESCE(${assets.hostname}, '') = ''))`)
+    } else if (gap === 'stale') {
+      conditions.push(sql`${assets.source} <> 'manual' AND (${assets.lastScanned} IS NULL OR ${assets.lastScanned} < ${weekAgo})`)
+    } else if (gap === 'no_sbom') {
+      conditions.push(sql`${assets.deviceType} IN ('server', 'workstation')
+        AND NOT EXISTS (SELECT 1 FROM ${sboms} WHERE ${sboms.assetId} = ${assets.assetId})`)
     }
 
     // My Assets membership filter (new canonical param).

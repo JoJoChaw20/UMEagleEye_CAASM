@@ -77,6 +77,10 @@ export default function AlertsPage() {
   const [debounced,    setDebounced]    = useState(search)
   const [severity,     setSeverity]     = useState(() => searchParams.get('severity') ?? '')
   const [age,          setAge]          = useState('')
+  // Exact filters from deep links: one asset, or one CVE package
+  const [assetFilter,  setAssetFilter]  = useState(() => searchParams.get('asset_id')
+    ? { id: searchParams.get('asset_id'), label: searchParams.get('label') } : null)
+  const [pkgFilter,    setPkgFilter]    = useState(() => searchParams.get('package') ?? '')
   const [typeFilter,   setTypeFilter]   = useState('')
   const [deviceType,   setDeviceType]   = useState('')
   const [onlyExposed,  setOnlyExposed]  = useState(false)
@@ -110,6 +114,8 @@ export default function AlertsPage() {
     const p = { page, page_size: PAGE_SIZE, sort: activeView.sort ?? sort, ...activeView.params }
     if (severity) p.severity = severity
     if (age) p.age = age
+    if (assetFilter) p.asset_id = assetFilter.id
+    if (pkgFilter) p.package = pkgFilter
     if (typeFilter && !activeView.params.event_type && !activeView.params.concern) p.event_type = typeFilter
     if (deviceType) p.device_type = deviceType
     if (onlyExposed) p.internet_facing = 'true'
@@ -117,7 +123,7 @@ export default function AlertsPage() {
     if (debounced) p.q = debounced
     if (tenantFilter) p.tenant_id = tenantFilter
     return p
-  }, [page, sort, activeView, severity, age, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
+  }, [page, sort, activeView, severity, age, assetFilter, pkgFilter, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -153,8 +159,10 @@ export default function AlertsPage() {
     if (view !== 'open') next.view = view
     if (debounced) next.q = debounced
     if (detailId) next.event = detailId
+    if (assetFilter) { next.asset_id = assetFilter.id; if (assetFilter.label) next.label = assetFilter.label }
+    if (pkgFilter) next.package = pkgFilter
     setSearchParams(next, { replace: true })
-  }, [view, debounced, detailId, setSearchParams])
+  }, [view, debounced, detailId, assetFilter, pkgFilter, setSearchParams])
 
   const resetPage = (fn) => (v) => { fn(v); setPage(1) }
 
@@ -212,9 +220,18 @@ export default function AlertsPage() {
     return n
   })
 
-  const filtersActive = severity || age || typeFilter || deviceType || onlyExposed || onlyNew || search
+  const filtersActive = severity || age || assetFilter || pkgFilter || typeFilter || deviceType || onlyExposed || onlyNew || search
   const clearFilters = () => {
-    setSeverity(''); setAge(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
+    setSeverity(''); setAge(''); setAssetFilter(null); setPkgFilter(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
+  }
+  const assetLabel = assetFilter && (assetFilter.label || events[0]?.asset_hostname || events[0]?.asset_ip || 'selected asset')
+  // From the drawer: narrow the queue to one asset / one package
+  const showAssetAlerts = (asset) => {
+    setAssetFilter({ id: asset.asset_id, label: asset.hostname || asset.ip_address })
+    setView('open'); setDetailId(null); setPage(1)
+  }
+  const showPackageAlerts = (pkg) => {
+    setPkgFilter(pkg); setView('cve'); setDetailId(null); setPage(1)
   }
 
   return (
@@ -338,6 +355,18 @@ export default function AlertsPage() {
           <option value="medium">Medium</option>
           <option value="low">Low</option>
         </select>
+        {assetFilter && (
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
+            <Server className="w-3 h-3" />Asset: {assetLabel}
+            <button onClick={() => resetPage(setAssetFilter)(null)} aria-label="Remove asset filter"><X className="w-3 h-3" /></button>
+          </span>
+        )}
+        {pkgFilter && (
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
+            Package: <span className="font-mono">{pkgFilter}</span>
+            <button onClick={() => resetPage(setPkgFilter)('')} aria-label="Remove package filter"><X className="w-3 h-3" /></button>
+          </span>
+        )}
         {age && (
           <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
             {AGE_LABELS[age]}
@@ -517,6 +546,8 @@ export default function AlertsPage() {
           onStatus={(status) => requestStatus([detailId], status)}
           onAssign={(v) => assign([detailId], v)}
           onAdvisory={() => triggerAdvisory([detailId])}
+          onAssetAlerts={showAssetAlerts}
+          onPackageAlerts={showPackageAlerts}
           onNavigate={(dir) => {
             const i = events.findIndex(e => e.event_id === detailId)
             const next = events[i + dir]
@@ -585,7 +616,7 @@ function CloseDialog({ count, status, onCancel, onConfirm }) {
 }
 
 // ── Detail drawer: everything needed to decide, without leaving the queue ──
-function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssign, onAdvisory, onNavigate, reloadKey }) {
+function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssign, onAdvisory, onAssetAlerts, onPackageAlerts, onNavigate, reloadKey }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
 
@@ -704,6 +735,11 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 d.source && ['Detected by', d.source.replace('_', ' ')],
               ]} />
               {d.description && <p className="text-xs text-dark-400 mt-2 leading-relaxed">{d.description}</p>}
+              {d.package_name && (
+                <button onClick={() => onPackageAlerts(d.package_name)} className="text-xs text-eagle-400 hover:underline mt-2">
+                  All open alerts for {d.package_name} →
+                </button>
+              )}
             </Section>
 
             {/* Asset */}
@@ -723,6 +759,10 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                     ))}</span>) : '—'],
                   ['Last scanned', e.asset.last_scanned ? `${timeAgo(e.asset.last_scanned)} (${e.asset.source?.replace('scan_', '')})` : 'never'],
                 ]} />
+                <div className="flex items-center gap-4 mt-2">
+                  <Link to={assetHref(e.asset.asset_id, e.asset.hostname || e.asset.ip_address)} className="text-xs text-eagle-400 hover:underline">Open in Assets →</Link>
+                  <button onClick={() => onAssetAlerts(e.asset)} className="text-xs text-eagle-400 hover:underline">All alerts on this asset →</button>
+                </div>
               </Section>
             )}
 
@@ -733,7 +773,10 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 : <ul className="space-y-1">{e.related_assets.map((r, i) => (
                     <li key={i} className="text-xs text-dark-300 flex items-center gap-2">
                       <span className="text-dark-500 w-16">{r.direction === 'outbound' ? '→' : '←'} {r.relationship.replace(/_/g, ' ')}</span>
-                      <span>{r.hostname ?? r.ip}</span><span className="text-dark-500 capitalize">{r.device_type}</span>
+                      {r.asset_id
+                        ? <Link to={assetHref(r.asset_id, r.hostname ?? r.ip)} className="text-eagle-300 hover:underline">{r.hostname ?? r.ip}</Link>
+                        : <span>{r.hostname ?? r.ip}</span>}
+                      <span className="text-dark-500 capitalize">{r.device_type}</span>
                     </li>
                   ))}</ul>}
             </Section>
@@ -756,7 +799,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 <div className="space-y-2">
                   <p className="text-sm text-dark-200">{e.advisory.summary}</p>
                   <p className="text-xs text-dark-300 whitespace-pre-line">{e.advisory.recommended_action}</p>
-                  <Link to="/advisories" className="text-xs text-eagle-400 hover:underline">Open in Advisories →</Link>
+                  <Link to="/advisories" state={{ openAdvisoryId: e.advisory.advisory_id }} className="text-xs text-eagle-400 hover:underline">Open this advisory →</Link>
                 </div>
               ) : canManage ? (
                 <button onClick={onAdvisory} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Generate advisory</button>
@@ -781,6 +824,8 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
     </div>
   )
 }
+
+const assetHref = (id, label) => `/assets?${new URLSearchParams({ asset_id: id, ...(label ? { label } : {}) })}`
 
 function serviceOn(asset, port) {
   const s = asset?.services?.find(x => Number(x.port) === Number(port))

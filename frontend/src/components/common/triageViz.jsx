@@ -41,47 +41,54 @@ export function SeverityStack({ counts, onSelect, height = 10, legend = true }) 
 }
 
 // One "should I worry?" category: count, why it matters, what to do, examples.
-export function ConcernCard({ meta, count, examples = [], loading, onOpen, active }) {
+export function ConcernCard({ meta, count, examples = [], loading, onOpen, onExample, active }) {
   const Icon = meta.icon
   const clear = !loading && count === 0
   const t = clear ? TONE.good : TONE[meta.tone]
   return (
-    <button type="button" onClick={onOpen} disabled={clear && !onOpen}
-      className={`glass-card text-left w-full p-4 border-l-4 transition-colors flex flex-col
+    <div className={`glass-card w-full p-4 border-l-4 transition-colors flex flex-col
         ${clear ? 'border-l-emerald-500/50 opacity-80' : t.bg}
         ${active ? 'ring-2 ring-eagle-500/60' : 'hover:border-eagle-500/40'}`}
       style={!clear ? { borderLeftColor: t.bar } : undefined}>
-      <div className="flex items-center gap-2">
-        <Icon className={`w-4 h-4 ${clear ? 'text-emerald-400' : t.text}`} />
-        <span className="text-sm font-semibold text-dark-100">{meta.title}</span>
-      </div>
-      <div className="flex items-baseline gap-2 mt-2">
-        <span className={`text-4xl font-bold leading-none ${clear ? 'text-dark-400' : 'text-dark-50'}`}>{loading ? '…' : fmtNum(count)}</span>
-        {clear
-          ? <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" />All clear</span>
-          : !loading && <span className={`text-xs font-semibold ${t.text}`}>{meta.action}</span>}
-      </div>
-      <p className="text-xs text-dark-400 mt-2 leading-relaxed">{meta.why}</p>
+      {/* Header area opens the whole category */}
+      <button type="button" onClick={onOpen} disabled={clear || loading || !onOpen} className="text-left group"
+        title={onOpen && !clear ? `Open all ${fmtNum(count)} alerts in this category` : undefined}>
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${clear ? 'text-emerald-400' : t.text}`} />
+          <span className="text-sm font-semibold text-dark-100 group-hover:text-eagle-300">{meta.title}</span>
+        </div>
+        <div className="flex items-baseline gap-2 mt-2">
+          <span className={`text-4xl font-bold leading-none ${clear ? 'text-dark-400' : 'text-dark-50'}`}>{loading ? '…' : fmtNum(count)}</span>
+          {clear
+            ? <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" />All clear</span>
+            : !loading && <span className={`text-xs font-semibold ${t.text}`}>{meta.action}</span>}
+        </div>
+        <p className="text-xs text-dark-400 mt-2 leading-relaxed">{meta.why}</p>
+      </button>
+      {/* Each example opens that specific alert */}
       {!clear && examples.length > 0 && (
-        <ul className="mt-3 space-y-1 border-t border-dark-700/60 pt-2">
+        <ul className="mt-3 space-y-0.5 border-t border-dark-700/60 pt-2">
           {examples.map(e => (
-            <li key={e.event_id} className="text-xs min-w-0">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: SEVERITY_COLORS[e.severity] }} />
-                <span className="text-dark-200 truncate" title={e.asset?.hostname || e.asset?.ip}>{e.asset?.hostname || e.asset?.ip}</span>
-                {e.asset?.internet_facing && <Globe className="w-3 h-3 text-accent-amber flex-shrink-0" title="Internet-facing" />}
-              </div>
-              <p className="font-mono text-[11px] text-dark-400 truncate pl-3" title={shortDetail(e)}>{shortDetail(e)}</p>
+            <li key={e.event_id} className="min-w-0">
+              <button type="button" onClick={() => onExample?.(e)} disabled={!onExample} title="Open this alert"
+                className="w-full text-left text-xs min-w-0 rounded px-1 -mx-1 py-0.5 hover:bg-dark-700/30">
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: SEVERITY_COLORS[e.severity] }} />
+                  <span className="text-dark-200 truncate" title={e.asset?.hostname || e.asset?.ip}>{e.asset?.hostname || e.asset?.ip}</span>
+                  {e.asset?.internet_facing && <Globe className="w-3 h-3 text-accent-amber flex-shrink-0" title="Internet-facing" />}
+                </span>
+                <span className="block font-mono text-[11px] text-dark-400 truncate pl-3" title={shortDetail(e)}>{shortDetail(e)}</span>
+              </button>
             </li>
           ))}
         </ul>
       )}
       {!clear && !loading && onOpen && (
-        <span className="mt-auto pt-3 text-xs text-eagle-400 inline-flex items-center gap-0.5">
+        <button type="button" onClick={onOpen} className="mt-auto pt-3 text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 self-start">
           Review {count === 1 ? 'it' : `all ${fmtNum(count)}`} <ChevronRight className="w-3.5 h-3.5" />
-        </span>
+        </button>
       )}
-    </button>
+    </div>
   )
 }
 
