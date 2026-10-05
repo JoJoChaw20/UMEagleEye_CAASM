@@ -120,6 +120,7 @@ Format response as JSON where recommended_action is a plain string with steps se
     recommendedAction,
     status: 'open',
   }).returning()
+  if (!inserted) throw new Error('Advisory insert returned no row')
 
   return {
     advisoryId:        inserted.advisoryId,

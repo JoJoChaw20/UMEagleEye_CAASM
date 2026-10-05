@@ -265,7 +265,7 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
 
   const INFRA_TYPES = new Set(['gateway', 'router', 'switch', 'access_point'])
 
-  function classifyRelType(parentType: string, childType: string, sameSubnet: boolean): string {
+  function classifyRelType(parentType: string, childType: string, sameSubnet: boolean): (typeof assetRelationships.$inferInsert)['relationshipType'] {
     const parentInfra = INFRA_TYPES.has(parentType)
     const childInfra  = INFRA_TYPES.has(childType)
     if (parentInfra && childInfra) return 'connects_to'   // network infrastructure uplink/trunk
