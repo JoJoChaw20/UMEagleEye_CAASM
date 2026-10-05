@@ -1,6 +1,6 @@
 import type { DB } from '../db/client'
 import { assets, events } from '../db/schema'
-import { isNotNull, and, eq, gte, sql } from 'drizzle-orm'
+import { isNotNull, and, eq, gte, inArray, sql } from 'drizzle-orm'
 import { normalizeMac } from '../lib/mac'
 
 // ── Baseline shape stored in assets.baseline_state ────────────────
@@ -219,61 +219,17 @@ function dedupFilter(drift: DriftEvent): DedupFilter {
   return { kind: 'simple', eventType: drift.type }
 }
 
-async function isDuplicate(
-  db:      DB,
-  assetId: string,
-  drift:   DriftEvent,
-  cutoff:  Date,
-): Promise<boolean> {
-  const f = dedupFilter(drift)
-  let rows: { eventId: string }[]
-
-  if (f.kind === 'port') {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, f.eventType),
-        sql`${events.details}->>'port' = ${String(f.port)}`,
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  } else if (f.kind === 'config') {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, 'config_change'),
-        sql`${events.details}->>'changed_attribute' = ${f.attribute}`,
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  } else if (f.kind === 'pkg') {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, f.eventType),
-        sql`${events.details}->>'package' = ${f.pkg}`,
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
-  } else {
-    rows = await db
-      .select({ eventId: events.eventId })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, f.eventType),
-        gte(events.timestamp, cutoff),
-      ))
-      .limit(1)
+// In-memory dedup key — mirrors the exact WHERE-clause matching the old per-drift
+// isDuplicate query used, so bulk prefetch + memory dedup gives identical results.
+// Works for both a candidate drift and an already-stored event (pass its type/details).
+function driftDedupKey(assetId: string, type: EventType, details: Record<string, unknown>): string {
+  const f = dedupFilter({ type, severity: 'low', details } as DriftEvent)
+  switch (f.kind) {
+    case 'port':   return `${assetId}|port|${f.eventType}|${f.port}`
+    case 'config': return `${assetId}|config|${f.attribute}`
+    case 'pkg':    return `${assetId}|pkg|${f.eventType}|${f.pkg}`
+    case 'simple': return `${assetId}|simple|${f.eventType}`
   }
-
-  return rows.length > 0
 }
 
 // ── Main audit runner ─────────────────────────────────────────────
@@ -285,28 +241,45 @@ export async function runDriftAudit(db: DB, tenantId?: string | null): Promise<n
     : db.select().from(assets).where(isNotNull(assets.baselineState))
 
   const assetRows = await query
-
-  let driftCount = 0
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
 
+  // 1) Detect all drifts in memory (detectDrift is pure).
+  const candidates: { assetId: string; type: EventType; severity: DriftEvent['severity']; details: Record<string, unknown> }[] = []
+  const driftAssetIds: string[] = []
   for (const asset of assetRows) {
     if (!asset.baselineState) continue
+    const drifts = detectDrift(asset.baselineState as AssetBaseline, asset)
+    if (drifts.length === 0) continue
+    driftAssetIds.push(asset.assetId)
+    for (const d of drifts) candidates.push({ assetId: asset.assetId, type: d.type, severity: d.severity, details: d.details })
+  }
+  if (candidates.length === 0) return 0
 
-    const baseline = asset.baselineState as AssetBaseline
-    const drifts   = detectDrift(baseline, asset)
+  // 2) Prefetch recent events (within the 24h dedup window) for the involved
+  //    assets in ONE query, and build the set of existing dedup keys.
+  const recent = await db
+    .select({ assetId: events.assetId, eventType: events.eventType, details: events.details })
+    .from(events)
+    .where(and(inArray(events.assetId, driftAssetIds), gte(events.timestamp, cutoff)))
+  const seen = new Set<string>()
+  for (const e of recent) seen.add(driftDedupKey(e.assetId, e.eventType, (e.details ?? {}) as Record<string, unknown>))
 
-    for (const drift of drifts) {
-      if (await isDuplicate(db, asset.assetId, drift, cutoff)) continue
-
-      await db.insert(events).values({
-        assetId:   asset.assetId,
-        eventType: drift.type,
-        severity:  drift.severity,
-        details:   drift.details,
-      })
-      driftCount++
-    }
+  // 3) Keep only non-duplicate drifts (in-memory dedup also covers two drifts in
+  //    this run sharing a key — matching the old sequential insert-then-check order).
+  const toInsert: { assetId: string; eventType: EventType; severity: DriftEvent['severity']; details: Record<string, unknown> }[] = []
+  for (const c of candidates) {
+    const key = driftDedupKey(c.assetId, c.type, c.details)
+    if (seen.has(key)) continue
+    seen.add(key)
+    toInsert.push({ assetId: c.assetId, eventType: c.type, severity: c.severity, details: c.details })
   }
 
-  return driftCount
+  // 4) Insert in ~100-statement batches (one batch = one subrequest).
+  for (let i = 0; i < toInsert.length; i += 100) {
+    const slice = toInsert.slice(i, i + 100)
+    if (slice.length === 0) continue
+    await db.batch(slice.map(v => db.insert(events).values(v)) as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+  }
+
+  return toInsert.length
 }

@@ -616,8 +616,9 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
       ? (c.req.query('tenant_id') ?? user.tenantId ?? null)
       : user.tenantId!
 
-    const updated = await rescoreAssets(db, tenantId)
-    return c.json({ updated, message: `Criticality rescored for ${updated} asset(s)` })
+    const { scanned, changes } = await rescoreAssets(db, tenantId)
+    const changed = changes.length
+    return c.json({ updated: changed, scanned, changed, message: `Rescored ${scanned} asset(s), ${changed} changed` })
   } catch (err) {
     console.error('assets POST /rescore error:', err)
     return c.json({ detail: 'Failed to rescore assets' }, 500)
