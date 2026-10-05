@@ -26,6 +26,7 @@ const MERGE_ROLES  = ['tenant_superadmin']   // same guard as delete (destructiv
 function mergeOpToStmt(db: ReturnType<typeof getDb>, op: MergeOp, ctx: { userId: string; tenantId: string | null }): unknown {
   switch (op.k) {
     case 'endAddress':        return db.update(assetAddresses).set({ endedAt: new Date() }).where(eq(assetAddresses.addressId, op.addressId))
+    case 'endAddressAt':      return db.update(assetAddresses).set({ endedAt: new Date(op.endedAt) }).where(eq(assetAddresses.addressId, op.addressId))
     case 'moveAddresses':     return db.update(assetAddresses).set({ assetId: op.survivorId }).where(inArray(assetAddresses.assetId, op.loserIds))
     case 'moveEvents':        return db.update(events).set({ assetId: op.survivorId }).where(inArray(events.assetId, op.loserIds))
     case 'moveSboms':         return db.update(sboms).set({ assetId: op.survivorId }).where(inArray(sboms.assetId, op.loserIds))
@@ -210,7 +211,7 @@ app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('jso
 
     const addrRows = await db.select({
       addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
-      ipAddress: assetAddresses.ipAddress, endedAt: assetAddresses.endedAt, lastSeen: assetAddresses.lastSeen,
+      ipAddress: assetAddresses.ipAddress, endedAt: assetAddresses.endedAt, lastSeen: assetAddresses.lastSeen, firstSeen: assetAddresses.firstSeen,
     }).from(assetAddresses).where(inArray(assetAddresses.assetId, allIds))
     const relRows = await db.select({
       relationshipId: assetRelationships.relationshipId, sourceAssetId: assetRelationships.sourceAssetId,
@@ -260,7 +261,7 @@ app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES),
     const addrRows = allAssetIds.length
       ? await db.select({
           addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
-          ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt, lastSeen: assetAddresses.lastSeen,
+          ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt, lastSeen: assetAddresses.lastSeen, firstSeen: assetAddresses.firstSeen,
         }).from(assetAddresses).where(inArray(assetAddresses.assetId, allAssetIds))
       : []
 
