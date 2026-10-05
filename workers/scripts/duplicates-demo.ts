@@ -16,7 +16,7 @@ function check(label: string, actual: unknown, expected: unknown) {
 let seq = 0
 const A = (over: Partial<DupAsset>): DupAsset => ({
   assetId: over.assetId ?? `a${seq++}`, hostname: null, ipAddress: '0.0.0.0', macAddress: null,
-  source: 'scan_active', deviceType: 'workstation', lastScanned: '2026-01-01', createdAt: '2026-01-01',
+  source: 'scan_active', inMyAssets: false, deviceType: 'workstation', lastScanned: '2026-01-01', createdAt: '2026-01-01',
   hostKey: null, ...over,
 })
 const AD = (assetId: string, mac: string | null, net: string | null, ip: string): DupAddress => ({
@@ -29,10 +29,11 @@ const VMWARE = '00:50:56:c0:00:08'   // VMware shared/virtual
 
 console.log('=== findDuplicateGroups ===')
 
-// (a) 4 assets, same GLOBAL MAC, 4 different networks, one manual → SAFE, manual survivor.
+// (a) 4 assets, same GLOBAL MAC, 4 different networks, one in My Assets → SAFE,
+//     the My Assets member is the suggested survivor.
 {
   const assets = [
-    A({ assetId: 'm', source: 'manual', ipAddress: '10.0.0.10' }),
+    A({ assetId: 'm', source: 'manual', inMyAssets: true, ipAddress: '10.0.0.10' }),
     A({ assetId: 's1', ipAddress: '10.1.0.10' }),
     A({ assetId: 's2', ipAddress: '10.2.0.10' }),
     A({ assetId: 's3', ipAddress: '10.3.0.10' }),
@@ -47,7 +48,7 @@ console.log('=== findDuplicateGroups ===')
   check('(a) one group', g.length, 1)
   check('(a) confidence safe', g[0]?.confidence, 'safe')
   check('(a) 4 assets', g[0]?.assets.length, 4)
-  check('(a) survivor = manual', g[0]?.suggestedSurvivorId, 'm')
+  check('(a) survivor = My Assets member', g[0]?.suggestedSurvivorId, 'm')
 }
 
 // (b) two assets, same LOCAL MAC, same /24 → SAFE.
@@ -120,12 +121,12 @@ console.log('\n=== planMerge ===')
 // (h) merge plan: duplicate survivor edge dropped, survivor<->loser self-loop dropped,
 //     remaining edge remapped, and loser current address at same (net,ip) ended first.
 {
-  const survivor: MergeAsset = { assetId: 'S', tenantId: 't', hostname: 'srv', ipAddress: '10.0.0.5', macAddress: GLOBAL, hostKey: null, owner: null, deviceType: 'server', hardwareVendor: null, osInfo: { a: 1 }, criticalityScore: 5, baselineState: null, isInternetFacing: false, source: 'scan_active', lastScanned: '2026-01-01', createdAt: '2026-01-01' }
-  const loser: MergeAsset = { assetId: 'L', tenantId: 't', hostname: null, ipAddress: '10.0.0.5', macAddress: LOCAL, hostKey: null, owner: 'bob', deviceType: 'unknown', hardwareVendor: null, osInfo: { b: 2 }, criticalityScore: 7, baselineState: null, isInternetFacing: true, source: 'manual', lastScanned: '2026-06-01', createdAt: '2025-12-01' }
+  const survivor: MergeAsset = { assetId: 'S', tenantId: 't', hostname: 'srv', ipAddress: '10.0.0.5', macAddress: GLOBAL, hostKey: null, owner: null, deviceType: 'server', hardwareVendor: null, osInfo: { a: 1 }, criticalityScore: 5, baselineState: null, isInternetFacing: false, source: 'scan_active', inMyAssets: false, lastScanned: '2026-01-01', createdAt: '2026-01-01' }
+  const loser: MergeAsset = { assetId: 'L', tenantId: 't', hostname: null, ipAddress: '10.0.0.5', macAddress: LOCAL, hostKey: null, owner: 'bob', deviceType: 'unknown', hardwareVendor: null, osInfo: { b: 2 }, criticalityScore: 7, baselineState: null, isInternetFacing: true, source: 'manual', inMyAssets: true, lastScanned: '2026-06-01', createdAt: '2025-12-01' }
   const related: MergeRelated = {
     addresses: [
-      { addressId: 'sa', assetId: 'S', networkKey: '10.0.0.0/24', ipAddress: '10.0.0.5', endedAt: null, lastSeen: '2026-01-01' },
-      { addressId: 'la', assetId: 'L', networkKey: '10.0.0.0/24', ipAddress: '10.0.0.5', endedAt: null, lastSeen: '2026-06-01' },
+      { addressId: 'sa', assetId: 'S', networkKey: '10.0.0.0/24', ipAddress: '10.0.0.5', endedAt: null, lastSeen: '2026-01-01', firstSeen: '2026-01-01' },
+      { addressId: 'la', assetId: 'L', networkKey: '10.0.0.0/24', ipAddress: '10.0.0.5', endedAt: null, lastSeen: '2026-06-01', firstSeen: '2026-05-01' },
     ],
     relationships: [
       { relationshipId: 'r1', sourceAssetId: 'S', targetAssetId: 'X', relationshipType: 'connects_to' }, // survivor edge
@@ -149,7 +150,9 @@ console.log('\n=== planMerge ===')
   check('(h) deletes losers last', plan.ops[plan.ops.length - 1]?.k, 'deleteAssets')
 
   // (i) field merge outcomes.
-  check('(i) source manual if any', plan.mergedFields.source, 'manual')
+  // source = latest-scanned non-manual (loser is manual+newest, survivor scan_active) → scan_active.
+  check('(i) source = latest non-manual', plan.mergedFields.source, 'scan_active')
+  check('(i) inMyAssets OR (loser was a member)', plan.mergedFields.inMyAssets, true)
   check('(i) hostname coalesce (survivor non-empty wins)', plan.mergedFields.hostname, 'srv')
   check('(i) latest ip from newest last_scanned (loser)', plan.mergedFields.ipAddress, '10.0.0.5')
   check('(i) latest mac from newest last_scanned (loser)', plan.mergedFields.macAddress, LOCAL)
@@ -157,6 +160,96 @@ console.log('\n=== planMerge ===')
   check('(i) criticality max', plan.mergedFields.criticalityScore, 7)
   check('(i) internet-facing OR', plan.mergedFields.isInternetFacing, true)
   check('(i) os_info shallow merge', plan.mergedFields.osInfo, { a: 1, b: 2 })
+}
+
+console.log('\n=== planMerge: keep exactly ONE current address ===')
+{
+  const mAsset = (id: string, over: Partial<MergeAsset> = {}): MergeAsset => ({
+    assetId: id, tenantId: 't', hostname: null, ipAddress: '0.0.0.0', macAddress: null, hostKey: null,
+    owner: null, deviceType: 'workstation', hardwareVendor: null, osInfo: {}, criticalityScore: 1,
+    baselineState: null, isInternetFacing: false, source: 'scan_active', inMyAssets: false, lastScanned: '2026-01-01', createdAt: '2026-01-01', ...over,
+  })
+  const mAddr = (o: Partial<import('../src/lib/merge').MergeAddress> & { addressId: string; assetId: string }): import('../src/lib/merge').MergeAddress => ({
+    networkKey: null, ipAddress: '0.0.0.0', endedAt: null, lastSeen: '2026-01-01', firstSeen: '2026-01-01', ...o,
+  })
+  const endOps = (p: ReturnType<typeof planMerge>) => p.ops.filter(o => o.k === 'endAddress' || o.k === 'endAddressAt')
+  const noRel: MergeRelated['relationships'] = []
+  const noTopo: MergeRelated['topologyNodes'] = []
+
+  // (a) survivor 1 current + 3 loser current rows on different networks → 1 current remains (latest last_seen).
+  {
+    const plan = planMerge(
+      mAsset('S', { lastScanned: '2026-03-01' }),
+      [mAsset('L1', { lastScanned: '2026-07-20' }), mAsset('L2'), mAsset('L3')],
+      { addresses: [
+        mAddr({ addressId: 'sa', assetId: 'S',  networkKey: 'n0', ipAddress: '10.0.0.5', lastSeen: '2026-03-01' }),
+        mAddr({ addressId: 'a1', assetId: 'L1', networkKey: 'n1', ipAddress: '10.1.0.5', lastSeen: '2026-07-20' }), // latest → kept
+        mAddr({ addressId: 'a2', assetId: 'L2', networkKey: 'n2', ipAddress: '10.2.0.5', lastSeen: '2026-06-01' }),
+        mAddr({ addressId: 'a3', assetId: 'L3', networkKey: 'n3', ipAddress: '10.3.0.5', lastSeen: '2026-05-01' }),
+      ], relationships: noRel, topologyNodes: noTopo },
+    )
+    const ends = endOps(plan)
+    check('(a) three stale current rows ended', ends.length, 3)
+    check('(a) kept the latest (a1); ended the rest', ends.map(o => o.addressId).sort(), ['a2', 'a3', 'sa'])
+    check('(a) ended_at = each row last_seen', (ends.find(o => o.addressId === 'a2') as { endedAt: string }).endedAt, '2026-06-01')
+    check('(a) count matches end-ops (e)', plan.counts.addressesEnded, ends.length)
+  }
+
+  // (b) last_seen tie → the survivor's own row stays current.
+  {
+    const plan = planMerge(
+      mAsset('S', { lastScanned: '2026-07-01' }),
+      [mAsset('L1', { lastScanned: '2026-07-01' })],
+      { addresses: [
+        mAddr({ addressId: 'sa', assetId: 'S',  networkKey: 'n0', ipAddress: '10.0.0.5', lastSeen: '2026-07-01' }),
+        mAddr({ addressId: 'a1', assetId: 'L1', networkKey: 'n1', ipAddress: '10.1.0.5', lastSeen: '2026-07-01' }), // tie
+      ], relationships: noRel, topologyNodes: noTopo },
+    )
+    const ends = endOps(plan)
+    check('(b) tie → exactly one ended', ends.length, 1)
+    check('(b) tie → survivor row kept, loser ended', ends[0]!.addressId, 'a1')
+  }
+
+  // (c) already-ended rows are untouched.
+  {
+    const plan = planMerge(
+      mAsset('S', { lastScanned: '2026-07-01' }),
+      [mAsset('L1', { lastScanned: '2026-06-01' })],
+      { addresses: [
+        mAddr({ addressId: 'sa',  assetId: 'S',  networkKey: 'n0', ipAddress: '10.0.0.5', lastSeen: '2026-07-01' }),
+        mAddr({ addressId: 'old', assetId: 'L1', networkKey: 'n1', ipAddress: '10.1.0.5', lastSeen: '2026-01-01', endedAt: '2026-02-01' }),
+        mAddr({ addressId: 'a1',  assetId: 'L1', networkKey: 'n2', ipAddress: '10.2.0.5', lastSeen: '2026-06-01' }),
+      ], relationships: noRel, topologyNodes: noTopo },
+    )
+    const ends = endOps(plan)
+    check('(c) only the newer current loser ended', ends.map(o => o.addressId), ['a1'])
+    check('(c) already-ended row left untouched', ends.some(o => o.addressId === 'old'), false)
+  }
+
+  // (d) a colliding row is ended first (collision) and NOT double-ended by the keep-one step.
+  {
+    const plan = planMerge(
+      mAsset('S', { lastScanned: '2026-07-01' }),
+      [mAsset('L1', { lastScanned: '2026-06-01' }), mAsset('L2', { lastScanned: '2026-08-01' })],
+      { addresses: [
+        mAddr({ addressId: 'sa', assetId: 'S',  networkKey: 'n0', ipAddress: '10.0.0.5', lastSeen: '2026-07-01' }),
+        mAddr({ addressId: 'c1', assetId: 'L1', networkKey: 'n0', ipAddress: '10.0.0.5', lastSeen: '2026-06-01' }), // collides with sa
+        mAddr({ addressId: 'a2', assetId: 'L2', networkKey: 'n1', ipAddress: '10.1.0.5', lastSeen: '2026-08-01' }), // latest → kept
+      ], relationships: noRel, topologyNodes: noTopo },
+    )
+    const collision = plan.ops.filter(o => o.k === 'endAddress')
+    const stale = plan.ops.filter(o => o.k === 'endAddressAt')
+    check('(d) c1 collision-ended once', collision.map(o => o.addressId), ['c1'])
+    check('(d) c1 not double-ended', stale.some(o => o.addressId === 'c1'), false)
+    check('(d) survivor stale row sa ended (kept a2)', stale.map(o => o.addressId), ['sa'])
+    check('(d) total ended = 2', plan.counts.addressesEnded, 2)
+    const ci = plan.ops.findIndex(o => o.k === 'endAddress')
+    const mi = plan.ops.findIndex(o => o.k === 'moveAddresses')
+    check('(d) collision end before move', ci >= 0 && ci < mi, true)
+    check('(d) stale end after move', plan.ops.findIndex(o => o.k === 'endAddressAt') > mi, true)
+    // (e) statement count == preview "ended" count
+    check('(e) end-ops == counts.addressesEnded', endOps(plan).length, plan.counts.addressesEnded)
+  }
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

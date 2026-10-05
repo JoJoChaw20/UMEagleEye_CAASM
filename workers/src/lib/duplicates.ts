@@ -33,6 +33,7 @@ export interface DupAsset {
   ipAddress: string
   macAddress: string | null
   source: string
+  inMyAssets: boolean
   deviceType: string
   lastScanned: string | Date | null
   createdAt: string | Date | null
@@ -52,6 +53,7 @@ export interface DuplicateGroupAsset {
   ipAddress: string
   macAddress: string | null
   source: string
+  inMyAssets: boolean
   deviceType: string
   lastScanned: string | Date | null
   createdAt: string | Date | null
@@ -213,15 +215,15 @@ export function findDuplicateGroups(
       const a = assetById.get(id)!
       return {
         assetId: a.assetId, hostname: a.hostname, ipAddress: a.ipAddress, macAddress: a.macAddress,
-        source: a.source, deviceType: a.deviceType, lastScanned: a.lastScanned, createdAt: a.createdAt,
+        source: a.source, inMyAssets: a.inMyAssets, deviceType: a.deviceType, lastScanned: a.lastScanned, createdAt: a.createdAt,
         addressCount: (addrByAsset.get(id) ?? []).length,
         ...(eventCounts ? { eventCount: eventCounts.get(id) ?? 0 } : {}),
       }
     })
 
-    // Suggested survivor: manual first → latest last_scanned → oldest created_at.
+    // Suggested survivor: My Assets member first → latest last_scanned → oldest created_at.
     const survivor = [...groupAssets].sort((x, y) => {
-      const mx = x.source === 'manual' ? 1 : 0, my = y.source === 'manual' ? 1 : 0
+      const mx = x.inMyAssets ? 1 : 0, my = y.inMyAssets ? 1 : 0
       if (mx !== my) return my - mx
       const ls = ms(y.lastScanned) - ms(x.lastScanned)
       if (ls !== 0) return ls

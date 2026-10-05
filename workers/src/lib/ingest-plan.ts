@@ -200,7 +200,9 @@ export function planIngest(
         deviceType: resolvedDeviceType, isInternetFacing: exposed,
         hostname: host.hostname ?? st.hostname, owner: st.owner ?? null, osInfo: merged,
       }).score
-      const resolvedSource = st.source === 'manual' ? 'manual' : (host.isPassive ? 'scan_passive' : 'scan_active')
+      // source = last observation method. Membership (in_my_assets) is NEVER
+      // changed by ingest, so a rescan no longer needs the old sticky-manual CASE.
+      const resolvedSource = host.isPassive ? 'scan_passive' : 'scan_active'
       const newHostname = st.hostname ?? host.hostname ?? null
       const newMac = mac ?? st.macAddress ?? null
       const newHostKey = st.hostKey ?? hostKey ?? null
@@ -295,7 +297,8 @@ export function planIngest(
         assetId, tenantId: host.tenantId, ipAddress: host.ip, hostname: host.hostname ?? null,
         macAddress: mac ?? null, hostKey: hostKey ?? null, hardwareVendor: host.hardwareVendor ?? null,
         deviceType: host.deviceType, osInfo: merged, isInternetFacing: host.internetFacing,
-        criticalityScore: crit, baselineState: baseline, source, lastScanned: now, createdAt: now, updatedAt: now,
+        criticalityScore: crit, baselineState: baseline, source, inMyAssets: false,
+        lastScanned: now, createdAt: now, updatedAt: now,
       } })
       const nid = newId()
       ops.push({ k: 'insertAddress', values: addrValues(nid, assetId, networkKey, host.ip, mac, host.tenantId) })

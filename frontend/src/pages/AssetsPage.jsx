@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Server, Search, Shield, Bookmark, Target, CheckCircle, RefreshCw, Layers } from 'lucide-react'
+import { Server, Search, Shield, Bookmark, Target, CheckCircle, MinusCircle, Trash2, RefreshCw, Layers } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
@@ -13,6 +13,7 @@ export default function AssetsPage() {
   const isSuperadmin = user?.role === 'superadmin'
   const isBusinessOwner = user?.role === 'business_owner'
   const canManageAssets = !isSuperadmin && !isBusinessOwner
+  const canDelete = user?.role === 'tenant_superadmin'
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -53,19 +54,42 @@ export default function AssetsPage() {
 
   const promoteToMyAssets = async (asset) => {
     try {
-      await client.post('/assets', {
-        ip_address: asset.ipAddress,
-        hostname: asset.hostname || undefined,
-        mac_address: asset.macAddress || undefined,
-        device_type: asset.deviceType,
-        os_info: asset.osInfo || undefined,
-        is_internet_facing: asset.isInternetFacing,
-        source: 'manual',
-        tenant_id: asset.tenantId || undefined,
-      })
+      // Adopt into My Assets — flip the flag only, never re-POST (which would reset
+      // `source`, the last-observation method).
+      await client.patch(`/assets/${asset.assetId}`, { in_my_assets: true })
       loadAssets()
     } catch (err) {
-      alert(err?.response?.data?.detail || 'Failed to accept asset')
+      alert(err?.response?.data?.detail || 'Failed to add asset to My Assets')
+    }
+  }
+
+  const removeFromMyAssets = async (asset) => {
+    if (!confirm(
+      'Remove this asset from My Assets?\n\n' +
+      '• It stays in All Assets with its history, owner and criticality.\n' +
+      '• It will be hidden from the relationship graph.\n' +
+      '• You can add it back at any time.'
+    )) return
+    try {
+      await client.patch(`/assets/${asset.assetId}`, { in_my_assets: false })
+      loadAssets()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to remove asset from My Assets')
+    }
+  }
+
+  const deletePermanently = async (asset) => {
+    if (!confirm(
+      `Delete ${asset.hostname || asset.ipAddress} permanently?\n\n` +
+      'This permanently deletes the asset and its events, SBOMs, dependencies and ' +
+      'relationships. This cannot be undone.'
+    )) return
+    try {
+      await client.delete(`/assets/${asset.assetId}`)
+      loadAssets()
+      loadDupCount()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to delete asset')
     }
   }
 
@@ -128,8 +152,10 @@ export default function AssetsPage() {
     }
   }
 
+  // source = the LAST observation method only (My Assets membership is a separate
+  // green badge driven by a.inMyAssets).
   const SOURCE_META = {
-    manual:       { label: 'My Assets',    cls: 'bg-green-500/20 text-green-400 border-green-500/30' },
+    manual:       { label: 'Manual',       cls: 'bg-dark-600/40 text-dark-300 border-dark-500/30' },
     scan_active:  { label: 'Active scan',  cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
     scan_passive: { label: 'Passive scan', cls: 'bg-dark-600/40 text-dark-400 border-dark-500/30' },
   }
@@ -248,7 +274,6 @@ export default function AssetsPage() {
             <tbody>
               {assets.map((a) => {
                 const srcMeta    = SOURCE_META[a.source] ?? SOURCE_META.scan_passive
-                const isManual   = a.source === 'manual'
                 const deviceMeta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
                 const { label: critLabel, cls: critCls } = getCriticalityMeta(a.criticalityScore)
                 return (
@@ -264,9 +289,16 @@ export default function AssetsPage() {
                       <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
                     </td>
                     <td className="whitespace-nowrap">
-                      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>
-                        {srcMeta.label}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>
+                          {srcMeta.label}
+                        </span>
+                        {a.inMyAssets && (
+                          <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-green-500/20 text-green-400 border-green-500/30">
+                            My Assets
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>
                     <td className="criticality-col">
@@ -278,13 +310,22 @@ export default function AssetsPage() {
                     <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
                     {canManageAssets && <td>
                       <div className="flex items-center gap-1">
-                        {!isSuperadmin && !isBusinessOwner && !isManual && (
+                        {!a.inMyAssets && (
                           <button
                             onClick={() => promoteToMyAssets(a)}
                             className="p-1.5 hover:bg-green-500/10 rounded text-dark-400 hover:text-green-400 transition-colors"
-                            title="Accept to My Assets"
+                            title="Add to My Assets"
                           >
                             <CheckCircle className="w-4 h-4" />
+                          </button>
+                        )}
+                        {a.inMyAssets && (
+                          <button
+                            onClick={() => removeFromMyAssets(a)}
+                            className="p-1.5 hover:bg-amber-500/10 rounded text-dark-400 hover:text-amber-400 transition-colors"
+                            title="Remove from My Assets"
+                          >
+                            <MinusCircle className="w-4 h-4" />
                           </button>
                         )}
                         {!isSuperadmin && !isBusinessOwner && (
@@ -315,6 +356,15 @@ export default function AssetsPage() {
                             title="Blast Radius"
                           >
                             <Target className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canDelete && (
+                          <button
+                            onClick={() => deletePermanently(a)}
+                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                            title="Delete permanently"
+                          >
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         )}
                       </div>

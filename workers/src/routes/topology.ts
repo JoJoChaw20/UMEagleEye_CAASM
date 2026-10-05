@@ -187,11 +187,15 @@ export async function inferForTenant(
     if (parentId) updates.push({ nodeId: node.nodeId, parentId })
   }
 
-  await Promise.all(
-    updates.map(({ nodeId, parentId }) =>
-      db.update(topologyNodes).set({ parentNodeId: parentId }).where(eq(topologyNodes.nodeId, nodeId))
-    )
-  )
+  // Batch the parent updates (one db.batch = one subrequest) instead of one
+  // UPDATE per node — a 100-asset tenant would otherwise fire 100 subrequests.
+  for (let i = 0; i < updates.length; i += 100) {
+    const slice = updates.slice(i, i + 100)
+    if (slice.length === 0) continue
+    const stmts = slice.map(({ nodeId, parentId }) =>
+      db.update(topologyNodes).set({ parentNodeId: parentId }).where(eq(topologyNodes.nodeId, nodeId)))
+    await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+  }
 
   return insertedNodes.length
 }
@@ -333,7 +337,7 @@ router.post(
         const tenantAssets = await db.select().from(assets).where(
           and(
             eq(assets.tenantId, tenant.tenantId),
-            eq(assets.source, 'manual')
+            eq(assets.inMyAssets, true)
           )
         )
         const count = await inferForTenant(db, tenantAssets, tenant.tenantId)
@@ -346,7 +350,7 @@ router.post(
       const tenantAssets = await db.select().from(assets).where(
         and(
           eq(assets.tenantId, user.tenantId!),
-          eq(assets.source, 'manual')
+          eq(assets.inMyAssets, true)
         )
       )
       totalNodes = await inferForTenant(db, tenantAssets, user.tenantId!)

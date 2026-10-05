@@ -1,7 +1,11 @@
 /**
  * Bulk criticality rescoring.
- * Fetches topology layer for each asset (if available) then calls
- * computeCriticality and writes the updated score back to the DB.
+ *
+ * Prefetches the tenant's assets + topology layers in a constant number of
+ * queries, recomputes every score IN MEMORY with the existing scoring function
+ * (logic unchanged), and writes back only the assets whose score changed, via
+ * db.batch in ~100-statement chunks. This keeps Cloudflare subrequests constant
+ * instead of one UPDATE per asset (which blew the Free-plan 50/request limit).
  */
 import { eq, inArray } from 'drizzle-orm'
 import { getDb } from '../db/client'
@@ -10,42 +14,18 @@ import { computeCriticality } from './criticality'
 
 type DbClient = ReturnType<typeof getDb>
 
+export interface RescoreChange { assetId: string; score: number }
+export interface RescorePlan { scanned: number; changes: RescoreChange[] }
+
 /**
- * Rescore a set of assets (by ID) within a tenant.
- * If assetIds is empty, rescores ALL assets for the tenant.
- * Returns the number of assets updated.
+ * PURE: recompute scores in memory and return only the assets whose score
+ * differs from the stored value. No DB access — unit-testable (see rescore-demo).
  */
-export async function rescoreAssets(
-  db: DbClient,
-  tenantId: string | null,
-  assetIds?: string[],
-): Promise<number> {
-  // Fetch asset rows
-  let rows: (typeof assets.$inferSelect)[]
-  if (assetIds && assetIds.length > 0) {
-    rows = await db.select().from(assets).where(inArray(assets.assetId, assetIds))
-  } else if (tenantId) {
-    rows = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
-  } else {
-    return 0
-  }
-  if (rows.length === 0) return 0
-
-  // Build assetId → topology layer map
-  const topoRows = tenantId
-    ? await db
-        .select({ assetId: topologyNodes.assetId, layer: topologyNodes.layer })
-        .from(topologyNodes)
-        .where(eq(topologyNodes.tenantId, tenantId))
-    : []
-
-  const layerMap = new Map<string, number>()
-  for (const t of topoRows) {
-    if (t.assetId) layerMap.set(t.assetId, t.layer)
-  }
-
-  // Score each asset and batch-update
-  let updated = 0
+export function planRescore(
+  rows: Pick<typeof assets.$inferSelect, 'assetId' | 'deviceType' | 'isInternetFacing' | 'hostname' | 'osInfo' | 'criticalityScore'>[],
+  layerMap: Map<string, number>,
+): RescorePlan {
+  const changes: RescoreChange[] = []
   for (const asset of rows) {
     const result = computeCriticality({
       deviceType: asset.deviceType,
@@ -54,14 +34,52 @@ export async function rescoreAssets(
       osInfo: (asset.osInfo ?? {}) as Record<string, unknown>,
       topologyLayer: layerMap.get(asset.assetId) ?? null,
     })
+    if (result.score !== asset.criticalityScore) changes.push({ assetId: asset.assetId, score: result.score })
+  }
+  return { scanned: rows.length, changes }
+}
 
-    await db
-      .update(assets)
-      .set({ criticalityScore: result.score, updatedAt: new Date() })
-      .where(eq(assets.assetId, asset.assetId))
+/**
+ * Rescore a set of assets (by ID) within a tenant. If assetIds is empty,
+ * rescores ALL assets for the tenant.
+ *
+ * Subrequests: 1 (assets) + 1 (topology, tenant-wide) + ceil(changed / 100) batch
+ * writes — constant regardless of asset count.
+ */
+export async function rescoreAssets(
+  db: DbClient,
+  tenantId: string | null,
+  assetIds?: string[],
+): Promise<RescorePlan> {
+  // Fetch asset rows (1 query).
+  let rows: (typeof assets.$inferSelect)[]
+  if (assetIds && assetIds.length > 0) {
+    rows = await db.select().from(assets).where(inArray(assets.assetId, assetIds))
+  } else if (tenantId) {
+    rows = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
+  } else {
+    return { scanned: 0, changes: [] }
+  }
+  if (rows.length === 0) return { scanned: 0, changes: [] }
 
-    updated++
+  // Topology layers for the tenant (1 query).
+  const topoRows = tenantId
+    ? await db.select({ assetId: topologyNodes.assetId, layer: topologyNodes.layer })
+        .from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
+    : []
+  const layerMap = new Map<string, number>()
+  for (const t of topoRows) { if (t.assetId) layerMap.set(t.assetId, t.layer) }
+
+  const plan = planRescore(rows, layerMap)
+
+  // Write only changed assets, in ~100-statement batches (one batch = one subrequest).
+  const now = new Date()
+  for (let i = 0; i < plan.changes.length; i += 100) {
+    const slice = plan.changes.slice(i, i + 100)
+    if (slice.length === 0) continue
+    const stmts = slice.map(ch => db.update(assets).set({ criticalityScore: ch.score, updatedAt: now }).where(eq(assets.assetId, ch.assetId)))
+    await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
   }
 
-  return updated
+  return plan
 }

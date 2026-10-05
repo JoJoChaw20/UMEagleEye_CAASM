@@ -561,6 +561,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
     let eventsCreated = 0
     let eventsUpdated = 0
     const toInsert: (typeof events.$inferInsert)[] = []
+    const updateStmts: unknown[] = []   // collected, then run in db.batch chunks
 
     for (const finding of findings) {
       const { cve_id, cvss_base_score, severity: grypeSev, package_name,
@@ -586,11 +587,13 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
           description:     description.slice(0, 500),
           cwe_ids,
         }
-        try {
-          // Still vulnerable after being marked resolved → the fix didn't take,
-          // so reopen. False positives and accepted risks stay closed.
-          const reopen = existing.status === 'resolved'
-          await db.update(events)
+        // Still vulnerable after being marked resolved → the fix didn't take,
+        // so reopen. False positives and accepted risks stay closed.
+        const reopen = existing.status === 'resolved'
+        // Collect the update; executed in batches after the loop (one db.batch =
+        // one subrequest) instead of one UPDATE per finding.
+        updateStmts.push(
+          db.update(events)
             .set({
               lastSeen:           now,
               occurrences:        sql`${events.occurrences} + 1`,
@@ -602,10 +605,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
                              resolutionNote: 'Reopened: CVE still present in latest SBOM scan' } : {}),
             })
             .where(eq(events.eventId, existing.eventId))
-          eventsUpdated++
-        } catch (e) {
-          console.error(`Failed to update event for ${cve_id}:`, e)
-        }
+        )
       } else {
         toInsert.push({
           assetId,
@@ -627,8 +627,20 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
       }
     }
 
-    // Batch insert new events (50 per statement)
     const BATCH = 50
+
+    // Batch refresh existing events (one db.batch per 50 instead of one UPDATE each).
+    for (let i = 0; i < updateStmts.length; i += BATCH) {
+      const slice = updateStmts.slice(i, i + BATCH)
+      try {
+        await db.batch(slice as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+        eventsUpdated += slice.length
+      } catch (e) {
+        console.error(`Batch update failed at offset ${i}:`, e)
+      }
+    }
+
+    // Batch insert new events (50 per statement)
     for (let i = 0; i < toInsert.length; i += BATCH) {
       try {
         await db.insert(events).values(toInsert.slice(i, i + BATCH))

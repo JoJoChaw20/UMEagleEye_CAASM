@@ -77,7 +77,7 @@ router.get('/:tenantId', ...tenantViewAccess, async (c) => {
   const [assetCountRow] = await db
     .select({ value: count() })
     .from(assets)
-    .where(and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual')))
+    .where(and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true)))
 
   return c.json({
     tenant_id: tenant.tenantId,

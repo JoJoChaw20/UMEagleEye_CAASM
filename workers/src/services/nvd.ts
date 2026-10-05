@@ -62,7 +62,10 @@ export async function enrichMissingCwe(db: DB, apiKey?: string): Promise<number>
 
   if (rows.length === 0) return 0
 
-  let enriched = 0
+  // NVD fetches stay sequential (external, rate-limited); collect the resulting
+  // updates and write them in one db.batch so cron subrequests = ~30 fetches + 1
+  // batch instead of 30 fetches + 30 updates (which exceeded the 50 limit).
+  const updateStmts: unknown[] = []
   for (const row of rows) {
     const details = (row.details ?? {}) as Record<string, unknown>
     const cveId = details['cve_id'] as string | undefined
@@ -70,14 +73,16 @@ export async function enrichMissingCwe(db: DB, apiKey?: string): Promise<number>
 
     const cweIds = await fetchNvdCwe(cveId, apiKey)
     if (cweIds.length > 0) {
-      await db.update(events)
-        .set({ details: { ...details, cwe_ids: cweIds } })
-        .where(eq(events.eventId, row.eventId))
-      enriched++
+      updateStmts.push(
+        db.update(events).set({ details: { ...details, cwe_ids: cweIds } }).where(eq(events.eventId, row.eventId)),
+      )
     }
 
     await delay(delayMs)
   }
 
-  return enriched
+  if (updateStmts.length > 0) {
+    await db.batch(updateStmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+  }
+  return updateStmts.length
 }

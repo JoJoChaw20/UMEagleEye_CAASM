@@ -33,7 +33,7 @@ function getSubnet(ip: string): string {
 
 async function getTenantAssetIds(db: ReturnType<typeof getDb>, tenantId: string): Promise<string[]> {
   const rows = await db.select({ assetId: assets.assetId }).from(assets).where(
-    and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual'))
+    and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true))
   )
   return rows.map(r => r.assetId)
 }
@@ -68,8 +68,8 @@ app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
     }
 
     const rawNodes = tenantScopeId
-      ? await db.select().from(assets).where(and(eq(assets.tenantId, tenantScopeId), eq(assets.source, 'manual')))
-      : await db.select().from(assets).where(eq(assets.source, 'manual'))
+      ? await db.select().from(assets).where(and(eq(assets.tenantId, tenantScopeId), eq(assets.inMyAssets, true)))
+      : await db.select().from(assets).where(eq(assets.inMyAssets, true))
 
     const rawEdges = allowedAssetIds !== null
       ? await db.select().from(assetRelationships).where(
@@ -77,15 +77,22 @@ app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
         )
       : await db.select().from(assetRelationships)
 
+    // Hide any edge unless BOTH endpoints are in My Assets. Removing an asset from
+    // My Assets drops its node here, so its edges disappear — but are never deleted,
+    // so re-adding the asset restores the full graph. (Also covers the superadmin
+    // unscoped case where rawEdges isn't pre-filtered by allowedAssetIds.)
+    const nodeIdSet = new Set(rawNodes.map(n => n.assetId))
+    const visibleEdges = rawEdges.filter(e => nodeIdSet.has(e.sourceAssetId) && nodeIdSet.has(e.targetAssetId))
+
     // edge_count per node
     const edgeCounts = new Map<string, number>()
-    for (const e of rawEdges) {
+    for (const e of visibleEdges) {
       edgeCounts.set(e.sourceAssetId, (edgeCounts.get(e.sourceAssetId) ?? 0) + 1)
       edgeCounts.set(e.targetAssetId, (edgeCounts.get(e.targetAssetId) ?? 0) + 1)
     }
 
     const nodes = rawNodes.map(n => toSnakeNode(n, edgeCounts.get(n.assetId) ?? 0))
-    const edges = rawEdges.map(e => ({
+    const edges = visibleEdges.map(e => ({
       source:            e.sourceAssetId,
       target:            e.targetAssetId,
       relationship_type: e.relationshipType,
@@ -227,7 +234,7 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
   let topoNodes = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
   if (topoNodes.length === 0) {
     const tenantAssets = await db.select().from(assets).where(
-      and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual'))
+      and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true))
     )
     await inferForTenant(db, tenantAssets, tenantId)
     topoNodes = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
@@ -253,7 +260,7 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
   const assetRows = await db
     .select({ assetId: assets.assetId, ipAddress: assets.ipAddress })
     .from(assets)
-    .where(and(eq(assets.tenantId, tenantId), eq(assets.source, 'manual')))
+    .where(and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true)))
   const assetIp = new Map(assetRows.map(a => [a.assetId, a.ipAddress]))
 
   const INFRA_TYPES = new Set(['gateway', 'router', 'switch', 'access_point'])

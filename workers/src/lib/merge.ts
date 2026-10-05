@@ -23,6 +23,7 @@ export interface MergeAsset {
   baselineState: Record<string, unknown> | null
   isInternetFacing: boolean
   source: string
+  inMyAssets: boolean
   lastScanned: string | Date | null
   createdAt: string | Date | null
 }
@@ -33,6 +34,7 @@ export interface MergeAddress {
   ipAddress: string
   endedAt: string | Date | null
   lastSeen: string | Date | null
+  firstSeen: string | Date | null
 }
 export interface MergeRelationship {
   relationshipId: string
@@ -50,6 +52,7 @@ export interface MergeRelated {
 
 export type MergeOp =
   | { k: 'endAddress'; addressId: string }
+  | { k: 'endAddressAt'; addressId: string; endedAt: string | Date }
   | { k: 'moveAddresses'; loserIds: string[]; survivorId: string }
   | { k: 'moveEvents'; loserIds: string[]; survivorId: string }
   | { k: 'moveSboms'; loserIds: string[]; survivorId: string }
@@ -106,7 +109,15 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
       : (all.find(a => a.deviceType && a.deviceType !== 'unknown')?.deviceType ?? survivor.deviceType),
     osInfo: mergedOsInfo,
     baselineState: survivor.baselineState ?? all.find(a => a.baselineState != null)?.baselineState ?? null,
-    source: all.some(a => a.source === 'manual') ? 'manual' : survivor.source,
+    // source = the latest-scanned asset's observation method. 'manual' only when
+    // EVERY merged asset is manual (never scanned); otherwise fall back to the
+    // most-recently-scanned non-manual source (byLatest keeps the survivor first on ties).
+    source: all.every(a => a.source === 'manual')
+      ? 'manual'
+      : (byLatest.find(a => a.source !== 'manual')?.source ?? survivor.source),
+    // Membership is the OR of survivor + losers: if any was in My Assets, the
+    // merged device stays in My Assets.
+    inMyAssets: all.some(a => a.inMyAssets),
     isInternetFacing: all.some(a => a.isInternetFacing),
     criticalityScore: Math.max(...all.map(a => a.criticalityScore ?? 0)),
     lastScanned: byLatest.map(a => a.lastScanned).find(v => v != null) ?? null,
@@ -118,6 +129,7 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
 
   // ── Addresses: end colliding current scoped loser rows, then move all loser rows ──
   let addressesEnded = 0
+  const endedByCollision = new Set<string>()
   const currentScoped = related.addresses.filter(a => a.endedAt == null && a.networkKey != null)
   const byNetIp = new Map<string, MergeAddress[]>()
   for (const a of currentScoped) {
@@ -131,7 +143,7 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     for (const a of group) {
       if (a.addressId === keeper.addressId) continue
       if (!loserSet.has(a.assetId)) continue   // never end a survivor row
-      ops.push({ k: 'endAddress', addressId: a.addressId }); addressesEnded++
+      ops.push({ k: 'endAddress', addressId: a.addressId }); addressesEnded++; endedByCollision.add(a.addressId)
     }
   }
   const addressesMoved = related.addresses.filter(a => loserSet.has(a.assetId)).length
@@ -140,6 +152,30 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     ops.push({ k: 'moveEvents', loserIds, survivorId })
     ops.push({ k: 'moveSboms', loserIds, survivorId })
     ops.push({ k: 'moveDependencies', loserIds, survivorId })
+  }
+
+  // After the move, the survivor's current-address set = every still-current row
+  // (its own + the moved loser rows, minus the ones just collision-ended). A device
+  // is in one place, so keep exactly ONE current row and end the rest with their own
+  // last_seen — otherwise stale "current" rows on networks the device left let the
+  // resolver's current-row rules (4/5) attach a different host there later.
+  // Ending (not deleting) preserves history; ended rows can't hit the unique index.
+  const survivingCurrent = related.addresses.filter(a => a.endedAt == null && !endedByCollision.has(a.addressId))
+  if (survivingCurrent.length > 1) {
+    const keeper = [...survivingCurrent].sort((x, y) => {
+      const ls = ms(y.lastSeen) - ms(x.lastSeen)
+      if (ls !== 0) return ls                                              // latest last_seen
+      const sx = x.assetId === survivorId ? 1 : 0, sy = y.assetId === survivorId ? 1 : 0
+      if (sx !== sy) return sy - sx                                        // tie → survivor's own row
+      const fs = ms(y.firstSeen) - ms(x.firstSeen)
+      if (fs !== 0) return fs                                             // then newest first_seen
+      return x.addressId < y.addressId ? -1 : x.addressId > y.addressId ? 1 : 0  // then lowest address_id
+    })[0]!
+    for (const a of survivingCurrent) {
+      if (a.addressId === keeper.addressId) continue
+      ops.push({ k: 'endAddressAt', addressId: a.addressId, endedAt: a.lastSeen ?? now })
+      addressesEnded++
+    }
   }
 
   // ── Relationships: drop self-loops + duplicates (on survivor edge), remap the rest ──
@@ -202,6 +238,6 @@ function loserSnapshot(a: MergeAsset): Record<string, unknown> {
     mac_address: a.macAddress, host_key: a.hostKey, owner: a.owner, device_type: a.deviceType,
     hardware_vendor: a.hardwareVendor, os_info: a.osInfo, criticality_score: a.criticalityScore,
     baseline_state: a.baselineState, is_internet_facing: a.isInternetFacing, source: a.source,
-    last_scanned: a.lastScanned, created_at: a.createdAt,
+    in_my_assets: a.inMyAssets, last_scanned: a.lastScanned, created_at: a.createdAt,
   }
 }
