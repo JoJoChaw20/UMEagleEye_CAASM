@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { Plus, Search, MinusCircle, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, GitBranch } from 'lucide-react'
+import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetAddressInfo'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
@@ -509,6 +510,7 @@ export default function MyAssetsPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('')
   const [tenantFilter, setTenantFilter] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [showImport, setShowImport] = useState(false)
@@ -517,6 +519,8 @@ export default function MyAssetsPage() {
   const [rescoring, setRescoring] = useState(false)
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [graphBlastId, setGraphBlastId] = useState(null)
+  const [expandedId, setExpandedId] = useState(null)   // asset whose address timeline is open
+  const toggleTimeline = (id) => setExpandedId((cur) => (cur === id ? null : id))
   const isReadOnly = ['business_owner', 'superadmin'].includes(user?.role)
 
   const loadAssets = useCallback(async () => {
@@ -526,6 +530,7 @@ export default function MyAssetsPage() {
       const params = { in_my_assets: true, page, page_size: PAGE_SIZE }
       if (search) params.search = search
       if (deviceTypeFilter) params.device_type = deviceTypeFilter
+      if (sourceFilter) params.source = sourceFilter
       if (tenantFilter) params.tenant_id = tenantFilter
       const res = await client.get('/assets', { params })
       setAssets(res.data.items || [])
@@ -535,7 +540,7 @@ export default function MyAssetsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, deviceTypeFilter, tenantFilter])
+  }, [page, search, deviceTypeFilter, sourceFilter, tenantFilter])
 
   useEffect(() => { loadAssets() }, [loadAssets])
 
@@ -601,6 +606,7 @@ export default function MyAssetsPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
+  const colCount = isReadOnly ? 7 : 8   // columns in the inventory table (for the timeline colSpan)
 
   return (
     <div className="space-y-6">
@@ -676,7 +682,7 @@ export default function MyAssetsPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
               <input
                 type="text"
-                placeholder="Search by IP or hostname..."
+                placeholder="Search hostname, vendor, IP or MAC"
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
                 className="input-field pl-10 text-sm"
@@ -694,8 +700,18 @@ export default function MyAssetsPage() {
               <option value="iot">IoT</option>
               <option value="unknown">Unknown</option>
             </select>
+            <select
+              value={sourceFilter}
+              onChange={e => { setSourceFilter(e.target.value); setPage(1) }}
+              className="input-field text-sm py-1.5 w-40"
+            >
+              <option value="">All Sources</option>
+              <option value="scan_active">Active scan</option>
+              <option value="scan_passive">Passive scan</option>
+              <option value="manual">Manual</option>
+            </select>
             <button
-              onClick={() => { setSearch(''); setDeviceTypeFilter(''); setPage(1) }}
+              onClick={() => { setSearch(''); setDeviceTypeFilter(''); setSourceFilter(''); setPage(1) }}
               className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
             >
               Clear filters
@@ -731,8 +747,12 @@ export default function MyAssetsPage() {
                 </thead>
                 <tbody>
                   {assets.map((a) => (
-                    <tr key={a.assetId}>
-                      <td className="font-mono text-sm text-accent-cyan">{a.ipAddress}</td>
+                    <Fragment key={a.assetId}>
+                    <tr>
+                      <td className="font-mono text-sm text-accent-cyan">
+                        {a.ipAddress}
+                        <AddressCellInfo asset={a} searchTerm={search} expanded={expandedId === a.assetId} onToggle={() => toggleTimeline(a.assetId)} />
+                      </td>
                       <td>
                         <div className="font-medium text-white">{a.hostname || '—'}</div>
                         {a.osInfo?.ai_description && (
@@ -809,6 +829,10 @@ export default function MyAssetsPage() {
                         </div>
                       </td>}
                     </tr>
+                    {expandedId === a.assetId && (
+                      <AddressTimelineRow asset={a} colSpan={colCount} searchTerm={search} tenantId={tenantFilter || undefined} />
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -817,9 +841,11 @@ export default function MyAssetsPage() {
                 <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
                 <p className="text-lg font-medium mb-2">No manual assets found</p>
                 <p className="text-sm mb-4">
-                  {search || deviceTypeFilter ? 'No assets match your filters.' : 'Add assets manually to track them here.'}
+                  {search
+                    ? 'No assets match your search. Searched hostname, vendor, and current & historical IPs/MACs.'
+                    : (deviceTypeFilter || sourceFilter) ? 'No assets match the current filters.' : 'Add assets manually to track them here.'}
                 </p>
-                {!isReadOnly && !search && !deviceTypeFilter && (
+                {!isReadOnly && !search && !deviceTypeFilter && !sourceFilter && (
                   <button onClick={() => setShowAdd(true)} className="btn-primary">
                     <Plus className="w-4 h-4 mr-2" />
                     Add First Asset

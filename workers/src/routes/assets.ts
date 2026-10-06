@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, isNull, inArray, desc, ilike, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, inArray, desc, ilike, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -9,6 +9,7 @@ import { assets, assetAddresses, scanResults, agents, events, sboms, dependencie
 import { rescoreAssets } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
 import { normalizeMac } from '../lib/mac'
+import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
 import { findDuplicateGroups, type DupAsset, type DupAddress } from '../lib/duplicates'
 import { planMerge, type MergeAsset, type MergeOp, type MergeRelated } from '../lib/merge'
@@ -123,12 +124,42 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       conditions.push(ilike(assets.hostname, `%${hostname}%`))
     }
 
+    // Tenant scope applied to the address-history EXISTS (keeps tenant isolation on
+    // every subquery, and lets the (tenant_id, mac_address) index help MAC lookups).
+    const tenantScopeId = user.role !== 'superadmin' ? (user.tenantId ?? null) : (tenant_id_param ?? null)
+
+    // Build a MAC match on a column: a full term → exact normalized equality; a MAC
+    // fragment → separator-insensitive contains; otherwise null (term can't be a MAC).
+    const normMac = search ? normalizeMac(search) : null
+    const macFrag = (search && looksMacFragment(search)) ? search.toLowerCase().replace(/[:.\-]/g, '') : null
+    const macColMatch = (col: SQLWrapper): SQL | null => {
+      if (normMac) return sql`${col} = ${normMac}`
+      if (macFrag && /^[0-9a-f]+$/.test(macFrag) && macFrag.length >= 2)
+        return sql`replace(replace(replace(lower(${col}), ':', ''), '-', ''), '.', '') LIKE ${'%' + macFrag + '%'}`
+      return null
+    }
+
+    // Search matches hostname, hardware vendor, current IP, current MAC (asset row)
+    // OR any historical address (current/ended) in asset_addresses — so an old IP/MAC
+    // still finds the device. EXISTS (not JOIN) keeps asset rows unique. rowFieldMatch
+    // also drives the ordering CASE below, so vendor hits rank with current matches.
+    let rowFieldMatch: SQL | undefined
     if (search) {
-      const searchCondition = or(
-        ilike(assets.hostname, `%${search}%`),
-        ilike(assets.ipAddress, `%${search}%`),
-      )
-      if (searchCondition) conditions.push(searchCondition)
+      const likeT = `%${search}%`
+      const rowConds: SQL[] = [
+        ilike(assets.hostname, likeT) as SQL,
+        ilike(assets.hardwareVendor, likeT) as SQL,
+        ilike(assets.ipAddress, likeT) as SQL,
+      ]
+      const assetMac = macColMatch(assets.macAddress); if (assetMac) rowConds.push(assetMac)
+      rowFieldMatch = or(...rowConds)!
+
+      const aaMac = macColMatch(sql`aa.mac_address`)
+      const addrMatch = aaMac ? sql`(aa.ip_address ILIKE ${likeT} OR ${aaMac})` : sql`aa.ip_address ILIKE ${likeT}`
+      const tenantScope = tenantScopeId ? sql` AND aa.tenant_id = ${tenantScopeId}` : sql``
+      const addrExists = sql`EXISTS (SELECT 1 FROM ${assetAddresses} aa WHERE aa.asset_id = ${assets.assetId}${tenantScope} AND ${addrMatch})`
+
+      conditions.push(or(rowFieldMatch, addrExists)!)
     }
 
     // Exact asset (deep links from the dashboard / alert drawer)
@@ -172,18 +203,56 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
+    // When searching: current-field matches (hostname/IP/MAC) before history-only,
+    // exact before partial, then last_scanned desc. Otherwise last_scanned desc.
+    const orderByClause: SQL[] = (search && rowFieldMatch)
+      ? [
+          sql`CASE WHEN ${rowFieldMatch} THEN 0 ELSE 1 END`,
+          sql`CASE WHEN ${assets.ipAddress} = ${search} OR lower(${assets.hostname}) = ${search.toLowerCase()}${normMac ? sql` OR ${assets.macAddress} = ${normMac}` : sql``} THEN 0 ELSE 1 END`,
+          sql`${assets.lastScanned} DESC NULLS LAST`,
+          desc(assets.createdAt) as SQL,
+        ]
+      : [sql`${assets.lastScanned} DESC NULLS LAST`, desc(assets.createdAt) as SQL]
+
     const [rows, countRows] = await Promise.all([
-      db
-        .select()
-        .from(assets)
-        .where(whereClause)
-        .orderBy(sql`${assets.lastScanned} DESC NULLS LAST`, desc(assets.createdAt))
-        .limit(limit)
-        .offset(offset),
+      db.select().from(assets).where(whereClause).orderBy(...orderByClause).limit(limit).offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(assets).where(whereClause),
     ])
 
-    return c.json({ total: countRows[0]?.count ?? 0, page, limit, items: rows })
+    // One extra query for the page's address rows (all rows → addressCount; the
+    // matching subset feeds the per-asset "why it matched" explanation). No per-row
+    // queries. Tenant-scoped to match the EXISTS above.
+    const pageIds = rows.map(r => r.assetId)
+    const addrByAsset = new Map<string, AddrRow[]>()
+    if (pageIds.length > 0) {
+      const addrScope = tenantScopeId
+        ? and(inArray(assetAddresses.assetId, pageIds), eq(assetAddresses.tenantId, tenantScopeId))
+        : inArray(assetAddresses.assetId, pageIds)
+      const addrRows = await db.select({
+        addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+        ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress,
+        firstSeen: assetAddresses.firstSeen, lastSeen: assetAddresses.lastSeen, endedAt: assetAddresses.endedAt,
+      }).from(assetAddresses).where(addrScope)
+      for (const r of addrRows) {
+        const l = addrByAsset.get(r.assetId) ?? []; l.push(r as AddrRow); addrByAsset.set(r.assetId, l)
+      }
+    }
+
+    const items = rows.map(r => {
+      const rowsForAsset = addrByAsset.get(r.assetId) ?? []
+      const addressCount = rowsForAsset.length
+      if (search) {
+        const { matches, matchedAddressCount } = computeMatches(r as MatchAsset, rowsForAsset, search)
+        return { ...r, addressCount, matches, matchedAddressCount }
+      }
+      return { ...r, addressCount, matches: [], matchedAddressCount: 0 }
+    })
+
+    // Within the returned page, current-field matches before history-only (ties keep
+    // the DB order, which already applied the same rank + last_scanned desc).
+    if (search) items.sort((a, b) => matchRank(a.matches) - matchRank(b.matches))
+
+    return c.json({ total: countRows[0]?.count ?? 0, page, limit, items })
   } catch (err) {
     console.error('assets GET / error:', err)
     return c.json({ detail: 'Failed to fetch assets' }, 500)
@@ -374,6 +443,38 @@ app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   } catch (err) {
     console.error('assets GET /:assetId error:', err)
     return c.json({ detail: 'Failed to fetch asset' }, 500)
+  }
+})
+
+// ── GET /:assetId/addresses — full address timeline (tenant-scoped, 1 query) ──
+app.get('/:assetId/addresses', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+    if (!z.string().uuid().safeParse(assetId).success) return c.json({ detail: 'Invalid asset id' }, 400)
+
+    const tenantScopeId = user.role !== 'superadmin' ? (user.tenantId ?? null) : (c.req.query('tenant_id') ?? null)
+    const where = tenantScopeId
+      ? and(eq(assetAddresses.assetId, assetId), eq(assetAddresses.tenantId, tenantScopeId))
+      : eq(assetAddresses.assetId, assetId)
+
+    const rows = await db.select({
+      addressId: assetAddresses.addressId, networkKey: assetAddresses.networkKey,
+      ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress,
+      firstSeen: assetAddresses.firstSeen, lastSeen: assetAddresses.lastSeen, endedAt: assetAddresses.endedAt,
+    }).from(assetAddresses).where(where).orderBy(desc(assetAddresses.lastSeen))
+
+    return c.json({
+      asset_id: assetId,
+      addresses: rows.map(r => ({
+        addressId: r.addressId, ipAddress: r.ipAddress, macAddress: r.macAddress, networkKey: r.networkKey,
+        firstSeen: r.firstSeen, lastSeen: r.lastSeen, endedAt: r.endedAt, isCurrent: r.endedAt == null,
+      })),
+    })
+  } catch (err) {
+    console.error('assets GET /:assetId/addresses error:', err)
+    return c.json({ detail: 'Failed to fetch addresses' }, 500)
   }
 })
 

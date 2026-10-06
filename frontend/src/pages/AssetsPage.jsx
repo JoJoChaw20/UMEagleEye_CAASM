@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Server, Search, Shield, Bookmark, Target, CheckCircle, MinusCircle, Trash2, RefreshCw, Layers, Filter, X } from 'lucide-react'
 import client from '../api/client'
@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
 import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import TenantSelector from '../components/common/TenantSelector'
+import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetAddressInfo'
 import { RISKY_PORTS } from '../components/common/alertMeta'
 
 const PAGE_SIZE = 25
@@ -43,6 +44,8 @@ export default function AssetsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '')
   const [deviceTypeFilter, setDeviceTypeFilter] = useState(() => searchParams.get('device_type') ?? '')
+  const [sourceFilter, setSourceFilter] = useState(() => searchParams.get('source') ?? '')
+  const [membershipFilter, setMembershipFilter] = useState(() => searchParams.get('in_my_assets') ?? '')  // '', 'true', 'false'
   const [linkFilter, setLinkFilter] = useState(() => readLinkFilter(searchParams))
   const [tenantFilter, setTenantFilter] = useState('')
   const [loading, setLoading] = useState(true)
@@ -51,6 +54,8 @@ export default function AssetsPage() {
   const [sbomScans, setSbomScans] = useState({})
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [dupCount, setDupCount] = useState(0)
+  const [expandedId, setExpandedId] = useState(null)   // asset whose address timeline is open
+  const toggleTimeline = (id) => setExpandedId((cur) => (cur === id ? null : id))
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -58,6 +63,8 @@ export default function AssetsPage() {
       const params = { page, page_size: PAGE_SIZE }
       if (search) params.search = search
       if (deviceTypeFilter) params.device_type = deviceTypeFilter
+      if (sourceFilter) params.source = sourceFilter
+      if (membershipFilter) params.in_my_assets = membershipFilter
       if (tenantFilter) params.tenant_id = tenantFilter
       Object.assign(params, linkFilter?.params)
       const res = await client.get('/assets', { params })
@@ -65,7 +72,7 @@ export default function AssetsPage() {
       setTotal(res.data.total || 0)
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
-  }, [page, search, deviceTypeFilter, tenantFilter, linkFilter])
+  }, [page, search, deviceTypeFilter, sourceFilter, membershipFilter, tenantFilter, linkFilter])
 
   // Follow in-app links that change the query while this page is open
   useEffect(() => {
@@ -73,6 +80,8 @@ export default function AssetsPage() {
     setLinkFilter(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next)
     setSearch(searchParams.get('q') ?? '')
     setDeviceTypeFilter(searchParams.get('device_type') ?? '')
+    setSourceFilter(searchParams.get('source') ?? '')
+    setMembershipFilter(searchParams.get('in_my_assets') ?? '')
     setPage(1)
   }, [searchParams])
 
@@ -214,6 +223,15 @@ export default function AssetsPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
+  const colCount = canManageAssets ? 8 : 7   // columns in the table (for the timeline colSpan)
+
+  // Human-readable summary of the active filters, for the empty state.
+  const activeFilterBits = []
+  if (deviceTypeFilter) activeFilterBits.push(`type ${DEVICE_TYPE_META[deviceTypeFilter]?.label ?? deviceTypeFilter}`)
+  if (sourceFilter) activeFilterBits.push(`source ${SOURCE_META[sourceFilter]?.label ?? sourceFilter}`)
+  if (membershipFilter === 'true') activeFilterBits.push('in My Assets')
+  else if (membershipFilter === 'false') activeFilterBits.push('not in My Assets')
+  const filterSummary = activeFilterBits.join(', ')
 
   return (
     <div className="space-y-6">
@@ -271,7 +289,7 @@ export default function AssetsPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
           <input
             type="text"
-            placeholder="Search by hostname or IP..."
+            placeholder="Search hostname, vendor, IP or MAC"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1) }}
             className="input-field pl-10 text-sm"
@@ -290,8 +308,27 @@ export default function AssetsPage() {
           <option value="iot">IoT</option>
           <option value="unknown">Unknown</option>
         </select>
+        <select
+          value={sourceFilter}
+          onChange={e => { setSourceFilter(e.target.value); setPage(1) }}
+          className="input-field text-sm py-1.5 w-40"
+        >
+          <option value="">All Sources</option>
+          <option value="scan_active">Active scan</option>
+          <option value="scan_passive">Passive scan</option>
+          <option value="manual">Manual</option>
+        </select>
+        <select
+          value={membershipFilter}
+          onChange={e => { setMembershipFilter(e.target.value); setPage(1) }}
+          className="input-field text-sm py-1.5 w-44"
+        >
+          <option value="">All assets</option>
+          <option value="true">In My Assets</option>
+          <option value="false">Not in My Assets</option>
+        </select>
         <button
-          onClick={() => { setSearch(''); setDeviceTypeFilter(''); clearLinkFilter() }}
+          onClick={() => { setSearch(''); setDeviceTypeFilter(''); setSourceFilter(''); setMembershipFilter(''); clearLinkFilter() }}
           className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
         >
           Clear filters
@@ -325,7 +362,8 @@ export default function AssetsPage() {
                 const deviceMeta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
                 const { label: critLabel, cls: critCls } = getCriticalityMeta(a.criticalityScore)
                 return (
-                  <tr key={a.assetId}>
+                  <Fragment key={a.assetId}>
+                  <tr>
                     <td>
                       <span className="flex items-center gap-1.5 whitespace-nowrap">
                         <span className="text-base leading-none">{deviceMeta.icon}</span>
@@ -335,6 +373,7 @@ export default function AssetsPage() {
                     <td>
                       <div className="font-medium text-white">{a.hostname || '—'}</div>
                       <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
+                      <AddressCellInfo asset={a} searchTerm={search} expanded={expandedId === a.assetId} onToggle={() => toggleTimeline(a.assetId)} />
                     </td>
                     <td className="whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
@@ -418,6 +457,10 @@ export default function AssetsPage() {
                       </div>
                     </td>}
                   </tr>
+                  {expandedId === a.assetId && (
+                    <AddressTimelineRow asset={a} colSpan={colCount} searchTerm={search} tenantId={tenantFilter || undefined} />
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>
@@ -425,7 +468,13 @@ export default function AssetsPage() {
         ) : (
           <div className="text-center py-20 text-dark-400">
             <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p>No assets found. Run a scan or adjust your filters.</p>
+            {search ? (
+              <p>No assets match “{search}”{filterSummary ? ` with ${filterSummary}` : ''}. Searched hostname, vendor, and current <span className="whitespace-nowrap">&amp; historical</span> IPs/MACs.</p>
+            ) : filterSummary ? (
+              <p>No assets match the current filters ({filterSummary}).</p>
+            ) : (
+              <p>No assets found. Run a scan or adjust your filters.</p>
+            )}
           </div>
         )}
       </div>
