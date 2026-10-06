@@ -11,6 +11,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators } from '../db/schema'
+import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -352,9 +353,10 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
     const assetId = scanRow.subnet
     if (!assetId) return c.json({ detail: 'Scan has no associated asset' }, 400)
 
-    // Verify asset exists
+    // Verify asset exists. Also pull its baseline so the first real SBOM can
+    // complete the (unknown) package baseline in the same write — no extra query.
     const [asset] = await db
-      .select({ assetId: assets.assetId })
+      .select({ assetId: assets.assetId, baselineState: assets.baselineState })
       .from(assets)
       .where(eq(assets.assetId, assetId))
       .limit(1)
@@ -398,12 +400,33 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
       await db.insert(dependencies).values(depRows.slice(i, i + BATCH))
     }
 
-    // Mark scan completed
-    await db.update(scanResults)
+    // First real SBOM for an asset whose baseline packages are still unknown →
+    // complete baseline_state.packages (+ packages_known) from this scan, so the
+    // drift audit has a package baseline to compare against instead of treating
+    // every package as new. Partial jsonb merge (|| patch) leaves ports/hostname/
+    // os_version/etc. untouched; skipped when baseline is null, already known, or
+    // this SBOM carried no packages. Runs in the SAME batch as the scan-complete
+    // update, so the drift cron can never observe one without the other and the
+    // ingest keeps the same subrequest count as before.
+    const pkgMap = buildPackageMap((sbomJson as Record<string, unknown>).components)
+    const completion = planPackageBaselineCompletion(asset.baselineState as AssetBaseline | null, pkgMap)
+
+    const scanDone = db.update(scanResults)
       .set({ status: 'completed', hostsDiscovered: depRows.length })
       .where(eq(scanResults.scanId, scan_id))
 
-    return c.json({ sbom_id: sbomRow.sbomId, dependencies_inserted: depRows.length }, 201)
+    if (completion) {
+      await db.batch([
+        scanDone,
+        db.update(assets)
+          .set({ baselineState: sql`${assets.baselineState} || ${JSON.stringify(completion)}::jsonb`, updatedAt: new Date() })
+          .where(eq(assets.assetId, assetId)),
+      ])
+    } else {
+      await scanDone
+    }
+
+    return c.json({ sbom_id: sbomRow.sbomId, dependencies_inserted: depRows.length, baseline_packages_completed: completion ? Object.keys(pkgMap).length : 0 }, 201)
   } catch (err) {
     console.error('sbom ingest error:', err)
     return c.json({ detail: 'Failed to ingest SBOM' }, 500)

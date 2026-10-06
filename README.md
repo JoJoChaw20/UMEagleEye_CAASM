@@ -691,11 +691,15 @@ Setting a baseline via **Assets → Bookmark icon** captures a point-in-time Gol
   "is_internet_facing": false,
   "device_type": "server",
   "captured_at": "2026-05-15T10:00:00.000Z",
-  "auto_set": false
+  "auto_set": false,
+  "ports_known": true,
+  "packages_known": true
 }
 ```
 
 **Auto-baseline:** The first scan of a previously-unseen asset automatically sets its baseline so future scans can detect drift immediately. Manually overriding the baseline (Bookmark icon) sets `auto_set: false`.
+
+**`ports_known` / `packages_known`:** A baseline only records what the capture could actually see. A passive scan has no port visibility (`ports_known: false`) and no scan collects installed packages, so a baseline set before an SBOM has `packages_known: false` and omits the `packages` key entirely — never an empty `{}`. The drift audit skips the ports (or packages) comparison while that flag is false, so the first active scan / first SBOM **completes** the baseline for that attribute instead of raising drift for every port/package at once. Package completion rides on the same atomic write as the SBOM ingest.
 
 The drift audit cron (`*/15 * * * *`) compares each asset's current `os_info` and fields against its `baseline_state` and generates typed security events:
 
@@ -703,9 +707,9 @@ The drift audit cron (`*/15 * * * *`) compares each asset's current `os_info` an
 |---|---|---|
 | `port_opened` | New port seen in scan | High if port < 1024, else Medium |
 | `port_closed` | Port no longer seen | Low |
-| `version_downgrade` | OS/package version decreased | High |
-| `version_upgrade` | OS/package version increased | Low |
-| `new_package` | Package in scan not in baseline | Medium |
+| `version_downgrade` | OS or package version decreased | High (OS) / Medium (package) |
+| `version_upgrade` | OS or package version increased | Low |
+| `new_package` | Package in scan not in baseline | Low |
 | `removed_package` | Baseline package no longer present | Low |
 | `config_change` (hostname) | Hostname changed | Medium |
 | `config_change` (mac_address) | MAC address changed | High |
@@ -714,9 +718,9 @@ The drift audit cron (`*/15 * * * *`) compares each asset's current `os_info` an
 | `config_change` (device_type) | Device type reclassified | Medium |
 | `new_device` | IP never seen before; set at scan ingest | High if internet-facing, else Medium |
 
-**Deduplication:** Identical drift events within a 24-hour window are suppressed to avoid flooding alerts on every 15-minute cron run.
+**One alert per condition:** The audit does not raise a fresh event every cron run. Each distinct condition (e.g. "port 22 open on asset X", "package nginx added") maps to a single alert — re-detecting it bumps `last_seen` and an `occurrences` counter on the existing open alert, a condition that is no longer detected (port closed again, package removed, hostname reverted) is auto-resolved, and a condition an analyst marked a false positive stays suppressed. Package comparisons are skipped entirely until the baseline packages are known (see `packages_known` above), so the first SBOM never opens a wave of `new_package` alerts.
 
-**Acknowledge workflow:** Clicking the checkmark button on a drift alert in the Alerts page accepts the change as the new normal — it re-baselines the asset to its current state and removes the alert.
+**Accept-into-baseline workflow:** Accepting a drift alert as *accepted risk* in the Alerts page treats that change as the new normal — only the single attribute the alert is about is re-baselined (accepting "port 22 opened" never silently accepts an unrelated MAC or package change), and the alert is closed. Accepting a package change while the asset's baseline packages are still unknown leaves them unknown and just closes the alert; the first full SBOM is what establishes the package baseline.
 
 ## Deployment
 

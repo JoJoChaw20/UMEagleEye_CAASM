@@ -18,6 +18,11 @@ export interface AssetBaseline {
   captured_at?:       string
   auto_set?:          boolean              // true when set automatically on first scan
   ports_known?:       boolean              // false when captured by a passive scan (no port visibility)
+  // false until a real SBOM has been ingested. A baseline captured before any SBOM
+  // (manual/CSV, passive, or active — active scans don't collect installed packages)
+  // has no package visibility, so the drift audit must NOT treat the first SBOM's
+  // packages as "new". Mirrors ports_known. See buildBaseline / detectDrift.
+  packages_known?:    boolean
   captured_from?:     string               // 'manual' when seeded at hand/CSV creation
 }
 
@@ -65,6 +70,48 @@ function extractPackages(osInfo: Record<string, unknown> | null | undefined): Re
   return {}
 }
 
+// ── Package-baseline "known" test (mirrors ports_known) ───────────
+// A baseline's packages are UNKNOWN when the `packages` key is absent, or the
+// map is empty and packages_known is not explicitly true. Legacy scan-created
+// baselines that carry an empty `packages:{}` and no flag therefore count as
+// unknown and get completed by their next first SBOM. Pure.
+export function baselinePackagesKnown(baseline: AssetBaseline | null | undefined): boolean {
+  if (!baseline) return false
+  if (baseline.packages_known === true) return true
+  return Object.keys(baseline.packages ?? {}).length > 0
+}
+
+// ── CycloneDX components → canonical package map (name → version) ──
+// Same shape the drift audit compares (extractPackages). Last version wins on a
+// duplicate name; components missing name or version are dropped. Pure.
+export function buildPackageMap(components: unknown): Record<string, string> {
+  const map: Record<string, string> = {}
+  if (!Array.isArray(components)) return map
+  for (const c of components) {
+    const comp = c as Record<string, unknown>
+    if (comp?.name == null || comp?.version == null) continue
+    map[String(comp.name)] = String(comp.version)
+  }
+  return map
+}
+
+// ── Plan the first-SBOM baseline completion (pure) ────────────────
+// Returns the PARTIAL patch to jsonb-merge into baseline_state when a real SBOM
+// (≥1 package) is ingested for an asset whose baseline packages are still unknown,
+// or null when nothing should change: no baseline row (null-baseline assets are
+// skipped by the audit), an already-known baseline, or an empty SBOM result.
+// The caller merges this with `baseline_state || patch` so ports/hostname/etc. are
+// left untouched, and runs it in the SAME batch as the SBOM write.
+export function planPackageBaselineCompletion(
+  baseline: AssetBaseline | null | undefined,
+  pkgMap: Record<string, string>,
+): { packages: Record<string, string>; packages_known: true } | null {
+  if (!baseline) return null
+  if (baselinePackagesKnown(baseline)) return null
+  if (Object.keys(pkgMap).length === 0) return null
+  return { packages: pkgMap, packages_known: true }
+}
+
 // ── Build a canonical baseline snapshot from asset state ──────────
 // Used both by the manual POST /assets/:id/baseline endpoint and by
 // auto-baselining on first scan ingest.
@@ -78,10 +125,15 @@ export function buildBaseline(params: {
   autoSet?:         boolean
   portsKnown?:      boolean
 }): AssetBaseline {
-  return {
+  // Only treat packages as known when the asset actually has package data (an SBOM
+  // has landed in os_info). Active/passive scans don't collect packages, so this is
+  // normally false and the `packages` key is omitted — never an empty `{}` — so the
+  // first SBOM completes it without a flood of false new_package drift.
+  const pkgs = extractPackages(params.osInfo)
+  const hasPkgs = Object.keys(pkgs).length > 0
+  const b: AssetBaseline = {
     ports:             params.ports,
     os_version:        extractOsVersion(params.osInfo),
-    packages:          extractPackages(params.osInfo),
     hostname:          params.hostname ?? null,
     mac_address:       params.macAddress ?? null,
     is_internet_facing: params.isInternetFacing,
@@ -90,7 +142,10 @@ export function buildBaseline(params: {
     captured_at:       new Date().toISOString(),
     auto_set:          params.autoSet ?? false,
     ports_known:       params.portsKnown ?? true,
+    packages_known:    hasPkgs,
   }
+  if (hasPkgs) b.packages = pkgs
+  return b
 }
 
 // ── Manual-creation baseline (POST /assets + CSV import) ──────────
@@ -114,6 +169,7 @@ export function buildManualBaseline(params: {
     captured_at:        new Date().toISOString(),
     auto_set:           true,
     ports_known:        false,
+    packages_known:     false,
     captured_from:      'manual',
   }
   if (params.osVersion) b.os_version = params.osVersion
@@ -140,7 +196,8 @@ export function mergeBaselineFields(
 }
 
 // ── Core drift comparison ─────────────────────────────────────────
-function detectDrift(
+// Exported for the packages-known demo; still pure.
+export function detectDrift(
   baseline: AssetBaseline,
   asset:    typeof assets.$inferSelect,
 ): DriftEvent[] {
@@ -182,25 +239,32 @@ function detectDrift(
     })
   }
 
-  // ── Packages (only meaningful if SBOM has been run) ────────────
+  // ── Packages ────────────────────────────────────────────────────
+  // Mirror ports_known: compare only when the baseline packages are KNOWN and the
+  // asset actually has current package data. A baseline captured before any SBOM
+  // (manual/CSV, passive, or a legacy `packages:{}`) has unknown packages, so the
+  // first SBOM that completes it can't look like every package is new; an asset
+  // with no current packages is also skipped so a completed baseline doesn't flag
+  // every package as removed from an empty/failed scan.
   const basePkgs = baseline.packages ?? {}
   const curPkgs  = extractPackages(osInfo)
-
-  for (const [pkg, ver] of Object.entries(curPkgs)) {
-    if (!(pkg in basePkgs)) {
-      drifts.push({ type: 'new_package', severity: 'low', details: { package: pkg, version: ver } })
-    } else if (basePkgs[pkg] !== ver) {
-      const isDowngrade = compareVersions(ver, basePkgs[pkg] ?? '') < 0
-      drifts.push({
-        type:     isDowngrade ? 'version_downgrade' : 'version_upgrade',
-        severity: isDowngrade ? 'medium' : 'low',
-        details:  { changed_attribute: 'package_version', package: pkg, from: basePkgs[pkg], to: ver },
-      })
+  if (baselinePackagesKnown(baseline) && Object.keys(curPkgs).length > 0) {
+    for (const [pkg, ver] of Object.entries(curPkgs)) {
+      if (!(pkg in basePkgs)) {
+        drifts.push({ type: 'new_package', severity: 'low', details: { package: pkg, version: ver } })
+      } else if (basePkgs[pkg] !== ver) {
+        const isDowngrade = compareVersions(ver, basePkgs[pkg] ?? '') < 0
+        drifts.push({
+          type:     isDowngrade ? 'version_downgrade' : 'version_upgrade',
+          severity: isDowngrade ? 'medium' : 'low',
+          details:  { changed_attribute: 'package_version', package: pkg, from: basePkgs[pkg], to: ver },
+        })
+      }
     }
-  }
-  for (const pkg of Object.keys(basePkgs)) {
-    if (!(pkg in curPkgs)) {
-      drifts.push({ type: 'removed_package', severity: 'low', details: { package: pkg } })
+    for (const pkg of Object.keys(basePkgs)) {
+      if (!(pkg in curPkgs)) {
+        drifts.push({ type: 'removed_package', severity: 'low', details: { package: pkg } })
+      }
     }
   }
 

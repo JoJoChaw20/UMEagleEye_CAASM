@@ -18,7 +18,7 @@ import {
   events, assets, advisories, users, auditLogs,
   assetRelationships, eventCtiIndicators, ctiIndicators,
 } from '../db/schema'
-import { buildBaseline, extractPorts, type AssetBaseline } from '../services/drift'
+import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
@@ -520,15 +520,20 @@ async function acceptIntoBaseline(db: DB, event: typeof events.$inferSelect, ass
   const d = (event.details ?? {}) as Record<string, unknown>
   const ports = new Set(baseline.ports ?? [])
   const packages = { ...(baseline.packages ?? {}) }
+  // Accepting a single package change into an UNKNOWN package baseline would turn it
+  // into a one-entry "known" map, so the next audit would flag every other installed
+  // package as new. Leave packages unknown and just let the caller close the event —
+  // the first full SBOM is what completes the package baseline.
+  const pkgKnown = baselinePackagesKnown(baseline)
 
   switch (event.eventType) {
     case 'port_opened': ports.add(Number(d.port)); break
     case 'port_closed': ports.delete(Number(d.port)); break
-    case 'new_package': if (d.package) packages[String(d.package)] = String(d.version ?? ''); break
-    case 'removed_package': if (d.package) delete packages[String(d.package)]; break
+    case 'new_package': if (!pkgKnown) return; if (d.package) packages[String(d.package)] = String(d.version ?? ''); break
+    case 'removed_package': if (!pkgKnown) return; if (d.package) delete packages[String(d.package)]; break
     case 'version_upgrade':
     case 'version_downgrade':
-      if (d.package) packages[String(d.package)] = String(d.to ?? '')
+      if (d.package) { if (!pkgKnown) return; packages[String(d.package)] = String(d.to ?? '') }
       else baseline.os_version = d.to != null ? String(d.to) : baseline.os_version
       break
     case 'config_change':
@@ -546,7 +551,9 @@ async function acceptIntoBaseline(db: DB, event: typeof events.$inferSelect, ass
   }
 
   baseline.ports = [...ports].filter(p => !isNaN(p)).sort((a, b) => a - b)
-  baseline.packages = packages
+  // Only write packages back when they are (or just became) known, so accepting a
+  // non-package change never stamps an empty `packages:{}` onto an unknown baseline.
+  if (pkgKnown) baseline.packages = packages
   baseline.captured_at = new Date().toISOString()
   baseline.auto_set = false
   await db.update(assets).set({ baselineState: baseline, updatedAt: new Date() }).where(eq(assets.assetId, asset.assetId))
