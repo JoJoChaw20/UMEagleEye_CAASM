@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
-import { Plus, Search, MinusCircle, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, GitBranch } from 'lucide-react'
+import { Plus, Search, MinusCircle, Bookmark, X, Server, Save, ToggleLeft, ToggleRight, Upload, Download, FileText, Zap, GitBranch, Pencil, RefreshCw } from 'lucide-react'
 import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetAddressInfo'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -219,42 +219,141 @@ function AddAssetModal({ onClose, onSave }) {
   )
 }
 
-// ── Inline edit cell for owner / criticality ──────────────────────
-function EditableCell({ value, type = 'text', onSave, readOnly }) {
-  const [editing, setEditing] = useState(false)
-  const [local, setLocal] = useState(value)
+// ── Edit asset modal (owner, type, hostname, exposure) ────────────
+function EditAssetModal({ asset, onClose, onSave }) {
+  const [form, setForm] = useState({
+    owner: asset.owner ?? '',
+    device_type: asset.deviceType ?? 'unknown',
+    hostname: asset.hostname ?? '',
+    is_internet_facing: !!asset.isInternetFacing,
+  })
+  const [updateBaseline, setUpdateBaseline] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
 
-  if (readOnly || !editing) {
-    return (
-      <span
-        onClick={() => !readOnly && setEditing(true)}
-        className={`cursor-pointer text-sm ${readOnly ? '' : 'hover:text-white underline decoration-dotted decoration-dark-500'}`}
-        title={readOnly ? '' : 'Click to edit'}
-      >
-        {value || <span className="text-dark-500">—</span>}
-      </span>
-    )
+  // Drift-tracked fields editable here that actually changed (owner is not tracked).
+  const driftChanged =
+    form.hostname !== (asset.hostname ?? '') ||
+    form.device_type !== (asset.deviceType ?? 'unknown') ||
+    form.is_internet_facing !== !!asset.isInternetFacing
+  const showBaselineOption = driftChanged && !!asset.baselineState
+
+  const set = (field) => (e) => setForm(f => ({ ...f, [field]: e.target?.value ?? e }))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setSaving(true); setError(null)
+    try {
+      await onSave({
+        owner: form.owner,
+        device_type: form.device_type,
+        hostname: form.hostname,
+        is_internet_facing: form.is_internet_facing,
+        ...(showBaselineOption ? { update_baseline: updateBaseline } : {}),
+      })
+      onClose()
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to save changes')
+    } finally {
+      setSaving(false)
+    }
   }
 
+  // Focus trap + Escape close — the Edit button is the single entry point.
+  const modalRef = useRef(null)
+  useEffect(() => {
+    const el = modalRef.current
+    if (!el) return
+    const focusables = () => Array.from(
+      el.querySelectorAll('button, input, select, textarea, [href], [tabindex]:not([tabindex="-1"])'),
+    ).filter((n) => !n.disabled && n.offsetParent !== null)
+    focusables()[0]?.focus()
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); onClose(); return }
+      if (ev.key !== 'Tab') return
+      const f = focusables()
+      if (f.length === 0) return
+      const first = f[0], last = f[f.length - 1]
+      if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus() }
+      else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus() }
+    }
+    el.addEventListener('keydown', onKey)
+    return () => el.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
-    <div className="flex items-center gap-1">
-      <input
-        autoFocus
-        type={type}
-        value={local}
-        onChange={(e) => setLocal(e.target.value)}
-        className="input-field text-sm py-0.5 px-2 w-32"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') { onSave(local); setEditing(false) }
-          if (e.key === 'Escape') { setLocal(value); setEditing(false) }
-        }}
-      />
-      <button
-        onClick={() => { onSave(local); setEditing(false) }}
-        className="p-1 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors"
-      >
-        <Save className="w-3.5 h-3.5" />
-      </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="edit-asset-title" className="glass-card w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 id="edit-asset-title" className="text-lg font-semibold text-white">Edit Asset</h2>
+            <p className="font-mono text-xs text-accent-cyan mt-0.5">{asset.ipAddress}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-dark-400 hover:text-dark-100 transition-colors"><X className="w-5 h-5" /></button>
+        </div>
+
+        {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-xs text-dark-400 mb-1">Hostname</label>
+            <input type="text" value={form.hostname} onChange={set('hostname')} placeholder="workstation-01" className="input-field w-full text-sm" />
+          </div>
+          <div>
+            <label className="block text-xs text-dark-400 mb-1">Device Type</label>
+            <select value={form.device_type} onChange={set('device_type')} className="input-field w-full text-sm">
+              <option value="unknown">Unknown</option>
+              <option value="server">Server</option>
+              <option value="workstation">Workstation</option>
+              <option value="network">Network Device</option>
+              <option value="iot">IoT</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-dark-400 mb-1">Owner</label>
+            <input type="text" value={form.owner} onChange={set('owner')} placeholder="IT Dept / john.doe@company.com" className="input-field w-full text-sm" />
+          </div>
+          <div className="flex items-center justify-between py-1">
+            <label className="text-sm text-dark-300">Internet Facing</label>
+            <button type="button" role="switch" aria-checked={form.is_internet_facing} aria-label="Internet facing"
+              onClick={() => setForm(f => ({ ...f, is_internet_facing: !f.is_internet_facing }))}
+              className="text-dark-400 hover:text-dark-100 transition-colors">
+              {form.is_internet_facing ? <ToggleRight className="w-7 h-7 text-eagle-400" /> : <ToggleLeft className="w-7 h-7" />}
+            </button>
+          </div>
+
+          {/* Read-only — criticality is changed only via Rescore, not inline here. */}
+          <div className="rounded-lg border border-dark-700/70 bg-dark-900/40 px-3 py-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-dark-400">Criticality <span className="text-dark-400">(read-only)</span></span>
+              <span className="text-sm font-semibold text-dark-100">{asset.criticalityScore}/10</span>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-dark-300">
+              Computed from device type, exposure and topology. Use <span className="text-dark-200">Rescore this asset</span> to refresh.
+            </p>
+          </div>
+
+          {showBaselineOption && (
+            <div className="rounded-lg border border-dark-700/70 bg-dark-900/30 p-3">
+              <label className="flex items-start gap-2 text-xs text-dark-200 cursor-pointer">
+                <input type="checkbox" checked={updateBaseline} onChange={(e) => setUpdateBaseline(e.target.checked)} className="mt-0.5 accent-eagle-500" />
+                <span>Also update the baseline for the fields I changed</span>
+              </label>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-dark-300">
+                Unchecked, the next drift audit will flag this change as drift.
+              </p>
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
+            <button type="submit" disabled={saving} className="btn-primary flex-1 text-sm flex items-center justify-center gap-2">
+              {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }
@@ -521,6 +620,8 @@ export default function MyAssetsPage() {
   const [graphBlastId, setGraphBlastId] = useState(null)
   const [expandedId, setExpandedId] = useState(null)   // asset whose address timeline is open
   const toggleTimeline = (id) => setExpandedId((cur) => (cur === id ? null : id))
+  const [editingAsset, setEditingAsset] = useState(null)
+  const [rescoringId, setRescoringId] = useState(null)
   const isReadOnly = ['business_owner', 'superadmin'].includes(user?.role)
 
   const loadAssets = useCallback(async () => {
@@ -557,8 +658,10 @@ export default function MyAssetsPage() {
   const handleRescore = async () => {
     setRescoring(true)
     try {
-      const params = tenantFilter ? `?tenant_id=${tenantFilter}` : ''
-      const res = await client.post(`/assets/rescore${params}`)
+      // scope=my_assets → score only the assets in My Assets (not the whole tenant).
+      const qs = new URLSearchParams({ scope: 'my_assets' })
+      if (tenantFilter) qs.set('tenant_id', tenantFilter)
+      const res = await client.post(`/assets/rescore?${qs.toString()}`)
       await loadAssets()
       alert(res.data.message)
     } catch (err) {
@@ -580,13 +683,34 @@ export default function MyAssetsPage() {
   }
 
   const handleBaseline = async (assetId) => {
-    if (!confirm('Set current state as baseline? This will overwrite any existing baseline.')) return
+    if (!confirm('Set the baseline to this asset\'s current state?\n\nThis replaces the current baseline (ports, packages, hostname, MAC, exposure and device type).')) return
     try {
       await client.post(`/assets/${assetId}/baseline`, { confirm: true })
       alert('Baseline set successfully.')
       await loadAssets()
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to set baseline')
+    }
+  }
+
+  // Edit modal save → PATCH; errors bubble to the modal.
+  const handleEditSave = async (patch) => {
+    await client.patch(`/assets/${editingAsset.assetId}`, patch)
+    await loadAssets()
+  }
+
+  const handleRescoreOne = async (asset) => {
+    setRescoringId(asset.assetId)
+    try {
+      const res = await client.post(`/assets/${asset.assetId}/rescore`)
+      const { changed, previous, current } = res.data
+      const name = asset.hostname || asset.ipAddress
+      alert(changed ? `${name}: Criticality ${previous}/10 to ${current}/10` : `${name}: Criticality already up to date`)
+      if (changed) await loadAssets()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Rescore failed')
+    } finally {
+      setRescoringId(null)
     }
   }
 
@@ -623,14 +747,14 @@ export default function MyAssetsPage() {
             <button
               onClick={handleRescore}
               disabled={rescoring}
-              title="Auto-compute criticality score from device type, open ports, hostname, and network position"
+              title="Re-score criticality for all assets in My Assets"
               className="btn-secondary flex items-center gap-2 text-sm"
             >
               {rescoring
                 ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 : <Zap className="w-4 h-4 text-yellow-400" />
               }
-              Auto-Score
+              Rescore All
             </button>
             <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-2">
               <Upload className="w-4 h-4" />
@@ -774,11 +898,8 @@ export default function MyAssetsPage() {
                         })()}
                       </td>
                       <td>
-                        <EditableCell
-                          value={a.owner}
-                          readOnly={isReadOnly}
-                          onSave={(v) => handleUpdate(a.assetId, 'owner', v)}
-                        />
+                        {/* Read-only — owner is edited from the Edit modal only. */}
+                        <span className="text-sm text-dark-200">{a.owner || <span className="text-dark-500">—</span>}</span>
                       </td>
                       <td>
                         {isReadOnly ? (
@@ -808,24 +929,35 @@ export default function MyAssetsPage() {
                       </td>
                       {!isReadOnly && <td>
                         <div className="flex items-center gap-1">
-                          {!isReadOnly && (
-                            <button
-                              onClick={() => handleBaseline(a.assetId)}
-                              className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`}
-                              title="Set Baseline"
-                            >
-                              <Bookmark className="w-4 h-4" />
-                            </button>
-                          )}
-                          {!isReadOnly && (
-                            <button
-                              onClick={() => handleRemove(a.assetId)}
-                              className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                              title="Remove from My Assets"
-                            >
-                              <MinusCircle className="w-4 h-4" />
-                            </button>
-                          )}
+                          <button
+                            onClick={() => setEditingAsset(a)}
+                            className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
+                            title="Edit asset" aria-label="Edit asset"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleRescoreOne(a)}
+                            disabled={rescoringId === a.assetId}
+                            className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
+                            title="Rescore this asset's criticality" aria-label="Rescore this asset's criticality"
+                          >
+                            <RefreshCw className={`w-4 h-4 ${rescoringId === a.assetId ? 'animate-spin' : ''}`} />
+                          </button>
+                          <button
+                            onClick={() => handleBaseline(a.assetId)}
+                            className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`}
+                            title="Set baseline to the asset's current state" aria-label="Set baseline to the asset's current state"
+                          >
+                            <Bookmark className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleRemove(a.assetId)}
+                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
+                            title="Remove from My Assets" aria-label="Remove from My Assets"
+                          >
+                            <MinusCircle className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>}
                     </tr>
@@ -891,6 +1023,14 @@ export default function MyAssetsPage() {
           onClose={() => setShowImport(false)}
           onImport={handleImportDone}
           tenantId={tenantFilter || undefined}
+        />
+      )}
+
+      {editingAsset && (
+        <EditAssetModal
+          asset={editingAsset}
+          onClose={() => setEditingAsset(null)}
+          onSave={handleEditSave}
         />
       )}
     </div>

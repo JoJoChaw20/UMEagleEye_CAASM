@@ -1,19 +1,19 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, isNull, inArray, desc, ilike, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
+import { eq, and, or, isNull, inArray, desc, ilike, sql, getTableColumns, type SQL, type SQLWrapper } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, assetAddresses, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
-import { rescoreAssets } from '../lib/rescore'
+import { rescoreAssets, scoreAsset } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
 import { normalizeMac } from '../lib/mac'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
 import { findDuplicateGroups, type DupAsset, type DupAddress } from '../lib/duplicates'
 import { planMerge, type MergeAsset, type MergeOp, type MergeRelated } from '../lib/merge'
-import { buildBaseline, extractPorts } from '../services/drift'
+import { buildBaseline, buildManualBaseline, extractPorts, extractOsVersion, mergeBaselineFields, type AssetBaseline } from '../services/drift'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -69,21 +69,6 @@ async function recordManualAddress(
   }
 }
 
-function computeAssetCriticality(input: {
-  deviceType: string
-  isInternetFacing: boolean
-  hostname?: string | null
-  owner?: string | null
-  osInfo: Record<string, unknown>
-}): number {
-  return computeCriticality({
-    deviceType: input.deviceType,
-    isInternetFacing: input.isInternetFacing,
-    hostname: input.hostname ?? undefined,
-    owner: input.owner ?? undefined,
-    osInfo: input.osInfo,
-  }).score
-}
 
 // ── GET / ────────────────────────────────────────────────────────
 app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
@@ -532,10 +517,11 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
     const osInfo = (body.os_info ?? existing?.osInfo ?? {}) as Record<string, unknown>
     const hostname = body.hostname ?? existing?.hostname
 
-    // Preserve criticality from scan when device type is unchanged; recompute only when type improves
+    // Preserve criticality from scan when device type is unchanged; recompute only when type
+    // improves. A brand-new asset has no topology layer, so this equals a later rescore.
     const computedScore = (existing?.criticalityScore && deviceType === existing.deviceType)
       ? existing.criticalityScore
-      : computeAssetCriticality({ deviceType, isInternetFacing, hostname, owner: body.owner ?? existing?.owner, osInfo })
+      : scoreAsset({ deviceType, isInternetFacing, hostname, osInfo, topologyLayer: null, owner: body.owner ?? existing?.owner })
 
     if (existing) {
       // Adopt into My Assets. Leave `source` (last observation method) untouched —
@@ -555,6 +541,16 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         updateData.osInfo = { ...(existing.osInfo as Record<string, unknown> ?? {}), ...body.os_info }
       }
       if (body.is_internet_facing !== undefined) updateData.isInternetFacing = body.is_internet_facing
+      // Seed a baseline only if the adopted asset has none — never overwrite one.
+      if (!existing.baselineState || Object.keys(existing.baselineState as Record<string, unknown>).length === 0) {
+        updateData.baselineState = buildManualBaseline({
+          hostname: (updateData.hostname as string | undefined) ?? existing.hostname,
+          macAddress: (updateData.macAddress as string | null | undefined) ?? existing.macAddress,
+          deviceType: (updateData.deviceType as string | undefined) ?? deviceType,
+          isInternetFacing: (updateData.isInternetFacing as boolean | undefined) ?? isInternetFacing,
+          osVersion: extractOsVersion((updateData.osInfo as Record<string, unknown> | undefined) ?? osInfo),
+        })
+      }
       const [updated] = await db.update(assets).set(updateData).where(eq(assets.assetId, existing.assetId)).returning()
       await recordManualAddress(db, { assetId: existing.assetId, tenantId: targetTenantId, ip: body.ip_address, mac: normalizedMac ?? null })
       return c.json(updated, 200)
@@ -576,6 +572,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         osInfo,
         criticalityScore: computedScore,
         isInternetFacing,
+        baselineState: buildManualBaseline({ hostname: body.hostname, macAddress: normalizedMac, deviceType, isInternetFacing, osVersion: extractOsVersion(osInfo) }),
         source: body.source ?? 'manual',
         inMyAssets: true,              // created by hand → a My Assets member
         tenantId: targetTenantId,
@@ -607,6 +604,9 @@ const updateAssetSchema = z.object({
   internet_facing_override: z.boolean().nullable().optional(),
   source: z.enum(['manual', 'scan_active', 'scan_passive']).optional(),
   in_my_assets: z.boolean().optional(),
+  // When true, merge the edited drift-tracked fields into the existing baseline in
+  // the same update, so the edit is not flagged as drift at the next audit.
+  update_baseline: z.boolean().optional(),
 })
 
 app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', updateAssetSchema), async (c) => {
@@ -616,7 +616,15 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     const { assetId } = c.req.param()
     const body = c.req.valid('json')
 
-    const [existing] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
+    // Fetch the asset AND its topology layer in one query (leftJoin), so the
+    // criticality recompute below can use the same topology input as Rescore
+    // without an extra subrequest.
+    const [existing] = await db
+      .select({ ...getTableColumns(assets), topologyLayer: topologyNodes.layer })
+      .from(assets)
+      .leftJoin(topologyNodes, eq(topologyNodes.assetId, assets.assetId))
+      .where(eq(assets.assetId, assetId))
+      .limit(1)
     if (!existing) {
       return c.json({ detail: 'Asset not found' }, 404)
     }
@@ -651,21 +659,37 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     if (body.source !== undefined) updateData.source = body.source
     if (body.in_my_assets !== undefined) updateData.inMyAssets = body.in_my_assets
 
-    // Recompute criticality unless caller explicitly sets it
+    // Recompute criticality unless the caller sets it explicitly. Routed through the
+    // SAME single-asset scorer as bulk/per-asset rescore — including the topology
+    // layer — so PATCH and Rescore agree. (Matches the bulk run, which does not use
+    // owner; see scoreAsset.)
     if (body.criticality_score !== undefined) {
       updateData.criticalityScore = body.criticality_score
     } else {
-      const mergedDeviceType = body.device_type ?? existing.deviceType
-      const mergedHostname = body.hostname ?? existing.hostname
       const mergedOsInfo = (body.os_info ?? existing.osInfo ?? {}) as Record<string, unknown>
-      const mergedInternetFacing = updateData.isInternetFacing ?? existing.isInternetFacing
-      updateData.criticalityScore = computeAssetCriticality({
-        deviceType: mergedDeviceType,
-        isInternetFacing: mergedInternetFacing,
-        hostname: mergedHostname,
-        owner: body.owner !== undefined ? body.owner : existing.owner,
+      updateData.criticalityScore = scoreAsset({
+        deviceType: body.device_type ?? existing.deviceType,
+        isInternetFacing: updateData.isInternetFacing ?? existing.isInternetFacing,
+        hostname: body.hostname ?? existing.hostname,
         osInfo: mergedOsInfo,
+        topologyLayer: existing.topologyLayer ?? null,
+        owner: body.owner !== undefined ? body.owner : existing.owner,
       })
+    }
+
+    // Optionally merge the edited drift-tracked fields into the baseline (same
+    // UPDATE, no extra query) so the edit is not flagged as drift next audit. Only
+    // when a baseline already exists and a tracked field actually changed.
+    if (body.update_baseline && existing.baselineState) {
+      const edits: { hostname?: string | null; device_type?: string; is_internet_facing?: boolean; mac_address?: string | null } = {}
+      if (body.hostname !== undefined && body.hostname !== existing.hostname) edits.hostname = body.hostname
+      if (body.device_type !== undefined && body.device_type !== existing.deviceType) edits.device_type = body.device_type
+      if (updateData.isInternetFacing !== undefined && updateData.isInternetFacing !== existing.isInternetFacing) edits.is_internet_facing = updateData.isInternetFacing as boolean
+      if (updateData.macAddress !== undefined && updateData.macAddress !== existing.macAddress) edits.mac_address = updateData.macAddress as string | null
+      if (Object.keys(edits).length > 0) {
+        const merged = mergeBaselineFields(existing.baselineState as AssetBaseline, edits)
+        if (merged) updateData.baselineState = merged
+      }
     }
 
     const [updated] = await db
@@ -770,7 +794,7 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
   }
 })
 
-// ── POST /rescore ─── Bulk auto-score all tenant assets ──────────
+// ── POST /rescore ─── Bulk re-score tenant assets (scope=my_assets optional) ──
 app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -784,9 +808,14 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
       ? (c.req.query('tenant_id') ?? user.tenantId ?? null)
       : user.tenantId!
 
-    const { scanned, changes } = await rescoreAssets(db, tenantId)
+    // scope=my_assets restricts to in_my_assets=true (same query count).
+    const myAssetsOnly = c.req.query('scope') === 'my_assets'
+    const { scanned, changes } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly })
     const changed = changes.length
-    return c.json({ updated: changed, scanned, changed, message: `Rescored ${scanned} asset(s), ${changed} changed` })
+    const noun = myAssetsOnly ? 'My Assets' : 'assets'
+    // Make the zero case explicit so "0 changed" doesn't read like a failure.
+    const suffix = changed === 0 ? ' (scores were already up to date)' : ''
+    return c.json({ updated: changed, scanned, changed, message: `Rescored ${scanned} ${noun}, ${changed} changed${suffix}` })
   } catch (err) {
     console.error('assets POST /rescore error:', err)
     return c.json({ detail: 'Failed to rescore assets' }, 500)
@@ -818,6 +847,52 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
   } catch (err) {
     console.error('assets GET /:assetId/score error:', err)
     return c.json({ detail: 'Failed to compute score' }, 500)
+  }
+})
+
+// ── POST /:assetId/rescore ─── recompute ONE asset's criticality ──
+// Uses the same scorer + topology layer as the bulk run, so per-asset == bulk.
+// Writes only when the score changed. Subrequests: 1 (asset+layer leftJoin) + 1
+// (update, only if changed). Role: WRITE_ROLES (same as PATCH).
+app.post('/:assetId/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+    if (!z.string().uuid().safeParse(assetId).success) return c.json({ detail: 'Invalid asset id' }, 400)
+
+    const [row] = await db
+      .select({
+        tenantId: assets.tenantId, deviceType: assets.deviceType, isInternetFacing: assets.isInternetFacing,
+        hostname: assets.hostname, osInfo: assets.osInfo, criticalityScore: assets.criticalityScore,
+        owner: assets.owner, topologyLayer: topologyNodes.layer,
+      })
+      .from(assets)
+      .leftJoin(topologyNodes, eq(topologyNodes.assetId, assets.assetId))
+      .where(eq(assets.assetId, assetId))
+      .limit(1)
+    if (!row) return c.json({ detail: 'Asset not found' }, 404)
+    if (user.role !== 'superadmin' && user.tenantId && row.tenantId !== user.tenantId) {
+      return c.json({ detail: 'Asset not found' }, 404)
+    }
+
+    const previous = row.criticalityScore
+    const current = scoreAsset({
+      deviceType: row.deviceType,
+      isInternetFacing: row.isInternetFacing,
+      hostname: row.hostname,
+      osInfo: row.osInfo as Record<string, unknown> | null,
+      topologyLayer: row.topologyLayer ?? null,
+      owner: row.owner,
+    })
+    const changed = current !== previous
+    if (changed) {
+      await db.update(assets).set({ criticalityScore: current, updatedAt: new Date() }).where(eq(assets.assetId, assetId))
+    }
+    return c.json({ changed, previous, current })
+  } catch (err) {
+    console.error('assets POST /:assetId/rescore error:', err)
+    return c.json({ detail: 'Failed to rescore asset' }, 500)
   }
 })
 
@@ -929,12 +1004,13 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
         }
       }
 
-      const criticalityScore = computeAssetCriticality({
+      const criticalityScore = scoreAsset({
         deviceType,
         isInternetFacing,
         hostname: row['hostname'] || undefined,
-        owner: row['owner'] || undefined,
         osInfo,
+        topologyLayer: null,              // brand-new CSV asset has no topology layer
+        owner: row['owner'] || undefined,
       })
 
       parsed.push({
@@ -962,6 +1038,8 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     const csvMacs = [...new Set(parsed.map(r => classifyMac(r.macAddress ?? null).mac).filter((m): m is string => !!m))]
     const csvIps = [...new Set(parsed.map(r => r.ipAddress))]
     const prefetch = await prefetchIdentity(db, targetTenantId, csvMacs, csvIps, [])
+    // Whether each prefetched asset already has a baseline (to fill-if-null on adopt).
+    const assetHasBaseline = new Map(prefetch.assets.map(a => [a.assetId, a.hasBaseline]))
 
     type WAddr = CandidateAddress & { ended: boolean }
     const workAddrs: WAddr[] = prefetch.addresses.map(a => ({
@@ -994,10 +1072,13 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           criticalityScore: r.criticalityScore,
           isInternetFacing: r.isInternetFacing,
           inMyAssets: true,          // adopt the matched asset; leave source alone
+          // Seed a baseline only if the adopted asset has none — never overwrite.
+          ...(assetHasBaseline.get(decision.assetId) ? {} : { baselineState: buildManualBaseline({ hostname: r.hostname, macAddress: r.macAddress, deviceType: r.deviceType, isInternetFacing: r.isInternetFacing, osVersion: extractOsVersion(r.osInfo) }) }),
           ...(targetTenantId ? { tenantId: targetTenantId } : {}),
           ipAddress: r.ipAddress,
           updatedAt: now,
         }).where(eq(assets.assetId, decision.assetId)))
+        assetHasBaseline.set(decision.assetId, true)   // another CSV row won't re-seed it
         const curAddr = workAddrs.find(w => !w.ended && w.assetId === decision.assetId && w.networkKey === null)
         if (curAddr) {
           const filledMac = curAddr.macAddress ?? r.macAddress ?? null
@@ -1015,7 +1096,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           stmts.push(db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, decision.endAddressId)))
           const w = workAddrs.find(x => !x.ended && x.addressId === decision.endAddressId); if (w) w.ended = true
         }
-        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, isInternetFacing: r.isInternetFacing, source: 'manual' as const, inMyAssets: true, tenantId: targetTenantId }))
+        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, isInternetFacing: r.isInternetFacing, baselineState: buildManualBaseline({ hostname: r.hostname, macAddress: r.macAddress, deviceType: r.deviceType, isInternetFacing: r.isInternetFacing, osVersion: extractOsVersion(r.osInfo) }), source: 'manual' as const, inMyAssets: true, tenantId: targetTenantId }))
         const nid = crypto.randomUUID()
         stmts.push(db.insert(assetAddresses).values({ addressId: nid, assetId: newAssetId, tenantId: targetTenantId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, firstSeen: now, lastSeen: now }))
         workAddrs.unshift({ addressId: nid, assetId: newAssetId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, assetDeviceType: r.deviceType, ended: false })

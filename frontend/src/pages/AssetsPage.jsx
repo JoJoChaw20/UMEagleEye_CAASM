@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Server, Search, Shield, Bookmark, Target, CheckCircle, MinusCircle, Trash2, RefreshCw, Layers, Filter, X } from 'lucide-react'
+import { Server, Search, Shield, CheckCircle, MinusCircle, Trash2, RefreshCw, Layers, Filter, X } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import BlastRadiusModal from '../components/common/BlastRadiusModal'
 import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import TenantSelector from '../components/common/TenantSelector'
 import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetAddressInfo'
+import { formatSeen } from '../utils/time'
+import { isLocallyAdministeredMac } from '../utils/mac'
 import { RISKY_PORTS } from '../components/common/alertMeta'
 
 const PAGE_SIZE = 25
@@ -50,7 +51,6 @@ export default function AssetsPage() {
   const [tenantFilter, setTenantFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [rescoring, setRescoring] = useState(false)
-  const [blastRadiusAssetId, setBlastRadiusAssetId] = useState(null)
   const [sbomScans, setSbomScans] = useState({})
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [dupCount, setDupCount] = useState(0)
@@ -172,24 +172,12 @@ export default function AssetsPage() {
     }
   }
 
-  const triggerSetBaseline = async (assetId) => {
-    if (!confirm('Set current state as Golden Image baseline? This will overwrite any existing baseline.')) return
-    try {
-      await client.post(`/assets/${assetId}/baseline`, { confirm: true })
-      alert('Baseline set successfully.')
-      loadAssets()
-    } catch (err) {
-      console.error(err)
-      alert('Failed to set baseline.')
-    }
-  }
-
   const rescoreAssets = async () => {
     if (!confirm('Recalculate criticality scores for all assets using the risk formula?')) return
     setRescoring(true)
     try {
       const res = await client.post('/assets/rescore')
-      alert(`Rescored ${res.data.updated} asset(s) successfully.`)
+      alert(res.data.message)
       loadAssets()
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to rescore assets.')
@@ -223,7 +211,7 @@ export default function AssetsPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-  const colCount = canManageAssets ? 8 : 7   // columns in the table (for the timeline colSpan)
+  const colCount = canManageAssets ? 7 : 6   // columns in the table (for the timeline colSpan)
 
   // Human-readable summary of the active filters, for the empty state.
   const activeFilterBits = []
@@ -351,8 +339,7 @@ export default function AssetsPage() {
                 <th>Source</th>
                 <th>Vendor</th>
                 <th className="criticality-col">Criticality</th>
-                <th>Baseline</th>
-                <th>Last Scanned</th>
+                <th>First / Last seen</th>
                 {canManageAssets && <th>Actions</th>}
               </tr>
             </thead>
@@ -387,14 +374,33 @@ export default function AssetsPage() {
                         )}
                       </div>
                     </td>
-                    <td className="text-dark-300 text-sm">{a.hardwareVendor || '—'}</td>
+                    <td className="text-dark-300 text-sm">
+                      {a.hardwareVendor
+                        ? a.hardwareVendor
+                        : isLocallyAdministeredMac(a.macAddress)
+                          ? <span className="text-dark-400 italic">Private (randomized) MAC</span>
+                          : '—'}
+                      {a.macAddress && (
+                        <div className="font-mono text-[11px] text-dark-400 mt-0.5 lowercase">{a.macAddress}</div>
+                      )}
+                    </td>
                     <td className="criticality-col">
                       <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${critCls}`}>
                         {a.criticalityScore}/10 <span className="opacity-70">{critLabel}</span>
                       </span>
                     </td>
-                    <td>{a.baselineState ? <span className="badge-resolved">Set</span> : <span className="text-dark-500 text-xs">No</span>}</td>
-                    <td className="text-dark-400 text-xs">{a.lastScanned ? new Date(a.lastScanned).toLocaleString() : '—'}</td>
+                    <td className="text-xs">
+                      {(() => {
+                        const first = formatSeen(a.createdAt)
+                        const last = formatSeen(a.lastScanned, { nullText: 'Never scanned' })
+                        return (
+                          <div className="space-y-0.5 whitespace-nowrap">
+                            <div className="text-dark-400"><span className="text-dark-500">First</span> <span title={first.title || ''}>{first.text}</span></div>
+                            <div className={last.stale ? 'text-amber-400' : 'text-dark-400'}><span className="text-dark-500">Last</span> <span title={last.title || ''}>{last.text}</span></div>
+                          </div>
+                        )
+                      })()}
+                    </td>
                     {canManageAssets && <td>
                       <div className="flex items-center gap-1">
                         {!a.inMyAssets && (
@@ -425,24 +431,6 @@ export default function AssetsPage() {
                             <Shield className={`w-4 h-4 ${sbomScans[a.assetId]?.status === 'running' ? 'animate-pulse text-blue-400' : sbomScans[a.assetId]?.status === 'pending' ? 'text-yellow-400' : ''}`} />
                             {sbomScans[a.assetId]?.status === 'running' && <span className="text-xs text-blue-400">Running</span>}
                             {sbomScans[a.assetId]?.status === 'pending' && <span className="text-xs text-yellow-400">Queued</span>}
-                          </button>
-                        )}
-                        {!isSuperadmin && !isBusinessOwner && (
-                          <button
-                            onClick={() => triggerSetBaseline(a.assetId)}
-                            className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-500 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-500/20'}`}
-                            title="Set Baseline"
-                          >
-                            <Bookmark className="w-4 h-4" />
-                          </button>
-                        )}
-                        {!isSuperadmin && !isBusinessOwner && (
-                          <button
-                            onClick={() => setBlastRadiusAssetId(a.assetId)}
-                            className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors"
-                            title="Blast Radius"
-                          >
-                            <Target className="w-4 h-4" />
                           </button>
                         )}
                         {canDelete && (
@@ -498,14 +486,6 @@ export default function AssetsPage() {
             Next
           </button>
         </div>
-      )}
-
-      {/* Blast Radius Modal */}
-      {blastRadiusAssetId && (
-        <BlastRadiusModal
-          assetId={blastRadiusAssetId}
-          onClose={() => setBlastRadiusAssetId(null)}
-        />
       )}
 
       {showDuplicates && (

@@ -234,3 +234,10 @@ html.light .text-red-300, html.light .text-red-400 { color: #c81e1e; }
 html.light .text-orange-300, html.light .text-orange-400 { color: #c2410c; }
 html.light .text-yellow-300, html.light .text-yellow-400 { color: #a16207; }
 html.light .text-emerald-300, html.light .text-emerald-400 { color: #047857; }
+/* Added for the inventory revision UI: amber (history match + stale "Last seen"),
+   green (My Assets badges/dot) and cyan (IP/MAC) are pale on white — darken them. */
+html.light .text-amber-300, html.light .text-amber-400 { color: #b45309; }
+html.light .text-green-300, html.light .text-green-400, html.light .text-green-500 { color: #15803d; }
+html.light .text-accent-cyan { color: #0e7490; }
+/* Brand blue is too light on white (toggle-on, edit/rescore icon hovers, active nav). */
+html.light .text-eagle-400 { color: #145ee1; }

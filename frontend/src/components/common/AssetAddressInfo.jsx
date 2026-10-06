@@ -100,11 +100,11 @@ export function AddressTimelineRow({ asset, colSpan, searchTerm, tenantId }) {
             {loading ? (
               <div className="text-[11px] text-dark-400">Loading addresses…</div>
             ) : (rows || []).length === 0 ? (
-              <div className="text-[11px] text-dark-500">No address history.</div>
+              <div className="text-[11px] text-dark-400">No address history.</div>
             ) : (
               <table className="w-full table-fixed text-[11px]">
                 <thead>
-                  <tr className="text-dark-500 text-left">
+                  <tr className="text-dark-400 text-left">
                     <th className="w-[24%] font-medium pb-1">IP</th>
                     <th className="w-[28%] font-medium pb-1">MAC</th>
                     <th className="w-[26%] font-medium pb-1">Network</th>
@@ -123,8 +123,8 @@ export function AddressTimelineRow({ asset, colSpan, searchTerm, tenantId }) {
                           </div>
                         </td>
                         <td className="py-0.5 pr-2 truncate font-mono text-dark-400">{t.macAddress || '—'}</td>
-                        <td className="py-0.5 pr-2 truncate text-dark-500">{t.networkKey || 'unscoped'}</td>
-                        <td className="py-0.5 truncate text-dark-500">
+                        <td className="py-0.5 pr-2 truncate text-dark-400">{t.networkKey || 'unscoped'}</td>
+                        <td className="py-0.5 truncate text-dark-400">
                           {fmtDate(t.firstSeen)} → {t.isCurrent ? 'current' : fmtDate(t.lastSeen)}
                         </td>
                       </tr>

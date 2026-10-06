@@ -18,6 +18,7 @@ export interface AssetBaseline {
   captured_at?:       string
   auto_set?:          boolean              // true when set automatically on first scan
   ports_known?:       boolean              // false when captured by a passive scan (no port visibility)
+  captured_from?:     string               // 'manual' when seeded at hand/CSV creation
 }
 
 type DriftSeverity = 'low' | 'medium' | 'high' | 'critical'
@@ -90,6 +91,52 @@ export function buildBaseline(params: {
     auto_set:          params.autoSet ?? false,
     ports_known:       params.portsKnown ?? true,
   }
+}
+
+// ── Manual-creation baseline (POST /assets + CSV import) ──────────
+// Seeds a baseline from only the fields known at hand/CSV creation. Deliberately
+// OMITS ports and packages keys (not empty arrays) and sets ports_known=false, so
+// the first ACTIVE scan completes ports via the ingest "complete baseline" path
+// without raising "port opened" drift, and hostname/MAC/exposure are already
+// baselined so they don't flag either. Pure.
+export function buildManualBaseline(params: {
+  hostname?: string | null
+  macAddress?: string | null
+  deviceType: string
+  isInternetFacing: boolean
+  osVersion?: string | null
+}): AssetBaseline {
+  const b: AssetBaseline = {
+    hostname:           params.hostname ?? null,
+    mac_address:        params.macAddress ?? null,
+    device_type:        params.deviceType,
+    is_internet_facing: params.isInternetFacing,
+    captured_at:        new Date().toISOString(),
+    auto_set:           true,
+    ports_known:        false,
+    captured_from:      'manual',
+  }
+  if (params.osVersion) b.os_version = params.osVersion
+  return b
+}
+
+// ── Partial baseline merge (used by PATCH update_baseline) ────────
+// Merges ONLY the edited drift-tracked attributes into an existing baseline, using
+// the same jsonb keys buildBaseline writes, leaving ports/packages/os_version/etc.
+// untouched. Returns null when there is no baseline to update (null/absent) so the
+// caller can skip the write — a null baseline is never created here. Pure.
+export function mergeBaselineFields(
+  baseline: AssetBaseline | null | undefined,
+  edited: { hostname?: string | null; device_type?: string; is_internet_facing?: boolean; mac_address?: string | null },
+): AssetBaseline | null {
+  if (!baseline || Object.keys(baseline).length === 0) return null
+  const next: AssetBaseline = { ...baseline }
+  if ('hostname' in edited)           next.hostname = edited.hostname ?? null
+  if ('device_type' in edited)        next.device_type = edited.device_type
+  if ('is_internet_facing' in edited) next.is_internet_facing = edited.is_internet_facing
+  if ('mac_address' in edited)        next.mac_address = edited.mac_address ?? null
+  next.captured_at = new Date().toISOString()
+  return next
 }
 
 // ── Core drift comparison ─────────────────────────────────────────
