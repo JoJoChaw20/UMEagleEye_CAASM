@@ -36,6 +36,13 @@ function mergeOpToStmt(db: ReturnType<typeof getDb>, op: MergeOp, ctx: { userId:
     case 'updateRelationship': return db.update(assetRelationships).set({ sourceAssetId: op.sourceAssetId, targetAssetId: op.targetAssetId }).where(eq(assetRelationships.relationshipId, op.id))
     case 'deleteTopologyNodes': return db.delete(topologyNodes).where(inArray(topologyNodes.nodeId, op.ids))
     case 'moveTopologyNode':  return db.update(topologyNodes).set({ assetId: op.survivorId }).where(eq(topologyNodes.nodeId, op.nodeId))
+    // Reparent children of deleted nodes onto the surviving node. CASE prevents making
+    // the surviving node its own parent; null when there is no surviving node.
+    case 'reparentTopology':  return db.update(topologyNodes).set({
+      parentNodeId: op.survivorNodeId
+        ? sql`CASE WHEN ${topologyNodes.nodeId} = ${op.survivorNodeId}::uuid THEN NULL ELSE ${op.survivorNodeId}::uuid END`
+        : sql`NULL`,
+    }).where(inArray(topologyNodes.parentNodeId, op.deletedNodeIds))
     case 'updateAsset':       return db.update(assets).set(op.set as Partial<typeof assets.$inferInsert>).where(eq(assets.assetId, op.assetId))
     case 'insertAudit':       return db.insert(auditLogs).values({ userId: ctx.userId, tenantId: ctx.tenantId, actionType: 'asset.merge', targetEntity: op.loserId, previousState: op.snapshot, newState: { survivor_id: op.survivorId } })
     case 'deleteAssets':      return db.delete(assets).where(inArray(assets.assetId, op.loserIds))

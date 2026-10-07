@@ -4,10 +4,17 @@ import client from '../../api/client'
 
 const DEPTH_COLORS = ['#ff5252', '#ff9800', '#ffc400', '#00e676']
 
+const DIRECTIONS = [
+  { key: 'downstream', label: 'Downstream', hint: 'What this asset impacts if it fails' },
+  { key: 'upstream',   label: 'Upstream',   hint: 'What this asset depends on' },
+  { key: 'both',       label: 'Both',       hint: 'All connected assets (undirected)' },
+]
+
 export default function BlastRadiusModal({ assetId, onClose }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [assetInfo, setAssetInfo] = useState(null)
+  const [direction, setDirection] = useState('downstream')
 
   useEffect(() => {
     if (!assetId) return
@@ -15,7 +22,7 @@ export default function BlastRadiusModal({ assetId, onClose }) {
       setLoading(true)
       try {
         const [blastRes, assetRes] = await Promise.all([
-          client.get(`/relationships/blast-radius/${assetId}?max_depth=3`),
+          client.get(`/relationships/blast-radius/${assetId}?max_depth=3&direction=${direction}`),
           client.get(`/assets/${assetId}`),
         ])
         setData(blastRes.data)
@@ -27,9 +34,11 @@ export default function BlastRadiusModal({ assetId, onClose }) {
       }
     }
     fetchData()
-  }, [assetId])
+  }, [assetId, direction])
 
   if (!assetId) return null
+
+  const dirLabel = (DIRECTIONS.find(d => d.key === direction)?.label ?? 'Downstream').toLowerCase()
 
   // Group affected by depth
   const byDepth = {}
@@ -67,20 +76,54 @@ export default function BlastRadiusModal({ assetId, onClose }) {
           </button>
         </div>
 
+        {/* Direction selector */}
+        <div className="px-6 pt-4 flex items-center gap-2" role="group" aria-label="Blast radius direction">
+          {DIRECTIONS.map(d => {
+            const active = direction === d.key
+            return (
+              <button
+                key={d.key}
+                onClick={() => setDirection(d.key)}
+                title={d.hint}
+                aria-pressed={active}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  active
+                    ? 'bg-eagle-600/20 text-eagle-400 border-eagle-500/40'
+                    : 'bg-dark-800 text-dark-300 border-dark-700 hover:text-dark-100 hover:border-dark-600'
+                }`}
+              >
+                {d.label}
+              </button>
+            )
+          })}
+        </div>
+
         {/* Content */}
         <div className="px-6 py-5 max-h-[60vh] overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
             </div>
+          ) : data?.reason === 'not_in_my_assets' ? (
+            <div className="text-center py-12 text-dark-400">
+              <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />
+              <p className="text-lg font-medium">Not in My Assets</p>
+              <p className="text-sm mt-1">Blast radius only covers assets that are in My Assets.</p>
+            </div>
           ) : data?.total_affected === 0 ? (
             <div className="text-center py-12 text-dark-400">
               <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="text-lg font-medium">No downstream impact</p>
-              <p className="text-sm mt-1">This asset has no connected assets in the relationship graph.</p>
+              <p className="text-lg font-medium">No {dirLabel} impact</p>
+              <p className="text-sm mt-1">This asset has no connected assets in this direction.</p>
             </div>
           ) : (
             <div className="space-y-5">
+              {data.truncated && (
+                <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                  Large graph — showing the first {data.total_affected} affected assets.
+                </div>
+              )}
+
               {/* Summary cards */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="glass-card p-4 text-center">
@@ -129,6 +172,14 @@ export default function BlastRadiusModal({ assetId, onClose }) {
                           </div>
                         </div>
                         <div className="flex items-center gap-3">
+                          {a.hub && (
+                            <span
+                              className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-dark-700 text-dark-300 border border-dark-600"
+                              title="Infrastructure hub — included but not expanded further"
+                            >
+                              Hub · not expanded
+                            </span>
+                          )}
                           {a.criticality_score >= 8 && (
                             <span className="badge-critical">Critical</span>
                           )}

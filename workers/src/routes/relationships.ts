@@ -2,11 +2,13 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, or, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema'
 import { inferForTenant } from './topology'
+import { computeBlastRadius, clampDepth, normalizeDirection, type BlastNodeInput, type BlastEdgeInput } from '../lib/blastRadius'
 
 const app = new Hono<{ Bindings: Env }>()
 const VIEW_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin'] as const
@@ -151,68 +153,108 @@ app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c
   }
 })
 
+// ── Blast-radius data loader (2 queries, constant) ───────────────
+// One query for the start asset (tenant guard + its attributes), one for every
+// My-Assets-to-My-Assets edge in scope (both endpoints joined for node attributes +
+// membership), capped at BLAST_EDGE_CAP. No per-node queries. Exported so the demo
+// can assert the query count with a counting stub.
+export const BLAST_EDGE_CAP = 5000
+
+export async function loadBlastGraph(
+  db: ReturnType<typeof getDb>,
+  params: { startId: string; tenantScopeId: string | null },
+): Promise<{ start: BlastNodeInput | null; startTenantId: string | null; nodes: BlastNodeInput[]; edges: BlastEdgeInput[]; truncated: boolean }> {
+  // Q1 — start asset
+  const [startRow] = await db
+    .select({
+      assetId: assets.assetId, tenantId: assets.tenantId, hostname: assets.hostname, ipAddress: assets.ipAddress,
+      deviceType: assets.deviceType, criticalityScore: assets.criticalityScore, inMyAssets: assets.inMyAssets,
+    })
+    .from(assets).where(eq(assets.assetId, params.startId)).limit(1)
+
+  // Q2 — member-to-member edges, both endpoints joined for attributes (+1 to detect cap)
+  const src = alias(assets, 'blast_src')
+  const tgt = alias(assets, 'blast_tgt')
+  const edgeRows = await db
+    .select({
+      source: assetRelationships.sourceAssetId, target: assetRelationships.targetAssetId, type: assetRelationships.relationshipType,
+      srcHostname: src.hostname, srcIp: src.ipAddress, srcDeviceType: src.deviceType, srcCrit: src.criticalityScore,
+      tgtHostname: tgt.hostname, tgtIp: tgt.ipAddress, tgtDeviceType: tgt.deviceType, tgtCrit: tgt.criticalityScore,
+    })
+    .from(assetRelationships)
+    .innerJoin(src, eq(src.assetId, assetRelationships.sourceAssetId))
+    .innerJoin(tgt, eq(tgt.assetId, assetRelationships.targetAssetId))
+    .where(and(
+      params.tenantScopeId ? eq(src.tenantId, params.tenantScopeId) : undefined,
+      eq(src.inMyAssets, true),
+      eq(tgt.inMyAssets, true),
+    ))
+    .limit(BLAST_EDGE_CAP + 1)
+
+  const truncated = edgeRows.length > BLAST_EDGE_CAP
+  const capped = truncated ? edgeRows.slice(0, BLAST_EDGE_CAP) : edgeRows
+
+  const nodeMap = new Map<string, BlastNodeInput>()
+  for (const r of capped) {
+    if (!nodeMap.has(r.source)) nodeMap.set(r.source, { assetId: r.source, hostname: r.srcHostname, ipAddress: r.srcIp, deviceType: r.srcDeviceType, criticalityScore: r.srcCrit, inMyAssets: true })
+    if (!nodeMap.has(r.target)) nodeMap.set(r.target, { assetId: r.target, hostname: r.tgtHostname, ipAddress: r.tgtIp, deviceType: r.tgtDeviceType, criticalityScore: r.tgtCrit, inMyAssets: true })
+  }
+
+  // The start may be isolated (no edges) or a non-member — seed/override it with its
+  // own authoritative row so computeBlastRadius can decide membership.
+  const start: BlastNodeInput | null = startRow
+    ? { assetId: startRow.assetId, hostname: startRow.hostname, ipAddress: startRow.ipAddress, deviceType: startRow.deviceType, criticalityScore: startRow.criticalityScore, inMyAssets: startRow.inMyAssets }
+    : null
+  if (start) nodeMap.set(start.assetId, start)
+
+  const edges: BlastEdgeInput[] = capped.map(r => ({ source: r.source, target: r.target, type: r.type }))
+  return { start, startTenantId: startRow?.tenantId ?? null, nodes: [...nodeMap.values()], edges, truncated }
+}
+
 // ── GET /blast-radius/:assetId ───────────────────────────────────
-// BFS up to max_depth hops. Returns per-asset depth + path.
+// Directional impact walk over My-Assets edges. Prefetches the graph in a constant
+// 2 queries, then runs the pure traversal. Response is backward compatible with
+// BlastRadiusModal (origin_asset_id, affected_assets[], total_affected, max_depth)
+// with added fields: direction, reason, truncated, skipped_types, per-node hub + via.
 app.get('/blast-radius/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
     const { assetId } = c.req.param()
-    const maxDepth = Math.min(parseInt(c.req.query('max_depth') ?? '3', 10), 5)
+    const maxDepth  = clampDepth(parseInt(c.req.query('max_depth') ?? '', 10))
+    const direction = normalizeDirection(c.req.query('direction'))
+    const tenantScopeId = user.role === 'superadmin' ? (c.req.query('tenant_id') ?? null) : (user.tenantId ?? null)
 
-    const [rootAsset] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
-    if (!rootAsset) return c.json({ detail: 'Asset not found' }, 404)
-    if (user.role !== 'superadmin' && user.tenantId && rootAsset.tenantId !== user.tenantId) {
+    const { start, startTenantId, nodes, edges, truncated: edgeTruncated } =
+      await loadBlastGraph(db, { startId: assetId, tenantScopeId })
+
+    // Tenant isolation: unknown or cross-tenant start is a 404, exactly as before.
+    if (!start) return c.json({ detail: 'Asset not found' }, 404)
+    if (user.role !== 'superadmin' && user.tenantId && startTenantId !== user.tenantId) {
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
-    // BFS tracking depth + path per visited node
-    const visited = new Map<string, { depth: number; path: string[] }>()
-    visited.set(assetId, { depth: 0, path: [assetId] })
-    const queue: Array<{ id: string; depth: number; path: string[] }> = [
-      { id: assetId, depth: 0, path: [assetId] },
-    ]
-
-    while (queue.length > 0) {
-      const current = queue.shift()!
-      if (current.depth >= maxDepth) continue
-
-      const edges = await db.select().from(assetRelationships).where(
-        or(eq(assetRelationships.sourceAssetId, current.id), eq(assetRelationships.targetAssetId, current.id))
-      )
-
-      for (const edge of edges) {
-        const neighborId = edge.sourceAssetId === current.id ? edge.targetAssetId : edge.sourceAssetId
-        if (!visited.has(neighborId)) {
-          const depth = current.depth + 1
-          const path = [...current.path, neighborId]
-          visited.set(neighborId, { depth, path })
-          queue.push({ id: neighborId, depth, path })
-        }
-      }
-    }
-
-    const affectedIds = Array.from(visited.keys()).filter(id => id !== assetId)
-    let affectedAssets: (typeof rootAsset)[] = []
-    if (affectedIds.length > 0) {
-      affectedAssets = await db.select().from(assets).where(anyOfUuids(assets.assetId, affectedIds))
-    }
-
-    const result = affectedAssets.map(a => ({
-      asset_id:         a.assetId,
-      hostname:         a.hostname,
-      ip_address:       a.ipAddress,
-      device_type:      a.deviceType,
-      criticality_score: a.criticalityScore,
-      depth:            visited.get(a.assetId)?.depth ?? 1,
-      path:             visited.get(a.assetId)?.path ?? [],
-    })).sort((a, b) => a.depth - b.depth)
+    const result = computeBlastRadius({ startId: assetId, nodes, edges, depth: maxDepth, direction })
 
     return c.json({
       origin_asset_id: assetId,
-      affected_assets: result,
-      total_affected:  result.length,
-      max_depth:       result.length > 0 ? Math.max(...result.map(a => a.depth)) : 0,
+      direction:       result.direction,
+      reason:          result.reason,                       // 'not_in_my_assets' or null
+      truncated:       edgeTruncated || result.truncated,   // edge-cap OR node-cap hit
+      skipped_types:   result.skippedTypes,
+      affected_assets: result.nodes.map(n => ({
+        asset_id:          n.assetId,
+        hostname:          n.hostname,
+        ip_address:        n.ipAddress,
+        device_type:       n.deviceType,
+        criticality_score: n.criticalityScore,
+        depth:             n.depth,
+        path:              n.path,
+        hub:               n.hub,
+        via:               n.via,
+      })),
+      total_affected: result.nodes.length,
+      max_depth:      result.nodes.length > 0 ? Math.max(...result.nodes.map(n => n.depth)) : 0,
     })
   } catch (err) {
     console.error('GET /blast-radius error:', err)

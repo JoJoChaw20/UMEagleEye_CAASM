@@ -61,6 +61,10 @@ export type MergeOp =
   | { k: 'updateRelationship'; id: string; sourceAssetId: string; targetAssetId: string }
   | { k: 'deleteTopologyNodes'; ids: string[] }
   | { k: 'moveTopologyNode'; nodeId: string; survivorId: string }
+  // Reparent any node whose parent_node_id pointed at a node we just deleted, onto the
+  // surviving node (never a self-parent; null if there is no surviving node). Set-based,
+  // so it fixes children not prefetched here; runs in the same merge batch.
+  | { k: 'reparentTopology'; deletedNodeIds: string[]; survivorNodeId: string | null }
   | { k: 'updateAsset'; assetId: string; set: Record<string, unknown> }
   | { k: 'insertAudit'; loserId: string; survivorId: string; snapshot: Record<string, unknown> }
   | { k: 'deleteAssets'; loserIds: string[] }
@@ -203,16 +207,24 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
   for (const u of updates) ops.push({ k: 'updateRelationship', id: u.id, sourceAssetId: u.s, targetAssetId: u.t })
 
   // ── Topology: one node per asset. Keep survivor's; else move one loser node. ──
+  // Any node we DELETE must not leave children with a dangling parent_node_id, so we
+  // reparent those children onto the surviving node (survivor's own, or the one we
+  // moved) in the same batch. parent_node_id has no FK, so this is app-enforced.
   const survivorHasNode = related.topologyNodes.some(n => n.assetId === survivorId)
   const loserNodes = related.topologyNodes.filter(n => loserSet.has(n.assetId))
   let topologyMoved = 0, topologyDropped = 0
+  let deletedNodeIds: string[] = []
+  let survivorNodeId: string | null = null
   if (survivorHasNode) {
-    if (loserNodes.length) { ops.push({ k: 'deleteTopologyNodes', ids: loserNodes.map(n => n.nodeId) }); topologyDropped = loserNodes.length }
+    survivorNodeId = related.topologyNodes.find(n => n.assetId === survivorId)!.nodeId
+    if (loserNodes.length) { deletedNodeIds = loserNodes.map(n => n.nodeId); ops.push({ k: 'deleteTopologyNodes', ids: deletedNodeIds }); topologyDropped = loserNodes.length }
   } else if (loserNodes.length) {
     const [keep, ...rest] = loserNodes
+    survivorNodeId = keep!.nodeId
     ops.push({ k: 'moveTopologyNode', nodeId: keep!.nodeId, survivorId }); topologyMoved = 1
-    if (rest.length) { ops.push({ k: 'deleteTopologyNodes', ids: rest.map(n => n.nodeId) }); topologyDropped = rest.length }
+    if (rest.length) { deletedNodeIds = rest.map(n => n.nodeId); ops.push({ k: 'deleteTopologyNodes', ids: deletedNodeIds }); topologyDropped = rest.length }
   }
+  if (deletedNodeIds.length) ops.push({ k: 'reparentTopology', deletedNodeIds, survivorNodeId })
 
   // ── Survivor field update, audit rows, delete losers (last) ──
   ops.push({ k: 'updateAsset', assetId: survivorId, set: mergedFields })
