@@ -24,9 +24,8 @@ const rows = Array.from({ length: 150 }, (_, i) => ({
   osInfo: { ports: i % 4 === 0 ? ['22/tcp', '3389/tcp', '445/tcp'] : ['80/tcp'] } as Record<string, unknown>,
   criticalityScore: 0,
 }))
-const layerMap = new Map<string, number>([['a0', 1], ['a1', 2]])
 
-const plan = planRescore(rows, layerMap)
+const plan = planRescore(rows)
 const chunks = Math.ceil(plan.changes.length / CHUNK)
 console.log(`scanned=${plan.scanned}  changed=${plan.changes.length}  statements=${plan.changes.length}  chunks(@${CHUNK})=${chunks}`)
 
@@ -39,7 +38,7 @@ check('scores in 1..10', plan.changes.every(c => c.score >= 1 && c.score <= 10),
 // Idempotency: write the computed scores back, rescore again → nothing to write.
 const scoreById = new Map(plan.changes.map(c => [c.assetId, c.score]))
 const rows2 = rows.map(r => ({ ...r, criticalityScore: scoreById.get(r.assetId) ?? r.criticalityScore }))
-const plan2 = planRescore(rows2, layerMap)
+const plan2 = planRescore(rows2)
 check('idempotent: 0 changes on re-run', plan2.changes.length, 0)
 check('idempotent: still scanned 150', plan2.scanned, 150)
 

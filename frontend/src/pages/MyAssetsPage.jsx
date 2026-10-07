@@ -5,74 +5,7 @@ import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import AssetGraph from '../components/common/AssetGraph'
-
-// ── Criticality badge with score-breakdown tooltip ────────────────
-function CriticalityBadge({ score, assetId }) {
-  const s = Number(score)
-  const [tip, setTip] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const timerRef = useRef(null)
-
-  let cls = 'bg-green-500/20 text-green-400 border-green-500/30'
-  if (s >= 9) cls = 'bg-red-500/20 text-red-400 border-red-500/30'
-  else if (s >= 7) cls = 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-  else if (s >= 4) cls = 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-
-  const label = s >= 9 ? 'Critical' : s >= 7 ? 'High' : s >= 4 ? 'Medium' : 'Low'
-
-  const fetchBreakdown = async () => {
-    if (tip || !assetId) return
-    setLoading(true)
-    try {
-      const res = await client.get(`/assets/${assetId}/score`)
-      setTip(res.data)
-    } catch { /* silent */ } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleMouseEnter = () => {
-    timerRef.current = setTimeout(fetchBreakdown, 300)
-  }
-  const handleMouseLeave = () => {
-    clearTimeout(timerRef.current)
-  }
-
-  return (
-    <div className="relative inline-block group" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium cursor-default select-none ${cls}`}>
-        {s}/10 <span className="opacity-70">{label}</span>
-      </span>
-      {/* Tooltip */}
-      <div className="absolute bottom-full left-0 mb-2 z-50 w-64 pointer-events-none
-                      opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-        <div className="bg-dark-900 border border-dark-600 rounded-xl p-3 shadow-2xl text-xs space-y-2">
-          <p className="font-semibold text-white">Criticality Breakdown</p>
-          {loading && <p className="text-dark-400">Loading…</p>}
-          {tip && (
-            <>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-dark-300">
-                <span>Base (device type)</span><span className="text-right text-white">+{tip.breakdown?.base}</span>
-                {tip.breakdown?.internetFacing > 0 && <><span>Internet facing</span><span className="text-right text-yellow-400">+{tip.breakdown.internetFacing}</span></>}
-                {tip.breakdown?.portRisk > 0 && <><span>Port risk</span><span className="text-right text-orange-400">+{tip.breakdown.portRisk}</span></>}
-                {tip.breakdown?.hostnameHints !== 0 && <><span>Hostname hints</span><span className={`text-right ${tip.breakdown.hostnameHints > 0 ? 'text-orange-400' : 'text-green-400'}`}>{tip.breakdown.hostnameHints > 0 ? '+' : ''}{tip.breakdown.hostnameHints}</span></>}
-                {tip.breakdown?.topologyLayer > 0 && <><span>Network position</span><span className="text-right text-purple-400">+{tip.breakdown.topologyLayer}</span></>}
-              </div>
-              {tip.factors?.length > 0 && (
-                <ul className="text-dark-400 space-y-0.5 border-t border-dark-700 pt-2">
-                  {tip.factors.map((f, i) => <li key={i}>· {f}</li>)}
-                </ul>
-              )}
-              <p className="text-dark-500 border-t border-dark-700 pt-1.5">
-                Hover score = computed value. Drag slider to override.
-              </p>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+import CriticalityBadge from '../components/common/CriticalityBadge'
 
 // ── Add Asset Modal ───────────────────────────────────────────────
 function AddAssetModal({ onClose, onSave }) {
@@ -903,10 +836,10 @@ export default function MyAssetsPage() {
                       </td>
                       <td>
                         {isReadOnly ? (
-                          <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
+                          <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} footer="slider" />
                         ) : (
                           <div className="flex items-center gap-2">
-                            <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} />
+                            <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} footer="slider" />
                             <input
                               type="range"
                               min="1"

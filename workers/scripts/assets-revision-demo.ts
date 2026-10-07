@@ -21,19 +21,20 @@ function check(label: string, actual: unknown, expected: unknown) {
   ok ? pass++ : fail++
 }
 
-// ── (a)(b) shared scorer == bulk, including the topology layer ───────────────
+// ── (a)(b) shared scorer == bulk; criticality no longer reads topology ───────
 console.log('=== (a)(b) per-asset scorer == bulk ===')
 {
-  const input = { deviceType: 'workstation', isInternetFacing: false, hostname: 'dev-pc', osInfo: {}, topologyLayer: 1 }
-  const single = scoreAsset(input)                              // base3 −1 dev +1 unowned +3 L1 = 6
-  const noLayer = scoreAsset({ ...input, topologyLayer: null }) // = 3
-  const row = { assetId: 'A', deviceType: 'workstation', isInternetFacing: false, hostname: 'dev-pc', osInfo: {}, criticalityScore: 0 }
-  const bulk = planRescore([row], new Map([['A', 1]]))
-  check('(a) per-asset == bulk (same inputs incl. layer)', bulk.changes[0]?.score, single)
-  check('(a) topology layer is included (L1 > no-layer)', single > noLayer, true)
+  const input = { deviceType: 'workstation', isInternetFacing: false, hostname: 'dev-pc', osInfo: {}, owner: null }
+  const single = scoreAsset(input)                              // base3 −1 dev +1 unowned = 3
+  const row = { assetId: 'A', deviceType: 'workstation', isInternetFacing: false, hostname: 'dev-pc', osInfo: {}, criticalityScore: 0, owner: null }
+  const bulk = planRescore([row])
+  check('(a) per-asset == bulk (same inputs)', bulk.changes[0]?.score, single)
+  // CHANGED (legitimately): the old "topology L1 > no-layer" assertion is gone —
+  // criticality no longer reads topology. A stray layer must not change the score.
+  check('(a) a stray topology layer does not change the score', scoreAsset({ ...input, topologyLayer: 1 } as never), single)
 
   const row2 = { ...row, criticalityScore: single }            // store the computed score
-  check('(b) second run → no change', planRescore([row2], new Map([['A', 1]])).changes.length, 0)
+  check('(b) second run → no change', planRescore([row2]).changes.length, 0)
 }
 
 // ── (c)(d) route guards (mirrors assets.ts) ──────────────────────────────────
@@ -58,8 +59,8 @@ console.log('\n=== (e) scope=my_assets ===')
     { assetId: 'x1', deviceType: 'server', isInternetFacing: false, hostname: 'c', osInfo: {}, criticalityScore: 0, inMyAssets: false },
   ]
   const scopeFilter = (rows: typeof mixed) => rows.filter(r => r.inMyAssets)   // mirrors SQL in_my_assets=true
-  const scoped = planRescore(scopeFilter(mixed), new Map())
-  const unscoped = planRescore(mixed, new Map())
+  const scoped = planRescore(scopeFilter(mixed))
+  const unscoped = planRescore(mixed)
   check('(e) scoped scans only My Assets', scoped.scanned, 2)
   check('(e) non-member not scored', scoped.changes.some(c => c.assetId === 'x1'), false)
   check('(e) chunk formula matches unscoped run', Math.ceil(scoped.changes.length / 100), Math.ceil(unscoped.changes.length / 100))
@@ -126,17 +127,17 @@ console.log('\n=== (i) formatSeen edge cases ===')
 // ── §4 owner in the criticality score ───────────────────────────────────────
 console.log('\n=== §4 owner in criticality score ===')
 {
-  const base = { deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: {}, topologyLayer: null }
+  const base = { deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: {} }
   const owned = scoreAsset({ ...base, owner: 'IT' })
   const unowned = scoreAsset({ ...base, owner: null })
   check('§4 owned scores exactly 1 lower than unowned', unowned - owned, 1)
 
   // per-asset (scoreAsset) == bulk (planRescore) for the same owned asset.
   const row = { assetId: 'A', deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: {}, criticalityScore: 0, owner: 'IT' }
-  const bulk = planRescore([row], new Map())
+  const bulk = planRescore([row])
   check('§4 per-asset == bulk (incl. owner)', bulk.changes[0]?.score, owned)
   check('§4 create/PATCH use the same scoreAsset (deterministic)', scoreAsset({ ...base, owner: 'IT' }), owned)
-  check('§4 second rescore → no change', planRescore([{ ...row, criticalityScore: owned }], new Map()).changes.length, 0)
+  check('§4 second rescore → no change', planRescore([{ ...row, criticalityScore: owned }]).changes.length, 0)
 }
 
 // ── §2 baseline seeded at manual creation ────────────────────────────────────

@@ -10,7 +10,7 @@ import { computeCriticality } from '../lib/criticality'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
 import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
-import { chunkPlan, planIngest, type IngestOp, type PlanHost } from '../lib/ingest-plan'
+import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 
@@ -57,17 +57,16 @@ function isNetworkBySnmp(snmpSysDescr?: string | null, snmpInterfaces?: string[]
   return false
 }
 
-function inferDeviceType(
+export function inferDeviceType(
   ports: NmapPort[],
   ip?: string,
   os?: Record<string, unknown> | null,
   defaultGateway?: string,
 ): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
-  if (ip) {
-    if (defaultGateway && ip === defaultGateway) return 'network'
-    const last = ip.split('.').pop()
-    if (last === '1' || last === '254') return 'network'
-  }
+  // Only a real signal makes a device 'network': the agent-reported default gateway
+  // is evidence; a bare .1/.254 position is NOT (it made ordinary hosts look like
+  // gateways — removed). Port/product/SNMP/OS rules below carry the real evidence.
+  if (ip && defaultGateway && ip === defaultGateway) return 'network'
   const text = ports.map(p => `${p.product ?? ''} ${p.service ?? ''}`).join(' ').toLowerCase()
   if (/busybox|router|cisco|juniper|aruba|mikrotik|ubiquiti|fortigate|panos|snmp/.test(text)) return 'network'
   if (/rdp|remote.desktop/.test(text) || ports.some(p => p.port === 3389)) return 'workstation'
@@ -914,7 +913,8 @@ Example:
       if (resolution.assetId) {
         const [existing] = await db.select().from(assets).where(eq(assets.assetId, resolution.assetId)).limit(1)
         const { merged } = mergeOsInfo(existing?.osInfo as Record<string, unknown> | null, p.observedOsInfo, p.isPassive)
-        const resolvedDeviceType = (existing?.deviceType && existing.deviceType !== 'unknown') ? existing.deviceType : p.deviceType
+        const dt = resolveIngestDeviceType(existing ? { deviceType: existing.deviceType, deviceTypeSource: existing.deviceTypeSource ?? null } : null, p.deviceType, p.isPassive)
+        const resolvedDeviceType = dt.deviceType
         const exposed = existing?.internetFacingOverride ?? p.internetFacing
         const crit = computeCriticality({ deviceType: resolvedDeviceType, isInternetFacing: exposed, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged }).score
         const baselineForUpdate = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? existing?.hostname ?? null, macAddress: mac ?? existing?.macAddress ?? null, isInternetFacing: exposed, deviceType: resolvedDeviceType, autoSet: true, portsKnown: !p.isPassive })
@@ -925,7 +925,8 @@ Example:
           hostKey: existing?.hostKey ?? resolution.hostKey ?? null,
           hardwareVendor: p.hardwareVendor ?? existing?.hardwareVendor ?? null,
           osInfo: merged,
-          deviceType: resolvedDeviceType,
+          deviceType: resolvedDeviceType as typeof p.deviceType,
+          deviceTypeSource: dt.deviceTypeSource,
           isInternetFacing: exposed,
           criticalityScore: crit,
           source: p.isPassive ? 'scan_passive' : 'scan_active',
@@ -940,7 +941,7 @@ Example:
       const crit = computeCriticality({ deviceType: p.deviceType, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }).score
       const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: p.deviceType, autoSet: true, portsKnown: !p.isPassive })
       const now = new Date()
-      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
+      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, deviceTypeSource: 'auto' as const, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
       const addressValues = { assetId: newAssetId, tenantId: tenantId ?? null, networkKey, ipAddress: p.ip, macAddress: mac, firstSeen: now, lastSeen: now }
       if (resolution.endAddressId) {
         await db.batch([

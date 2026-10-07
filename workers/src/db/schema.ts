@@ -86,6 +86,10 @@ export const assets = pgTable('assets', {
   hostKey: varchar('host_key', { length: 255 }),
   owner: varchar('owner', { length: 255 }),
   deviceType: deviceTypeEnum('device_type').notNull().default('unknown'),
+  // Who set device_type: 'auto' (inferred by a scan) or 'manual' (user via POST/CSV/
+  // PATCH). A manual type is never changed by a scan; an auto type may be corrected by
+  // a later active scan. Default 'auto' is a safety net — the code sets it explicitly.
+  deviceTypeSource: text('device_type_source').notNull().default('auto'),
   hardwareVendor: varchar('hardware_vendor', { length: 255 }),
   osInfo: jsonb('os_info').default({}),
   criticalityScore: smallint('criticality_score').notNull().default(5),

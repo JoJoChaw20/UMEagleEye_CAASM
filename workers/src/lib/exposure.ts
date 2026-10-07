@@ -58,12 +58,13 @@ export function isIPv4(v: string | null | undefined): v is string {
   return v.split('.').every(o => Number(o) <= 255)
 }
 
-// Internet exposure: an analyst override always wins; otherwise the host is
-// treated as exposed only when it is the agent's reported gateway. The old
-// ".1 / .254" guess is used only when the agent never reported a gateway.
+// Internet exposure: an analyst override always wins; otherwise the host is treated
+// as exposed only when it is the agent's reported gateway (real evidence). The old
+// ".1 / .254" positional fallback was removed — it was the same kind of guess that
+// made ordinary hosts look like gateways and fed the +2 criticality term. With no
+// override and no reported gateway we now say "not exposed" rather than guess.
 export function resolveInternetFacing(ip: string, agentGatewayIp: string | null | undefined, override: boolean | null | undefined): boolean {
   if (override !== null && override !== undefined) return override
   if (agentGatewayIp) return ip === agentGatewayIp
-  const last = ip.split('.').pop()
-  return last === '1' || last === '254'
+  return false
 }

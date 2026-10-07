@@ -35,7 +35,7 @@ interface TreeNode {
 //   server                               → host      L4
 //   workstation                          → host      L5
 //   iot                                  → host      L6
-function classifyAsset(asset: typeof assets.$inferSelect): { nodeType: NodeType; layer: number } {
+export function classifyAsset(asset: typeof assets.$inferSelect): { nodeType: NodeType; layer: number } {
   const h = (asset.hostname ?? '').toLowerCase()
   const dt = asset.deviceType
 
@@ -70,32 +70,66 @@ interface FlatNode {
 
 // Type preference: closer to a physical switch is better for hosts
 const TYPE_SCORE: Record<string, number> = { switch: 4, router: 3, gateway: 2, access_point: 2, host: 0 }
+// Infrastructure node types (what classifyAsset marks as device_type = network).
+// Only these may be parented ACROSS subnets, and only to each other.
+const INFRA_NODE_TYPES = new Set<NodeType>(['gateway', 'router', 'switch', 'access_point'])
 
-function resolveParent(node: FlatNode, others: FlatNode[]): string | null {
-  // Step 1: same-subnet candidates with strictly lower layer
-  const subnetCandidates = others
+// Same IPv4 /16 (first two octets match). Non-IPv4 on either side → false, so a
+// cross-subnet link is only drawn when there is address evidence they're related.
+function sameSixteen(a: string, b: string): boolean {
+  const re = /^\d{1,3}(\.\d{1,3}){3}$/
+  if (!re.test(a) || !re.test(b)) return false
+  const pa = a.split('.'), pb = b.split('.')
+  return pa[0] === pb[0] && pa[1] === pb[1]
+}
+
+export interface ResolvedParents { primary: string | null; all: string[] }
+
+// Returns the PRIMARY parent (the single parent_node_id stored in the tree) and ALL
+// parents to draw edges to — the primary plus every candidate TIED with it (same best
+// type score AND layer): an end host links to every equal-level gateway/switch of its
+// subnet (primary + backups), not just one. Pure.
+export function resolveParents(node: FlatNode, others: FlatNode[]): ResolvedParents {
+  // Step 1: same /24, strictly lower layer — for EVERY node. Order: best type score,
+  // then closest (highest) layer, then lowest IP (deterministic primary).
+  const sub = others
     .filter(n => n.subnet === node.subnet && n.layer < node.layer)
     .sort((a, b) =>
-      (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0) || b.layer - a.layer
-    )
-  if (subnetCandidates.length > 0) return subnetCandidates[0]?.nodeId ?? null
-
-  // Step 2: cross-subnet, target layer = this layer - 1
-  // Use last IP octet to distribute evenly across same-layer parents
-  const targetLayer = node.layer - 1
-  const layerCandidates = others
-    .filter(n => n.layer === targetLayer)
-    .sort((a, b) => (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0))
-  if (layerCandidates.length > 0) {
-    const lastOctet = parseInt(node.ip.split('.').pop() ?? '1', 10)
-    return layerCandidates[lastOctet % layerCandidates.length]?.nodeId ?? null
+      (TYPE_SCORE[b.nodeType] ?? 0) - (TYPE_SCORE[a.nodeType] ?? 0) ||
+      b.layer - a.layer ||
+      ipToNum(a.ip) - ipToNum(b.ip))
+  if (sub.length > 0) {
+    const best = sub[0]!
+    const tied = sub.filter(c => (TYPE_SCORE[c.nodeType] ?? 0) === (TYPE_SCORE[best.nodeType] ?? 0) && c.layer === best.layer)
+    return { primary: best.nodeId, all: tied.map(c => c.nodeId) }
   }
 
-  // Step 3: any node with lower layer
-  const fallback = others
-    .filter(n => n.layer < node.layer)
-    .sort((a, b) => b.layer - a.layer)
-  return fallback[0]?.nodeId ?? null
+  // Cross-subnet fallback: INFRASTRUCTURE only, and only WITHIN the same IPv4 /16.
+  // A non-infra node (server/workstation/iot/unknown) with no same-subnet infra parent
+  // stays a ROOT (no parent, no edge). Same tie rule applies here within the /16.
+  if (!INFRA_NODE_TYPES.has(node.nodeType)) return { primary: null, all: [] }
+  // Only the immediately-higher tier (layer - 1) within the same /16 — a core above its
+  // distribution switches. There is deliberately NO "any lower layer" fallback: it
+  // bridged non-adjacent tiers (e.g. a subnet's switch to an unrelated gateway of a
+  // sibling /24 in the same /16) with no evidence. Lowest IP is the primary; a same-
+  // type peer at that tier is a tied (redundant) parent.
+  const pool = others
+    .filter(n => INFRA_NODE_TYPES.has(n.nodeType) && n.layer === node.layer - 1 && sameSixteen(node.ip, n.ip))
+    .sort((a, b) => ipToNum(a.ip) - ipToNum(b.ip))
+  if (pool.length === 0) return { primary: null, all: [] }
+  const best = pool[0]!
+  const tied = pool.filter(c => (TYPE_SCORE[c.nodeType] ?? 0) === (TYPE_SCORE[best.nodeType] ?? 0))
+  return { primary: best.nodeId, all: tied.map(c => c.nodeId) }
+}
+
+// The single tree parent (topology_nodes.parent_node_id) — the deterministic primary.
+export function resolveParent(node: FlatNode, others: FlatNode[]): string | null {
+  return resolveParents(node, others).primary
+}
+
+// Numeric IP for deterministic tie-breaks (shared by resolveParent + buildTree sort).
+function ipToNum(ip: string): number {
+  return ip.split('.').reduce((acc, oct) => acc * 256 + (parseInt(oct, 10) || 0), 0)
 }
 
 // ── Build tree from flat rows ─────────────────────────────────────

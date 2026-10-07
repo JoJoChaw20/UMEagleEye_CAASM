@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import TenantSelector from '../components/common/TenantSelector'
 import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetAddressInfo'
+import CriticalityBadge from '../components/common/CriticalityBadge'
 import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
 import { RISKY_PORTS } from '../components/common/alertMeta'
@@ -202,14 +203,6 @@ export default function AssetsPage() {
     unknown:     { icon: '❓', label: 'Unknown' },
   }
 
-  const getCriticalityMeta = (score) => {
-    const s = Number(score)
-    if (s >= 9) return { label: 'Critical', cls: 'bg-red-500/20 text-red-400 border-red-500/30' }
-    if (s >= 7) return { label: 'High',     cls: 'bg-orange-500/20 text-orange-400 border-orange-500/30' }
-    if (s >= 4) return { label: 'Medium',   cls: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' }
-    return              { label: 'Low',      cls: 'bg-green-500/20 text-green-400 border-green-500/30' }
-  }
-
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const colCount = canManageAssets ? 7 : 6   // columns in the table (for the timeline colSpan)
 
@@ -347,7 +340,6 @@ export default function AssetsPage() {
               {assets.map((a) => {
                 const srcMeta    = SOURCE_META[a.source] ?? SOURCE_META.scan_passive
                 const deviceMeta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
-                const { label: critLabel, cls: critCls } = getCriticalityMeta(a.criticalityScore)
                 return (
                   <Fragment key={a.assetId}>
                   <tr>
@@ -385,9 +377,7 @@ export default function AssetsPage() {
                       )}
                     </td>
                     <td className="criticality-col">
-                      <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${critCls}`}>
-                        {a.criticalityScore}/10 <span className="opacity-70">{critLabel}</span>
-                      </span>
+                      <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} footer="computed" />
                     </td>
                     <td className="text-xs">
                       {(() => {

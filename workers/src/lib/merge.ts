@@ -17,6 +17,7 @@ export interface MergeAsset {
   hostKey: string | null
   owner: string | null
   deviceType: string
+  deviceTypeSource: string | null
   hardwareVendor: string | null
   osInfo: Record<string, unknown> | null
   criticalityScore: number
@@ -103,14 +104,36 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
   const osByOldest = [...all].sort((a, b) => ms(a.lastScanned) - ms(b.lastScanned))
   const mergedOsInfo = osByOldest.reduce<Record<string, unknown>>((acc, a) => ({ ...acc, ...(a.osInfo ?? {}) }), {})
 
+  // Device type keeps the survivor's source. A manual survivor type wins; else a
+  // manual loser type (user-confirmed) is taken over the survivor's auto guess; else
+  // the usual "survivor's non-unknown, else first non-unknown" auto pick.
+  // (Before this change the merge ignored source entirely and always took the
+  // survivor's non-unknown type, then the first non-unknown.)
+  let mergedDeviceType: string
+  let mergedDeviceTypeSource: string
+  if (survivor.deviceTypeSource === 'manual') {
+    mergedDeviceType = survivor.deviceType
+    mergedDeviceTypeSource = 'manual'
+  } else {
+    const manualLoser = losers.find(l => l.deviceTypeSource === 'manual' && !!l.deviceType && l.deviceType !== 'unknown')
+    if (manualLoser) {
+      mergedDeviceType = manualLoser.deviceType
+      mergedDeviceTypeSource = 'manual'
+    } else {
+      mergedDeviceType = (survivor.deviceType && survivor.deviceType !== 'unknown')
+        ? survivor.deviceType
+        : (all.find(a => a.deviceType && a.deviceType !== 'unknown')?.deviceType ?? survivor.deviceType)
+      mergedDeviceTypeSource = 'auto'
+    }
+  }
+
   const mergedFields: Record<string, unknown> = {
     hostname: firstNonEmpty('hostname') ?? null,
     owner: firstNonEmpty('owner') ?? null,
     hostKey: firstNonEmpty('hostKey') ?? null,
     hardwareVendor: firstNonEmpty('hardwareVendor') ?? null,
-    deviceType: (survivor.deviceType && survivor.deviceType !== 'unknown')
-      ? survivor.deviceType
-      : (all.find(a => a.deviceType && a.deviceType !== 'unknown')?.deviceType ?? survivor.deviceType),
+    deviceType: mergedDeviceType,
+    deviceTypeSource: mergedDeviceTypeSource,
     osInfo: mergedOsInfo,
     baselineState: survivor.baselineState ?? all.find(a => a.baselineState != null)?.baselineState ?? null,
     // source = the latest-scanned asset's observation method. 'manual' only when
@@ -248,7 +271,7 @@ function loserSnapshot(a: MergeAsset): Record<string, unknown> {
   return {
     asset_id: a.assetId, tenant_id: a.tenantId, hostname: a.hostname, ip_address: a.ipAddress,
     mac_address: a.macAddress, host_key: a.hostKey, owner: a.owner, device_type: a.deviceType,
-    hardware_vendor: a.hardwareVendor, os_info: a.osInfo, criticality_score: a.criticalityScore,
+    device_type_source: a.deviceTypeSource, hardware_vendor: a.hardwareVendor, os_info: a.osInfo, criticality_score: a.criticalityScore,
     baseline_state: a.baselineState, is_internet_facing: a.isInternetFacing, source: a.source,
     in_my_assets: a.inMyAssets, last_scanned: a.lastScanned, created_at: a.createdAt,
   }

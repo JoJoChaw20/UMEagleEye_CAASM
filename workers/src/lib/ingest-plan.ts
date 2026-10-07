@@ -43,6 +43,7 @@ export interface PrefetchAsset {
   hardwareVendor: string | null
   macAddress: string | null
   source: string
+  deviceTypeSource?: string | null           // 'auto' | 'manual'; manual is never changed by a scan
   hasBaseline: boolean
   baseline?: AssetBaseline | null            // to complete a passive-captured baseline
   internetFacingOverride?: boolean | null    // analyst-confirmed exposure wins over inference
@@ -113,9 +114,44 @@ interface MutAsset {
   hardwareVendor: string | null
   macAddress: string | null
   source: string
+  deviceTypeSource: string | null
   hasBaseline: boolean
   baseline?: AssetBaseline | null
   internetFacingOverride?: boolean | null
+}
+
+/**
+ * Resolve an asset's device type + its source on a scan ingest (pure).
+ *  - A `manual` KNOWN type is NEVER changed by a scan (the user's choice is protected).
+ *  - A `manual` UNKNOWN type is not a real choice: the first scan that infers a concrete
+ *    (non-unknown) type FILLS it and takes ownership (source → `auto`, so later active
+ *    scans can keep correcting it). An unclassified scan leaves it as manual/unknown.
+ *  - An `auto`/legacy type is filled from `unknown` by any scan; a KNOWN auto type is
+ *    corrected only by an ACTIVE scan that infers a DIFFERENT non-unknown type, so a
+ *    passive scan can't flip-flop against an active one. `unknown` never overwrites a
+ *    known type. `corrected` marks the known→different-known active case (used to keep
+ *    an auto baseline's device_type in step so no false drift is raised).
+ */
+export function resolveIngestDeviceType(
+  existing: { deviceType: string; deviceTypeSource: string | null } | null,
+  incoming: string,
+  isPassive: boolean,
+): { deviceType: string; deviceTypeSource: 'auto' | 'manual'; corrected: boolean } {
+  if (!existing) return { deviceType: incoming, deviceTypeSource: 'auto', corrected: false }
+  const known = !!existing.deviceType && existing.deviceType !== 'unknown'
+  if (existing.deviceTypeSource === 'manual') {
+    if (known) return { deviceType: existing.deviceType, deviceTypeSource: 'manual', corrected: false }
+    // manual + unknown → a concrete scan result fills it and becomes auto; else untouched.
+    if (incoming !== 'unknown') return { deviceType: incoming, deviceTypeSource: 'auto', corrected: false }
+    return { deviceType: 'unknown', deviceTypeSource: 'manual', corrected: false }
+  }
+  if (!known) {
+    return { deviceType: incoming !== 'unknown' ? incoming : (existing.deviceType || 'unknown'), deviceTypeSource: 'auto', corrected: false }
+  }
+  if (!isPassive && incoming !== 'unknown' && incoming !== existing.deviceType) {
+    return { deviceType: incoming, deviceTypeSource: 'auto', corrected: true }
+  }
+  return { deviceType: existing.deviceType, deviceTypeSource: 'auto', corrected: false }
 }
 
 /** Resolve + plan writes for a whole batch in memory. */
@@ -135,7 +171,7 @@ export function planIngest(
     .sort((x, y) => (y.lastSeen - x.lastSeen) || (x.assetCreatedAt - y.assetCreatedAt))
   const assetState = new Map<string, MutAsset>()
   for (const a of prefetch.assets) {
-    assetState.set(a.assetId, { ...a, osInfo: a.osInfo ?? {} })
+    assetState.set(a.assetId, { ...a, osInfo: a.osInfo ?? {}, deviceTypeSource: a.deviceTypeSource ?? null })
   }
 
   const perHost: PlannedHost[] = []
@@ -193,7 +229,10 @@ export function planIngest(
       isNew = false
       const st = assetState.get(assetId)!
       const merged = mergeOsInfo(st.osInfo, host.observedOsInfo, host.isPassive).merged
-      const resolvedDeviceType = (st.deviceType && st.deviceType !== 'unknown') ? st.deviceType : host.deviceType
+      // Device type: manual is protected; an auto type may be corrected by an active
+      // scan (never a passive one). See resolveIngestDeviceType.
+      const dt = resolveIngestDeviceType({ deviceType: st.deviceType, deviceTypeSource: st.deviceTypeSource ?? null }, host.deviceType, host.isPassive)
+      const resolvedDeviceType = dt.deviceType
       // Analyst-confirmed exposure wins; otherwise the scan's gateway inference
       const exposed = st.internetFacingOverride ?? host.internetFacing
       const crit = computeCriticality({
@@ -216,6 +255,7 @@ export function planIngest(
         hardwareVendor: newVendor,
         osInfo: merged,
         deviceType: resolvedDeviceType,
+        deviceTypeSource: dt.deviceTypeSource,
         isInternetFacing: exposed,
         criticalityScore: crit,
         source: resolvedSource,
@@ -241,6 +281,13 @@ export function planIngest(
         if (!st.baseline.snmp_sysdescr && typeof merged.snmp_sysdescr === 'string') {
           patch.snmp_sysdescr = merged.snmp_sysdescr
         }
+        // An auto device-type correction against an auto-set baseline that still holds
+        // the OLD type is not drift — move the baseline with it (same write). If the
+        // baseline was user-confirmed (auto_set false) or already differs, leave it and
+        // let detectDrift flag the real change.
+        if (dt.corrected && st.baseline.auto_set === true && st.baseline.device_type === st.deviceType) {
+          patch.device_type = resolvedDeviceType
+        }
         if (Object.keys(patch).length > 0) {
           nextBaseline = { ...st.baseline, ...patch }
           set.baselineState = nextBaseline
@@ -265,7 +312,7 @@ export function planIngest(
       }
 
       assetState.set(assetId, {
-        ...st, osInfo: merged, deviceType: resolvedDeviceType, hostKey: newHostKey,
+        ...st, osInfo: merged, deviceType: resolvedDeviceType, deviceTypeSource: dt.deviceTypeSource, hostKey: newHostKey,
         hardwareVendor: newVendor, source: resolvedSource, hasBaseline: true,
         hostname: newHostname, macAddress: newMac, baseline: nextBaseline,
       })
@@ -296,7 +343,7 @@ export function planIngest(
       ops.push({ k: 'insertAsset', values: {
         assetId, tenantId: host.tenantId, ipAddress: host.ip, hostname: host.hostname ?? null,
         macAddress: mac ?? null, hostKey: hostKey ?? null, hardwareVendor: host.hardwareVendor ?? null,
-        deviceType: host.deviceType, osInfo: merged, isInternetFacing: host.internetFacing,
+        deviceType: host.deviceType, deviceTypeSource: 'auto', osInfo: merged, isInternetFacing: host.internetFacing,
         criticalityScore: crit, baselineState: baseline, source, inMyAssets: false,
         lastScanned: now, createdAt: now, updatedAt: now,
       } })
@@ -308,7 +355,7 @@ export function planIngest(
       } })
 
       assetState.set(assetId, {
-        assetId, deviceType: host.deviceType, hostKey, osInfo: merged, hostname: host.hostname ?? null,
+        assetId, deviceType: host.deviceType, deviceTypeSource: 'auto', hostKey, osInfo: merged, hostname: host.hostname ?? null,
         owner: null, hardwareVendor: host.hardwareVendor ?? null, macAddress: mac ?? null, source, hasBaseline: true,
         baseline, internetFacingOverride: null,
       })

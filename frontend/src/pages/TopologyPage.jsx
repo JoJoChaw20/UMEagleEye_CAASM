@@ -182,12 +182,29 @@ export default function TopologyPage() {
     setError(null)
     try {
       const params = tenantFilter ? { tenant_id: tenantFilter } : {}
-      const res = await client.get('/topology', { params })
+      // Pull the live criticality from the engine (the asset list) and overlay it on
+      // the tree, so the dot reflects the current score — not the value baked into
+      // topology_nodes.metadata at infer time. Graph reads the engine (allowed);
+      // never the reverse. Capped at 200 (dot is cosmetic; high-risk nodes first).
+      const [res, assetsRes] = await Promise.all([
+        client.get('/topology', { params }),
+        client.get('/assets', { params: { ...params, in_my_assets: 'true', limit: 200 } })
+          .catch(() => ({ data: { items: [] } })),
+      ])
+      const liveScore = new Map((assetsRes.data?.items ?? []).map(a => [a.assetId, a.criticalityScore]))
+      const overlay = (nodes) => (nodes || []).forEach(n => {
+        const live = liveScore.get(n.asset_id)
+        if (live != null) n.metadata = { ...(n.metadata ?? {}), criticality_score: live }
+        if (n.children) overlay(n.children)
+      })
       if (res.data.tenant_trees) {
+        res.data.tenant_trees.forEach(t => overlay(t.tree))
         setTenantTrees(res.data.tenant_trees)
         setTree([])
       } else {
-        setTree(res.data.tree || [])
+        const tree = res.data.tree || []
+        overlay(tree)
+        setTree(tree)
         setTenantTrees([])
       }
     } catch (err) {

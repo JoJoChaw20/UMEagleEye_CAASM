@@ -287,32 +287,35 @@ The `POST /topology/infer` endpoint rebuilds the topology tree from the asset in
 ### Parent assignment (3-step resolution)
 
 1. **Same-subnet candidates** with strictly lower layer — prefers highest layer number (closest parent), then switch > router > gateway type score
-2. **Cross-subnet candidates** at `target_layer = this_layer - 1` — distributes evenly by `lastOctet % candidateCount`
+2. **Cross-subnet candidates** at `target_layer = this_layer - 1` — chosen deterministically: lowest layer first, then lowest IP (same input always yields the same parent)
 3. **Fallback** — any node with lower layer
 
 ## Asset Relationship Inference
 
 The `POST /relationships/infer` endpoint builds a star-topology relationship graph per `/24` subnet:
 
-- **`same_subnet`** edges — hub (network device or lowest-IP asset) connects to every other asset in the same subnet
-- **`connects_to`** edges — internet-facing gateway connects to the hub of every other subnet
+- **`connects_to`** edges — a network/infrastructure parent to a host child (downstream impact), and infrastructure-to-infrastructure uplinks
+- **`depends_on`** edges — host-to-host dependencies
+- **`same_subnet`** edges — informational peer links (not traversed by blast radius)
 
 Runs per tenant; clears existing relationships before reinferring.
 
 ## Criticality Scoring
 
-Criticality scores (1–10) are computed automatically at ingest time:
+Criticality scores (1–10) are derived **only from the asset's own facts** — never from topology (layers, nodes or relationships). The relationship graph is a downstream view that may read this score; the score never reads the graph.
 
 | Factor | Effect |
 |--------|--------|
 | Device type: `server` | Higher base score |
 | `is_internet_facing: true` | +2 |
 | No `owner` set | +1 penalty (unowned assets are higher risk) |
+| High-risk / DB / wide-surface ports | up to +4 |
+| Production / DB / perimeter hostname hints | ±1 each |
 | Device type: `iot` | Moderate base |
 | Device type: `workstation` | Lower base |
-| Device type: `network` | Gateway = high; switch/AP = moderate |
+| Device type: `network` | Higher base |
 
-Existing device types are never downgraded on re-scan; only `unknown` can be improved.
+`device_type_source` tracks whether the type was set by a user (`manual`) or inferred (`auto`). A `manual` **known** type is never changed by a scan; a `manual` **unknown** type (a hand-created/CSV asset with no type yet) is filled by the first scan that infers a concrete type, which then takes ownership (`→ auto`). An `auto` type may be corrected by a later **active** scan that infers a different non-`unknown` type (an `unknown` result never overwrites a known type). Any Rescore overwrites a manually-set criticality score.
 
 ## EagleEye Agent
 

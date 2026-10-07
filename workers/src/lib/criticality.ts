@@ -5,8 +5,12 @@
  *       + isInternetFacing bonus
  *       + port-risk bonus
  *       + hostname-hint bonus/penalty
- *       + topology-layer bonus
+ *       + unowned penalty
  * Clamped to [1, 10].
+ *
+ * Criticality is derived ONLY from the asset's own facts. It must never read
+ * topology (layers, nodes, relationships): the relationship graph is a downstream
+ * visualization that may read this score, never the reverse.
  *
  * Designed so users understand every point: a breakdown object and a
  * human-readable factors array are returned alongside the final score.
@@ -49,8 +53,6 @@ export interface ScoringInput {
   hostname: string | null | undefined
   /** osInfo from the assets table — may contain a "ports" array populated by scan ingest */
   osInfo: Record<string, unknown>
-  /** Layer from topology_nodes (1 = internet-facing gateway … 6 = IoT leaf) */
-  topologyLayer?: number | null
   /** The assigned owner of the asset. Empty means unowned (adds risk). */
   owner?: string | null
 }
@@ -60,7 +62,6 @@ export interface ScoringBreakdown {
   internetFacing: number
   portRisk: number
   hostnameHints: number
-  topologyLayer: number
   ownerPenalty: number
 }
 
@@ -71,7 +72,7 @@ export interface ScoringResult {
 }
 
 export function computeCriticality(input: ScoringInput): ScoringResult {
-  const { deviceType, isInternetFacing, hostname, osInfo, topologyLayer, owner } = input
+  const { deviceType, isInternetFacing, hostname, osInfo, owner } = input
   const factors: string[] = []
 
   // ── 1. Base score ────────────────────────────────────────────────
@@ -131,17 +132,7 @@ export function computeCriticality(input: ScoringInput): ScoringResult {
     hostnameHints -= 1; factors.push('non-production hostname (−1)')
   }
 
-  // ── 5. Topology layer bonus ──────────────────────────────────────
-  let topologyBonus = 0
-  if (topologyLayer === 1) {
-    topologyBonus = 3; factors.push('topology L1 internet gateway (+3)')
-  } else if (topologyLayer === 2) {
-    topologyBonus = 2; factors.push('topology L2 core network (+2)')
-  } else if (topologyLayer === 3) {
-    topologyBonus = 1; factors.push('topology L3 distribution (+1)')
-  }
-
-  // ── 6. Unowned asset penalty ─────────────────────────────────────
+  // ── 5. Unowned asset penalty ─────────────────────────────────────
   let ownerPenalty = 0
   if (!owner || owner.trim() === '') {
     ownerPenalty = 1
@@ -149,12 +140,12 @@ export function computeCriticality(input: ScoringInput): ScoringResult {
   }
 
   // ── Final score ──────────────────────────────────────────────────
-  const raw = base + internetFacing + portRisk + hostnameHints + topologyBonus + ownerPenalty
+  const raw = base + internetFacing + portRisk + hostnameHints + ownerPenalty
   const score = Math.max(1, Math.min(10, raw))
 
   return {
     score,
-    breakdown: { base, internetFacing, portRisk, hostnameHints, topologyLayer: topologyBonus, ownerPenalty },
+    breakdown: { base, internetFacing, portRisk, hostnameHints, ownerPenalty },
     factors,
   }
 }

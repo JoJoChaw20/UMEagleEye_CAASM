@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { RefreshCw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import client from '../../api/client'
+import { layoutGraph } from '../../utils/graphLayout'
 
 const TYPE_COLORS = {
   server:      '#3393ff',
@@ -31,124 +32,31 @@ const EDGE_LABELS = {
   exposes_service:  'Exposes',
 }
 
-const ALL_TYPES    = ['server', 'workstation', 'network', 'iot']
+const ALL_TYPES    = ['server', 'workstation', 'network', 'iot', 'unknown']
+
+// The asset's /24 for the "no network device" notice; falls back for non-IPv4.
+const subnet24 = (ip) =>
+  (typeof ip === 'string' && /^\d{1,3}(\.\d{1,3}){3}$/.test(ip))
+    ? `${ip.split('.').slice(0, 3).join('.')}.0/24`
+    : 'its subnet'
 const ALL_REL_TYPES = ['same_subnet', 'connects_to', 'depends_on', 'authenticates_to', 'exposes_service']
 
-/* ── Reingold-Tilford tree layout ──────────────────────────────────
- * Guarantees zero node overlap. Handles disconnected components by
- * placing each component side-by-side. Deterministic — same data
- * always produces identical positions.
+/* ── Layered-by-tier layout ─────────────────────────────────────────
+ * Vertical position follows the topology tier (peers share a row); the pure algorithm
+ * lives in utils/graphLayout.js. This adapter maps the graph nodes/edges into it and
+ * writes x/y back onto the node objects, returning the tier/isolated-band metadata so
+ * draw() can label the bottom band. Deterministic.
  * ---------------------------------------------------------------- */
-function forceSimulation(nodes, edges, W, H) {
-  if (nodes.length === 0) return nodes
-
-  const NODE_SEP  = 100   // min horizontal gap between leaf nodes
-  const LAYER_SEP = 110   // vertical gap between depth levels
-  const PAD       = 50    // canvas padding
-
-  const nodeMap = {}
-  nodes.forEach(n => { nodeMap[n.asset_id] = n })
-
-  // ── Build undirected adjacency (deduplicated) ──
-  const adj = {}
-  nodes.forEach(n => { adj[n.asset_id] = [] })
-  const edgeSeen = new Set()
-  edges.forEach(e => {
-    const k = e.source < e.target ? `${e.source}-${e.target}` : `${e.target}-${e.source}`
-    if (edgeSeen.has(k)) return
-    edgeSeen.add(k)
-    adj[e.source]?.push(e.target)
-    adj[e.target]?.push(e.source)
-  })
-
-  // ── Find connected components; gateway-containing component first ──
-  const globalVisited = new Set()
-  const components = []
-  const ordered = [...nodes].sort((a, b) => {
-    if (a.is_internet_facing !== b.is_internet_facing) return a.is_internet_facing ? -1 : 1
-    return (b.edge_count ?? 0) - (a.edge_count ?? 0)
-  })
-  for (const start of ordered) {
-    if (globalVisited.has(start.asset_id)) continue
-    const comp = []
-    const q = [start.asset_id]
-    globalVisited.add(start.asset_id)
-    while (q.length > 0) {
-      const id = q.shift()
-      comp.push(id)
-      for (const nid of adj[id] ?? []) {
-        if (!globalVisited.has(nid)) { globalVisited.add(nid); q.push(nid) }
-      }
-    }
-    components.push({ root: start.asset_id, ids: comp })
+function applyLayout(nodes, edges, W) {
+  if (nodes.length === 0) return { tiers: [], isolatedBandY: 0, hasIsolated: false }
+  const input = nodes.map(n => ({ id: n.asset_id, layer: n.layer ?? null, ip: n.ip_address, deviceType: n.device_type }))
+  const { pos, tiers, isolatedBandY, hasIsolated } =
+    layoutGraph(input, edges.map(e => ({ source: e.source, target: e.target })), { width: W })
+  for (const n of nodes) {
+    const p = pos.get(n.asset_id)
+    if (p) { n.x = p.x; n.y = p.y } else { n.x = W / 2; n.y = 60 }
   }
-
-  // ── Per-component: build spanning tree via BFS, assign positions ──
-  function layoutComponent(root, ids) {
-    const idSet  = new Set(ids)
-    const ch     = {}      // children map
-    const depth  = {}      // BFS depth
-    ids.forEach(id => { ch[id] = [] })
-    depth[root] = 0
-    const q = [root]
-    const vis = new Set([root])
-    while (q.length > 0) {
-      const id = q.shift()
-      // Sort neighbours by IP for a deterministic, IP-ascending child order
-      const nbrs = (adj[id] ?? [])
-        .filter(nid => idSet.has(nid) && !vis.has(nid))
-        .sort((a, b) => {
-          const ipA = nodeMap[a]?.ip_address ?? ''
-          const ipB = nodeMap[b]?.ip_address ?? ''
-          return ipA.localeCompare(ipB, undefined, { numeric: true })
-        })
-      for (const nid of nbrs) {
-        vis.add(nid); ch[id].push(nid); depth[nid] = depth[id] + 1; q.push(nid)
-      }
-    }
-
-    // Reingold-Tilford: count leaves to determine subtree width
-    function leaves(id) {
-      return ch[id].length === 0 ? 1 : ch[id].reduce((s, c) => s + leaves(c), 0)
-    }
-
-    // Assign preliminary x (relative to component origin = 0)
-    const px = {}
-    function assignX(id, left) {
-      if (ch[id].length === 0) { px[id] = left + NODE_SEP / 2; return left + NODE_SEP }
-      let x = left
-      for (const c of ch[id]) x = assignX(c, x)
-      px[id] = (px[ch[id][0]] + px[ch[id][ch[id].length - 1]]) / 2
-      return x
-    }
-    assignX(root, 0)
-
-    const treeW    = leaves(root) * NODE_SEP
-    const maxDepth = Math.max(...ids.map(id => depth[id] ?? 0))
-    const treeH    = maxDepth * LAYER_SEP
-
-    return { ch, depth, px, treeW, treeH }
-  }
-
-  const layouts = components.map(({ root, ids }) => ({
-    root, ids, ...layoutComponent(root, ids)
-  }))
-
-  // ── Arrange components side-by-side, centred in canvas ──
-  const totalW   = layouts.reduce((s, l) => s + l.treeW, 0) + (layouts.length - 1) * NODE_SEP
-  const maxTreeH = Math.max(...layouts.map(l => l.treeH))
-  let ox = Math.max(PAD, (W - totalW) / 2)
-
-  layouts.forEach(({ root, ids, ch, depth, px, treeW, treeH }) => {
-    const oy = Math.max(PAD, (H - treeH) / 2)
-    ids.forEach(id => {
-      nodeMap[id].x = Math.max(PAD, Math.min(W - PAD, (px[id] ?? 0) + ox))
-      nodeMap[id].y = Math.max(PAD, Math.min(H - PAD, (depth[id] ?? 0) * LAYER_SEP + oy))
-    })
-    ox += treeW + NODE_SEP
-  })
-
-  return nodes
+  return { tiers, isolatedBandY, hasIsolated }
 }
 
 /* ── Main component ────────────────────────────────────────────── */
@@ -167,6 +75,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
   const [tooltip,   setTooltip]         = useState(null)
   const [loading,   setLoading]         = useState(true)
   const [inferring, setInferring]       = useState(false)
+  const [showUnconnected, setShowUnconnected] = useState(false)
   const [activeTypes,    setActiveTypes]    = useState(new Set(ALL_TYPES))
   const [activeRelTypes, setActiveRelTypes] = useState(new Set(ALL_REL_TYPES))
 
@@ -228,22 +137,30 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
     stateRef.current.zoom = 1; stateRef.current.offsetX = 0; stateRef.current.offsetY = 0
 
     const ctx = canvas.getContext('2d')
-    const rect = canvas.parentElement?.getBoundingClientRect()
-    const W = (rect?.width || 800)
-    const H = 580
-    canvas.width  = W * window.devicePixelRatio
-    canvas.height = H * window.devicePixelRatio
-    canvas.style.width  = W + 'px'
-    canvas.style.height = H + 'px'
-    ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0)
-
     const nodes = graphData.nodes.map(n => ({ ...n }))
     const edges = [...(graphData.edges ?? [])]
-
-    if (nodes.length > 0) forceSimulation(nodes, edges, W, H)
-
     stateRef.current.nodes = nodes
     stateRef.current.edges = edges
+
+    // Size the canvas to its container and (re)lay out. Called on mount AND whenever
+    // the container resizes, so the canvas never stays stuck at a stale/too-narrow
+    // width read before the panel finished laying out (the "light strip on the right"
+    // glitch). W/H are closed over by draw().
+    let W = 800, H = 580
+    let layoutMeta = { tiers: [], isolatedBandY: 0, hasIsolated: false }
+    const sizeAndLayout = () => {
+      const dpr = window.devicePixelRatio || 1
+      const rect = canvas.parentElement?.getBoundingClientRect()
+      W = Math.max(320, Math.floor(rect?.width || 800))
+      H = 580
+      canvas.width  = W * dpr
+      canvas.height = H * dpr
+      canvas.style.width  = W + 'px'
+      canvas.style.height = H + 'px'
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      if (nodes.length > 0) layoutMeta = applyLayout(nodes, edges, W)
+    }
+    sizeAndLayout()
 
     /* ── Draw function ──────────────────────────────────────────── */
     function draw() {
@@ -338,7 +255,10 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
         }
 
         if (zoom > 0.5 && !dimmed) {
-          const label = n.hostname || n.ip_address
+          // Long hostnames: truncate so adjacent labels don't overlap; full name is in
+          // the hover tooltip.
+          const raw = n.hostname || n.ip_address || ''
+          const label = raw.length > 22 ? raw.slice(0, 21) + '…' : raw
           ctx.font = `bold ${10 / zoom}px Inter,sans-serif`
           ctx.fillStyle = isOrigin ? '#ff8a80' : '#e2e3e5'
           ctx.textAlign = 'center'
@@ -349,6 +269,14 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
           }
         }
       })
+
+      // Faint label over the bottom band of isolated nodes (matches the notice below).
+      if (layoutMeta.hasIsolated) {
+        ctx.font = `${11 / zoom}px Inter,sans-serif`
+        ctx.fillStyle = '#7b7f87'; ctx.globalAlpha = 0.85; ctx.textAlign = 'left'
+        ctx.fillText('No known relationships', 40, layoutMeta.isolatedBandY - 18)
+        ctx.globalAlpha = 1
+      }
 
       ctx.restore()
 
@@ -372,6 +300,12 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
     drawRef.current = draw
     draw()
+
+    /* ── Follow container / window resizes ───────────────────────── */
+    const onResize = () => { sizeAndLayout(); draw() }
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null
+    if (ro && canvas.parentElement) ro.observe(canvas.parentElement)
+    window.addEventListener('resize', onResize)
 
     /* ── Event handlers ──────────────────────────────────────────── */
     const getNodeAt = (mx, my) => {
@@ -448,6 +382,8 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
     canvas.addEventListener('wheel',      handleWheel, { passive: false })
 
     return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', onResize)
       canvas.removeEventListener('mousemove',  handleMouseMove)
       canvas.removeEventListener('mousedown',  handleMouseDown)
       canvas.removeEventListener('mouseup',    handleMouseUp)
@@ -461,11 +397,19 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
   const triggerInference = async () => {
     setInferring(true)
     try {
-      // Topology must be inferred first so assets get network layer data
-      try { await client.post('/topology/infer') } catch { /* backend optional */ }
+      // Topology must be inferred first so assets get network layer data. If it fails
+      // we still build relationships (from the older topology) but warn, with status —
+      // the failure used to be swallowed entirely.
+      let topoWarning = ''
+      try {
+        await client.post('/topology/infer')
+      } catch (e) {
+        const status = e?.response?.status
+        topoWarning = `Topology step failed (HTTP ${status ?? 'error'}); relationships were built from older topology. `
+      }
       const res = await client.post('/relationships/infer')
       await loadGraph()
-      alert(res.data?.message || 'Relationships inferred.')
+      alert(topoWarning + (res.data?.message || 'Relationships inferred.'))
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to infer relationships')
     } finally {
@@ -490,13 +434,24 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
   const relTypeCounts = {}
   ALL_REL_TYPES.forEach(t => { relTypeCounts[t] = graphData.edges?.filter(e => e.relationship_type === t).length ?? 0 })
 
+  // Header "drawn vs total": a node is drawn iff its type is active; an edge iff its
+  // type is active AND both endpoints' types are active — mirrors the draw() filters.
+  const nodeTypeById = {}
+  ;(graphData.nodes ?? []).forEach(n => { nodeTypeById[n.asset_id] = n.device_type })
+  const totalNodes = graphData.total_nodes ?? graphData.nodes?.length ?? 0
+  const totalEdges = graphData.total_edges ?? graphData.edges?.length ?? 0
+  const drawnNodes = (graphData.nodes ?? []).filter(n => activeTypes.has(n.device_type)).length
+  const drawnEdges = (graphData.edges ?? []).filter(e =>
+    activeRelTypes.has(e.relationship_type) &&
+    activeTypes.has(nodeTypeById[e.source]) && activeTypes.has(nodeTypeById[e.target])).length
+
   return (
     <div className="space-y-3">
       {/* Top controls */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="text-sm text-dark-300">
-            {graphData.total_nodes ?? graphData.nodes?.length ?? 0} nodes &middot; {graphData.total_edges ?? graphData.edges?.length ?? 0} edges
+            {totalNodes} nodes{drawnNodes !== totalNodes ? ` (${drawnNodes} shown)` : ''} &middot; {totalEdges} edges{drawnEdges !== totalEdges ? ` (${drawnEdges} shown)` : ''}
           </span>
           {blastData && (
             <span className="badge-critical">Blast Radius: {blastData.total_affected} affected</span>
@@ -528,6 +483,11 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
         {ALL_TYPES.map(type => {
           const active = activeTypes.has(type)
           const count  = typeCounts[type]
+          // 'unknown' uses a neutral grey from the token palette (CSS var dark-400 for
+          // the dot; a token text class when active) so the chip text keeps ≥4.5:1 in
+          // light AND dark — a hard-coded hex would fail on the light-mode background.
+          const isUnknown = type === 'unknown'
+          const dotColor = isUnknown ? 'rgb(var(--dark-400))' : TYPE_COLORS[type]
           return (
             <button
               key={type}
@@ -535,10 +495,10 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
               title={`${active ? 'Hide' : 'Show'} ${type}`}
               className={`flex items-center gap-1 px-2 py-0.5 rounded-full border transition-all ${
                 active ? 'border-current' : 'border-dark-600 opacity-30 grayscale'
-              }`}
-              style={{ color: active ? TYPE_COLORS[type] : undefined }}
+              } ${isUnknown && active ? 'text-dark-200' : ''}`}
+              style={{ color: active && !isUnknown ? TYPE_COLORS[type] : undefined }}
             >
-              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: TYPE_COLORS[type] }} />
+              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
               <span className="capitalize">{type}</span>
               {count > 0 && <span className="text-[10px] opacity-70">({count})</span>}
             </button>
@@ -616,6 +576,40 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
           </div>
         )}
       </div>
+
+      {/* Unconnected members — real My Assets that have no edge to another member.
+          Informational only: NOT graph nodes, layout is untouched. Hidden when empty. */}
+      {graphData.unconnected?.length > 0 && (
+        <div className="rounded-lg border border-dark-700 bg-dark-800/60 text-xs">
+          <button
+            onClick={() => setShowUnconnected(v => !v)}
+            aria-expanded={showUnconnected}
+            className="w-full flex items-center justify-between px-3 py-2 text-dark-200 hover:text-dark-100 transition-colors"
+          >
+            <span>
+              {graphData.unconnected.length} asset{graphData.unconnected.length === 1 ? '' : 's'} have no known relationships
+            </span>
+            <span className="text-dark-400">{showUnconnected ? 'Hide' : 'Show'}</span>
+          </button>
+          {showUnconnected && (
+            <ul className="border-t border-dark-700 divide-y divide-dark-700/60 max-h-56 overflow-y-auto">
+              {graphData.unconnected.map(u => (
+                <li key={u.id} className="px-3 py-2 flex items-start justify-between gap-3">
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium text-dark-100">{u.hostname || u.ip}</span>
+                    <span className="ml-2 text-dark-300 capitalize">{u.device_type}</span>
+                  </span>
+                  <span className="text-dark-300 text-right shrink-0 max-w-[60%]">
+                    {u.reason === 'unknown_type'
+                      ? 'Device type unknown: scan it so it can be classified'
+                      : `No gateway or switch of its network (${subnet24(u.ip)}) is in My Assets. Add or scan its gateway to link it.`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }

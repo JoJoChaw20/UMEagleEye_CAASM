@@ -1,15 +1,16 @@
 /**
  * Bulk criticality rescoring.
  *
- * Prefetches the tenant's assets + topology layers in a constant number of
- * queries, recomputes every score IN MEMORY with the existing scoring function
- * (logic unchanged), and writes back only the assets whose score changed, via
- * db.batch in ~100-statement chunks. This keeps Cloudflare subrequests constant
- * instead of one UPDATE per asset (which blew the Free-plan 50/request limit).
+ * Prefetches the tenant's assets in a constant number of queries, recomputes every
+ * score IN MEMORY from each asset's own facts (the scoring function is unchanged
+ * except that it no longer reads topology), and writes back only the assets whose
+ * score changed, via db.batch in ~100-statement chunks. This keeps Cloudflare
+ * subrequests constant instead of one UPDATE per asset (which blew the Free-plan
+ * 50/request limit).
  */
 import { eq, inArray, and } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { assets, topologyNodes } from '../db/schema'
+import { assets } from '../db/schema'
 import { computeCriticality } from './criticality'
 
 type DbClient = ReturnType<typeof getDb>
@@ -22,16 +23,15 @@ export interface ScoreInput {
   isInternetFacing: boolean
   hostname: string | null | undefined
   osInfo: Record<string, unknown> | null | undefined
-  topologyLayer: number | null
   owner: string | null | undefined
 }
 
 /**
  * PURE single-asset scorer — the ONE entry point for criticality used by bulk
  * rescore, the per-asset rescore endpoint, PATCH recompute, and POST create, so
- * they can never disagree. Passes device type, exposure, hostname, ports (via
- * osInfo), the topology layer AND the owner, so an owned asset no longer gets the
- * "unowned" penalty on a bulk run. Formula itself is unchanged.
+ * they can never disagree. Derives the score from the asset's own facts only
+ * (device type, exposure, hostname, ports via osInfo, owner). It does NOT take any
+ * topology input — criticality must never depend on the graph.
  */
 export function scoreAsset(input: ScoreInput): number {
   return computeCriticality({
@@ -39,7 +39,6 @@ export function scoreAsset(input: ScoreInput): number {
     isInternetFacing: input.isInternetFacing,
     hostname: input.hostname,
     osInfo: (input.osInfo ?? {}) as Record<string, unknown>,
-    topologyLayer: input.topologyLayer,
     owner: input.owner,
   }).score
 }
@@ -50,7 +49,6 @@ export function scoreAsset(input: ScoreInput): number {
  */
 export function planRescore(
   rows: Pick<typeof assets.$inferSelect, 'assetId' | 'deviceType' | 'isInternetFacing' | 'hostname' | 'osInfo' | 'criticalityScore' | 'owner'>[],
-  layerMap: Map<string, number>,
 ): RescorePlan {
   const changes: RescoreChange[] = []
   for (const asset of rows) {
@@ -59,7 +57,6 @@ export function planRescore(
       isInternetFacing: asset.isInternetFacing,
       hostname: asset.hostname,
       osInfo: asset.osInfo as Record<string, unknown> | null,
-      topologyLayer: layerMap.get(asset.assetId) ?? null,
       owner: asset.owner,
     })
     if (score !== asset.criticalityScore) changes.push({ assetId: asset.assetId, score })
@@ -71,8 +68,8 @@ export function planRescore(
  * Rescore a set of assets (by ID) within a tenant. If assetIds is empty,
  * rescores ALL assets for the tenant.
  *
- * Subrequests: 1 (assets) + 1 (topology, tenant-wide) + ceil(changed / 100) batch
- * writes — constant regardless of asset count.
+ * Subrequests: 1 (assets) + ceil(changed / 100) batch writes — constant regardless
+ * of asset count. (No topology read: criticality no longer depends on the graph.)
  */
 export async function rescoreAssets(
   db: DbClient,
@@ -81,8 +78,7 @@ export async function rescoreAssets(
   opts?: { myAssetsOnly?: boolean },
 ): Promise<RescorePlan> {
   // Fetch asset rows (1 query). scope=my_assets adds in_my_assets=true to the
-  // tenant prefetch only — the topology-layer read below stays tenant-wide (it
-  // only holds My Assets nodes anyway), so the query count is unchanged.
+  // tenant prefetch.
   let rows: (typeof assets.$inferSelect)[]
   if (assetIds && assetIds.length > 0) {
     rows = await db.select().from(assets).where(inArray(assets.assetId, assetIds))
@@ -95,15 +91,7 @@ export async function rescoreAssets(
   }
   if (rows.length === 0) return { scanned: 0, changes: [] }
 
-  // Topology layers for the tenant (1 query).
-  const topoRows = tenantId
-    ? await db.select({ assetId: topologyNodes.assetId, layer: topologyNodes.layer })
-        .from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
-    : []
-  const layerMap = new Map<string, number>()
-  for (const t of topoRows) { if (t.assetId) layerMap.set(t.assetId, t.layer) }
-
-  const plan = planRescore(rows, layerMap)
+  const plan = planRescore(rows)
 
   // Write only changed assets, in ~100-statement batches (one batch = one subrequest).
   const now = new Date()

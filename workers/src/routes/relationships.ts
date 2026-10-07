@@ -1,14 +1,18 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, sql } from 'drizzle-orm'
+import { eq, and, or, sql, getTableColumns } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema'
-import { inferForTenant } from './topology'
+import { inferForTenant, resolveParents } from './topology'
 import { computeBlastRadius, clampDepth, normalizeDirection, type BlastNodeInput, type BlastEdgeInput } from '../lib/blastRadius'
+
+// Chunk size for the relationship rebuild INSERT, so one statement never grows without
+// bound now that a host can link to several equal-level gateways/switches.
+const REL_INSERT_CHUNK = 200
 
 const app = new Hono<{ Bindings: Env }>()
 const VIEW_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin'] as const
@@ -16,7 +20,9 @@ const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin'] as const
 const DELETE_ROLES = ['tenant_superadmin', 'tenant_admin'] as const
 
 // ── Helpers ───────────────────────────────────────────────────────
-function toSnakeNode(n: typeof assets.$inferSelect, edgeCount: number) {
+// `layer` is the asset's topology layer (the graph MAY read topology; the engine never
+// does). Used only by the layered layout on the client.
+function toSnakeNode(n: typeof assets.$inferSelect & { topoLayer?: number | null }, edgeCount: number) {
   return {
     asset_id:         n.assetId,
     hostname:         n.hostname,
@@ -25,12 +31,25 @@ function toSnakeNode(n: typeof assets.$inferSelect, edgeCount: number) {
     criticality_score: n.criticalityScore,
     is_internet_facing: n.isInternetFacing,
     hardware_vendor:  n.hardwareVendor,
+    layer:            n.topoLayer ?? null,
     edge_count:       edgeCount,
   }
 }
 
-function getSubnet(ip: string): string {
-  return ip.split('.').slice(0, 3).join('.')
+// Infrastructure node types (topology). A parent of one of these is network gear.
+export const INFRA_TYPES = new Set(['gateway', 'router', 'switch', 'access_point'])
+
+// How a topology parent→child link maps to a relationship edge. Exported + pure so
+// the classification harness can test it. A network/infra parent to a HOST child is a
+// downstream-impact edge (connects_to) regardless of subnet — previously an in-subnet
+// infra→host link was `same_subnet`, which the blast-radius walk skips, so clicking a
+// switch showed none of its hosts. Infra→infra is an uplink; host→host is a dependency.
+export function classifyRelType(parentType: string, childType: string): (typeof assetRelationships.$inferInsert)['relationshipType'] {
+  const parentInfra = INFRA_TYPES.has(parentType)
+  const childInfra  = INFRA_TYPES.has(childType)
+  if (parentInfra && childInfra) return 'connects_to'
+  if (parentInfra && !childInfra) return 'connects_to'
+  return 'depends_on'
 }
 
 async function getTenantAssetIds(db: ReturnType<typeof getDb>, tenantId: string): Promise<string[]> {
@@ -45,8 +64,98 @@ function anyOfUuids(col: any, ids: string[]) {
   return sql`${col} = ANY(ARRAY[${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)}])`
 }
 
+// ── Graph data loader (constant queries) ─────────────────────────
+// Loads the My Assets member nodes + edges in a constant number of queries
+// (tenant-scoped: getTenantAssetIds + nodes + edges = 3; superadmin unscoped:
+// nodes + edges = 2). The nodes query LEFT JOINs topology_nodes for each node's layer
+// (the graph may read topology) — still ONE query; an asset with >1 node yields >1 row
+// which is collapsed to the lowest layer in memory. Exported so the demo can assert
+// the query count with a stub.
+type GraphNodeRow = typeof assets.$inferSelect & { topoLayer: number | null }
+
+function collapseByLowestLayer(rows: GraphNodeRow[]): GraphNodeRow[] {
+  const m = new Map<string, GraphNodeRow>()
+  for (const r of rows) {
+    const ex = m.get(r.assetId)
+    if (!ex) m.set(r.assetId, { ...r })
+    else if (r.topoLayer != null && (ex.topoLayer == null || r.topoLayer < ex.topoLayer)) ex.topoLayer = r.topoLayer
+  }
+  return [...m.values()]
+}
+
+export async function loadGraphData(
+  db: ReturnType<typeof getDb>,
+  params: { tenantScopeId: string | null },
+): Promise<{ rawNodes: GraphNodeRow[]; rawEdges: (typeof assetRelationships.$inferSelect)[] }> {
+  const nodeSel = { ...getTableColumns(assets), topoLayer: topologyNodes.layer }
+  if (params.tenantScopeId) {
+    const allowed = await getTenantAssetIds(db, params.tenantScopeId)
+    if (allowed.length === 0) return { rawNodes: [], rawEdges: [] }
+    const nodeRows = await db.select(nodeSel).from(assets)
+      .leftJoin(topologyNodes, eq(topologyNodes.assetId, assets.assetId))
+      .where(and(eq(assets.tenantId, params.tenantScopeId), eq(assets.inMyAssets, true)))
+    const rawEdges = await db.select().from(assetRelationships).where(
+      and(anyOfUuids(assetRelationships.sourceAssetId, allowed), anyOfUuids(assetRelationships.targetAssetId, allowed)))
+    return { rawNodes: collapseByLowestLayer(nodeRows as GraphNodeRow[]), rawEdges }
+  }
+  const nodeRows = await db.select(nodeSel).from(assets)
+    .leftJoin(topologyNodes, eq(topologyNodes.assetId, assets.assetId))
+    .where(eq(assets.inMyAssets, true))
+  const rawEdges = await db.select().from(assetRelationships)
+  return { rawNodes: collapseByLowestLayer(nodeRows as GraphNodeRow[]), rawEdges }
+}
+
+export interface UnconnectedMember { id: string; hostname: string | null; ip: string | null; device_type: string; reason: 'unknown_type' | 'no_network_device' }
+
+// PURE: the My Assets members that have NO edge to another member (both endpoints must
+// be members — an edge to a non-member doesn't count). reason distinguishes an
+// unclassified device (scan it to classify) from a known-type device whose /24 has no
+// gateway/switch in My Assets to link to (add/scan its gateway). Both are the two only
+// ways a member ends up edgeless now that a host is never cross-subnet parented, so
+// the old `no_relationships` code is gone. No DB.
+export function computeUnconnected(
+  members: { assetId: string; hostname: string | null; ipAddress: string | null; deviceType: string }[],
+  edges: { sourceAssetId: string; targetAssetId: string }[],
+): UnconnectedMember[] {
+  const memberIds = new Set(members.map(m => m.assetId))
+  const connected = new Set<string>()
+  for (const e of edges) {
+    if (memberIds.has(e.sourceAssetId) && memberIds.has(e.targetAssetId)) {
+      connected.add(e.sourceAssetId); connected.add(e.targetAssetId)
+    }
+  }
+  return members
+    .filter(m => !connected.has(m.assetId))
+    .map(m => ({
+      id: m.assetId, hostname: m.hostname, ip: m.ipAddress, device_type: m.deviceType,
+      reason: m.deviceType === 'unknown' ? 'unknown_type' : 'no_network_device',
+    }))
+}
+
+// PURE: build the /graph response body from the member nodes + edges. Only edges with
+// BOTH endpoints in My Assets are shown; `unconnected` lists members with no such edge.
+// Exported so the demo can assert the response shape without a DB.
+export function buildGraphResponse(
+  rawNodes: (typeof assets.$inferSelect & { topoLayer?: number | null })[],
+  rawEdges: (typeof assetRelationships.$inferSelect)[],
+) {
+  const nodeIdSet = new Set(rawNodes.map(n => n.assetId))
+  const visibleEdges = rawEdges.filter(e => nodeIdSet.has(e.sourceAssetId) && nodeIdSet.has(e.targetAssetId))
+  const edgeCounts = new Map<string, number>()
+  for (const e of visibleEdges) {
+    edgeCounts.set(e.sourceAssetId, (edgeCounts.get(e.sourceAssetId) ?? 0) + 1)
+    edgeCounts.set(e.targetAssetId, (edgeCounts.get(e.targetAssetId) ?? 0) + 1)
+  }
+  const nodes = rawNodes.map(n => toSnakeNode(n, edgeCounts.get(n.assetId) ?? 0))
+  const edges = visibleEdges.map(e => ({ source: e.sourceAssetId, target: e.targetAssetId, relationship_type: e.relationshipType }))
+  const unconnected = computeUnconnected(rawNodes, visibleEdges)
+  return { nodes, edges, total_nodes: nodes.length, total_edges: edges.length, unconnected }
+}
+
 // ── GET /graph ───────────────────────────────────────────────────
-// Returns nodes + edges with snake_case field names and edge_count per node.
+// Returns nodes + edges with snake_case field names and edge_count per node, plus an
+// `unconnected` list of My Assets members with no edge to another member (so they are
+// not silently hidden — the graph tab shows them as a notice, not as graph nodes).
 app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -61,46 +170,10 @@ app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
       tenantScopeId = tenantIdParam
     }
 
-    let allowedAssetIds: string[] | null = null
-    if (tenantScopeId) {
-      allowedAssetIds = await getTenantAssetIds(db, tenantScopeId)
-      if (allowedAssetIds.length === 0) {
-        return c.json({ nodes: [], edges: [], total_nodes: 0, total_edges: 0 })
-      }
-    }
-
-    const rawNodes = tenantScopeId
-      ? await db.select().from(assets).where(and(eq(assets.tenantId, tenantScopeId), eq(assets.inMyAssets, true)))
-      : await db.select().from(assets).where(eq(assets.inMyAssets, true))
-
-    const rawEdges = allowedAssetIds !== null
-      ? await db.select().from(assetRelationships).where(
-          and(anyOfUuids(assetRelationships.sourceAssetId, allowedAssetIds), anyOfUuids(assetRelationships.targetAssetId, allowedAssetIds))
-        )
-      : await db.select().from(assetRelationships)
-
-    // Hide any edge unless BOTH endpoints are in My Assets. Removing an asset from
-    // My Assets drops its node here, so its edges disappear — but are never deleted,
-    // so re-adding the asset restores the full graph. (Also covers the superadmin
-    // unscoped case where rawEdges isn't pre-filtered by allowedAssetIds.)
-    const nodeIdSet = new Set(rawNodes.map(n => n.assetId))
-    const visibleEdges = rawEdges.filter(e => nodeIdSet.has(e.sourceAssetId) && nodeIdSet.has(e.targetAssetId))
-
-    // edge_count per node
-    const edgeCounts = new Map<string, number>()
-    for (const e of visibleEdges) {
-      edgeCounts.set(e.sourceAssetId, (edgeCounts.get(e.sourceAssetId) ?? 0) + 1)
-      edgeCounts.set(e.targetAssetId, (edgeCounts.get(e.targetAssetId) ?? 0) + 1)
-    }
-
-    const nodes = rawNodes.map(n => toSnakeNode(n, edgeCounts.get(n.assetId) ?? 0))
-    const edges = visibleEdges.map(e => ({
-      source:            e.sourceAssetId,
-      target:            e.targetAssetId,
-      relationship_type: e.relationshipType,
-    }))
-
-    return c.json({ nodes, edges, total_nodes: nodes.length, total_edges: edges.length })
+    const { rawNodes, rawEdges } = await loadGraphData(db, { tenantScopeId })
+    // Only edges with BOTH endpoints in My Assets are shown; members with no such edge
+    // go in `unconnected` so they aren't silently hidden. All built in memory.
+    return c.json(buildGraphResponse(rawNodes, rawEdges))
   } catch (err) {
     console.error('GET /graph error:', err)
     return c.json({ detail: 'Failed to fetch graph' }, 500)
@@ -298,52 +371,44 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
     if (n.assetId) nodeToInfo.set(n.nodeId, { assetId: n.assetId, nodeType: n.nodeType })
   }
 
-  // assetId → IP for subnet classification
-  const assetRows = await db
-    .select({ assetId: assets.assetId, ipAddress: assets.ipAddress })
-    .from(assets)
-    .where(and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true)))
-  const assetIp = new Map(assetRows.map(a => [a.assetId, a.ipAddress]))
-
-  const INFRA_TYPES = new Set(['gateway', 'router', 'switch', 'access_point'])
-
-  function classifyRelType(parentType: string, childType: string, sameSubnet: boolean): (typeof assetRelationships.$inferInsert)['relationshipType'] {
-    const parentInfra = INFRA_TYPES.has(parentType)
-    const childInfra  = INFRA_TYPES.has(childType)
-    if (parentInfra && childInfra) return 'connects_to'   // network infrastructure uplink/trunk
-    if (parentInfra && !childInfra) return sameSubnet ? 'same_subnet' : 'connects_to'  // access layer
-    return 'depends_on'  // host-to-host
+  // Re-derive parents with resolveParents so a child links to EVERY equal-level
+  // gateway/switch (primary + backups), not just the single stored parent_node_id.
+  // IP comes from the node metadata captured at topology infer — no extra query.
+  const ipOf = (n: typeof topoNodes[number]): string => {
+    const ip = (n.metadata as Record<string, unknown> | null)?.ip_address
+    return typeof ip === 'string' ? ip : ''
   }
+  const flat = topoNodes
+    .filter(n => n.assetId)
+    .map(n => ({ nodeId: n.nodeId, nodeType: n.nodeType, layer: n.layer, ip: ipOf(n), subnet: ipOf(n).split('.').slice(0, 3).join('.') }))
 
   const newRels: (typeof assetRelationships.$inferInsert)[] = []
-
-  for (const node of topoNodes) {
-    if (!node.parentNodeId || !node.assetId) continue
-    const parentInfo = nodeToInfo.get(node.parentNodeId)
-    if (!parentInfo) continue
-
-    const nodeIp   = assetIp.get(node.assetId)      ?? ''
-    const parentIp = assetIp.get(parentInfo.assetId) ?? ''
-    const sameSubnet = !!(nodeIp && parentIp && getSubnet(nodeIp) === getSubnet(parentIp))
-
-    newRels.push({
-      sourceAssetId:    parentInfo.assetId,
-      targetAssetId:    node.assetId,
-      relationshipType: classifyRelType(parentInfo.nodeType, node.nodeType, sameSubnet),
-      confidence:       '1.00',
-    })
+  for (const node of flat) {
+    const child = nodeToInfo.get(node.nodeId)
+    if (!child) continue
+    for (const parentNodeId of resolveParents(node, flat.filter(f => f.nodeId !== node.nodeId)).all) {
+      const parent = nodeToInfo.get(parentNodeId)
+      if (!parent) continue
+      newRels.push({
+        sourceAssetId:    parent.assetId,
+        targetAssetId:    child.assetId,
+        relationshipType: classifyRelType(parent.nodeType, node.nodeType),
+        confidence:       '1.00',
+      })
+    }
   }
 
-  if (newRels.length > 0) {
-    await db.insert(assetRelationships).values(newRels).onConflictDoNothing()
+  // Chunked insert so one statement stays bounded even with redundant links; the
+  // unique index on (source, target, type) dedups.
+  for (let i = 0; i < newRels.length; i += REL_INSERT_CHUNK) {
+    await db.insert(assetRelationships).values(newRels.slice(i, i + REL_INSERT_CHUNK)).onConflictDoNothing()
   }
   return newRels.length
 }
 
 // ── POST /infer ──────────────────────────────────────────────────
-// Rebuilds relationships from asset inventory:
-//   • same_subnet  (star topology per /24 subnet, hub = network device or lowest IP)
-//   • connects_to  (router → hub of every other subnet)
+// Rebuilds relationship edges from the topology parent→child tree: infra→host and
+// infra→infra become connects_to (downstream), host→host becomes depends_on.
 app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
