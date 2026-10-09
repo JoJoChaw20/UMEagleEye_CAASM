@@ -5,9 +5,17 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:generate": "node --env-file=../.env node_modules/drizzle-kit/bin.cjs generate",
-    "db:push": "node --env-file=../.env node_modules/drizzle-kit/bin.cjs push",
-    "db:studio": "node --env-file=../.env node_modules/drizzle-kit/bin.cjs studio"
+    "db:generate": "node scripts/db/db.mjs generate",
+    "db:status:staging": "node scripts/db/db.mjs status staging",
+    "db:status:prod": "node scripts/db/db.mjs status production",
+    "db:migrate:staging": "node scripts/db/db.mjs migrate staging",
+    "db:migrate:prod": "node scripts/db/db.mjs migrate production",
+    "db:baseline:prod": "node scripts/db/db.mjs baseline production",
+    "db:baseline:prod:apply": "node scripts/db/db.mjs baseline production --apply",
+    "db:staging:mark": "node scripts/db/staging.mjs mark",
+    "db:staging:sanitize": "node scripts/db/staging.mjs sanitize",
+    "db:staging:sanitize:apply": "node scripts/db/staging.mjs sanitize --apply",
+    "deploy:staging": "wrangler deploy --env staging"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.4.1",

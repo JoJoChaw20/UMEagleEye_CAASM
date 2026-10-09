@@ -1,5 +1,5 @@
 {
-  "id": "793dfd22-4374-484d-97e8-1e2bdddcb6a2",
+  "id": "c3ae424f-1c4c-45c3-bb2c-f831bc4ea340",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -223,168 +223,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.asset_addresses": {
-      "name": "asset_addresses",
-      "schema": "",
-      "columns": {
-        "address_id": {
-          "name": "address_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "asset_id": {
-          "name": "asset_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "network_key": {
-          "name": "network_key",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ip_address": {
-          "name": "ip_address",
-          "type": "varchar(45)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "mac_address": {
-          "name": "mac_address",
-          "type": "varchar(17)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "first_seen": {
-          "name": "first_seen",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_seen": {
-          "name": "last_seen",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_addr_tenant_mac": {
-          "name": "idx_addr_tenant_mac",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "mac_address",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_addr_current": {
-          "name": "idx_addr_current",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "network_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ip_address",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "ended_at IS NULL AND network_key IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_addr_asset": {
-          "name": "idx_addr_asset",
-          "columns": [
-            {
-              "expression": "asset_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "asset_addresses_asset_id_assets_asset_id_fk": {
-          "name": "asset_addresses_asset_id_assets_asset_id_fk",
-          "tableFrom": "asset_addresses",
-          "tableTo": "assets",
-          "columnsFrom": [
-            "asset_id"
-          ],
-          "columnsTo": [
-            "asset_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "asset_addresses_tenant_id_tenants_tenant_id_fk": {
-          "name": "asset_addresses_tenant_id_tenants_tenant_id_fk",
-          "tableFrom": "asset_addresses",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "tenant_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.asset_relationships": {
       "name": "asset_relationships",
       "schema": "",
@@ -570,12 +408,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "host_key": {
-          "name": "host_key",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "owner": {
           "name": "owner",
           "type": "varchar(255)",
@@ -589,13 +421,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'unknown'"
-        },
-        "device_type_source": {
-          "name": "device_type_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'auto'"
         },
         "hardware_vendor": {
           "name": "hardware_vendor",
@@ -630,12 +455,6 @@
           "notNull": true,
           "default": false
         },
-        "internet_facing_override": {
-          "name": "internet_facing_override",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
         "source": {
           "name": "source",
           "type": "asset_source",
@@ -643,13 +462,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'manual'"
-        },
-        "in_my_assets": {
-          "name": "in_my_assets",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "last_scanned": {
           "name": "last_scanned",
@@ -677,19 +489,19 @@
           "name": "idx_assets_ip_tenant",
           "columns": [
             {
-              "expression": "tenant_id",
+              "expression": "ip_address",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "ip_address",
+              "expression": "tenant_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -705,43 +517,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_assets_host_key": {
-          "name": "idx_assets_host_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "host_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_assets_in_my_assets": {
-          "name": "idx_assets_in_my_assets",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "in_my_assets",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1300,66 +1075,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "status": {
-          "name": "status",
-          "type": "event_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'open'"
-        },
-        "assigned_to": {
-          "name": "assigned_to",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "first_seen": {
-          "name": "first_seen",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_seen": {
-          "name": "last_seen",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "occurrences": {
-          "name": "occurrences",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_by": {
-          "name": "resolved_by",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolution_note": {
-          "name": "resolution_note",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
       "indexes": {
@@ -1368,42 +1083,6 @@
           "columns": [
             {
               "expression": "timestamp",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_events_status": {
-          "name": "idx_events_status",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_events_asset_status": {
-          "name": "idx_events_asset_status",
-          "columns": [
-            {
-              "expression": "asset_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1427,32 +1106,6 @@
             "asset_id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "events_assigned_to_users_user_id_fk": {
-          "name": "events_assigned_to_users_user_id_fk",
-          "tableFrom": "events",
-          "tableTo": "users",
-          "columnsFrom": [
-            "assigned_to"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "events_resolved_by_users_user_id_fk": {
-          "name": "events_resolved_by_users_user_id_fk",
-          "tableFrom": "events",
-          "tableTo": "users",
-          "columnsFrom": [
-            "resolved_by"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -1696,18 +1349,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
-        },
-        "network_info": {
-          "name": "network_info",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_reason": {
-          "name": "failure_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "started_at": {
           "name": "started_at",
@@ -2170,17 +1811,6 @@
         "network",
         "iot",
         "unknown"
-      ]
-    },
-    "public.event_status": {
-      "name": "event_status",
-      "schema": "public",
-      "values": [
-        "open",
-        "in_progress",
-        "resolved",
-        "false_positive",
-        "accepted_risk"
       ]
     },
     "public.event_type": {

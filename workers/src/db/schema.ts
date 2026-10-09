@@ -200,7 +200,7 @@ export const ctiIndicators = pgTable('cti_indicators', {
   attackTechnique: varchar('attack_technique', { length: 100 }),
   firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
   lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
-}, (t) => [index('idx_cti_value').on(t.value)])
+})  // value is already UNIQUE (that index serves lookups); a second index on it was redundant
 
 // ─── Table 8: Advisories ────────────────────────────────────────
 export const advisories = pgTable('advisories', {

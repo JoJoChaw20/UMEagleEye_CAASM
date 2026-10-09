@@ -5,8 +5,22 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1782308464150,
-      "tag": "0000_eager_starhawk",
+      "when": 1791530434662,
+      "tag": "0000_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791538809321,
+      "tag": "0001_drop_duplicate_cti_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791538810047,
+      "tag": "0002_user_role_cleanup",
       "breakpoints": true
     }
   ]

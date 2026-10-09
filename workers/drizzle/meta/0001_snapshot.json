@@ -1,6 +1,6 @@
 {
-  "id": "793dfd22-4374-484d-97e8-1e2bdddcb6a2",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "eb328040-c32b-464e-a5f5-63a39f41dec2",
+  "prevId": "793dfd22-4374-484d-97e8-1e2bdddcb6a2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1046,23 +1046,7 @@
           "default": "now()"
         }
       },
-      "indexes": {
-        "idx_cti_value": {
-          "name": "idx_cti_value",
-          "columns": [
-            {
-              "expression": "value",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
