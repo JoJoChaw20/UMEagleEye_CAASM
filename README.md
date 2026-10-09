@@ -6,9 +6,10 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 
 | Service | URL |
 |---------|-----|
-| Frontend | https://umeagleeye.pages.dev |
-| Frontend (University) | https://umeagleeye.csnet.my |
+| Frontend | https://umeagleeye.csnet.my |
 | Backend API | https://umeagleeye-api.syntaxch404.workers.dev/api/v1 |
+
+`umeagleeye.pages.dev` permanently redirects (301) to the csnet.my site, and every host serves `X-Robots-Tag: noindex`, so the application is not indexed by search engines. A separate **staging** environment (own Worker, KV/R2/queues and a sanitised copy of the database) is used to test changes before release; see [Environments](#environments).
 
 ## Core Features
 
@@ -35,7 +36,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Continuous Posture Management** — Automated drift detection (port changes, OS/package version drift, hostname/MAC/exposure/device-type changes, new device discovery) with 24-hour deduplication and an acknowledge workflow that re-baselines an asset in one click; posture score computed live on demand (start at 100, −5 per critical event capped at −40, −2 per high event capped at −20, −10 if >20% of assets have criticality ≥ 8) with 30-day reconstructed history
 - **Threat Intelligence Integration** — Ingests live IoC feeds (AlienVault OTX, ThreatFox) every morning (MYT); each indicator is correlated to a MITRE ATT&CK tactic via a three-level derivation cascade; IoC Lookup cross-references any IP/domain/hash against the internal asset table in real time; MITRE ATT&CK heatmap visualises tactic coverage across all ingested indicators
 - **AI-Driven Advisory Pipeline** — Triggering an advisory via the Alerts page sends a message to `advisory-queue` (Cloudflare Queues); the queue consumer fetches the event + asset context, builds a structured prompt, and calls DeepSeek; the resulting advisory is stored with `status = 'open'`; the pipeline is fully async so the HTTP request returns instantly; queue configured with max batch size 10, 30-second timeout, 2 retries on failure; advisory lifecycle managed as a state machine: `open → acknowledged → in_progress → resolved` with optional analyst assignment; `has_advisory` flag returned on every event row prevents accidental duplicate advisory generation from the UI
-- **SLA Monitoring** — Cron every 30 minutes queries all advisories where `status != 'resolved'` and `created_at < NOW() - 72h`; breaches are surfaced in the Notification Centre as a distinct alert type
+- **SLA Monitoring** — Open advisories older than 72 hours are counted whenever the Notification Centre loads (no scheduled job needed); breaches are surfaced as a distinct alert type
 
 ### SBOM & CVE Detection
 - **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOM generation via [Syft](https://github.com/anchore/syft); the EagleEye agent runs Syft locally and POSTs the result to the platform
@@ -88,7 +89,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Auth | JWT (jose / HS256), PBKDF2 Web Crypto, TOTP (otplib) |
 | Google OAuth | Access-token verification via Google userinfo endpoint |
 | Async Jobs | Cloudflare Queues (advisory generation, PDF reports) |
-| Scheduled Tasks | Cloudflare Cron Triggers (drift audit, SLA monitor, CTI ingestion, posture snapshot, NVD update) |
+| Scheduled Tasks | Cloudflare Cron Triggers (drift audit, CTI ingestion, NVD update, posture snapshot + data retention) |
 | Object Storage | Cloudflare R2 (PDF reports) |
 | KV Store | Cloudflare KV (rate-limit locks, report metadata) |
 | AI Advisory | DeepSeek via OpenRouter API |
@@ -185,14 +186,16 @@ UMEagleEye2.0/
 │   │   │   ├── drift.ts         # Drift detection + baseline comparison
 │   │   │   ├── posture.ts       # Daily posture snapshot calculation
 │   │   │   ├── cti.ts           # OTX + ThreatFox ingestion, MITRE tactic derivation
-│   │   │   └── nvd.ts           # NVD REST API client; CWE enrichment for CVE events
+│   │   │   ├── nvd.ts           # NVD REST API client; CWE enrichment for CVE events
+│   │   │   └── retention.ts     # Nightly purge of stale CTI indicators and old closed events
 │   │   ├── queues/
 │   │   │   └── consumer.ts      # Queue handler (advisory + PDF report jobs)
 │   │   ├── cron/
-│   │   │   └── triggers.ts      # Cron handler (5 scheduled tasks)
+│   │   │   └── triggers.ts      # Cron handler (4 scheduled tasks)
 │   │   └── index.ts             # Entry point, CORS, route mounting
-│   ├── drizzle/                 # Generated migration snapshots
-│   ├── wrangler.toml            # Worker config (KV, R2, Queues, Crons)
+│   ├── drizzle/                 # SQL migrations (0000_baseline, ...) + snapshots; legacy/ = archived hand-applied SQL
+│   ├── scripts/db/              # Guarded migration wrapper + staging sanitiser (see Database migrations)
+│   ├── wrangler.toml            # Worker config (KV, R2, Queues, Crons) + [env.staging]
 │   ├── drizzle.config.ts        # Drizzle Kit config
 │   └── package.json
 ├── frontend/                    # React SPA
@@ -226,6 +229,8 @@ UMEagleEye2.0/
 │   │   │   └── ChatbotPage.jsx          # AI chatbot — SSE streaming, multi-session localStorage persistence, advisory debug, context-aware AI
 │   │   └── App.jsx
 │   ├── .env.production          # VITE_API_URL + VITE_GOOGLE_CLIENT_ID (git-ignored)
+│   ├── .env.staging.example     # Template for the staging build
+│   ├── public/_headers          # noindex + security headers served by Cloudflare Pages
 │   └── package.json
 ├── agent/                       # EagleEye network scanning agent
 │   ├── eagleeye_agent.py        # Main agent: active + passive scanning loop
@@ -234,6 +239,7 @@ UMEagleEye2.0/
 ├── cyberforce_corporation_assets.csv  # Sample dataset — 33 assets (CyberForce Corp)
 ├── vanilla_corporation_assets.csv     # Sample dataset — 30 assets (Vanilla Corp)
 ├── AGENT_SETUP_GUIDE.md         # Step-by-step agent deployment guide
+├── STAGING.md                   # Staging environment runbook
 ├── deploy-workers.ps1           # One-shot full deployment script
 ├── .env                         # All secrets (git-ignored)
 └── .env.example                 # Template for required variables
@@ -256,12 +262,15 @@ UMEagleEye2.0/
 
 | Schedule (UTC) | MYT Equivalent | Task |
 |---|---|---|
-| `*/15 * * * *` | Every 15 min | Drift audit — compares asset state to baseline snapshots |
-| `*/30 * * * *` | Every 30 min | SLA monitor — flags advisories open >72 h (visible in Notification Centre) |
+| `0 */6 * * *` | Every 6 h (2, 8, 14, 20) | Drift audit — safety-net pass comparing asset state to baseline snapshots (scans already run drift for the assets they touch) |
 | `0 22 * * *` | 6:00 AM | CTI ingestion — pulls AlienVault OTX + ThreatFox feeds |
 | `0 23 * * *` | 7:00 AM | NVD enrichment — back-fills missing CWE IDs on `cve_detected` events from the last 48 h using the NIST NVD REST API (up to 30 CVEs per run) |
-| `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history |
+| `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history, then runs data retention |
 
+**Data retention** (runs with the midnight job, in batches): CTI indicators not re-seen by any feed for 90 days and not linked to an event are deleted, as are resolved / false-positive events older than 365 days. Open alerts are never purged. The windows are constants in `workers/src/services/retention.ts`. Staging has no cron triggers.
+
+> SLA breaches are not a cron job: they are computed when the Notification Centre is read.
+>
 > There is no scheduled active scan. Active scans (Nmap) are triggered manually from the Discovery page. Passive scanning runs autonomously on the agent at a configurable interval.
 
 ## Network Topology Inference
@@ -505,7 +514,7 @@ score = min(score, 100)
 
 ## Threat Intelligence (CTI)
 
-Two live IoC feeds are ingested daily at 6:00 AM MYT via a Cloudflare Cron Trigger. All rows are upserted — re-ingesting the same indicator value refreshes `last_seen`, `attack_tactic`, `confidence_score`, and `attack_technique` without creating duplicates.
+Two live IoC feeds are ingested daily at 6:00 AM MYT via a Cloudflare Cron Trigger. All rows are upserted — re-ingesting the same indicator value refreshes `last_seen`, `attack_tactic`, `confidence_score`, and `attack_technique` without creating duplicates. Indicators that no feed has re-seen for 90 days (and that no event references) are purged nightly, which keeps the table bounded on a free-tier database.
 
 ### Data sources
 
@@ -704,7 +713,7 @@ Setting a baseline via **Assets → Bookmark icon** captures a point-in-time Gol
 
 **`ports_known` / `packages_known`:** A baseline only records what the capture could actually see. A passive scan has no port visibility (`ports_known: false`) and no scan collects installed packages, so a baseline set before an SBOM has `packages_known: false` and omits the `packages` key entirely — never an empty `{}`. The drift audit skips the ports (or packages) comparison while that flag is false, so the first active scan / first SBOM **completes** the baseline for that attribute instead of raising drift for every port/package at once. Package completion rides on the same atomic write as the SBOM ingest.
 
-The drift audit cron (`*/15 * * * *`) compares each asset's current `os_info` and fields against its `baseline_state` and generates typed security events:
+The drift audit (run for the affected assets after every scan, plus a 6-hourly cron as a safety net) compares each asset's current `os_info` and fields against its `baseline_state` and generates typed security events:
 
 | Event type | Trigger | Severity |
 |---|---|---|
@@ -735,7 +744,18 @@ The drift audit cron (`*/15 * * * *`) compares each asset's current `os_info` an
 - Cloudflare R2 bucket `umeagleeye-reports` created
 - Cloudflare KV namespace created
 
-### First-time full deployment
+### Environments
+
+| | Production | Staging |
+|---|---|---|
+| Frontend | `umeagleeye.csnet.my` (Pages branch `main`) | Pages branch `staging` (alias `staging.<project>.pages.dev`) |
+| API | Worker `umeagleeye-api` | Worker `umeagleeye-api-staging` (no cron triggers) |
+| Database | Neon `production` branch | Neon `staging` branch: a copy of production with personal data and credentials stripped |
+| KV / R2 / Queues | production resources | separate `*-staging` resources |
+
+Staging exists so changes can be tested against realistic data while production stays live. Setup and commands are in [STAGING.md](STAGING.md).
+
+### First-time deployment
 
 ```powershell
 # 1. Copy and fill in all secrets
@@ -744,8 +764,11 @@ cp .env.example .env
 # 2. Install Workers dependencies
 cd workers && npm install && cd ..
 
-# 3. Push database schema to Neon
-cd workers && npx drizzle-kit push && cd ..
+# 3. Create the schema on an empty Neon database (see Database migrations)
+cd workers
+cp .env.production.example .env.production   # set DB_TARGET=production and DATABASE_URL
+npm run db:migrate:prod
+cd ..
 
 # 4. Deploy everything (secrets + Worker + frontend)
 .\deploy-workers.ps1
@@ -757,25 +780,52 @@ The `deploy-workers.ps1` script:
 3. Updates `frontend/.env.production` with the Workers URL
 4. Builds and deploys the frontend to Cloudflare Pages (`umeagleeye-caasm`)
 
-### Redeploy after code changes
+> The script **re-uploads every secret from `.env` on each run**, so use it for first-time setup only. For routine releases deploy each part separately, as below.
+
+### Releasing a change
 
 ```powershell
-# Worker only
-cd workers && npx wrangler deploy
+# 1. Test on staging
+cd workers  ; npm run deploy:staging
+cd ../frontend ; npm run deploy:staging
 
-# Frontend only
-cd frontend && npm run deploy
+# 2. Back up production, then apply any new migrations (see below)
+cd ../workers ; npm run db:migrate:prod
 
-# Both (recommended)
-.\deploy-workers.ps1
+# 3. Deploy to production: Worker first, then frontend
+npm run deploy
+cd ../frontend ; npm run deploy
 ```
 
-### Database schema changes
+### Database migrations
+
+The schema lives in `workers/src/db/schema.ts`; changes are shipped as numbered SQL files in `workers/drizzle/` and applied by a guarded wrapper (`workers/scripts/db/db.mjs`). `drizzle-kit push` is intentionally **not** exposed, because it rewrites a live schema with no history.
 
 ```powershell
 cd workers
-npx drizzle-kit push
+npm run db:generate          # diff schema.ts against the last snapshot -> new SQL file in drizzle/ (review it)
+npm run db:status:staging    # show target + pending migrations (read-only)
+npm run db:migrate:staging   # apply to staging, then test
+npm run db:status:prod
+npm run db:migrate:prod      # asks you to type "production" before writing
 ```
+
+- Credentials come from `workers/.env.staging` and `workers/.env.production` (git-ignored; templates are the `*.example` files). Each file declares `DB_TARGET`, and the wrapper refuses to run if it does not match the target you asked for. Use `postgresql://` URLs (not `postgresql+asyncpg://`).
+- `0000_baseline.sql` creates the whole schema on an empty database. The existing production database was brought under management by *recording* the baseline as applied (`db:baseline:prod`), not by re-running it. Earlier hand-applied SQL is archived in `drizzle/legacy/`.
+- Prefer additive changes (add columns, then drop later) so the previous Worker version keeps working while a release rolls out, and take a `pg_dump` of production before every production migration.
+
+### Staging data
+
+Staging is created as a Neon branch of production and then sanitised so no personal data is copied:
+
+```powershell
+cd workers
+npm run db:staging:mark              # creates the staging_marker table on the branch
+npm run db:staging:sanitize          # dry run: counts what would change
+npm run db:staging:sanitize:apply    # pseudonymise users, revoke agent keys, mask owners, clear audit logs
+```
+
+Accounts listed in `KEEP_EMAILS` (in `workers/.env.staging`) keep their login; all other users become `user_xxxx@staging.invalid` with no way to sign in. The sanitiser refuses to run unless the staging marker exists and the host differs from the production host.
 
 ## Environment Variables
 
@@ -795,12 +845,15 @@ See `.env.example` for the full list. Key variables:
 | `NVD_API_KEY` | NIST NVD API key — optional but recommended; increases rate limit from 5 req/30s to 50 req/30s for CWE enrichment |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token (for wrangler deployments) |
 
+Per-environment database credentials for migrations live in `workers/.env.staging` and `workers/.env.production` (`DB_TARGET`, `DATABASE_URL`, and optionally `KEEP_EMAILS` for staging). The staging Worker has its own secrets, set with `wrangler secret put <NAME> --env staging`; use a different `JWT_SECRET_KEY` there.
+
 All variables are stored as **Cloudflare Workers secrets** (never in code). The frontend needs `VITE_API_URL` and `VITE_GOOGLE_CLIENT_ID` in `frontend/.env.production` (git-ignored; set by deploy script).
 
 ## Local Development
 
 ```powershell
-# Backend (Workers dev server — proxies to Neon)
+# Backend (Workers dev server). Put a NON-production DATABASE_URL in workers/.dev.vars
+# (e.g. the staging branch) so local testing never touches live data
 cd workers && npx wrangler dev
 
 # Frontend

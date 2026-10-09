@@ -152,7 +152,7 @@ Write-Host "  Workers   : $workersUrl" -ForegroundColor Cyan
 Write-Host "  API Docs  : $workersUrl/" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Yellow
-Write-Host "  1. Run database migrations: cd workers && npm run db:push" -ForegroundColor Yellow
+Write-Host "  1. Apply database migrations: cd workers && npm run db:migrate:prod" -ForegroundColor Yellow
 Write-Host "  2. Create your first superadmin: POST $workersUrl/api/v1/auth/register" -ForegroundColor Yellow
 Write-Host "  3. Register an EagleEye agent: POST $workersUrl/api/v1/agents" -ForegroundColor Yellow
 Write-Host ""
