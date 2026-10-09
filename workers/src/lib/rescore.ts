@@ -75,16 +75,19 @@ export async function rescoreAssets(
   db: DbClient,
   tenantId: string | null,
   assetIds?: string[],
-  opts?: { myAssetsOnly?: boolean },
+  opts?: { myAssetsOnly?: boolean; discoveredOnly?: boolean },
 ): Promise<RescorePlan> {
   // Fetch asset rows (1 query). scope=my_assets adds in_my_assets=true to the
-  // tenant prefetch.
+  // tenant prefetch; scope=discovered adds in_my_assets=false.
   let rows: (typeof assets.$inferSelect)[]
   if (assetIds && assetIds.length > 0) {
     rows = await db.select().from(assets).where(inArray(assets.assetId, assetIds))
   } else if (tenantId) {
+    const membership = opts?.myAssetsOnly ? eq(assets.inMyAssets, true)
+      : opts?.discoveredOnly ? eq(assets.inMyAssets, false)
+      : undefined
     rows = await db.select().from(assets).where(
-      opts?.myAssetsOnly ? and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true)) : eq(assets.tenantId, tenantId),
+      membership ? and(eq(assets.tenantId, tenantId), membership) : eq(assets.tenantId, tenantId),
     )
   } else {
     return { scanned: 0, changes: [] }

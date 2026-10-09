@@ -5,6 +5,8 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import AssetsPage from './pages/AssetsPage'
 import MyAssetsPage from './pages/MyAssetsPage'
+import InventoryPage from './pages/InventoryPage'
+import AssetDetailPage from './pages/AssetDetailPage'
 import DiscoveryPage from './pages/DiscoveryPage'
 import AlertsPage from './pages/AlertsPage'
 import AdvisoriesPage from './pages/AdvisoriesPage'
@@ -37,6 +39,10 @@ export default function App() {
         {/* ASSETS — all roles can view; write restricted on backend */}
         <Route path="assets"    element={<ProtectedRoute allowedRoles={ALL_ROLES}><AssetsPage /></ProtectedRoute>} />
         <Route path="my-assets" element={<ProtectedRoute allowedRoles={ALL_ROLES}><MyAssetsPage /></ProtectedRoute>} />
+        {/* New merged inventory (My Assets + Discovered) and asset detail. Runs beside the
+            old pages until they are retired; then it moves to /assets. */}
+        <Route path="inventory"          element={<ProtectedRoute allowedRoles={ALL_ROLES}><InventoryPage /></ProtectedRoute>} />
+        <Route path="inventory/:assetId" element={<ProtectedRoute allowedRoles={ALL_ROLES}><AssetDetailPage /></ProtectedRoute>} />
 
         {/* DISCOVERY / NETWORK — business_owner excluded */}
         <Route path="discovery" element={<ProtectedRoute allowedRoles={OPS_ROLES}><DiscoveryPage /></ProtectedRoute>} />

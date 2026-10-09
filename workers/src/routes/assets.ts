@@ -829,11 +829,12 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
       ? (c.req.query('tenant_id') ?? user.tenantId ?? null)
       : user.tenantId!
 
-    // scope=my_assets restricts to in_my_assets=true (same query count).
+    // scope=my_assets / scope=discovered restrict by in_my_assets (same query count).
     const myAssetsOnly = c.req.query('scope') === 'my_assets'
-    const { scanned, changes } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly })
+    const discoveredOnly = c.req.query('scope') === 'discovered'
+    const { scanned, changes } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly, discoveredOnly })
     const changed = changes.length
-    const noun = myAssetsOnly ? 'My Assets' : 'assets'
+    const noun = myAssetsOnly ? 'My Assets' : discoveredOnly ? 'discovered assets' : 'assets'
     // Make the zero case explicit so "0 changed" doesn't read like a failure.
     const suffix = changed === 0 ? ' (scores were already up to date)' : ''
     return c.json({ updated: changed, scanned, changed, message: `Rescored ${scanned} ${noun}, ${changed} changed${suffix}` })

@@ -4,7 +4,9 @@ import client from '../../api/client'
 
 // Modal panel listing duplicate asset groups with per-group preview/merge and a
 // "merge all safe" loop. Styling follows the existing dark-theme component patterns.
-export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged }) {
+// centered: vertically centre the panel (auto margins fall back to top-aligned
+// scrolling when the panel is taller than the viewport).
+export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged, centered = false }) {
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -82,7 +84,7 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged 
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto">
-      <div className="w-full max-w-4xl bg-dark-900 border border-dark-700 rounded-xl shadow-xl my-8">
+      <div className={`w-full max-w-4xl bg-dark-900 border border-dark-700 rounded-xl shadow-xl ${centered ? 'my-auto' : 'my-8'}`}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-dark-700">
           <div className="flex items-center gap-2">
