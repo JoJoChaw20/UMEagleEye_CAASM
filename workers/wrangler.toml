@@ -40,11 +40,10 @@ max_retries = 2
 # Times are UTC; Malaysia (MYT) = UTC+8
 [triggers]
 crons = [
-  "*/15 * * * *",  # Drift audit every 15 min
-  "*/30 * * * *",  # SLA monitor every 30 min
+  "0 */6 * * *",   # Drift audit every 6 h (scans already trigger drift; this is a safety net)
   "0 22 * * *",    # CTI ingestion 6:00 AM MYT
   "0 23 * * *",    # NVD update  7:00 AM MYT
-  "0 16 * * *",    # Posture snapshot midnight MYT
+  "0 16 * * *",    # Posture snapshot + data retention, midnight MYT
 ]
 
 # ── Secrets (set via: wrangler secret put VAR_NAME) ──
