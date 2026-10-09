@@ -64,3 +64,51 @@ OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
 SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
 JWT_EXPIRE_MINUTES = "1440"
 FRONTEND_URL = "https://umeagleeye.csnet.my"
+
+# ══════════════════════════════════════════════════════════════════
+# Staging environment  —  deploy with: npm run deploy:staging
+# Bindings and vars are NOT inherited by environments, so each is redeclared with
+# its own staging resource. Production is untouched by anything below.
+# Create the resources first (see ../STAGING.md), then put the KV id below.
+# ══════════════════════════════════════════════════════════════════
+[env.staging]
+name = "umeagleeye-api-staging"
+
+# No cron triggers on staging (crons are inheritable, so override with none).
+[env.staging.triggers]
+crons = []
+
+[env.staging.vars]
+APP_ENV = "staging"
+OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
+SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
+JWT_EXPIRE_MINUTES = "1440"
+FRONTEND_URL = "https://staging.umeagleeye.pages.dev"
+
+[[env.staging.r2_buckets]]
+binding = "REPORTS_BUCKET"
+bucket_name = "umeagleeye-reports-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "KV_CACHE"
+id = "c0db1f597ef14d7aa15aa7320c3eb2e3"
+
+[[env.staging.queues.producers]]
+queue = "advisory-queue-staging"
+binding = "ADVISORY_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "advisory-queue-staging"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 2
+
+[[env.staging.queues.producers]]
+queue = "report-queue-staging"
+binding = "REPORT_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "report-queue-staging"
+max_batch_size = 5
+max_batch_timeout = 60
+max_retries = 2

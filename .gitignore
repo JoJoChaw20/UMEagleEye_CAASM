@@ -71,3 +71,4 @@ Claude outputs/
 
 # VSCode workspace file
 UMEagleEye2.0.code-workspace
+frontend/.env.staging
