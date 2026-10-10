@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sV -T4 -p 22,23,80,139,161,443,445,3389,8080,8443,3306,5432,6379,27017 --script smb-os-discovery,banner 192.168.1.0/24" start="1790000000" startstr="Sat Oct 10 12:00:00 2026" version="7.99" xmloutputversion="1.05">
+<scaninfo type="connect" protocol="tcp" numservices="14" services="22,23,80,139,161,443,445,3389,8080,8443,3306,5432,6379,27017"/>
+<verbose level="0"/>
+<debugging level="0"/>
+
+<host starttime="1790000001" endtime="1790000010">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="192.168.1.10" addrtype="ipv4"/>
+<address addr="AA:BB:CC:44:55:66" addrtype="mac" vendor="Dell"/>
+<hostnames><hostname name="server-01.lan" type="PTR"/></hostnames>
+<ports>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="ssh" product="OpenSSH" version="8.9p1 Ubuntu" method="probed" conf="10"/><script id="banner" output="SSH-2.0-OpenSSH_8.9p1 Ubuntu-3"/></port>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http" product="nginx" version="1.18.0" method="probed" conf="10"/></port>
+<port protocol="tcp" portid="443"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="https" product="nginx" version="1.18.0" method="probed" conf="10"/></port>
+<port protocol="tcp" portid="3306"><state state="closed" reason="conn-refused" reason_ttl="0"/><service name="mysql" method="table" conf="3"/></port>
+</ports>
+<os><osmatch name="Linux 5.4" accuracy="95" line="1234"><osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="5.X" accuracy="95"/></osmatch></os>
+</host>
+
+<host starttime="1790000001" endtime="1790000010">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="192.168.1.50" addrtype="ipv4"/>
+<address addr="AA:BB:CC:77:88:99" addrtype="mac" vendor="HP"/>
+<hostnames><hostname name="dns-name.lan" type="PTR"/></hostnames>
+<ports>
+<port protocol="tcp" portid="139"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="netbios-ssn" method="table" conf="3"/></port>
+<port protocol="tcp" portid="445"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="microsoft-ds" method="table" conf="3"/><script id="smb-os-discovery" output="&#10;  OS: Windows 10 Pro 19045 (Windows 10 Pro 6.3)&#10;  OS CPE: cpe:/o:microsoft:windows_10::-&#10;  Computer name: DESKTOP-ABC123&#10;  NetBIOS computer name: DESKTOP-ABC123\x00&#10;  Domain name: lan&#10;  FQDN: DESKTOP-ABC123.lan&#10;  System time: 2026-10-10T12:00:05+08:00&#10;"/></port>
+<port protocol="tcp" portid="3389"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="ms-wbt-server" method="table" conf="3"/></port>
+</ports>
+<os><osmatch name="Microsoft Windows 10" accuracy="90" line="5678"><osclass type="general purpose" vendor="Microsoft" osfamily="Windows" osgen="10" accuracy="90"/></osmatch></os>
+</host>
+
+<host starttime="1790000001" endtime="1790000010">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="172.17.0.5" addrtype="ipv4"/>
+<hostnames><hostname name="host.docker.internal" type="PTR"/></hostnames>
+<ports>
+<port protocol="tcp" portid="8080"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="http-proxy" method="table" conf="3"/><script id="banner" output="HTTP/1.1 200 OK"/></port>
+</ports>
+</host>
+
+<host starttime="1790000001" endtime="1790000010">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="172.17.0.6" addrtype="ipv4"/>
+<hostnames><hostname name="docker-desktop" type="PTR"/></hostnames>
+<ports>
+<port protocol="tcp" portid="8443"><state state="open" reason="syn-ack" reason_ttl="0"/><service name="https-alt" method="table" conf="3"/><script id="banner" output="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"/></port>
+</ports>
+</host>
+
+<host starttime="1790000001" endtime="1790000010">
+<status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.77" addrtype="ipv4"/>
+<address addr="6E:DC:C8:20:6C:E8" addrtype="mac"/>
+<hostnames/>
+<ports>
+<port protocol="tcp" portid="22"><state state="closed" reason="conn-refused" reason_ttl="0"/><service name="ssh" method="table" conf="3"/></port>
+</ports>
+</host>
+
+<host starttime="1790000001" endtime="1790000010">
+<status state="down" reason="no-response" reason_ttl="0"/>
+<address addr="192.168.1.99" addrtype="ipv4"/>
+</host>
+
+<runstats><finished time="1790000020" timestr="Sat Oct 10 12:00:20 2026" elapsed="20.00" summary="done" exit="success"/><hosts up="4" down="1" total="5"/></runstats>
+</nmaprun>

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eagleeye-agent"
+description = "EagleEye pipeline agent for the UMEagleEye CAASM platform"
+requires-python = ">=3.12"
+dynamic = ["version"]
+dependencies = [
+    "requests>=2.31.0",
+    "python-nmap>=0.7.1",
+]
+
+[project.optional-dependencies]
+passive = ["scapy>=2.5.0"]          # ARP / mDNS / NetBIOS / DHCP sniffing
+snmp    = ["pysnmp>=6.2"]           # SNMPv3 polling of network devices
+dev     = ["pytest>=8.0"]
+
+[project.scripts]
+eagleeye = "eagleeye.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "eagleeye.VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["eagleeye*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
