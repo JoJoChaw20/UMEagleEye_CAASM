@@ -53,7 +53,7 @@ def fake_scan(monkeypatch):
 
 
 def service(client, **settings):
-    return AgentService(Settings(api_url="http://x", api_key="k", agent_id="a", **settings), client=client, on_event=lambda e: None)
+    return AgentService(Settings(api_url="http://x", api_key="k", agent_id="a", **{"inventory": False, **settings}), client=client, on_event=lambda e: None)
 
 
 def wait_idle(svc, timeout=5):
@@ -160,6 +160,46 @@ def test_cancellation_during_run_does_not_fail_or_upload(monkeypatch):
     result = svc.run_active("x1", "192.168.1.0/24")
     assert result.status == "cancelled"
     assert client.ingested == [] and client.failed == []
+
+
+class FakeArp:
+    def __init__(self, seen):
+        self.seen = seen
+
+    def pending(self):
+        return len(self.seen)
+
+    def drain(self):
+        out, self.seen = [HostRecord(ip=ip) for ip in self.seen], []
+        return out
+
+
+class FakeSuite:
+    def __init__(self, seen):
+        self.arp, self.mdns, self.dhcp = FakeArp(seen), None, None
+
+
+def test_autonomous_flush_is_skipped_when_nothing_was_heard():
+    events = []
+    client = FakeClient()
+    svc = AgentService(Settings(api_url="http://x", api_key="k", agent_id="a", passive=True, inventory=False),
+                       client=client, on_event=events.append)
+    svc.suite = FakeSuite([])
+    svc._last_flush = 0
+    svc.poll_once()
+    assert events == [] and client.ingested == []
+
+
+def test_autonomous_flush_uploads_without_a_scan_id():
+    client = FakeClient()
+    svc = service(client, passive=True)
+    svc.suite = FakeSuite(["192.168.1.40"])
+    svc._last_flush = 0
+    svc.poll_once()
+    assert len(client.ingested) == 1
+    sent = client.ingested[0]
+    assert sent["scan_type"] == "passive" and sent["scan_id"] is None
+    assert [h["ip"] for h in sent["hosts"]] == ["192.168.1.40"]
 
 
 def test_throttled_limits_calls():

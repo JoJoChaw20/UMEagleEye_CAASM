@@ -40,7 +40,8 @@ export const relationshipTypeEnum = pgEnum('relationship_type', [
 ])
 export const sbomFormatEnum = pgEnum('sbom_format', ['cyclonedx', 'spdx'])
 export const agentStatusEnum = pgEnum('agent_status', ['online', 'offline', 'degraded'])
-export const assetSourceEnum = pgEnum('asset_source', ['manual', 'scan_active', 'scan_passive'])
+// 'agent' = created from an EagleEye agent's endpoint inventory of its own machine.
+export const assetSourceEnum = pgEnum('asset_source', ['manual', 'scan_active', 'scan_passive', 'agent'])
 export const topologyNodeTypeEnum = pgEnum('topology_node_type', [
   'gateway', 'router', 'switch', 'access_point', 'host'
 ])
@@ -104,6 +105,11 @@ export const assets = pgTable('assets', {
   // graph. Decoupled from source so "remove from My Assets" never loses how the
   // asset was last observed, and a rescan can't flip membership.
   inMyAssets: boolean('in_my_assets').notNull().default(false),
+  // Endpoint inventory reported by an agent running ON this asset (hardware, OS,
+  // patches, security posture, interfaces, listening services; software lives in
+  // asset_software). NULL = no agent has reported for this asset.
+  endpointInventory: jsonb('endpoint_inventory'),
+  inventoryCollectedAt: timestamp('inventory_collected_at', { withTimezone: true }),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
@@ -280,8 +286,32 @@ export const agents = pgTable('agents', {
   version: varchar('version', { length: 20 }),
   config: jsonb('config').notNull().default({}),
   bridgeId: uuid('bridge_id').references(() => bridges.bridgeId, { onDelete: 'set null' }),
+  // The asset this agent runs on (bound by its endpoint inventory). Re-resolved when
+  // the asset is deleted or merged away.
+  hostAssetId: uuid('host_asset_id').references(() => assets.assetId, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_agents_tenant').on(t.tenantId)])
+
+// ─── Installed software (endpoint inventory) ────────────────────
+// One row per installed application on an asset, as reported by the agent on that
+// machine. Synced by diff on every inventory: new rows inserted, missing rows
+// deleted, kept rows get last_seen refreshed. Independent of the SBOM tables.
+export const assetSoftware = pgTable('asset_software', {
+  softwareId: uuid('software_id').primaryKey().default(newUuid()),
+  assetId: uuid('asset_id').notNull().references(() => assets.assetId, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  version: varchar('version', { length: 100 }),
+  publisher: varchar('publisher', { length: 255 }),
+  installDate: varchar('install_date', { length: 10 }),   // yyyy-mm-dd when known
+  scope: varchar('scope', { length: 16 }),                // machine | user
+  arch: varchar('arch', { length: 16 }),
+  source: varchar('source', { length: 32 }).notNull().default('agent'),
+  firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
+  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  index('idx_software_asset').on(t.assetId),
+  index('idx_software_name').on(t.name),
+])
 
 // ─── Table 13: Topology Nodes ────────────────────────────────────
 export const topologyNodes = pgTable('topology_nodes', {

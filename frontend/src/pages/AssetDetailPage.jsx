@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Pencil, RefreshCw, Bookmark, MinusCircle, CheckCircle, Trash2, Zap,
-  Server, Cpu, Network, Bell, Package, GitBranch, History, Link2, ShieldAlert,
+  Server, Cpu, Network, Bell, GitBranch, History, Link2, ShieldAlert, Eraser,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -12,11 +12,13 @@ import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import { EditAssetModal } from '../components/assets/AssetModals'
 import AdoptMatchModal from '../components/assets/AdoptMatchModal'
 import { DEVICE_TYPE_META, SOURCE_META, assetName, buildMatchIndex } from '../components/assets/assetMeta'
+import { Section, Field, Empty, fmtDateTime } from '../components/assets/DetailParts'
+import {
+  AgentOsFields, HardwareSection, InterfacesSection, ListeningSection, PatchesSection, SecuritySection, SoftwareSection,
+} from '../components/assets/EndpointSections'
 import { RISKY_PORTS, SevBadge, StatusBadge, alertLabel, renderDetail, timeAgo } from '../components/common/alertMeta'
 import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
-
-const fmtDateTime = (d) => (d ? new Date(d).toLocaleString() : '—')
 
 // Human labels for the os_info keys written by scan ingest (active, passive, SNMP).
 const OS_FIELDS = [
@@ -33,31 +35,6 @@ const OS_FIELDS = [
   ['snmp_interfaces', 'SNMP interfaces', (v) => (Array.isArray(v) ? `${v.length} interface${v.length === 1 ? '' : 's'}` : String(v))],
 ]
 
-function Section({ icon: Icon, title, right, children, className = '' }) {
-  return (
-    <section className={`glass-card p-5 ${className}`}>
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-          <Icon className="w-4 h-4 text-eagle-400" /> {title}
-        </h2>
-        {right}
-      </div>
-      {children}
-    </section>
-  )
-}
-
-function Field({ label, children }) {
-  return (
-    <div className="flex items-start justify-between gap-4 py-1.5 border-b border-dark-700/40 last:border-0">
-      <dt className="text-xs text-dark-400 whitespace-nowrap pt-0.5">{label}</dt>
-      <dd className="text-sm text-dark-100 text-right break-all">{children ?? <span className="text-dark-500">—</span>}</dd>
-    </div>
-  )
-}
-
-const Empty = ({ children }) => <p className="text-sm text-dark-400">{children}</p>
-
 export default function AssetDetailPage() {
   const { assetId } = useParams()
   const navigate = useNavigate()
@@ -73,6 +50,7 @@ export default function AssetDetailPage() {
   const [addresses, setAddresses] = useState(null)
   const [alerts, setAlerts] = useState(null)        // { items, total }
   const [sbom, setSbom] = useState(undefined)       // undefined = loading, null = none
+  const [software, setSoftware] = useState(undefined) // { items, total } from the agent inventory
   const [graph, setGraph] = useState(null)
   const [dupGroups, setDupGroups] = useState([])
   const [notice, setNotice] = useState(null)
@@ -100,6 +78,7 @@ export default function AssetDetailPage() {
     client.get('/events', { params: { asset_id: assetId, status: 'open', page_size: 10, sort: 'priority' } })
       .then((r) => setAlerts({ items: r.data.items || [], total: r.data.total ?? (r.data.items || []).length }))
       .catch(() => setAlerts({ items: [], total: 0 }))
+    client.get(`/assets/${assetId}/software`).then((r) => setSoftware(r.data)).catch(() => setSoftware({ items: [], total: 0 }))
     client.get('/sboms', { params: { asset_id: assetId, page_size: 1 } })
       .then((r) => setSbom(r.data.items?.[0] ?? null)).catch(() => setSbom(null))
     if (!isBusinessOwner) {
@@ -120,7 +99,7 @@ export default function AssetDetailPage() {
     // dialogs from the previous asset as well.
     setEditing(false); setShowBlast(false); setShowDuplicates(false); setAdoptTarget(null); setNotice(null)
     setStatus('loading'); setAsset(null); setScore(null); setAddresses(null); setAlerts(null)
-    setSbom(undefined); setGraph(null); setDupGroups([])
+    setSbom(undefined); setSoftware(undefined); setGraph(null); setDupGroups([])
     loadAsset()
     loadPanels()
   }, [loadAsset, loadPanels])
@@ -183,6 +162,22 @@ export default function AssetDetailPage() {
     }
   }
 
+  const handleClearInventory = async () => {
+    if (!confirm(
+      `Clear the agent inventory of ${assetName(asset)}?\n\n` +
+      '• Removes the hardware, OS, patch, security and network details and the installed-software list.\n' +
+      '• The asset, its scans and alerts are kept.\n' +
+      '• The agent on this machine sends a new inventory at its next run unless it is stopped or started with --no-inventory.'
+    )) return
+    try {
+      const res = await client.delete(`/assets/${assetId}/inventory`)
+      setNotice(`Inventory cleared (${res.data.software_removed} software entr${res.data.software_removed === 1 ? 'y' : 'ies'} removed).`)
+      await refresh()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to clear inventory')
+    }
+  }
+
   const handleDelete = async () => {
     if (!confirm(
       `Delete ${assetName(asset)} permanently?\n\n` +
@@ -231,6 +226,7 @@ export default function AssetDetailPage() {
         return { port: Number(port), protocol: protocol || 'tcp' }
       }) : [])
   const osRows = OS_FIELDS.filter(([k]) => os[k] != null && os[k] !== '' && !(Array.isArray(os[k]) && os[k].length === 0))
+  const inv = asset.endpointInventory || null
   const baseline = asset.baselineState
   const backHref = asset.inMyAssets ? '/inventory' : '/inventory?scope=discovered'
   const neighbors = graph ? graph.nodes.filter((n) => n.asset_id !== assetId) : []
@@ -261,6 +257,12 @@ export default function AssetDetailPage() {
                 {asset.isInternetFacing && (
                   <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-yellow-500/10 text-yellow-400 border-yellow-500/30">Internet-facing</span>
                 )}
+                {inv && (
+                  <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-eagle-500/10 text-eagle-400 border-eagle-500/30"
+                    title={`Inventory reported by the EagleEye agent on ${fmtDateTime(asset.inventoryCollectedAt)}`}>
+                    Agent installed
+                  </span>
+                )}
                 <span className={`text-xs ${lastSeen.stale ? 'text-amber-400' : 'text-dark-400'}`} title={lastSeen.title || ''}>Last seen {lastSeen.text}</span>
               </div>
             </div>
@@ -284,6 +286,11 @@ export default function AssetDetailPage() {
             )}
             {!isReadOnly && !asset.inMyAssets && (
               <button onClick={handleAdopt} className="btn-primary text-sm flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Adopt into My Assets</button>
+            )}
+            {!isReadOnly && (asset.endpointInventory || software?.items?.length > 0) && (
+              <button onClick={handleClearInventory} className="btn-secondary text-sm flex items-center gap-2" title="Remove the inventory the agent reported for this machine">
+                <Eraser className="w-4 h-4" /> Clear inventory
+              </button>
             )}
             {canDelete && (
               <button onClick={handleDelete} className="btn-secondary text-sm flex items-center gap-2 hover:text-red-400" title="Delete permanently">
@@ -368,14 +375,20 @@ export default function AssetDetailPage() {
 
         {/* Operating system */}
         <Section icon={Cpu} title="Operating system">
-          {osRows.length ? (
+          {inv || osRows.length ? (
             <dl>
+              {inv && <AgentOsFields inv={inv} />}
+              {osRows.length > 0 && inv && <p className="pt-3 pb-1 text-[11px] uppercase tracking-wide text-dark-500">Seen by network scans</p>}
               {osRows.map(([k, label, fmt]) => (
                 <Field key={k} label={label}>{fmt ? fmt(os[k], os) : String(os[k])}</Field>
               ))}
             </dl>
-          ) : <Empty>No OS details collected yet. An active scan or SNMP poll fills this in.</Empty>}
+          ) : <Empty>No OS details collected yet. An active scan, SNMP poll or the EagleEye agent fills this in.</Empty>}
         </Section>
+
+        {inv && <HardwareSection inv={inv} />}
+        {inv && <SecuritySection inv={inv} />}
+        {inv && <PatchesSection inv={inv} />}
 
         {/* Services */}
         <Section icon={Network} title="Open ports & services" className="xl:col-span-2"
@@ -405,16 +418,10 @@ export default function AssetDetailPage() {
         </Section>
 
         {/* Software */}
-        <Section icon={Package} title="Software">
-          {sbom === undefined ? <Empty>Loading…</Empty> : sbom ? (
-            <dl>
-              <Field label="Packages">{sbom.component_count ?? '—'}</Field>
-              <Field label="Collected">{fmtDateTime(sbom.generated_at)}</Field>
-              <Field label="Tool">{sbom.tool_used}</Field>
-              <div className="pt-2"><Link to="/sbom" className="text-xs text-eagle-400 hover:underline">Open in SBOM</Link></div>
-            </dl>
-          ) : <Empty>No software inventory collected for this asset yet.</Empty>}
-        </Section>
+        <SoftwareSection software={software} sbom={sbom} inventoryAt={asset.inventoryCollectedAt} />
+
+        {inv && <ListeningSection inv={inv} className="xl:col-span-2" />}
+        {inv && <InterfacesSection inv={inv} />}
 
         {/* Alerts */}
         <Section icon={Bell} title="Open alerts" className="xl:col-span-2"

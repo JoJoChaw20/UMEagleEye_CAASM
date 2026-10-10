@@ -30,6 +30,16 @@ class IngestResult:
     error: Optional[str] = None
 
 
+@dataclass
+class InventoryResult:
+    ok: bool
+    asset_id: Optional[str] = None
+    created: bool = False
+    matched_by: Optional[str] = None
+    software: Optional[dict[str, int]] = None
+    error: Optional[str] = None
+
+
 class AgentClient:
     def __init__(
         self,
@@ -149,3 +159,15 @@ class AgentClient:
             return IngestResult(False, error=f"server rejected the results ({self._detail(resp)})")
         data = resp.json()
         return IngestResult(True, data.get("hosts_discovered", 0), data.get("assets_upserted", 0))
+
+    def send_inventory(self, inventory: dict[str, Any]) -> InventoryResult:
+        """POST /agents/:id/inventory - the endpoint inventory of the agent's own machine.
+        The server binds it to the matching asset (or creates one in Discovered)."""
+        try:
+            resp = self._request("POST", f"/agents/{self.agent_id}/inventory", 120, data=json.dumps(inventory))
+        except requests.RequestException as exc:
+            return InventoryResult(False, error=f"could not reach the server: {exc}")
+        if not resp.ok:
+            return InventoryResult(False, error=f"server rejected the inventory ({self._detail(resp)})")
+        data = resp.json()
+        return InventoryResult(True, data.get("asset_id"), bool(data.get("created")), data.get("matched_by"), data.get("software"))

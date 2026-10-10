@@ -13,6 +13,7 @@ export const SOURCE_META = {
   manual:       { label: 'Manual',       cls: 'bg-dark-600/40 text-dark-300 border-dark-500/30' },
   scan_active:  { label: 'Active scan',  cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   scan_passive: { label: 'Passive scan', cls: 'bg-dark-600/40 text-dark-400 border-dark-500/30' },
+  agent:        { label: 'Agent',        cls: 'bg-eagle-500/15 text-eagle-400 border-eagle-500/30' },
 }
 
 export const SCOPES = {

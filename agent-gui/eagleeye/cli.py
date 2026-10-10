@@ -3,6 +3,7 @@
     python -m eagleeye run                     poll the dashboard and run scans (the agent)
     python -m eagleeye scan 192.168.1.0/24     scan once, locally, and print the results
     python -m eagleeye listen --seconds 60     passively listen on the network, then print
+    python -m eagleeye inventory               collect this machine's inventory, then print
     python -m eagleeye check-deps              report missing tools
     python -m eagleeye config init|show        write / print the config file
 """
@@ -23,6 +24,7 @@ from .passive import PassiveSuite
 from .pipeline import Pipeline, PipelineContext
 from .service import AgentService, log_event
 from .stages import (
+    InventoryDryRunStage, LocalInventoryStage,
     DryRunUploadStage, NmapScanStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage,
 )
 
@@ -47,6 +49,14 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
     g.add_argument("--snmp-priv-key", dest="snmp_priv_key")
     g.add_argument("--snmp-auth-protocol", dest="snmp_auth_protocol")
     g.add_argument("--snmp-priv-protocol", dest="snmp_priv_protocol")
+    g.add_argument("--no-inventory", dest="inventory", action="store_false", default=None,
+                   help="do not collect the endpoint inventory of this machine")
+    g.add_argument("--inventory-interval", dest="inventory_interval", type=int,
+                   help="seconds between endpoint inventories (default 21600 = 6 h)")
+    g.add_argument("--include-user-software", dest="inventory_user_software", action="store_true", default=None,
+                   help="also report software installed per user (personal data; off by default)")
+    g.add_argument("--include-admin-names", dest="inventory_admin_names", action="store_true", default=None,
+                   help="report local administrator account names instead of only their count (off by default)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     listen.add_argument("--seconds", type=int, default=60)
     listen.add_argument("--json", type=Path, dest="json_out")
     _add_settings_flags(listen)
+
+    inv = sub.add_parser("inventory", help="collect this machine's endpoint inventory and print a summary; nothing is uploaded")
+    inv.add_argument("--json", type=Path, dest="json_out", help="write the full inventory document to this file")
+    _add_settings_flags(inv)
 
     chk = sub.add_parser("check-deps", help="check Nmap, Npcap/libpcap, Python modules and privileges")
     chk.add_argument("--json", action="store_true", dest="as_json")
@@ -124,6 +138,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     log.info("Active poll  : %ss   Heartbeat: %ss", settings.poll_interval, settings.heartbeat_interval)
     log.info("Passive mode : %s", "enabled" if settings.passive else "disabled")
     log.info("SNMPv3 poll  : %s", "enabled" if settings.snmp_enabled else "disabled")
+    log.info("Inventory    : %s", f"every {settings.inventory_interval}s" if settings.inventory else "disabled")
     missing = [d for d in deps.check_all() if not d.ok and d.name in ("Nmap",)]
     for d in missing:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
@@ -180,6 +195,44 @@ def cmd_listen(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inventory(args: argparse.Namespace) -> int:
+    settings = _settings_from(args)
+    holder: dict[str, Any] = {}
+    ctx = PipelineContext("inventory", scan_type="inventory")
+    stages = [LocalInventoryStage(options=settings.inventory_options), InventoryDryRunStage(holder.update)]
+    result = Pipeline("inventory", stages, log_event).run(ctx)
+    if not result.ok:
+        print(f"Inventory {result.status}: {result.error}", file=sys.stderr)
+        return 1
+    inv = holder
+    ident, hw, os_, sec, patches = inv["identity"], inv["hardware"], inv["os"], inv["security"], inv["patches"]
+    nics = [n for n in inv["network"]["interfaces"] if n["physical"]]
+    joined = f"domain {ident['domain']}" if ident["part_of_domain"] else "workgroup"
+    ram_gb = round((hw["memory_bytes"] or 0) / 2**30, 1)
+    days = patches["days_since_last_patch"]
+    antivirus = ", ".join(f"{a['name']} ({'on' if a['enabled'] else 'off'})" for a in sec["antivirus"]) or "-"
+    print(f"Host       : {ident['hostname']}  ({joined})")
+    print(f"Hardware   : {hw['manufacturer']} {hw['model']}  [{hw['form_factor']}]  RAM {ram_gb} GB")
+    print(f"OS         : {os_['name']} {os_['display_version'] or ''} build {os_['build']}  ({os_['role']})")
+    print(f"Patches    : {patches['hotfix_count']} hotfix(es), last {patches['last_patch_id'] or '-'} "
+          f"{days if days is not None else '?'} day(s) ago, pending reboot: {patches['pending_reboot']}")
+    print(f"Security   : firewall all on: {sec['firewall_all_enabled']}, secure boot: {sec['secure_boot']}, "
+          f"UAC: {sec['uac_enabled']}, RDP: {sec['rdp_enabled']}, antivirus: {antivirus}")
+    print(f"Network    : {len(nics)} physical NIC(s): " + ", ".join(f"{n['name']} {n['mac']}" for n in nics))
+    print(f"Listening  : {len(inv['network']['listening'])} port(s)")
+    print(f"Software   : {len(inv['software'])} application(s)"
+          + ("" if inv["privacy"]["user_software"] else "  (per-user installs not included)"))
+    admins = sec["local_admin_count"]
+    print(f"Local admins: {admins if admins is not None else '?'}"
+          + ("" if inv["privacy"]["admin_names"] else "  (names not included)"))
+    if inv["unavailable"]:
+        print(f"Needs admin: {', '.join(inv['unavailable'])}")
+    for err in inv["errors"]:
+        print(f"warning    : {err}")
+    _write_json(args.json_out, inv)
+    return 0
+
+
 def cmd_check_deps(args: argparse.Namespace) -> int:
     results = deps.check_all()
     if args.as_json:
@@ -220,7 +273,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     commands = {
         "run": cmd_run, "scan": cmd_scan, "listen": cmd_listen,
-        "check-deps": cmd_check_deps, "config": cmd_config,
+        "check-deps": cmd_check_deps, "config": cmd_config, "inventory": cmd_inventory,
     }
     if args.command == "version":
         print(VERSION)

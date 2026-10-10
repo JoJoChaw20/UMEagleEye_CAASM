@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, isNull, inArray, desc, ilike, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
+import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, type SQL, type SQLWrapper } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, assetAddresses, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
+import { assets, assetAddresses, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
 import { rescoreAssets, scoreAsset } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
 import { normalizeMac } from '../lib/mac'
@@ -189,7 +189,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     // `source` filters by the LAST observation method only (manual = hand/CSV and
     // never scanned since). This is NOT My Assets membership — use in_my_assets for
     // that. Unknown values are ignored (no filter), matching prior behavior.
-    if (source === 'manual' || source === 'scan_active' || source === 'scan_passive') {
+    if (source === 'manual' || source === 'scan_active' || source === 'scan_passive' || source === 'agent') {
       conditions.push(eq(assets.source, source))
     }
 
@@ -206,8 +206,10 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
         ]
       : [sql`${assets.lastScanned} DESC NULLS LAST`, desc(assets.createdAt) as SQL]
 
+    // The endpoint inventory blob is only needed on the detail page; keep list rows light.
+    const { endpointInventory: _inventory, ...listColumns } = getTableColumns(assets)
     const [rows, countRows] = await Promise.all([
-      db.select().from(assets).where(whereClause).orderBy(...orderByClause).limit(limit).offset(offset),
+      db.select(listColumns).from(assets).where(whereClause).orderBy(...orderByClause).limit(limit).offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(assets).where(whereClause),
     ])
 
@@ -435,6 +437,68 @@ app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   } catch (err) {
     console.error('assets GET /:assetId error:', err)
     return c.json({ detail: 'Failed to fetch asset' }, 500)
+  }
+})
+
+// ── GET /:assetId/software — installed software reported by the agent on this asset ──
+app.get('/:assetId/software', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+    if (!z.string().uuid().safeParse(assetId).success) return c.json({ detail: 'Invalid asset id' }, 400)
+
+    const [asset] = await db.select({ tenantId: assets.tenantId }).from(assets).where(eq(assets.assetId, assetId)).limit(1)
+    if (!asset || (user.role !== 'superadmin' && user.tenantId && asset.tenantId !== user.tenantId)) {
+      return c.json({ detail: 'Asset not found' }, 404)
+    }
+
+    const rows = await db.select({
+      softwareId: assetSoftware.softwareId, name: assetSoftware.name, version: assetSoftware.version,
+      publisher: assetSoftware.publisher, installDate: assetSoftware.installDate, scope: assetSoftware.scope,
+      arch: assetSoftware.arch, source: assetSoftware.source, firstSeen: assetSoftware.firstSeen, lastSeen: assetSoftware.lastSeen,
+    }).from(assetSoftware).where(eq(assetSoftware.assetId, assetId)).orderBy(asc(sql`lower(${assetSoftware.name})`), asc(assetSoftware.version))
+
+    return c.json({ asset_id: assetId, total: rows.length, items: rows })
+  } catch (err) {
+    console.error('assets GET /:assetId/software error:', err)
+    return c.json({ detail: 'Failed to fetch software' }, 500)
+  }
+})
+
+// ── DELETE /:assetId/inventory — remove the agent-reported inventory of one asset ──
+// Clears the stored endpoint inventory and the installed-software list (personal-data
+// removal on request). The asset itself, its scans and alerts stay. The agent on that
+// machine sends a fresh inventory at its next run unless it is stopped or set to
+// --no-inventory. Subrequests: 1 (asset) + 1 (count) + 1 (batch).
+app.delete('/:assetId/inventory', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+    if (!z.string().uuid().safeParse(assetId).success) return c.json({ detail: 'Invalid asset id' }, 400)
+
+    const [asset] = await db.select({ tenantId: assets.tenantId, inventoryCollectedAt: assets.inventoryCollectedAt })
+      .from(assets).where(eq(assets.assetId, assetId)).limit(1)
+    if (!asset || (user.role !== 'superadmin' && user.tenantId && asset.tenantId !== user.tenantId)) {
+      return c.json({ detail: 'Asset not found' }, 404)
+    }
+
+    const [counted] = await db.select({ n: sql<number>`count(*)::int` }).from(assetSoftware).where(eq(assetSoftware.assetId, assetId))
+    const softwareRemoved = counted?.n ?? 0
+    await db.batch([
+      db.delete(assetSoftware).where(eq(assetSoftware.assetId, assetId)),
+      db.update(assets).set({ endpointInventory: null, inventoryCollectedAt: null, updatedAt: new Date() }).where(eq(assets.assetId, assetId)),
+      db.insert(auditLogs).values({
+        userId: user.userId, tenantId: asset.tenantId, actionType: 'asset.inventory_clear', targetEntity: assetId,
+        previousState: { inventory_collected_at: asset.inventoryCollectedAt, software_count: softwareRemoved },
+        newState: { inventory_collected_at: null, software_count: 0 },
+      }),
+    ])
+    return c.json({ cleared: true, software_removed: softwareRemoved })
+  } catch (err) {
+    console.error('assets DELETE /:assetId/inventory error:', err)
+    return c.json({ detail: 'Failed to clear inventory' }, 500)
   }
 })
 

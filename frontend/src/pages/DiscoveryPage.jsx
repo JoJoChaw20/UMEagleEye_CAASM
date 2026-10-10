@@ -371,6 +371,13 @@ function HostsPanel({ scan, onClose, onAddAsset, inventoriedIps, myAssetIps, inv
 }
 
 // ── Scan Compare Panel ────────────────────────────────────────────
+// A passive-scan value next to its active counterpart: ✓ same, ≠ different,
+// + only the passive scan saw it (the active scan captured nothing to compare).
+function PassiveValue({ value, activeValue, match }) {
+  if (!activeValue) return <p className="text-cyan-500" title="Only seen by the passive scan">+ {value}</p>
+  return <p className={match ? 'text-green-500' : 'text-amber-500'}>{match ? '✓ ' : '≠ '}{value}</p>
+}
+
 function ScanComparePanel({ onClose }) {
   const [data, setData]       = useState(null)
   const [loading, setLoading] = useState(true)
@@ -437,6 +444,7 @@ function ScanComparePanel({ onClose }) {
               <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-cyan-500 inline-block" /> Passive scan data</span>
               <span className="flex items-center gap-1.5"><span className="text-green-500 font-bold">✓</span> Match between scans</span>
               <span className="flex items-center gap-1.5"><span className="text-amber-500 font-bold">≠</span> Mismatch between scans</span>
+              <span className="flex items-center gap-1.5"><span className="text-cyan-500 font-bold">+</span> Only seen by the passive scan</span>
               <span className="flex items-center gap-1.5"><span className="text-dark-400">—</span> Not captured</span>
             </div>
 
@@ -484,9 +492,7 @@ function ScanComparePanel({ onClose }) {
                             ? <p className="text-blue-500">{row.active.hostname}</p>
                             : <p className="text-dark-400">—</p>}
                           {row.passive.hostname
-                            ? <p className={`${row.delta.hostname_match ? 'text-green-500' : 'text-amber-500'}`}>
-                                {row.delta.hostname_match ? '✓ ' : '≠ '}{row.passive.hostname}
-                              </p>
+                            ? <PassiveValue value={row.passive.hostname} activeValue={row.active.hostname} match={row.delta.hostname_match} />
                             : <p className="text-dark-400">— passive</p>}
                         </div>
 
@@ -496,9 +502,7 @@ function ScanComparePanel({ onClose }) {
                             ? <p className="text-blue-500">{row.active.mac}</p>
                             : <p className="text-dark-400">—</p>}
                           {row.passive.mac
-                            ? <p className={`${row.delta.mac_match ? 'text-green-500' : 'text-amber-500'}`}>
-                                {row.delta.mac_match ? '✓ ' : '≠ '}{row.passive.mac}
-                              </p>
+                            ? <PassiveValue value={row.passive.mac} activeValue={row.active.mac} match={row.delta.mac_match} />
                             : <p className="text-dark-400">— passive</p>}
                         </div>
 

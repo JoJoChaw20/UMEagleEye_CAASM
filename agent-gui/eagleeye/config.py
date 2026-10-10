@@ -35,6 +35,16 @@ class Settings:
     snmp_priv_key: str = ""
     snmp_auth_protocol: str = "SHA"
     snmp_priv_protocol: str = "AES"
+    inventory: bool = True              # collect the endpoint inventory of this machine
+    inventory_interval: int = 21600     # seconds between inventories (6 h)
+    # Personal data, off by default (data minimisation): per-user software installs
+    # and the names of local administrator accounts (only their count is sent).
+    inventory_user_software: bool = False
+    inventory_admin_names: bool = False
+
+    @property
+    def inventory_options(self) -> dict[str, bool]:
+        return {"user_software": self.inventory_user_software, "admin_names": self.inventory_admin_names}
 
     @property
     def snmp_enabled(self) -> bool:
@@ -52,6 +62,8 @@ class Settings:
         for name in ("poll_interval", "heartbeat_interval", "passive_interval"):
             if getattr(self, name) < 5:
                 out.append(f"{name} must be at least 5 seconds")
+        if self.inventory and self.inventory_interval < 300:
+            out.append("inventory_interval must be at least 300 seconds")
         return out
 
     def redacted(self) -> dict[str, Any]:
@@ -79,6 +91,10 @@ _ENV_VARS = {
     "snmp_priv_key": "EAGLEEYE_SNMP_PRIV_KEY",
     "snmp_auth_protocol": "EAGLEEYE_SNMP_AUTH_PROTOCOL",
     "snmp_priv_protocol": "EAGLEEYE_SNMP_PRIV_PROTOCOL",
+    "inventory": "EAGLEEYE_INVENTORY",
+    "inventory_interval": "EAGLEEYE_INVENTORY_INTERVAL",
+    "inventory_user_software": "EAGLEEYE_INVENTORY_USER_SOFTWARE",
+    "inventory_admin_names": "EAGLEEYE_INVENTORY_ADMIN_NAMES",
 }
 
 

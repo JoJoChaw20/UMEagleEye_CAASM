@@ -26,6 +26,9 @@ version = { attr = "eagleeye.VERSION" }
 [tool.setuptools.packages.find]
 include = ["eagleeye*"]
 
+[tool.setuptools.package-data]
+"eagleeye.collectors" = ["*.ps1"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

@@ -74,6 +74,13 @@ def test_redacted_masks_secrets():
     assert "abcdef" not in json.dumps(red)
 
 
+def test_inventory_privacy_options_default_off_and_can_be_enabled(tmp_path):
+    s = load_settings(tmp_path / "x", env={})
+    assert s.inventory_options == {"user_software": False, "admin_names": False}
+    s = load_settings(tmp_path / "x", env={"EAGLEEYE_INVENTORY_USER_SOFTWARE": "1"}, overrides={"inventory_admin_names": True})
+    assert s.inventory_options == {"user_software": True, "admin_names": True}
+
+
 def test_save_and_reload_roundtrip(tmp_path):
     path = save_settings(Settings(api_url="http://x", api_key="k", agent_id="a", passive=True), tmp_path / "sub" / "c.json")
     loaded = load_settings(path, env={})

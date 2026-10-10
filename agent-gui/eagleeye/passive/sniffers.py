@@ -111,6 +111,11 @@ class ArpSniffer(_Sniffer):
 
         return handle
 
+    def pending(self) -> int:
+        """Hosts heard since the last drain."""
+        with self._lock:
+            return len(self._seen)
+
     def drain(self) -> list[HostRecord]:
         """Snapshot of discovered hosts (with best-effort reverse DNS); clears the buffer."""
         with self._lock:

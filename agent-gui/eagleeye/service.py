@@ -23,7 +23,8 @@ from .config import Settings
 from .passive import PassiveSuite
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
 from .stages import (
-    NmapScanStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage, UploadStage,
+    InventoryUploadStage, LocalInventoryStage, NmapScanStage, PassiveCollectStage, PassiveEnrichStage,
+    SnmpPollStage, UploadStage,
 )
 
 log = logging.getLogger("eagleeye.service")
@@ -72,6 +73,10 @@ class AgentService:
         self._stop = threading.Event()
         self._active_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="active")
         self._active_future: Optional[Future[None]] = None
+        self._inventory_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inventory")
+        self._inventory_future: Optional[Future[PipelineResult]] = None
+        self._last_inventory = 0.0           # 0 = collect on the first poll
+        self._inventory_supported = True
         self._last_flush = time.time()
 
     # ── pipelines ──
@@ -104,6 +109,31 @@ class AgentService:
             self._last_flush = time.time()
         self._finish(scan_id, result)
         return result
+
+    def run_inventory(self) -> PipelineResult:
+        ctx = PipelineContext("inventory", scan_type="inventory")
+        result = Pipeline("inventory", [
+            LocalInventoryStage(options=self.settings.inventory_options), InventoryUploadStage(self.client),
+        ], self.on_event).run(ctx)
+        if result.status == "failed" and "not available on" in (result.error or ""):
+            # Linux/macOS until their collectors exist: report it once, then stop trying.
+            self._inventory_supported = False
+        return result
+
+    def _maybe_inventory(self) -> None:
+        if not self.settings.inventory or not self._inventory_supported:
+            return
+        if self._inventory_future is not None:
+            if not self._inventory_future.done():
+                return
+            try:
+                self._inventory_future.result()
+            except Exception as exc:  # noqa: BLE001
+                log.error("Inventory worker failed: %s", exc, exc_info=True)
+            self._inventory_future = None
+        if time.time() - self._last_inventory >= self.settings.inventory_interval:
+            self._last_inventory = time.time()
+            self._inventory_future = self._inventory_pool.submit(self.run_inventory)
 
     def _finish(self, scan_id: Optional[str], result: PipelineResult) -> None:
         if result.status == "failed" and scan_id:
@@ -153,8 +183,10 @@ class AgentService:
             self._decline(scan_id, f"Unsupported scan type '{scan_type}'.")
 
     def poll_once(self) -> None:
-        """One polling cycle: dispatch pending scans, then the periodic passive flush."""
+        """One polling cycle: dispatch pending scans, the periodic passive flush and the
+        periodic endpoint inventory."""
         self._reap_active()
+        self._maybe_inventory()
         pending = self.client.get_pending_scans()
         if pending:
             log.info("Found %d pending scan(s)", len(pending))
@@ -166,7 +198,10 @@ class AgentService:
         if self.settings.passive and self.suite is not None and self.suite.arp is not None:
             if time.time() - self._last_flush >= self.settings.passive_interval:
                 self._last_flush = time.time()
-                self.run_passive(None)
+                if self.suite.arp.pending():
+                    self.run_passive(None)
+                else:
+                    log.debug("Passive flush: nothing new heard")
 
     # ── lifecycle ──
     def _heartbeat_loop(self) -> None:
@@ -201,3 +236,4 @@ class AgentService:
         if self.suite:
             self.suite.stop()
         self._active_pool.shutdown(wait=False, cancel_futures=True)
+        self._inventory_pool.shutdown(wait=False, cancel_futures=True)

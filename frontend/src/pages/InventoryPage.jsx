@@ -412,6 +412,7 @@ export default function InventoryPage() {
               <option value="scan_active">Active scan</option>
               <option value="scan_passive">Passive scan</option>
               <option value="manual">Manual</option>
+              <option value="agent">Agent</option>
             </select>
             {(hasFilters || linkFilter) && (
               <button onClick={clearFilters} className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2">Clear filters</button>
