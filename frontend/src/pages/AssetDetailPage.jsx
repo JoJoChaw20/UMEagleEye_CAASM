@@ -358,19 +358,7 @@ export default function AssetDetailPage() {
 
         {/* Criticality */}
         <Section icon={ShieldAlert} title="Criticality" right={<CriticalityBadge score={asset.criticalityScore} assetId={asset.assetId} footer="computed" />}>
-          {score ? (
-            <>
-              <p className="text-xs text-dark-400 mb-2">Computed from this asset's own facts. Each line adds to or subtracts from the score.</p>
-              <ul className="space-y-1">
-                {score.factors.map((f) => (
-                  <li key={f} className="text-sm text-dark-100 flex items-start gap-2"><span className="text-eagle-400 mt-0.5">•</span>{f}</li>
-                ))}
-              </ul>
-              {score.score !== asset.criticalityScore && (
-                <p className="mt-3 text-xs text-amber-400">The stored score ({asset.criticalityScore}) differs from the current formula ({score.score}). Rescore to update it.</p>
-              )}
-            </>
-          ) : <Empty>Score breakdown unavailable.</Empty>}
+          {score ? <CriticalityExplain score={score} stored={asset.criticalityScore} /> : <Empty>Score breakdown unavailable.</Empty>}
         </Section>
 
         {/* Operating system */}
@@ -387,8 +375,8 @@ export default function AssetDetailPage() {
         </Section>
 
         {inv && <HardwareSection inv={inv} />}
-        {inv && <SecuritySection inv={inv} />}
-        {inv && <PatchesSection inv={inv} />}
+        {inv && <SecuritySection inv={inv} checks={asset.postureChecks} score={asset.postureScore} />}
+        {inv && <PatchesSection inv={inv} checks={asset.postureChecks} />}
 
         {/* Services */}
         <Section icon={Network} title="Open ports & services" className="xl:col-span-2"
@@ -534,5 +522,64 @@ export default function AssetDetailPage() {
         />
       )}
     </div>
+  )
+}
+
+// ── Criticality explanation ──
+// The tenant's formula (v1 or v2) with each factor and where it came from; while a
+// tenant is still on v1, the v2 result is shown underneath for review.
+const SOURCE_TAG = {
+  agent: 'agent', manual: 'set by hand', scan: 'scan', analyst: 'analyst', inferred: 'inferred', hostname: 'hostname',
+}
+const CONFIDENCE_CLS = { high: 'text-green-400', medium: 'text-amber-400', low: 'text-red-400' }
+
+function FactorList({ result }) {
+  if (result.details) {
+    return (
+      <ul className="space-y-1">
+        {result.details.map((d) => (
+          <li key={d.label} className="text-sm text-dark-100 flex items-start gap-2">
+            <span className={`mt-0.5 w-7 flex-shrink-0 text-right tabular-nums ${d.points < 0 ? 'text-green-400' : 'text-eagle-400'}`}>{d.points > 0 ? `+${d.points}` : d.points}</span>
+            <span className="flex-1">{d.label}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-dark-600 text-dark-400 whitespace-nowrap">{SOURCE_TAG[d.source] ?? d.source}</span>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  return (
+    <ul className="space-y-1">
+      {result.factors.map((f) => (
+        <li key={f} className="text-sm text-dark-100 flex items-start gap-2"><span className="text-eagle-400 mt-0.5">•</span>{f}</li>
+      ))}
+    </ul>
+  )
+}
+
+function CriticalityExplain({ score, stored }) {
+  const v2 = score.v2
+  return (
+    <>
+      <p className="text-xs text-dark-400 mb-2">
+        How important this asset is, from its own facts (formula v{score.model ?? 1}). Each line adds to or subtracts from the score.
+        {score.confidence && <> Confidence: <span className={CONFIDENCE_CLS[score.confidence]}>{score.confidence}</span>.</>}
+      </p>
+      <FactorList result={score} />
+      {score.unknowns?.length > 0 && <p className="mt-2 text-xs text-dark-400">Not known yet: {score.unknowns.join(', ')}.</p>}
+      {(score.score !== stored || (score.stored_model != null && score.stored_model !== score.model)) && (
+        <p className="mt-3 text-xs text-amber-400">The stored score ({stored}) is not from the current formula ({score.score}). Rescore to update it.</p>
+      )}
+      {score.model === 1 && v2 && (
+        <div className="mt-4 rounded-lg border border-dark-700/60 bg-dark-900/40 p-3">
+          <p className="text-xs text-dark-300 mb-2">
+            Formula v2 preview: <span className="font-semibold text-dark-100">{v2.score}/10</span>
+            {v2.score !== score.score && <span className="text-dark-400"> ({v2.score > score.score ? '+' : ''}{v2.score - score.score} vs v1)</span>}
+            , confidence <span className={CONFIDENCE_CLS[v2.confidence]}>{v2.confidence}</span>.
+            {' '}Importance only: no owner no longer adds a point; security weaknesses are in the posture score.
+          </p>
+          <FactorList result={v2} />
+        </div>
+      )}
+    </>
   )
 }

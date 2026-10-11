@@ -19,7 +19,7 @@ import {
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
-import { computeCriticality } from './criticality'
+import { scoreAsset, type CriticalityModel } from './rescore'
 import { buildBaseline, type AssetBaseline } from '../services/drift'
 
 // ── Prefetched candidate data (filled by identity.prefetchIdentity) ──
@@ -47,6 +47,7 @@ export interface PrefetchAsset {
   hasBaseline: boolean
   baseline?: AssetBaseline | null            // to complete a passive-captured baseline
   internetFacingOverride?: boolean | null    // analyst-confirmed exposure wins over inference
+  agentRole?: string | null                  // OS role the machine's agent reported (criticality v2)
 }
 export interface IdentityPrefetch {
   addresses: PrefetchAddress[]
@@ -120,6 +121,7 @@ interface MutAsset {
   hasBaseline: boolean
   baseline?: AssetBaseline | null
   internetFacingOverride?: boolean | null
+  agentRole?: string | null
 }
 
 /**
@@ -164,10 +166,11 @@ export function resolveIngestDeviceType(
 export function planIngest(
   hosts: PlanHost[],
   prefetch: IdentityPrefetch,
-  opts?: { newId?: () => string; now?: Date },
+  opts?: { newId?: () => string; now?: Date; criticalityModel?: CriticalityModel },
 ): IngestPlan {
   const newId = opts?.newId ?? (() => crypto.randomUUID())
   const now = opts?.now ?? new Date()
+  const model: CriticalityModel = opts?.criticalityModel ?? 1
 
   // Working store, seeded from the prefetch. Addresses pre-sorted by the
   // tiebreaker so matchAsset's first-element pick is deterministic; new rows are
@@ -245,10 +248,11 @@ export function planIngest(
       const resolvedDeviceType = dt.deviceType
       // Analyst-confirmed exposure wins; otherwise the scan's gateway inference
       const exposed = st.internetFacingOverride ?? host.internetFacing
-      const crit = computeCriticality({
-        deviceType: resolvedDeviceType, isInternetFacing: exposed,
-        hostname: host.hostname ?? st.hostname, owner: st.owner ?? null, osInfo: merged,
-      }).score
+      const crit = scoreAsset({
+        deviceType: resolvedDeviceType, deviceTypeSource: dt.deviceTypeSource, isInternetFacing: exposed,
+        internetFacingOverride: st.internetFacingOverride ?? null,
+        hostname: host.hostname ?? st.hostname, owner: st.owner ?? null, osInfo: merged, agentRole: st.agentRole ?? null,
+      }, model)
       // source = last observation method. Membership (in_my_assets) is NEVER
       // changed by ingest, so a rescan no longer needs the old sticky-manual CASE.
       const resolvedSource = host.isPassive ? 'scan_passive' : 'scan_active'
@@ -268,6 +272,7 @@ export function planIngest(
         deviceTypeSource: dt.deviceTypeSource,
         isInternetFacing: exposed,
         criticalityScore: crit,
+        criticalityModel: model,
         source: resolvedSource,
         lastScanned: now,
         updatedAt: now,
@@ -331,10 +336,10 @@ export function planIngest(
       assetId = newId()
       isNew = true
       const merged = mergeOsInfo(null, host.observedOsInfo, host.isPassive).merged
-      const crit = computeCriticality({
-        deviceType: host.deviceType, isInternetFacing: host.internetFacing,
+      const crit = scoreAsset({
+        deviceType: host.deviceType, deviceTypeSource: 'auto', isInternetFacing: host.internetFacing,
         hostname: host.hostname, owner: null, osInfo: merged,
-      }).score
+      }, model)
       const baseline = buildBaseline({
         ports: host.ports, osInfo: merged, hostname: host.hostname ?? null, macAddress: mac ?? null,
         isInternetFacing: host.internetFacing, deviceType: host.deviceType, autoSet: true,
@@ -354,7 +359,7 @@ export function planIngest(
         assetId, tenantId: host.tenantId, ipAddress: host.ip, hostname: host.hostname ?? null,
         macAddress: mac ?? null, hostKey: hostKey ?? null, hardwareVendor: host.hardwareVendor ?? null,
         deviceType: host.deviceType, deviceTypeSource: 'auto', osInfo: merged, isInternetFacing: host.internetFacing,
-        criticalityScore: crit, baselineState: baseline, source, inMyAssets: false,
+        criticalityScore: crit, criticalityModel: model, baselineState: baseline, source, inMyAssets: false,
         lastScanned: now, createdAt: now, updatedAt: now,
       } })
       const nid = newId()

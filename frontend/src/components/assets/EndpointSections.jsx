@@ -6,8 +6,6 @@ import { HardDrive, ShieldCheck, Wrench, Radio, Package, Cable, CheckCircle2, XC
 import { Section, Field, Empty, fmtDate, fmtDateTime, fmtBytes } from './DetailParts'
 import { RISKY_PORTS } from '../common/alertMeta'
 
-const STALE_PATCH_DAYS = 45
-
 const FORM_FACTOR = { laptop: 'Laptop', desktop: 'Desktop', server: 'Server', virtual: 'Virtual machine', unknown: 'Unknown' }
 const ROLE = { workstation: 'Workstation', server: 'Server', domain_controller: 'Domain controller' }
 
@@ -57,9 +55,13 @@ export function AgentOsFields({ inv }) {
 }
 
 // ── Patches ──
-export function PatchesSection({ inv }) {
+// The "Updates" posture check (server side, lib/endpointPosture.ts) decides the colour,
+// so this panel and the posture score agree.
+export function PatchesSection({ inv, checks }) {
   const p = inv.patches || {}
-  const stale = p.days_since_last_patch != null && p.days_since_last_patch > STALE_PATCH_DAYS
+  const updates = (checks || []).find((c) => c.id === 'updates')
+  const stale = updates?.state === 'warn' || updates?.state === 'bad'
+  const late = updates?.state === 'bad'
   return (
     <Section icon={Wrench} title="Patches">
       <dl>
@@ -75,63 +77,15 @@ export function PatchesSection({ inv }) {
           {p.pending_reboot == null ? null : p.pending_reboot ? <span className="text-amber-400">Yes</span> : 'No'}
         </Field>
       </dl>
-      {stale && <p className="mt-3 text-xs text-amber-400">No update in over {STALE_PATCH_DAYS} days. Check Windows Update on this machine.</p>}
+      {stale && <p className={`mt-3 text-xs ${late ? 'text-red-400' : 'text-amber-400'}`}>{updates.detail ? `${updates.detail[0].toUpperCase()}${updates.detail.slice(1)}. ` : ''}Check the updates on this machine.</p>}
     </Section>
   )
 }
 
 // ── Security posture ──
-// Each check: good | bad | warn | unknown | admin (needs Administrator to read).
-function postureChecks(inv) {
-  const s = inv.security || {}
-  const unavailable = new Set(inv.unavailable || [])
-  const av = s.antivirus || []
-  const activeAv = av.filter((a) => a.enabled)
-  const checks = []
-
-  checks.push({
-    label: 'Firewall',
-    state: s.firewall_all_enabled == null ? 'unknown' : s.firewall_all_enabled ? 'good' : 'bad',
-    detail: (s.firewall || []).map((f) => `${f.profile} ${f.enabled ? 'on' : 'off'}`).join(', ') || null,
-  })
-  checks.push({
-    label: 'Antivirus',
-    state: !av.length ? 'unknown' : !activeAv.length ? 'bad' : activeAv.every((a) => a.up_to_date) ? 'good' : 'warn',
-    detail: av.length ? av.map((a) => `${a.name}${a.enabled ? '' : ' (off)'}${a.enabled && a.up_to_date === false ? ' (out of date)' : ''}`).join(', ') : null,
-  })
-  const bl = s.bitlocker
-  checks.push({
-    label: 'Disk encryption',
-    state: unavailable.has('bitlocker') ? 'admin' : !Array.isArray(bl) || !bl.length ? 'unknown'
-      : bl.every((v) => String(v.protection).toLowerCase() === 'on') ? 'good' : 'bad',
-    detail: Array.isArray(bl) ? bl.map((v) => `${v.drive} ${String(v.protection).toLowerCase()}`).join(', ') : null,
-  })
-  checks.push({ label: 'Secure Boot', state: s.secure_boot == null ? 'unknown' : s.secure_boot ? 'good' : 'warn' })
-  checks.push({
-    label: 'TPM', state: unavailable.has('tpm') ? 'admin' : !s.tpm ? 'unknown' : s.tpm.present && s.tpm.ready ? 'good' : 'warn',
-    detail: s.tpm ? `${s.tpm.present ? 'present' : 'absent'}${s.tpm.present ? `, ${s.tpm.ready ? 'ready' : 'not ready'}` : ''}` : null,
-  })
-  checks.push({ label: 'User Account Control', state: s.uac_enabled == null ? 'unknown' : s.uac_enabled ? 'good' : 'bad' })
-  checks.push({
-    label: 'Remote Desktop', state: s.rdp_enabled == null ? 'unknown' : s.rdp_enabled ? 'warn' : 'good',
-    detail: s.rdp_enabled ? 'Enabled' : s.rdp_enabled === false ? 'Disabled' : null,
-  })
-  checks.push({
-    label: 'SMBv1', state: unavailable.has('smb1') ? 'admin' : s.smb1_enabled == null ? 'unknown' : s.smb1_enabled ? 'bad' : 'good',
-    detail: s.smb1_enabled ? 'Enabled (obsolete, exploitable)' : s.smb1_enabled === false ? 'Disabled' : null,
-  })
-  // Names are only reported when the agent was told to include them; the count always is.
-  const adminNames = (s.local_admins || []).map((a) => a.name)
-  const adminCount = s.local_admin_count ?? (adminNames.length || null)
-  checks.push({
-    label: 'Local administrators', state: adminCount == null ? 'unknown' : adminCount > 3 ? 'warn' : 'good',
-    detail: adminCount == null ? null
-      : adminNames.length ? adminNames.join(', ')
-        : `${adminCount} account${adminCount === 1 ? '' : 's'} (names not collected)`,
-  })
-  return checks
-}
-
+// The checks and the score are computed by the server from the agent's inventory
+// (lib/endpointPosture.ts) and stored on the asset: one definition for this page, the
+// dashboard and reports. Each check: good | bad | warn | unknown | admin.
 const STATE_META = {
   good:    { icon: CheckCircle2,  cls: 'text-green-400', text: 'OK' },
   bad:     { icon: XCircle,       cls: 'text-red-400',   text: 'At risk' },
@@ -140,16 +94,29 @@ const STATE_META = {
   admin:   { icon: HelpCircle,    cls: 'text-dark-400',  text: 'Needs Administrator' },
 }
 
-export function SecuritySection({ inv }) {
-  const checks = postureChecks(inv)
+export function SecuritySection({ inv, checks, score }) {
+  if (!Array.isArray(checks)) {
+    return (
+      <Section icon={ShieldCheck} title="Security posture">
+        <Empty>Not assessed yet. It is computed when the agent next reports, or when criticality is rescored.</Empty>
+      </Section>
+    )
+  }
   const issues = checks.filter((c) => c.state === 'bad' || c.state === 'warn').length
-  const known = checks.some((c) => c.state === 'good' || c.state === 'bad' || c.state === 'warn')
-  const summary = issues ? { text: `${issues} to review`, cls: 'text-amber-400' }
-    : known ? { text: 'No issues found', cls: 'text-green-400' }
-      : { text: 'Not reported', cls: 'text-dark-400' }
+  const unread = checks.filter((c) => c.state === 'unknown' || c.state === 'admin').length
+  const scoreCls = score == null ? 'text-dark-400' : score >= 80 ? 'text-green-400' : score >= 50 ? 'text-amber-400' : 'text-red-400'
   return (
     <Section icon={ShieldCheck} title="Security posture"
-      right={<span className={`text-xs ${summary.cls}`}>{summary.text}</span>}>
+      right={
+        <span className="text-xs text-right">
+          <span className={`font-semibold ${scoreCls}`}>{score == null ? 'Unassessed' : `${score}/100`}</span>
+          {issues > 0 && <span className="text-amber-400"> · {issues} to review</span>}
+        </span>
+      }>
+      <p className="text-[11px] text-dark-400 mb-2">
+        How well this machine is protected, from {checks.length - unread} of {checks.length} checks the agent could read.
+        {' '}Unread checks are left out, not counted as passed. This does not change the criticality.
+      </p>
       <ul className="divide-y divide-dark-700/40">
         {checks.map((c) => {
           const m = STATE_META[c.state]

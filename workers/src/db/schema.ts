@@ -52,6 +52,9 @@ export const tenants = pgTable('tenants', {
   name: varchar('name', { length: 100 }).notNull(),
   slug: varchar('slug', { length: 50 }).notNull().unique(),
   isActive: boolean('is_active').notNull().default(true),
+  // Criticality formula this tenant's scores use (lib/rescore.ts): 1 = original,
+  // 2 = importance only, with sources. Switched by POST /assets/rescore?model=.
+  criticalityModel: smallint('criticality_model').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -94,6 +97,15 @@ export const assets = pgTable('assets', {
   hardwareVendor: varchar('hardware_vendor', { length: 255 }),
   osInfo: jsonb('os_info').default({}),
   criticalityScore: smallint('criticality_score').notNull().default(5),
+  // Which formula produced criticality_score (1 or 2; see tenants.criticality_model).
+  criticalityModel: smallint('criticality_model').notNull().default(1),
+  // Endpoint posture (weakness, kept apart from criticality = importance): 0-100 from
+  // the security checks in the agent's inventory (lib/endpointPosture.ts). NULL =
+  // unassessed (no agent, or too few checks readable), never "good".
+  postureScore: smallint('posture_score'),
+  postureModel: smallint('posture_model'),
+  postureAssessedAt: timestamp('posture_assessed_at', { withTimezone: true }),
+  postureChecks: jsonb('posture_checks'),
   baselineState: jsonb('baseline_state'),
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
   // Analyst-confirmed exposure. NULL = not confirmed, so scans keep inferring it.

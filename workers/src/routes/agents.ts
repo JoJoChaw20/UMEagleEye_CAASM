@@ -9,7 +9,8 @@ import { getDb } from '../db/client'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, events } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
-import { scoreAsset } from '../lib/rescore'
+import { scoreAsset, tenantCriticalityModel } from '../lib/rescore'
+import { postureColumns } from '../lib/endpointPosture'
 import { deriveNetworkKey } from '../lib/identity'
 import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
@@ -306,6 +307,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
     const mac = primaryMac(inv)
     const networkKey = ip ? deriveNetworkKey({ ip }) : null
     const reportedType = deviceTypeFor(inv)
+    const agentRole = typeof inv.os?.role === 'string' ? inv.os.role : null
     const now = new Date()
     const parsedAt = new Date(inv.collected_at)
     const collectedAt = isNaN(parsedAt.getTime()) ? now : parsedAt
@@ -329,7 +331,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
           eq(assetIdentifiers.tenantId, tenantId), eq(assetIdentifiers.kind, kind), eq(assetIdentifiers.value, value))))
       : undefined)
 
-    const [bound, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches] = await Promise.all([
+    const [bound, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches, criticalityModel] = await Promise.all([
       agent.hostAssetId ? candidates(eq(assets.assetId, agent.hostAssetId)) : Promise.resolve([]),
       byIdentifier('hardware_uuid', hardwareUuid),
       byIdentifier('os_install_id', osInstallId),
@@ -342,6 +344,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       ) : undefined),
       candidates(hostKey ? or(eq(assets.hostKey, hostKey), sql`lower(${assets.hostname}) = ${hostKey}`) : undefined),
       candidates(ips.length ? inArray(assets.ipAddress, ips) : undefined),
+      tenantCriticalityModel(db, tenantId),
     ])
 
     const binding = bindMachine({
@@ -364,6 +367,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       const [cur] = await db.select({
         deviceType: assets.deviceType, deviceTypeSource: assets.deviceTypeSource, baselineState: assets.baselineState,
         hostname: assets.hostname, owner: assets.owner, osInfo: assets.osInfo, isInternetFacing: assets.isInternetFacing,
+        internetFacingOverride: assets.internetFacingOverride,
       }).from(assets).where(eq(assets.assetId, assetId)).limit(1)
       if (!cur) return c.json({ detail: 'Asset disappeared while storing the inventory; retry' }, 409)
       const dt = resolveAgentDeviceType(cur, reportedType)
@@ -371,9 +375,11 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         deviceType: dt.deviceType,
         deviceTypeSource: dt.deviceTypeSource,
         criticalityScore: scoreAsset({
-          deviceType: dt.deviceType, isInternetFacing: cur.isInternetFacing, hostname: cur.hostname ?? hostname,
-          osInfo: cur.osInfo as Record<string, unknown> | null, owner: cur.owner,
-        }),
+          deviceType: dt.deviceType, deviceTypeSource: dt.deviceTypeSource, isInternetFacing: cur.isInternetFacing,
+          internetFacingOverride: cur.internetFacingOverride, hostname: cur.hostname ?? hostname,
+          osInfo: cur.osInfo as Record<string, unknown> | null, owner: cur.owner, agentRole,
+        }, criticalityModel),
+        criticalityModel,
       }
       // An automatic baseline still holding the old type moves with it (not drift).
       const baseline = cur.baselineState as Record<string, unknown> | null
@@ -424,7 +430,11 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         db.insert(assets).values({
           assetId, tenantId, ipAddress: ip, hostname, macAddress: mac, hostKey,
           hardwareVendor: vendor, deviceType: reportedType, deviceTypeSource: known ? 'agent' : 'auto', osInfo: {},
-          criticalityScore: scoreAsset({ deviceType: reportedType, isInternetFacing: false, hostname, owner: null, osInfo: {} }),
+          criticalityScore: scoreAsset({
+            deviceType: reportedType, deviceTypeSource: known ? 'agent' : 'auto', isInternetFacing: false,
+            hostname, owner: null, osInfo: {}, agentRole,
+          }, criticalityModel),
+          criticalityModel,
           source: 'agent', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now,
         }),
         db.insert(assetAddresses).values({
@@ -447,17 +457,19 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         }))
     }
 
-    // ── Store facts; fill identity gaps only (never overwrite what a user or scan set) ──
+    // ── Store facts (and the posture they imply); fill identity gaps only (never overwrite what a user or scan set) ──
     const existingSoftware = await db.select({
       softwareId: assetSoftware.softwareId, name: assetSoftware.name,
       version: assetSoftware.version, publisher: assetSoftware.publisher,
     }).from(assetSoftware).where(eq(assetSoftware.assetId, assetId))
     const diff = diffSoftware(existingSoftware, inv.software)
+    const stored = storedInventory(inv)
 
     statements.push(
       db.update(assets).set({
-        endpointInventory: storedInventory(inv),
+        endpointInventory: stored,
         inventoryCollectedAt: collectedAt,
+        ...postureColumns(stored, collectedAt),
         lastScanned: now,
         updatedAt: now,
         hostname: sql`COALESCE(${assets.hostname}, ${hostname})`,

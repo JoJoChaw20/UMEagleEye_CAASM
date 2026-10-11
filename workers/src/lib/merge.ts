@@ -30,6 +30,13 @@ export interface MergeAsset {
   /** Endpoint inventory from an agent on this asset (newest one survives the merge). */
   endpointInventory?: unknown
   inventoryCollectedAt?: string | Date | null
+  /** Endpoint posture computed from that inventory (moves with it). */
+  postureScore?: number | null
+  postureModel?: number | null
+  postureAssessedAt?: string | Date | null
+  postureChecks?: unknown
+  /** Formula that produced criticalityScore. */
+  criticalityModel?: number
 }
 export interface MergeAddress {
   addressId: string
@@ -163,6 +170,8 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     inMyAssets: all.some(a => a.inMyAssets),
     isInternetFacing: all.some(a => a.isInternetFacing),
     criticalityScore: Math.max(...all.map(a => a.criticalityScore ?? 0)),
+    // The kept (highest) score keeps the formula that produced it.
+    criticalityModel: [...all].sort((a, b) => (b.criticalityScore ?? 0) - (a.criticalityScore ?? 0))[0]!.criticalityModel ?? 1,
     lastScanned: byLatest.map(a => a.lastScanned).find(v => v != null) ?? null,
     createdAt: all.map(a => ms(a.createdAt)).filter(n => n > 0).sort((x, y) => x - y).map(n => new Date(n))[0] ?? survivor.createdAt,
     ipAddress: latest.ipAddress,            // "latest seen"
@@ -176,6 +185,10 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
   if (newestInventory) {
     mergedFields.endpointInventory = newestInventory.endpointInventory
     mergedFields.inventoryCollectedAt = newestInventory.inventoryCollectedAt ?? null
+    mergedFields.postureScore = newestInventory.postureScore ?? null
+    mergedFields.postureModel = newestInventory.postureModel ?? null
+    mergedFields.postureAssessedAt = newestInventory.postureAssessedAt ?? null
+    mergedFields.postureChecks = newestInventory.postureChecks ?? null
   }
 
   // ── Addresses: end colliding current scoped loser rows, then move all loser rows ──

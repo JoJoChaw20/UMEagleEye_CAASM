@@ -9,7 +9,7 @@
  *   2. DB wrapper (resolveAssetIdentity) — fetches candidate rows for the pure
  *      matcher and returns a decision the caller executes.
  */
-import { and, asc, desc, eq, inArray, isNull, or } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { assets, assetAddresses, assetIdentifiers } from '../db/schema'
 import { normalizeMac } from './mac'
@@ -389,6 +389,8 @@ export async function prefetchIdentity(
     hostKey: assets.hostKey,
     baselineState: assets.baselineState,
     internetFacingOverride: assets.internetFacingOverride,
+    // Only the role is needed from the inventory blob (criticality v2).
+    agentRole: sql<string | null>`${assets.endpointInventory}->'os'->>'role'`,
   }
   const toMs = (v: unknown): number => (v ? new Date(v as string | Date).getTime() : 0)
   const absorb = (r: Record<string, unknown>) => {
@@ -421,6 +423,7 @@ export async function prefetchIdentity(
         hasBaseline: r.baselineState != null,
         baseline: (r.baselineState as AssetBaseline | null) ?? null,
         internetFacingOverride: (r.internetFacingOverride as boolean | null) ?? null,
+        agentRole: (r.agentRole as string | null) ?? null,
       })
     }
   }

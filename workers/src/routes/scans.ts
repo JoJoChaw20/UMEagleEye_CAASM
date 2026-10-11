@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, assetAddresses, events } from '../db/schema'
-import { computeCriticality } from '../lib/criticality'
+import { agentRoleOf, scoreAsset, tenantCriticalityModel } from '../lib/rescore'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
 import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
@@ -743,7 +743,10 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const batchMacs = [...new Set(hosts.map(h => classifyMac(h.mac).mac).filter((m): m is string => !!m))]
     const batchIps = [...new Set(hosts.map(h => h.ip))]
     const batchHostKeys = [...new Set(hosts.map(h => sanitizeHostKey((h.os as Record<string, unknown> | null)?.['smb_computer_name'])).filter((k): k is string => !!k))]
-    const prefetch = await prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys)
+    const [prefetch, criticalityModel] = await Promise.all([
+      prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys),
+      tenantCriticalityModel(db, tenantId),
+    ])
 
     // LLM context (existing device_type/hostname/owner per IP) — built from the
     // prefetch, no extra queries. Authoritative identity match happens via planIngest.
@@ -978,7 +981,7 @@ Example:
 
     const planHosts = enhancedHosts.map(prepareHost)
     // Resolve the entire batch in memory against the prefetched candidates.
-    const plan = planIngest(planHosts, prefetch)
+    const plan = planIngest(planHosts, prefetch, { criticalityModel })
     for (const ph of plan.perHost) {
       if (ph.possibleDuplicateOf) {
         console.log(`identity: possible_duplicate hint ip=${ph.ip} rule=${ph.rule} relatedAsset=${ph.possibleDuplicateOf}`)
@@ -1013,7 +1016,7 @@ Example:
         const dt = resolveIngestDeviceType(existing ? { deviceType: existing.deviceType, deviceTypeSource: existing.deviceTypeSource ?? null } : null, p.deviceType, p.isPassive)
         const resolvedDeviceType = dt.deviceType
         const exposed = existing?.internetFacingOverride ?? p.internetFacing
-        const crit = computeCriticality({ deviceType: resolvedDeviceType, isInternetFacing: exposed, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged }).score
+        const crit = scoreAsset({ deviceType: resolvedDeviceType, deviceTypeSource: dt.deviceTypeSource, isInternetFacing: exposed, internetFacingOverride: existing?.internetFacingOverride ?? null, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged, agentRole: agentRoleOf(existing?.endpointInventory) }, criticalityModel)
         const baselineForUpdate = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? existing?.hostname ?? null, macAddress: mac ?? existing?.macAddress ?? null, isInternetFacing: exposed, deviceType: resolvedDeviceType, autoSet: true, portsKnown: !p.isPassive })
         await db.update(assets).set({
           ipAddress: p.ip,
@@ -1026,6 +1029,7 @@ Example:
           deviceTypeSource: dt.deviceTypeSource,
           isInternetFacing: exposed,
           criticalityScore: crit,
+          criticalityModel,
           source: p.isPassive ? 'scan_passive' : 'scan_active',
           lastScanned: new Date(), updatedAt: new Date(),
           ...(existing?.baselineState ? {} : { baselineState: baselineForUpdate }),
@@ -1035,10 +1039,10 @@ Example:
       }
       const newAssetId = crypto.randomUUID()
       const { merged } = mergeOsInfo(null, p.observedOsInfo, p.isPassive)
-      const crit = computeCriticality({ deviceType: p.deviceType, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }).score
+      const crit = scoreAsset({ deviceType: p.deviceType, deviceTypeSource: 'auto', isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }, criticalityModel)
       const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: p.deviceType, autoSet: true, portsKnown: !p.isPassive })
       const now = new Date()
-      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, deviceTypeSource: 'auto' as const, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
+      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, deviceTypeSource: 'auto' as const, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, criticalityModel, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
       const addressValues = { assetId: newAssetId, tenantId: tenantId ?? null, networkKey, ipAddress: p.ip, macAddress: mac, firstSeen: now, lastSeen: now }
       if (resolution.endAddressId) {
         await db.batch([

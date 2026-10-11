@@ -27,6 +27,8 @@ const GAP_LABELS = {
   unidentified: 'Unidentified devices (no type, vendor or hostname)',
   stale:        'Not seen by a scan in 7 days',
   no_sbom:      'Servers & PCs without an SBOM',
+  no_agent:     'Servers & PCs without the EagleEye agent',
+  posture_issues: 'Machines failing an endpoint security check',
 }
 
 function readLinkFilter(sp) {
@@ -81,6 +83,7 @@ export default function InventoryPage() {
   const [adoptTarget, setAdoptTarget] = useState(null)   // { asset, matches, reasons }
   const [rescoring, setRescoring] = useState(false)
   const [rescoringId, setRescoringId] = useState(null)
+  const [scoringModel, setScoringModel] = useState(null)   // tenant's criticality formula (1 | 2)
   const [graphBlastId, setGraphBlastId] = useState(null)
 
   // Follow in-app links that change the query while this page is open.
@@ -151,7 +154,15 @@ export default function InventoryPage() {
     } catch { setDupGroups([]) }
   }, [tenantFilter, isBusinessOwner])
 
+  const loadScoring = useCallback(async () => {
+    try {
+      const res = await client.get('/assets/scoring', { params: tenantFilter ? { tenant_id: tenantFilter } : {} })
+      setScoringModel(res.data.model ?? 1)
+    } catch { setScoringModel(null) }
+  }, [tenantFilter])
+
   useEffect(() => { loadAssets() }, [loadAssets])
+  useEffect(() => { loadScoring() }, [loadScoring])
   useEffect(() => { loadScopeCounts() }, [loadScopeCounts])
   useEffect(() => { loadDuplicates() }, [loadDuplicates])
 
@@ -253,6 +264,30 @@ export default function InventoryPage() {
     }
   }
 
+  // Switch the tenant's criticality formula; every asset is rescored with it.
+  const handleSwitchModel = async (next) => {
+    const msg = next === 2
+      ? 'Switch criticality to formula v2 for every asset?\n\n'
+        + '• v2 scores importance only: an asset without an owner no longer gets +1, and a domain controller gets +2.\n'
+        + '• Each factor shows its source (agent, scan, analyst, hostname) and a confidence.\n'
+        + '• All assets are rescored now. You can switch back to v1 at any time.'
+      : 'Switch criticality back to formula v1 for every asset? All assets are rescored now.'
+    if (!confirm(msg)) return
+    setRescoring(true)
+    try {
+      const qs = new URLSearchParams({ model: String(next) })
+      if (tenantFilter) qs.set('tenant_id', tenantFilter)
+      const res = await client.post(`/assets/rescore?${qs.toString()}`)
+      setNotice({ text: res.data.message })
+      setScoringModel(res.data.model)
+      await loadAssets()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Could not switch the formula')
+    } finally {
+      setRescoring(false)
+    }
+  }
+
   const clearFilters = () => {
     setSearch(''); setDeviceTypeFilter(''); setSourceFilter(''); setPage(1)
     if (linkFilter) clearLinkFilter()
@@ -303,6 +338,19 @@ export default function InventoryPage() {
                 ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 : <Zap className="w-4 h-4 text-yellow-400" />}
               Rescore All
+            </button>
+          )}
+          {scope !== 'any' && activeTab === 'inventory' && !isReadOnly && scoringModel != null && (
+            <button
+              onClick={() => handleSwitchModel(scoringModel === 2 ? 1 : 2)}
+              disabled={rescoring}
+              title={scoringModel === 2
+                ? 'Criticality uses formula v2 (importance only, with sources). Click to go back to v1.'
+                : 'Criticality uses formula v1. Formula v2 is shown as a preview on each asset page; click to switch.'}
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              Formula v{scoringModel}
+              <span className="text-dark-400">· switch to v{scoringModel === 2 ? 1 : 2}</span>
             </button>
           )}
           {scope === 'mine' && activeTab === 'inventory' && !isReadOnly && (

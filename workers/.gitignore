@@ -4,3 +4,4 @@ node_modules/
 wrangler.test.toml
 .env.staging
 .env.production
+.*.cjs

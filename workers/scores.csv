@@ -1,0 +1,12 @@
+asset,ip,type,type_source,in_my_assets,v1,v2,delta,confidence,posture,v2_factors
+"192.168.100.1","192.168.100.1","network","auto","false","9","8","-1","medium","","Network device (inferred from scans) (+6) | Internet-facing (inferred: it is the gateway) (+2)"
+"192.168.100.149","192.168.100.149","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.182","192.168.100.182","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.186","192.168.100.186","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.190","192.168.100.190","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.21","192.168.100.21","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.224","192.168.100.224","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.235","192.168.100.235","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"192.168.100.85","192.168.100.85","unknown","auto","false","4","3","-1","low","","Unidentified device (type not identified) (+3)"
+"HMSB-P1SV010507","192.168.100.165","workstation","auto","false","4","3","-1","medium","","Workstation (inferred from scans) (+3)"
+"JoJochaw","192.168.100.71","workstation","agent","false","5","4","-1","high","100","Workstation (confirmed by agent) (+3) | Reachable high-risk service SMB 445 (seen by scan) (+1)"

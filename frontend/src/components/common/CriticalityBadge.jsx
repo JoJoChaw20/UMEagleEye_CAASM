@@ -111,6 +111,7 @@ export default function CriticalityBadge({ score, assetId, footer = 'slider' }) 
               <>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-dark-300">
                   <span>Base (device type)</span><span className="text-right text-dark-100">+{bd?.base}</span>
+                  {bd?.role > 0 && <><span>Role</span><span className="text-right text-orange-400">+{bd.role}</span></>}
                   {bd?.internetFacing > 0 && <><span>Internet facing</span><span className="text-right text-yellow-400">+{bd.internetFacing}</span></>}
                   {bd?.portRisk > 0 && <><span>Port risk</span><span className="text-right text-orange-400">+{bd.portRisk}</span></>}
                   {bd?.hostnameHints != null && bd.hostnameHints !== 0 && <><span>Hostname hints</span><span className={`text-right ${bd.hostnameHints > 0 ? 'text-orange-400' : 'text-green-400'}`}>{bd.hostnameHints > 0 ? '+' : ''}{bd.hostnameHints}</span></>}

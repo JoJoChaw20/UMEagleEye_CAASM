@@ -5,9 +5,9 @@ import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, t
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
-import { rescoreAssets, scoreAsset } from '../lib/rescore'
-import { computeCriticality } from '../lib/criticality'
+import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, tenants } from '../db/schema'
+import { CRITICALITY_MODELS, agentRoleOf, asModel, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf, tenantCriticalityModel } from '../lib/rescore'
+import { postureColumns } from '../lib/endpointPosture'
 import { normalizeMac } from '../lib/mac'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
@@ -206,6 +206,12 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     } else if (gap === 'no_sbom') {
       conditions.push(sql`${assets.deviceType} IN ('server', 'workstation')
         AND NOT EXISTS (SELECT 1 FROM ${sboms} WHERE ${sboms.assetId} = ${assets.assetId})`)
+    } else if (gap === 'no_agent') {
+      // Servers and PCs no agent reports for: their posture is unassessed.
+      conditions.push(sql`${assets.deviceType} IN ('server', 'workstation') AND ${assets.endpointInventory} IS NULL`)
+    } else if (gap === 'posture_issues') {
+      // At least one failed endpoint security check.
+      conditions.push(sql`${assets.postureChecks} @> '[{"state":"bad"}]'::jsonb`)
     }
 
     // My Assets membership filter (new canonical param).
@@ -276,6 +282,19 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   } catch (err) {
     console.error('assets GET / error:', err)
     return c.json({ detail: 'Failed to fetch assets' }, 500)
+  }
+})
+
+// ── GET /scoring ─── the tenant's criticality formula ──
+app.get('/scoring', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') ?? null) : (user.tenantId ?? null)
+    return c.json({ model: await tenantCriticalityModel(db, tenantId), models: CRITICALITY_MODELS, tenant_id: tenantId })
+  } catch (err) {
+    console.error('assets GET /scoring error:', err)
+    return c.json({ detail: 'Failed to read scoring model' }, 500)
   }
 })
 
@@ -524,7 +543,7 @@ app.delete('/:assetId/inventory', authMiddleware, requireRoles(...WRITE_ROLES), 
     await db.batch([
       db.delete(assetSoftware).where(eq(assetSoftware.assetId, assetId)),
       db.delete(assetIdentifiers).where(eq(assetIdentifiers.assetId, assetId)),
-      db.update(assets).set({ endpointInventory: null, inventoryCollectedAt: null, updatedAt: new Date() }).where(eq(assets.assetId, assetId)),
+      db.update(assets).set({ endpointInventory: null, inventoryCollectedAt: null, ...postureColumns(null, null), updatedAt: new Date() }).where(eq(assets.assetId, assetId)),
       db.insert(auditLogs).values({
         userId: user.userId, tenantId: asset.tenantId, actionType: 'asset.inventory_clear', targetEntity: assetId,
         previousState: { inventory_collected_at: asset.inventoryCollectedAt, software_count: softwareRemoved },
@@ -626,9 +645,16 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
 
     // Preserve criticality from scan when device type is unchanged; recompute only
     // when the type improves. Scored from the asset's own facts (no topology).
-    const computedScore = (existing?.criticalityScore && deviceType === existing.deviceType)
-      ? existing.criticalityScore
-      : scoreAsset({ deviceType, isInternetFacing, hostname, osInfo, owner: body.owner ?? existing?.owner })
+    const model = await tenantCriticalityModel(db, targetTenantId)
+    const keepScore = !!existing?.criticalityScore && deviceType === existing.deviceType
+    const computedScore = keepScore
+      ? existing!.criticalityScore
+      : scoreAsset({
+          deviceType, deviceTypeSource: existingDeviceKnown ? existing!.deviceTypeSource : 'manual',
+          isInternetFacing, internetFacingOverride: existing?.internetFacingOverride ?? null,
+          hostname, osInfo, owner: body.owner ?? existing?.owner, agentRole: agentRoleOf(existing?.endpointInventory),
+        }, model)
+    const computedModel = keepScore ? existing!.criticalityModel : model
 
     if (existing) {
       // Adopt into My Assets. Leave `source` (last observation method) untouched —
@@ -636,6 +662,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       const updateData: Record<string, unknown> = {
         inMyAssets: true,
         criticalityScore: computedScore,
+        criticalityModel: computedModel,
         updatedAt: new Date(),
       }
       if (body.hostname != null) updateData.hostname = body.hostname
@@ -682,6 +709,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
         hardwareVendor: body.hardware_vendor,
         osInfo,
         criticalityScore: computedScore,
+        criticalityModel: computedModel,
         isInternetFacing,
         baselineState: buildManualBaseline({ hostname: body.hostname, macAddress: normalizedMac, deviceType, isInternetFacing, osVersion: extractOsVersion(osInfo) }),
         source: body.source ?? 'manual',
@@ -777,13 +805,18 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
       updateData.criticalityScore = body.criticality_score
     } else {
       const mergedOsInfo = (body.os_info ?? existing.osInfo ?? {}) as Record<string, unknown>
+      const model = await tenantCriticalityModel(db, existing.tenantId)
       updateData.criticalityScore = scoreAsset({
         deviceType: body.device_type ?? existing.deviceType,
+        deviceTypeSource: updateData.deviceTypeSource ?? existing.deviceTypeSource,
         isInternetFacing: updateData.isInternetFacing ?? existing.isInternetFacing,
+        internetFacingOverride: updateData.internetFacingOverride !== undefined ? updateData.internetFacingOverride : existing.internetFacingOverride,
         hostname: body.hostname ?? existing.hostname,
         osInfo: mergedOsInfo,
         owner: body.owner !== undefined ? body.owner : existing.owner,
-      })
+        agentRole: agentRoleOf(existing.endpointInventory),
+      }, model)
+      updateData.criticalityModel = model
     }
 
     // Optionally merge the edited drift-tracked fields into the baseline (same
@@ -916,6 +949,9 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
 })
 
 // ── POST /rescore ─── Bulk re-score tenant assets (scope=my_assets optional) ──
+// ?model=1|2 also switches the tenant's criticality formula (all its assets are then
+// rescored with it, whatever the scope). Without it, the tenant's current model is used.
+// Endpoint posture is refreshed from stored inventories in the same pass.
 app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -929,15 +965,36 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
       ? (c.req.query('tenant_id') ?? user.tenantId ?? null)
       : user.tenantId!
 
+    const modelParam = c.req.query('model')
+    if (modelParam !== undefined) {
+      if (!CRITICALITY_MODELS.includes(Number(modelParam) as 1 | 2)) return c.json({ detail: 'model must be 1 or 2' }, 400)
+      if (!tenantId) return c.json({ detail: 'Choose a tenant to switch its scoring model' }, 400)
+      const model = asModel(modelParam)
+      const [before] = await db.select({ model: tenants.criticalityModel }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+      if (!before) return c.json({ detail: 'Tenant not found' }, 404)
+      await db.batch([
+        db.update(tenants).set({ criticalityModel: model }).where(eq(tenants.tenantId, tenantId)),
+        db.insert(auditLogs).values({
+          userId: user.userId, tenantId, actionType: 'tenant.criticality_model', targetEntity: tenantId,
+          previousState: { criticality_model: before.model }, newState: { criticality_model: model },
+        }),
+      ])
+      const { scanned, changes } = await rescoreAssets(db, tenantId, undefined, { model })
+      return c.json({
+        model, previous_model: asModel(before.model), scanned, changed: changes.length, updated: changes.length,
+        message: `Criticality now uses formula v${model}: rescored ${scanned} assets, ${changes.length} changed`,
+      })
+    }
+
     // scope=my_assets / scope=discovered restrict by in_my_assets (same query count).
     const myAssetsOnly = c.req.query('scope') === 'my_assets'
     const discoveredOnly = c.req.query('scope') === 'discovered'
-    const { scanned, changes } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly, discoveredOnly })
+    const { scanned, changes, model } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly, discoveredOnly })
     const changed = changes.length
     const noun = myAssetsOnly ? 'My Assets' : discoveredOnly ? 'discovered assets' : 'assets'
     // Make the zero case explicit so "0 changed" doesn't read like a failure.
     const suffix = changed === 0 ? ' (scores were already up to date)' : ''
-    return c.json({ updated: changed, scanned, changed, message: `Rescored ${scanned} ${noun}, ${changed} changed${suffix}` })
+    return c.json({ updated: changed, scanned, changed, model, message: `Rescored ${scanned} ${noun}, ${changed} changed${suffix}` })
   } catch (err) {
     console.error('assets POST /rescore error:', err)
     return c.json({ detail: 'Failed to rescore assets' }, 500)
@@ -945,6 +1002,8 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
 })
 
 // ── GET /:assetId/score ─── Score breakdown for one asset ─────────
+// The tenant's active formula first (score, factors, breakdown), plus both formulas
+// side by side (v1, v2) so the change can be reviewed before switching.
 app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -957,15 +1016,12 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
-    const result = computeCriticality({
-      deviceType: asset.deviceType,
-      isInternetFacing: asset.isInternetFacing,
-      hostname: asset.hostname ?? undefined,
-      owner: asset.owner ?? undefined,
-      osInfo: (asset.osInfo ?? {}) as Record<string, unknown>,
-    })
-
-    return c.json({ asset_id: assetId, ...result })
+    const model = await tenantCriticalityModel(db, asset.tenantId)
+    const input = scoreInputOf(asset)
+    const v1 = scoreDetail(input, 1)
+    const v2 = scoreDetail(input, 2)
+    const active = model === 2 ? v2 : v1
+    return c.json({ asset_id: assetId, model, stored_model: asset.criticalityModel, ...active, v1, v2 })
   } catch (err) {
     console.error('assets GET /:assetId/score error:', err)
     return c.json({ detail: 'Failed to compute score' }, 500)
@@ -973,9 +1029,9 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
 })
 
 // ── POST /:assetId/rescore ─── recompute ONE asset's criticality ──
-// Uses the same scorer as the bulk run, so per-asset == bulk. Scored from the
-// asset's own facts (no topology). Writes only when the score changed.
-// Subrequests: 1 (asset) + 1 (update, only if changed). Role: WRITE_ROLES.
+// Uses the same scorer and the tenant's model like the bulk run, so per-asset == bulk.
+// Scored from the asset's own facts (no topology). Writes only when something changed.
+// Subrequests: 1 (asset) + 1 (tenant model) + 1 (update, only if changed). Role: WRITE_ROLES.
 app.post('/:assetId/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -983,33 +1039,16 @@ app.post('/:assetId/rescore', authMiddleware, requireRoles(...WRITE_ROLES), asyn
     const { assetId } = c.req.param()
     if (!z.string().uuid().safeParse(assetId).success) return c.json({ detail: 'Invalid asset id' }, 400)
 
-    const [row] = await db
-      .select({
-        tenantId: assets.tenantId, deviceType: assets.deviceType, isInternetFacing: assets.isInternetFacing,
-        hostname: assets.hostname, osInfo: assets.osInfo, criticalityScore: assets.criticalityScore,
-        owner: assets.owner,
-      })
-      .from(assets)
-      .where(eq(assets.assetId, assetId))
-      .limit(1)
+    const [row] = await db.select().from(assets).where(eq(assets.assetId, assetId)).limit(1)
     if (!row) return c.json({ detail: 'Asset not found' }, 404)
     if (user.role !== 'superadmin' && user.tenantId && row.tenantId !== user.tenantId) {
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
     const previous = row.criticalityScore
-    const current = scoreAsset({
-      deviceType: row.deviceType,
-      isInternetFacing: row.isInternetFacing,
-      hostname: row.hostname,
-      osInfo: row.osInfo as Record<string, unknown> | null,
-      owner: row.owner,
-    })
-    const changed = current !== previous
-    if (changed) {
-      await db.update(assets).set({ criticalityScore: current, updatedAt: new Date() }).where(eq(assets.assetId, assetId))
-    }
-    return c.json({ changed, previous, current })
+    const { changes, model } = await rescoreAssets(db, row.tenantId, [assetId])
+    const current = changes[0]?.score ?? previous
+    return c.json({ changed: current !== previous, previous, current, model })
   } catch (err) {
     console.error('assets POST /:assetId/rescore error:', err)
     return c.json({ detail: 'Failed to rescore asset' }, 500)
@@ -1047,6 +1086,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     const targetTenantId = user.role === 'superadmin'
       ? (c.req.query('tenant_id') || user.tenantId || null)
       : (user.tenantId ?? null)
+    const csvModel = await tenantCriticalityModel(db, targetTenantId)
 
     let formData: FormData
     try {
@@ -1126,11 +1166,12 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
 
       const criticalityScore = scoreAsset({
         deviceType,
+        deviceTypeSource: 'manual',
         isInternetFacing,
         hostname: row['hostname'] || undefined,
         osInfo,
         owner: row['owner'] || undefined,
-      })
+      }, csvModel)
 
       parsed.push({
         rowNum: i + 1,
@@ -1190,6 +1231,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           ...(r.hardwareVendor ? { hardwareVendor: r.hardwareVendor } : {}),
           ...(Object.keys(r.osInfo).length > 0 ? { osInfo: r.osInfo } : {}),
           criticalityScore: r.criticalityScore,
+          criticalityModel: csvModel,
           isInternetFacing: r.isInternetFacing,
           inMyAssets: true,          // adopt the matched asset; leave source alone
           // Seed a baseline only if the adopted asset has none — never overwrite.
@@ -1216,7 +1258,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
           stmts.push(db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, decision.endAddressId)))
           const w = workAddrs.find(x => !x.ended && x.addressId === decision.endAddressId); if (w) w.ended = true
         }
-        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, deviceTypeSource: 'manual' as const, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, isInternetFacing: r.isInternetFacing, baselineState: buildManualBaseline({ hostname: r.hostname, macAddress: r.macAddress, deviceType: r.deviceType, isInternetFacing: r.isInternetFacing, osVersion: extractOsVersion(r.osInfo) }), source: 'manual' as const, inMyAssets: true, tenantId: targetTenantId }))
+        stmts.push(db.insert(assets).values({ assetId: newAssetId, ipAddress: r.ipAddress, hostname: r.hostname ?? null, macAddress: r.macAddress ?? null, owner: r.owner, deviceType: r.deviceType, deviceTypeSource: 'manual' as const, hardwareVendor: r.hardwareVendor, osInfo: Object.keys(r.osInfo).length > 0 ? r.osInfo : {}, criticalityScore: r.criticalityScore, criticalityModel: csvModel, isInternetFacing: r.isInternetFacing, baselineState: buildManualBaseline({ hostname: r.hostname, macAddress: r.macAddress, deviceType: r.deviceType, isInternetFacing: r.isInternetFacing, osVersion: extractOsVersion(r.osInfo) }), source: 'manual' as const, inMyAssets: true, tenantId: targetTenantId }))
         const nid = crypto.randomUUID()
         stmts.push(db.insert(assetAddresses).values({ addressId: nid, assetId: newAssetId, tenantId: targetTenantId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, firstSeen: now, lastSeen: now }))
         workAddrs.unshift({ addressId: nid, assetId: newAssetId, networkKey: null, ipAddress: r.ipAddress, macAddress: r.macAddress ?? null, assetDeviceType: r.deviceType, ended: false })

@@ -17,6 +17,7 @@ import { priorityExpr } from '../lib/priority'
 import { RISKY_PORTS, compareVersions } from '../lib/exposure'
 import { CONCERN_IDS, concernCondition, concernCountColumns } from '../lib/concerns'
 import { extractPorts } from '../services/drift'
+import { summarizeCoverage, type CoverageAsset } from '../lib/coverage'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -57,6 +58,7 @@ app.get('/summary', authMiddleware, async (c) => {
           criticality: assets.criticalityScore, internetFacing: assets.isInternetFacing,
           internetFacingOverride: assets.internetFacingOverride,
           lastScanned: assets.lastScanned, createdAt: assets.createdAt, source: assets.source,
+          inventoryAt: assets.inventoryCollectedAt, postureScore: assets.postureScore, postureChecks: assets.postureChecks,
         })
         .from(assets).where(assetScope),
       db.selectDistinct({ assetId: sboms.assetId })
@@ -311,6 +313,11 @@ app.get('/summary', authMiddleware, async (c) => {
         identity_changes_open: identityRows[0]?.count ?? 0,
         stale_after_days: ASSET_STALE_DAYS,
       },
+      // Agent coverage and endpoint posture, always with how many assets they cover.
+      coverage: summarizeCoverage(assetRows.map((a): CoverageAsset => ({
+        asset_id: a.assetId, hostname: a.hostname, ip: a.ip, device_type: a.deviceType, criticality: a.criticality,
+        inventory_at: a.inventoryAt, posture_score: a.postureScore, posture_checks: a.postureChecks,
+      }))),
     })
   } catch (err) {
     console.error('dashboard GET /summary error:', err)

@@ -36,6 +36,13 @@
       "when": 1791725796289,
       "tag": "0004_machine_identifiers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791728926542,
+      "tag": "0005_scoring_v2_posture",
+      "breakpoints": true
     }
   ]
 }

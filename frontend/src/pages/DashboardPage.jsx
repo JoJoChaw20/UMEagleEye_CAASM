@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   Shield, AlertTriangle, TrendingUp, TrendingDown, Globe, Radio, Server,
   ChevronRight, Network, HelpCircle, Clock, PackageSearch, Fingerprint, Sparkles, Minus,
-  Target, Wrench, ShieldAlert, ShieldCheck, ArrowRight,
+  Target, Wrench, ShieldAlert, ShieldCheck, ArrowRight, MonitorSmartphone,
 } from 'lucide-react'
 import { AreaChart, Area, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts'
 import client from '../api/client'
@@ -72,6 +72,9 @@ export default function DashboardPage() {
   const col = summary?.collection
   const surface = summary?.attack_surface
   const hygiene = summary?.hygiene
+  const coverage = summary?.coverage
+  const openInventory = (q) => navigate(`/inventory?${new URLSearchParams(q).toString()}`)
+  const inventoryAsset = (a) => navigate(`/inventory/${a.asset_id}`)
   const openAlerts = (q) => navigate(`/alerts?${new URLSearchParams(q).toString()}`)
   const openAssets = (q) => navigate(`/assets?${new URLSearchParams(q).toString()}`)
   // Exact-asset links (never a text search: "192.168.0.1" would also match .10–.19)
@@ -350,6 +353,22 @@ export default function DashboardPage() {
             action="Run an SBOM scan on them"
             row={a => [a.hostname || a.ip, a.device_type]}
             onOpen={() => openAssets({ gap: 'no_sbom' })} onItem={assetPage} />
+        </div>
+      </section>
+
+      {/* ── Agent coverage + endpoint posture (each figure says what it covers) ── */}
+      <section>
+        <SectionTitle title="Endpoint coverage" hint="What the EagleEye agent on each machine reports. Machines without it are counted as unassessed, never as healthy." />
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <HygieneCard icon={MonitorSmartphone} title="Servers & PCs without the agent" data={coverage?.no_agent} loading={loading}
+            why={coverage
+              ? `${coverage.with_agent} machine${coverage.with_agent === 1 ? ' reports' : 's report'} through the agent. ${coverage.no_agent.count === 1 ? 'This one cannot' : `These ${coverage.no_agent.count} cannot`} be assessed: their patches, antivirus and encryption are unknown.`
+              : 'Their patches, antivirus and encryption are unknown.'}
+            action="Install the EagleEye agent on them"
+            row={a => [a.hostname || a.ip, `criticality ${a.criticality}`]}
+            onOpen={() => openInventory({ gap: 'no_agent' })} onItem={inventoryAsset} />
+          <EndpointPosture coverage={coverage} loading={loading}
+            onFailing={() => openInventory({ gap: 'posture_issues' })} onAsset={inventoryAsset} />
         </div>
       </section>
     </div>
@@ -729,6 +748,56 @@ function NetworkDevices({ surface, onAsset, onAlerts }) {
         </Link>
       )}
     </>
+  )
+}
+
+// Average posture of the machines that report it, always next to how many do and don't.
+function EndpointPosture({ coverage, loading, onFailing, onAsset }) {
+  const p = coverage?.posture
+  const avg = p?.average
+  const color = avg == null ? 'text-dark-400' : avg >= 80 ? 'text-emerald-400' : avg >= 50 ? 'text-yellow-400' : 'text-red-400'
+  return (
+    <div className="glass-card p-5 xl:col-span-2">
+      <PanelHead icon={ShieldCheck} title="Endpoint posture"
+        sub="Firewall, antivirus, encryption, updates and other checks read by the agent. Kept apart from criticality." />
+      {loading || !coverage ? <Skeleton rows={4} /> : (
+        <div className="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-5">
+          <div className="rounded-lg bg-dark-900/50 border border-dark-700/60 px-5 py-4 min-w-[180px]">
+            <p className={`text-4xl font-bold ${color}`}>{avg ?? '—'}<span className="text-base text-dark-500">{avg != null ? '/100' : ''}</span></p>
+            <p className="text-xs text-dark-300 mt-1">across <span className="font-semibold text-dark-100">{p.assessed}</span> assessed machine{p.assessed === 1 ? '' : 's'}</p>
+            <p className="text-xs text-dark-400"><span className="font-semibold text-dark-200">{p.unassessed}</span> unassessed (no agent or too few checks readable)</p>
+            {coverage.not_applicable > 0 && <p className="text-[11px] text-dark-500 mt-1">{coverage.not_applicable} network/IoT devices: not applicable</p>}
+          </div>
+          <div className="min-w-0">
+            {p.failing.length === 0 ? (
+              <Empty text={p.assessed ? 'No failed checks on the assessed machines.' : 'No machine reports its posture yet.'} />
+            ) : (
+              <>
+                <ul className="divide-y divide-dark-700/50 border-y border-dark-700/50">
+                  {p.failing.slice(0, 6).map(f => (
+                    <li key={f.id} className="flex items-center justify-between gap-3 py-1.5 text-xs">
+                      <span className="text-dark-200">{f.label}</span>
+                      <span className="flex items-center gap-2">
+                        {f.bad > 0 && <span className="text-red-400">{f.bad} at risk</span>}
+                        {f.warn > 0 && <span className="text-yellow-400">{f.warn} to review</span>}
+                        <button onClick={() => onAsset(f.assets[0])} className="text-dark-400 hover:text-eagle-300 truncate max-w-[140px]" title="Open the first machine">
+                          {f.assets[0]?.hostname || f.assets[0]?.ip}{f.bad + f.warn > 1 ? ` +${f.bad + f.warn - 1}` : ''}
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {p.machines_with_failures > 0 && (
+                  <button onClick={onFailing} className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+                    {p.machines_with_failures} machine{p.machines_with_failures === 1 ? '' : 's'} with a failed check <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
