@@ -578,6 +578,103 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
   }
 })
 
+// Marks an agent's active scans that are still 'running' as failed. Called when
+// the agent says it is not running anything (it just started, or it is idle and
+// starting a new scan), so those records can only be left over from a run that
+// was cut short. Results that still arrive later complete the record as usual.
+async function failInterruptedScans(db: ReturnType<typeof getDb>, agentId: string): Promise<number> {
+  const rows = await db.update(scanResults)
+    .set({
+      status: 'failed',
+      completedAt: new Date(),
+      failureReason: 'Interrupted: the agent was closed or restarted before the scan finished',
+    })
+    .where(and(
+      eq(scanResults.agentId, agentId),
+      eq(scanResults.scanType, 'active'),
+      eq(scanResults.status, 'running'),
+    ))
+    .returning({ scanId: scanResults.scanId })
+  return rows.length
+}
+
+async function authenticateAgent(c: { req: { header(name: string): string | undefined } }, db: ReturnType<typeof getDb>) {
+  const authHeader = c.req.header('Authorization')
+  const agentId = c.req.header('X-Agent-ID')
+  if (!authHeader?.startsWith('Bearer ') || !agentId) return null
+  const incomingKeyHash = await sha256Hex(authHeader.slice(7))
+  const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+  return agent && incomingKeyHash === agent.apiKeyHash ? agent : null
+}
+
+// ── POST /agent-reset ── the agent (re)started and is running nothing ────────
+app.post('/agent-reset', async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const agent = await authenticateAgent(c, db)
+    if (!agent) return c.json({ detail: 'Invalid credentials' }, 401)
+    const interrupted = await failInterruptedScans(db, agent.agentId)
+    return c.json({ interrupted })
+  } catch (err) {
+    console.error('scans POST /agent-reset error:', err)
+    return c.json({ detail: 'Failed to reset scans' }, 500)
+  }
+})
+
+// ── POST /agent-start ── the agent starts an active scan itself ──────────────
+// Used by the agent app's local schedules and its "Scan now" button. Creates the
+// scan record already 'running' (the agent starts at once), in the agent's tenant,
+// so the results ingest exactly like a dashboard-triggered scan.
+const agentStartSchema = z.object({
+  subnet: z.string().refine(
+    (v) => isValidSubnet(v) && Number(v.trim().split('/')[1] ?? 32) >= 16,
+    { message: 'subnet must be an IPv4 address or a CIDR range no larger than /16' },
+  ),
+  trigger: z.enum(['schedule', 'manual']),
+})
+
+app.post('/agent-start', zValidator('json', agentStartSchema, (result, c) => {
+  if (!result.success) return c.json({ detail: result.error.issues[0]?.message ?? 'Invalid request body' }, 400)
+}), async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) return c.json({ detail: 'Unauthorized' }, 401)
+    const agentId = c.req.header('X-Agent-ID')
+    if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
+
+    const db = getDb(c.env.DATABASE_URL)
+    const incomingKeyHash = await sha256Hex(authHeader.slice(7))
+    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+    if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
+
+    const { subnet, trigger } = c.req.valid('json')
+
+    // The agent runs one active scan at a time and only asks when it is idle, so
+    // any of its scans still 'running' here was interrupted (app closed or crashed).
+    await failInterruptedScans(db, agentId)
+
+    const [scan] = await db
+      .insert(scanResults)
+      .values({
+        agentId,
+        tenantId: agent.tenantId ?? null,
+        scanType: 'active',
+        subnet: subnet.trim(),
+        status: 'running',
+        hostsDiscovered: 0,
+        rawResults: [],
+      })
+      .returning({ scanId: scanResults.scanId })
+    if (!scan) return c.json({ detail: 'Failed to create scan record' }, 500)
+
+    console.log(`agent ${agentId} started scan ${scan.scanId} of ${subnet} (${trigger})`)
+    return c.json({ scan_id: scan.scanId, status: 'running' }, 201)
+  } catch (err) {
+    console.error('scans POST /agent-start error:', err)
+    return c.json({ detail: 'Failed to start scan' }, 500)
+  }
+})
+
 // ── POST /ingest ─────────────────────────────────────────────────
 const hostSchema = z.object({
   ip: z.string().min(1).max(45),

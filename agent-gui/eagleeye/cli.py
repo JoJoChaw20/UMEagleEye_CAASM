@@ -20,9 +20,11 @@ from typing import Any, Optional
 
 from . import VERSION, deps
 from .config import ConfigError, Settings, default_config_path, load_settings, save_settings
+from .keychain import Keychain
 from .passive import PassiveSuite
 from .pipeline import Pipeline, PipelineContext
-from .service import AgentService, log_event
+from .schedule import Schedule
+from .service import SCHEDULES_ENABLED, AgentService, log_event
 from .stages import (
     InventoryDryRunStage, LocalInventoryStage,
     DryRunUploadStage, NmapScanStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage,
@@ -91,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     show = cfg_sub.add_parser("show", help="print the effective settings (secrets masked)")
     _add_settings_flags(show)
 
+    gui = sub.add_parser("gui", help="open the desktop app (needs PySide6)")
+    gui.add_argument("--minimized", action="store_true", help="start in the system tray")
+
     sub.add_parser("version", help="print the version")
     return parser
 
@@ -143,7 +148,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     for d in missing:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
 
-    service = AgentService(settings)
+    service = AgentService(settings, state_path=default_config_path().with_name("state.json"))
+    if SCHEDULES_ENABLED:
+        for sched in settings.schedules:
+            log.info("Schedule     : %s %s", sched.get("subnet"), Schedule.from_dict(sched).describe())
     try:
         service.run_forever()
     except KeyboardInterrupt:
@@ -255,8 +263,13 @@ def cmd_config(args: argparse.Namespace) -> int:
         if problems:
             print("\nNot ready:", *[f"  - {p}" for p in problems], sep="\n")
         return 0
-    path = save_settings(settings, args.config)
+    keychain = Keychain()
+    path = save_settings(settings, args.config, keychain=keychain)
     print(f"Config written to {path}")
+    if keychain.available():
+        print("Secrets (API key, SNMP and Fingerbank keys) are stored in the OS credential store, not in the file.")
+    else:
+        print("The OS credential store is not available, so secrets are stored in the file. Keep it private.")
     problems = settings.problems()
     if problems:
         print("Still missing:", *[f"  - {p}" for p in problems], sep="\n")
@@ -264,6 +277,10 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        # Piped output on Windows uses a legacy code page; never crash on a product name.
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -278,6 +295,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "version":
         print(VERSION)
         return 0
+    if args.command == "gui":
+        try:
+            from .gui import main as gui_main
+        except ImportError as exc:
+            print(f"The desktop app needs PySide6 (pip install PySide6): {exc}", file=sys.stderr)
+            return 1
+        return gui_main(["--minimized"] if args.minimized else [])
     if args.command is None:
         parser.print_help()
         return 0

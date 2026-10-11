@@ -33,6 +33,16 @@ class FakeClient:
     def mark_scan_failed(self, scan_id, reason):
         self.failed.append((scan_id, reason))
 
+    def reset_interrupted_scans(self):
+        self.resets = getattr(self, "resets", 0) + 1
+        return 0
+
+    def start_local_scan(self, subnet, trigger):
+        self.started = getattr(self, "started", []) + [(subnet, trigger)]
+        if getattr(self, "start_error", None):
+            return None, self.start_error
+        return f"local-{len(self.started)}", None
+
     def ingest(self, scan_type, hosts, scan_id=None, network=None):
         self.ingested.append({"scan_type": scan_type, "hosts": hosts, "scan_id": scan_id, "network": network})
         return IngestResult(True, len(hosts), len(hosts)) if self.ingest_ok else IngestResult(False, error="server rejected the results (HTTP 400)")
@@ -208,3 +218,137 @@ def test_throttled_limits_calls():
     for _ in range(50):
         check()
     assert len(calls) == 1
+
+
+# ── scans started on this machine (GUI "Scan now" and local schedules) ──
+
+def test_scan_now_request_creates_a_server_record_and_uploads_to_it(fake_scan):
+    client = FakeClient()
+    svc = service(client)
+    svc.request_scan("192.168.1.0/24")
+    svc.poll_once()
+    wait_idle(svc)
+    assert client.started == [("192.168.1.0/24", "manual")]
+    assert client.ingested[0]["scan_id"] == "local-1"
+    assert client.running == []                       # the record is created already running
+    rec = svc.history[0]
+    assert (rec.pipeline, rec.trigger, rec.status, rec.hosts) == ("active", "manual", "ok", 2)
+
+
+def test_scan_now_with_a_bad_target_never_reaches_the_server():
+    client = FakeClient()
+    svc = service(client)
+    svc.request_scan("10.0.0.0/8")
+    svc.poll_once()
+    assert getattr(client, "started", []) == [] and svc._active_future is None
+
+
+def test_scan_now_refused_by_the_server_is_not_run(fake_scan):
+    client = FakeClient()
+    client.start_error = "the server did not start the scan (Another active scan from this agent is still running)"
+    svc = service(client)
+    svc.request_scan("192.168.1.0/24")
+    svc.poll_once()
+    assert svc._active_future is None and client.ingested == []
+
+
+def test_inventory_request_runs_even_between_intervals(monkeypatch):
+    calls = []
+    client = FakeClient()
+    svc = service(client, inventory=True)
+    monkeypatch.setattr(svc, "run_inventory", lambda trigger="auto": calls.append(trigger))
+    svc._last_inventory = time.time()                 # not due yet
+    svc.request_inventory()
+    svc.poll_once()
+    deadline = time.time() + 5
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+    assert calls == ["manual"]
+
+
+def test_inventory_request_is_ignored_when_inventory_is_off(monkeypatch):
+    svc = service(FakeClient(), inventory=False)
+    svc.request_inventory()
+    svc.poll_once()
+    assert svc._inventory_future is None
+
+
+def _sched_service(client, tmp_path, **sched):
+    raw = {"id": "s1", "subnet": "192.168.1.0/24", "mode": "interval", "hours": 1, **sched}
+    svc = AgentService(Settings(api_url="http://x", api_key="k", agent_id="a", inventory=False, schedules=[raw]),
+                       client=client, on_event=lambda e: None, state_path=tmp_path / "state.json")
+    svc.schedules_enabled = True          # schedules are off by default for now; the logic is still tested
+    return svc
+
+
+def test_schedules_are_off_by_default(fake_scan, tmp_path):
+    from datetime import datetime, timedelta
+    client = FakeClient()
+    svc = _sched_service(client, tmp_path)
+    svc.schedules_enabled = False
+    now = datetime(2026, 10, 11, 10, 0)
+    svc._maybe_schedules(now)
+    svc._maybe_schedules(now + timedelta(days=2))
+    assert getattr(client, "started", []) == []
+
+
+def test_new_schedule_does_not_fire_immediately_then_fires_when_due(fake_scan, tmp_path):
+    from datetime import datetime, timedelta
+    client = FakeClient()
+    svc = _sched_service(client, tmp_path)
+    now = datetime(2026, 10, 11, 10, 0)
+    svc._maybe_schedules(now)
+    assert getattr(client, "started", []) == []
+    svc._maybe_schedules(now + timedelta(hours=1))
+    wait_idle(svc)
+    assert client.started == [("192.168.1.0/24", "schedule")]
+    assert svc.schedule_state.last_runs["s1"] == now + timedelta(hours=1)
+    assert svc.history[0].trigger == "schedule"
+
+
+def test_unreachable_server_postpones_the_schedule_without_marking_it(tmp_path):
+    from datetime import datetime, timedelta
+    client = FakeClient()
+    client.start_error = "could not reach the server: timeout"
+    svc = _sched_service(client, tmp_path)
+    now = datetime(2026, 10, 11, 10, 0)
+    svc._maybe_schedules(now)
+    svc._maybe_schedules(now + timedelta(hours=2))
+    assert svc.schedule_state.last_runs["s1"] == now   # still due; retried later
+    svc._maybe_schedules(now + timedelta(hours=2))     # inside the retry delay: no new attempt
+    assert len(client.started) == 1
+
+
+def test_schedule_waits_while_another_active_scan_runs(tmp_path):
+    from datetime import datetime, timedelta
+    client = FakeClient()
+    svc = _sched_service(client, tmp_path)
+    now = datetime(2026, 10, 11, 10, 0)
+    svc._maybe_schedules(now)
+    svc._active_future = object()                      # a dashboard scan is running
+    svc._maybe_schedules(now + timedelta(hours=3))
+    assert getattr(client, "started", []) == []
+
+
+def test_requests_wake_the_polling_loop(fake_scan):
+    client = FakeClient()
+    svc = service(client, poll_interval=3600)
+    import threading
+    t = threading.Thread(target=svc.run_forever, daemon=True)
+    t.start()
+    time.sleep(0.2)                                    # first poll done; now waiting an hour
+    svc.request_scan("192.168.1.0/24")
+    deadline = time.time() + 5
+    while not client.ingested and time.time() < deadline:
+        time.sleep(0.02)
+    svc.stop()
+    t.join(timeout=5)
+    assert client.ingested and not t.is_alive()
+
+
+def test_start_tells_the_server_to_mark_interrupted_scans():
+    client = FakeClient()
+    svc = service(client)
+    svc.start()
+    svc.stop()
+    assert client.resets == 1

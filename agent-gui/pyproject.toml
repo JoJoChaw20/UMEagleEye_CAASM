@@ -10,15 +10,21 @@ dynamic = ["version"]
 dependencies = [
     "requests>=2.31.0",
     "python-nmap>=0.7.1",
+    "keyring>=25.0",                # secrets in the OS credential store
 ]
 
 [project.optional-dependencies]
 passive = ["scapy>=2.5.0"]          # ARP / mDNS / NetBIOS / DHCP sniffing
 snmp    = ["pysnmp>=6.2"]           # SNMPv3 polling of network devices
+gui     = ["PySide6>=6.7"]          # the desktop app
+build   = ["pyinstaller>=6.10"]     # packaging/build.ps1
 dev     = ["pytest>=8.0"]
 
 [project.scripts]
 eagleeye = "eagleeye.cli:main"
+
+[project.gui-scripts]
+eagleeye-gui = "eagleeye.gui:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "eagleeye.VERSION" }

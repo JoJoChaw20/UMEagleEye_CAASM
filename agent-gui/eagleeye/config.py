@@ -8,11 +8,17 @@ the original agent used (EAGLEEYE_API_URL, ...), so an existing setup keeps work
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Mapping, Optional
+
+from .keychain import SECRET_FIELDS, Keychain
+
+log = logging.getLogger("eagleeye.config")
+KEYCHAIN_MARKER = "secrets_in_keychain"
 
 
 class ConfigError(ValueError):
@@ -41,6 +47,11 @@ class Settings:
     # and the names of local administrator accounts (only their count is sent).
     inventory_user_software: bool = False
     inventory_admin_names: bool = False
+    # Local scan schedules (see schedule.py); the dashboard can still trigger scans too.
+    schedules: list[dict[str, Any]] = field(default_factory=list)
+    # The data-collection notice the person accepted in the GUI (0 = never shown).
+    consent_version: int = 0
+    consent_at: str = ""
 
     @property
     def inventory_options(self) -> dict[str, bool]:
@@ -64,13 +75,15 @@ class Settings:
                 out.append(f"{name} must be at least 5 seconds")
         if self.inventory and self.inventory_interval < 300:
             out.append("inventory_interval must be at least 300 seconds")
+        from .schedule import Schedule
+        for raw in self.schedules:
+            out += [f"schedule {raw.get('subnet') or '?'}: {p}" for p in Schedule.from_dict(raw).problems()]
         return out
 
     def redacted(self) -> dict[str, Any]:
         """Settings safe to print: secrets are masked down to their last 4 characters."""
-        secret = {"api_key", "fingerbank_key", "snmp_auth_key", "snmp_priv_key"}
         data = asdict(self)
-        for key in secret:
+        for key in SECRET_FIELDS:
             value = data[key]
             data[key] = "" if not value else "****" + value[-4:]
         return data
@@ -116,6 +129,11 @@ def default_config_path(env: Optional[Mapping[str, str]] = None) -> Path:
 
 def _coerce(name: str, raw: Any, default: Any) -> Any:
     try:
+        if isinstance(default, list):
+            value = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+                raise TypeError("expected a list of objects")
+            return value
         if isinstance(default, bool):
             if isinstance(raw, bool):
                 return raw
@@ -131,8 +149,10 @@ def load_settings(
     config_path: Optional[Path] = None,
     env: Optional[Mapping[str, str]] = None,
     overrides: Optional[Mapping[str, Any]] = None,
+    keychain: Optional[Keychain] = None,
 ) -> Settings:
-    """Merge defaults, config file, environment and explicit overrides (None = unset)."""
+    """Merge defaults, config file, environment and explicit overrides (None = unset).
+    Secrets of a config file saved to the OS credential store are read from there."""
     env = os.environ if env is None else env
     settings = Settings()
     defaults = {f.name: getattr(settings, f.name) for f in fields(Settings)}
@@ -148,6 +168,13 @@ def load_settings(
         for name, raw in file_data.items():
             if name in defaults:
                 setattr(settings, name, _coerce(name, raw, defaults[name]))
+        if file_data.get(KEYCHAIN_MARKER):
+            store = keychain or Keychain()
+            if not store.available():
+                log.warning("The config file keeps its secrets in the OS credential store, which is not available")
+            for name in SECRET_FIELDS:
+                if not getattr(settings, name):
+                    setattr(settings, name, store.get(name) or "")
 
     for name, var in _ENV_VARS.items():
         raw = env.get(var)
@@ -163,13 +190,20 @@ def load_settings(
     return settings
 
 
-def save_settings(settings: Settings, path: Optional[Path] = None) -> Path:
-    """Write settings as JSON. Secrets are stored in plain text, so the file is
-    restricted to the current user where the OS supports it (the GUI build will
-    move secrets into the OS keychain)."""
+def save_settings(settings: Settings, path: Optional[Path] = None, keychain: Optional[Keychain] = None) -> Path:
+    """Write settings as JSON. With a usable `keychain` the secrets go to the OS
+    credential store and the file keeps blanks; otherwise they are written in plain
+    text, and the file is restricted to the current user where the OS supports it."""
     target = path or default_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(asdict(settings), indent=2) + "\n", encoding="utf-8")
+    data: dict[str, Any] = asdict(settings)
+    if keychain is not None and keychain.available():
+        if all(keychain.set(name, data[name]) for name in SECRET_FIELDS):
+            data.update({name: "" for name in SECRET_FIELDS})
+            data[KEYCHAIN_MARKER] = True
+        else:
+            log.warning("Secrets could not be stored in the OS credential store; keeping them in %s", target)
+    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     if sys.platform != "win32":
         try:
             target.chmod(0o600)

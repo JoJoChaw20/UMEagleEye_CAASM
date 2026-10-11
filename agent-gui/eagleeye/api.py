@@ -104,6 +104,21 @@ class AgentClient:
             log.warning("Heartbeat failed: %s", exc)
             return False
 
+    def check_connection(self) -> tuple[bool, str]:
+        """Send one heartbeat and explain the outcome (for the setup screen)."""
+        payload = {"version": VERSION, "gateway_ip": local_ip()}
+        try:
+            resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
+        except requests.RequestException as exc:
+            return False, f"Could not reach the server: {exc}"
+        if resp.ok:
+            return True, "Connected. The dashboard now shows this agent as online."
+        if resp.status_code in (401, 403):
+            return False, "The server rejected the agent ID or API key."
+        if resp.status_code == 404:
+            return False, "The server does not know this agent ID (or the API URL is wrong)."
+        return False, f"The server answered {self._detail(resp)}."
+
     def get_pending_scans(self) -> list[dict[str, Any]]:
         try:
             resp = self._request("GET", "/scans/pending", 30)
@@ -112,6 +127,30 @@ class AgentClient:
         except requests.RequestException as exc:
             log.error("Failed to fetch pending scans: %s", exc)
             return []
+
+    def start_local_scan(self, subnet: str, trigger: str) -> tuple[Optional[str], Optional[str]]:
+        """POST /scans/agent-start - ask for a scan record for a scan started on this
+        machine (a local schedule or "Scan now"). Returns (scan_id, None) or (None, reason)."""
+        body = {"subnet": subnet, "trigger": trigger}
+        try:
+            resp = self._request("POST", "/scans/agent-start", 15, data=json.dumps(body))
+        except requests.RequestException as exc:
+            return None, f"could not reach the server: {exc}"
+        if not resp.ok:
+            return None, f"the server did not start the scan ({self._detail(resp)})"
+        scan_id = resp.json().get("scan_id")
+        return (scan_id, None) if scan_id else (None, "the server returned no scan id")
+
+    def reset_interrupted_scans(self) -> int:
+        """POST /scans/agent-reset - tell the server this agent just started and is running
+        nothing, so its scans left 'running' by a crash or restart are marked interrupted."""
+        try:
+            resp = self._request("POST", "/scans/agent-reset", 15, data="{}")
+            resp.raise_for_status()
+            return int(resp.json().get("interrupted") or 0)
+        except (requests.RequestException, ValueError) as exc:
+            log.warning("Could not tidy up interrupted scans: %s", exc)
+            return 0
 
     def mark_scan_running(self, scan_id: str) -> None:
         try:

@@ -1,0 +1,26 @@
+EagleEye Agent - third-party components
+=======================================
+
+The packaged agent includes the following open-source components. Their licence
+texts are available at the links below; the corresponding source code is available
+from each project and from the EagleEye repository (agent-gui/).
+
+Included in this package
+------------------------
+Python 3.12+ runtime            PSF License                   https://docs.python.org/3/license.html
+PySide6 / Qt 6 (Qt for Python)  LGPL-3.0                      https://www.qt.io/licensing/open-source-lgpl-obligations
+    Qt libraries are shipped as separate DLLs in this folder and may be replaced
+    with compatible versions (LGPL-3.0 section 4).
+requests, urllib3, idna,        Apache-2.0 / MIT / BSD / MPL  https://github.com/psf/requests
+  certifi, charset-normalizer
+keyring, pywin32-ctypes         MIT / BSD-3-Clause            https://github.com/jaraco/keyring
+python-nmap                     GPL-3.0-or-later              https://xael.org/pages/python-nmap-en.html
+scapy                           GPL-2.0-only                  https://github.com/secdev/scapy
+pysnmp, pyasn1                  BSD-2-Clause                  https://github.com/lextudio/pysnmp
+
+NOT included (downloaded from the official site only if you ask for it)
+----------------------------------------------------------------------
+Nmap    Nmap Public Source License   https://nmap.org/npsl/
+Npcap   Npcap License                https://npcap.com/oem/
+The agent's Dependencies page downloads the official, signed installers from
+nmap.org and npcap.com and opens them; you accept their licences in their installers.

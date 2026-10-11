@@ -1,6 +1,6 @@
 # EagleEye Agent 2 (pipeline agent)
 
-Command-line core of the new EagleEye agent. It does what the original agent in `../agent/` does
+The new EagleEye agent, as a Windows desktop app (`EagleEyeAgent.exe`) and a command line (`eagleeye`). It does what the original agent in `../agent/` does
 (network discovery and fingerprinting, passive sniffing, SNMPv3 polling, upload to the API), restructured as a
 pipeline of stages that report progress, and adds an **endpoint inventory** of the machine it runs on
 (hardware, OS, patches, security posture, interfaces, listening services, installed software).
@@ -30,12 +30,16 @@ python -m eagleeye check-deps
 | `python -m eagleeye config init ...` | Writes the config file |
 | `python -m eagleeye config show` | Prints the effective settings, secrets masked |
 | `python -m eagleeye run` | The agent: heartbeat, poll the dashboard, run scans, upload results |
+| `python -m eagleeye gui` | The desktop app (needs PySide6) |
 
 ## Settings
 Precedence: config file < `EAGLEEYE_*` environment variables < command-line flags. The variable names are the
 same as the original agent's. Config file: `%APPDATA%\EagleEye\config.json` on Windows,
 `~/Library/Application Support/EagleEye/config.json` on macOS, `~/.config/eagleeye/config.json` on Linux
-(override with `EAGLEEYE_CONFIG`). It stores secrets in plain text for now; the GUI build moves them to the OS keychain.
+(override with `EAGLEEYE_CONFIG`). Secrets (API key, SNMP and Fingerbank keys) are saved in the OS credential store
+(Windows Credential Manager, entries named "EagleEye Agent") by both the app and `config init`; the file then holds blanks
+and `"secrets_in_keychain": true`. Where no credential store is available they stay in the file. A config written by an
+older version keeps working; its secrets move to the credential store the next time it is saved.
 
 ## Endpoint inventory
 While `run` is active the agent collects the inventory of its own machine on the first poll and then every
@@ -55,6 +59,34 @@ asset with no MAC) or creates a new asset in Discovered, stores the facts on the
 BitLocker, TPM and SMBv1 need Administrator; without it they are reported as "needs Administrator". Settings:
 `inventory` (on/off, `--no-inventory`) and `inventory_interval` (`--inventory-interval`, minimum 300 s). Linux and
 macOS collectors are not written yet; on those systems the agent reports that once and stops trying.
+
+## Desktop app
+`python -m eagleeye gui`, or `EagleEyeAgent.exe` from the installer. One copy runs per user; it keeps running in the
+system tray when the window is closed (right-click the tray icon to quit).
+
+| Page | What it does |
+|---|---|
+| (first start) | Shows the data-collection notice with the choices below; the agent does not run until it is accepted. The acceptance date and notice version are saved (`consent_version`, `consent_at`); a new notice version is shown again |
+| Status | Connection and last heartbeat, what is running now, **Scan now** for a network, **Collect inventory now**, recent activity |
+| Settings | Server URL, agent ID, API key (with **Test connection**), timing, passive listening, SNMPv3. Saving restarts the agent |
+| Privacy | Inventory on/off, interval, the two personal-data options, **Preview what would be sent** (collects and shows the inventory without sending it), the notice |
+| Dependencies | Nmap, Npcap, Python modules and Administrator rights; download buttons for Nmap and Npcap; **Restart as Administrator** |
+| Log | Live log; also written to `%APPDATA%\EagleEye\logs\agent.log` (rotated, 5 x 1 MB) |
+
+**Scan now.** Scans started on the machine ask the server for a scan record first (`POST /scans/agent-start`), so they
+appear in the dashboard and upload exactly like dashboard scans. When the agent starts it calls `POST /scans/agent-reset`,
+and the server marks any of its active scans still "running" from an earlier run (app closed or crashed mid-scan) as failed,
+"Interrupted".
+
+**Local schedules (switched off for now).** `schedule.py` can scan a network daily at a set time or every N hours, with
+missed runs collapsed into one. Editing schedules crashed the desktop app under PySide6 6.12, so `SCHEDULES_ENABLED` in
+`service.py` is `False`: the Schedules page is hidden and saved schedules are ignored. The logic stays covered by tests
+so it can be switched back on once decided.
+
+**Getting Nmap and Npcap.** They are not shipped (licences). On the Dependencies page the agent reads the official download
+page (nmap.org, npcap.com), downloads the newest installer over HTTPS from that site only, checks its Authenticode signature
+(must be valid and signed by Nmap Software LLC; tampered or unsigned files are refused), and opens it with the normal
+Windows elevation prompt. You go through the official installer and accept its licence yourself.
 
 ## Privacy and data protection
 The endpoint inventory describes the machine the agent is installed on. On an organisation-owned device that is
@@ -77,7 +109,10 @@ or messages, location, and the contents of network traffic. For ports that only 
 (`127.0.0.1` / `::1`), which program owns them is not sent. Passive mode reads only broadcast discovery packets
 (ARP, mDNS, NetBIOS, DHCP) to learn device names and addresses.
 
-**Transparency:** `python -m eagleeye inventory` shows exactly what would be sent, without sending it
+**Notice and choice:** the desktop app shows this notice before the agent first runs, with the personal-data options
+off, and the choices can be changed at any time on the Privacy page.
+
+**Transparency:** the Privacy page's **Preview**, or `python -m eagleeye inventory`, shows exactly what would be sent, without sending it
 (`--json file` saves the full document for review).
 
 **Where it goes and for how long:** over HTTPS to the organisation's own EagleEye server only (no third parties),
@@ -103,14 +138,29 @@ python -m eagleeye run          # add --passive in an Administrator terminal for
 Then, in the staging dashboard, open Discovery or Agents and start a scan for this agent. The agent picks it up
 within one poll interval (30 s by default).
 
+## Building the Windows package
+```powershell
+cd agent-gui
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt pyinstaller
+.\packaging\build.ps1
+```
+Produces `dist\EagleEyeAgent\` (`EagleEyeAgent.exe` and `eagleeye.exe`, one folder, about 130 MB) and, if Inno Setup 6
+is installed, `dist\EagleEyeAgent-Setup-<version>.exe`. The installer can add a sign-in task that starts the agent with
+Administrator rights (needed for passive listening and the BitLocker/TPM/SMBv1 checks) without a prompt each time.
+`packaging/THIRD-PARTY-NOTICES.txt` lists the bundled components and their licences.
+
 ## Layout
 ```
 eagleeye/
   cli.py, service.py, config.py, api.py, deps.py, netinfo.py
+  keychain.py, schedule.py, installers.py, privacy.py
+  gui/        desktop app: app (window, tray, single instance), pages, consent, controller
   pipeline/   HostRecord, events, runner (stages, optional stages, cancellation)
   stages/     scan_nmap (Nmap + built-in fallback), snmp_poll, passive, inventory, upload
   collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser
   passive/    ARP, mDNS/NetBIOS and DHCP sniffers
+packaging/    PyInstaller spec, Inno Setup script, build.ps1, third-party notices
 tests/        pytest suite, including side-by-side parity checks against ../agent/eagleeye_agent.py
 ```
 
@@ -118,6 +168,7 @@ tests/        pytest suite, including side-by-side parity checks against ../agen
 ```powershell
 python -m pytest -q
 ```
+`tests/test_gui.py` runs the desktop app without a display (Qt offscreen) and is skipped when PySide6 is not installed.
 `tests/test_parity.py` loads the original agent and compares its output with this one on recorded Nmap data. It is
 skipped automatically once the original agent is removed.
 
