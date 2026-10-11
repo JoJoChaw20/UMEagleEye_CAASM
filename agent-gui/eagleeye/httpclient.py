@@ -14,6 +14,7 @@ HTTPS certificates are verified against the operating system's trust store.
 
 from __future__ import annotations
 
+import http.client
 import json as jsonlib
 import socket
 import ssl
@@ -21,6 +22,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Iterator, Mapping, Optional
+
+from . import VERSION
 
 
 class RequestException(Exception):
@@ -104,6 +107,69 @@ class Response:
         self.close()
 
 
+# ── connecting ────────────────────────────────────────────────────────────
+# A name often resolves to IPv6 and IPv4 addresses. On networks where IPv6 is
+# broken, connecting to the IPv6 address first hangs until the OS gives up (about
+# 21 s per address on Windows) on every request. So: give each address at most
+# CONNECT_ATTEMPT_SECONDS, and remember which address family worked per host.
+CONNECT_ATTEMPT_SECONDS = 3.0
+_preferred_family: dict[str, int] = {}
+
+
+def _create_connection(address: tuple[str, int], timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+                       source_address: Any = None, *args: Any, **kwargs: Any) -> socket.socket:
+    host, port = address
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    preferred = _preferred_family.get(host)
+    if preferred is not None:
+        infos.sort(key=lambda info: info[0] != preferred)          # stable: keeps the OS order otherwise
+    overall = timeout if isinstance(timeout, (int, float)) else None
+    last_error: Optional[OSError] = None
+    for family, socktype, proto, _canon, sockaddr in infos:
+        sock = socket.socket(family, socktype, proto)
+        try:
+            attempt = CONNECT_ATTEMPT_SECONDS if len(infos) > 1 else overall
+            if overall is not None and attempt is not None:
+                attempt = min(attempt, overall)
+            sock.settimeout(attempt)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            sock.settimeout(overall)                                # reads use the caller's timeout
+            _preferred_family[host] = family
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    raise last_error or OSError(f"no addresses for {host}")
+
+
+class _HTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _create_connection
+
+
+class _HTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._create_connection = _create_connection
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):  # type: ignore[no-untyped-def]
+        return self.do_open(_HTTPConnection, req)
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, context: ssl.SSLContext) -> None:
+        super().__init__(context=context)
+        self._ctx = context
+
+    def https_open(self, req):  # type: ignore[no-untyped-def]
+        return self.do_open(_HTTPSConnection, req, context=self._ctx)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         return None          # urllib then hands the 3xx back as an HTTPError, returned as a Response
@@ -111,8 +177,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Session:
     def __init__(self, follow_redirects: bool = True) -> None:
-        self.headers: dict[str, str] = {}
-        handlers: list[Any] = [urllib.request.HTTPSHandler(context=ssl.create_default_context())]
+        # Always identify the agent: Cloudflare answers urllib's default "Python-urllib" with 403.
+        self.headers: dict[str, str] = {"User-Agent": f"EagleEye-Agent/{VERSION}"}
+        handlers: list[Any] = [_HTTPHandler(), _HTTPSHandler(ssl.create_default_context())]
         if not follow_redirects:
             handlers.append(_NoRedirect())
         self._opener = urllib.request.build_opener(*handlers)

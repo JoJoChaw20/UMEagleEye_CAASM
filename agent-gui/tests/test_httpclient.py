@@ -164,3 +164,28 @@ def test_api_client_does_not_follow_redirects(server):
     ok, message = c.check_connection()
     assert not ok and "redirected" in message
     assert all(s["path"].startswith("/redirect") for s in seen)     # the key went nowhere else
+
+
+def test_unreachable_address_is_skipped_quickly_and_the_working_family_remembered(server, monkeypatch):
+    port = int(server.rsplit(":", 1)[1])
+    real = socket.getaddrinfo
+    dead = ("10.255.255.1", 9)                       # a black-hole address: connect never completes
+
+    def fake_getaddrinfo(host, p, *a, **k):
+        if host == "dual.example":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", dead),
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+        return real(host, p, *a, **k)
+
+    monkeypatch.setattr(httpclient, "CONNECT_ATTEMPT_SECONDS", 0.5)
+    monkeypatch.setattr(httpclient.socket, "getaddrinfo", fake_getaddrinfo)
+    started = time.time()
+    sock = httpclient._create_connection(("dual.example", 0), timeout=30)
+    sock.close()
+    assert time.time() - started < 5                 # not the OS connect timeout (~21 s)
+    assert httpclient._preferred_family["dual.example"] == socket.AF_INET
+
+
+def test_default_user_agent_identifies_the_agent(server):
+    httpclient.Session().get(f"{server}/json", timeout=5)
+    assert seen[0]["headers"]["user-agent"] == f"EagleEye-Agent/{VERSION}"
