@@ -27,6 +27,9 @@ export interface MergeAsset {
   inMyAssets: boolean
   lastScanned: string | Date | null
   createdAt: string | Date | null
+  /** Endpoint inventory from an agent on this asset (newest one survives the merge). */
+  endpointInventory?: unknown
+  inventoryCollectedAt?: string | Date | null
 }
 export interface MergeAddress {
   addressId: string
@@ -58,6 +61,13 @@ export type MergeOp =
   | { k: 'moveEvents'; loserIds: string[]; survivorId: string }
   | { k: 'moveSboms'; loserIds: string[]; survivorId: string }
   | { k: 'moveDependencies'; loserIds: string[]; survivorId: string }
+  // Installed software describes one machine's current state, so the list of the asset
+  // with the newest inventory is kept (moved to the survivor) and the others dropped.
+  | { k: 'keepSoftware'; keepAssetId: string; dropAssetIds: string[]; survivorId: string }
+  // Machine identifiers move to the survivor; values it already has are dropped first.
+  | { k: 'moveIdentifiers'; loserIds: string[]; survivorId: string }
+  // An agent bound to a loser now reports into the survivor.
+  | { k: 'moveAgentBinding'; loserIds: string[]; survivorId: string }
   | { k: 'deleteRelationships'; ids: string[] }
   | { k: 'updateRelationship'; id: string; sourceAssetId: string; targetAssetId: string }
   | { k: 'deleteTopologyNodes'; ids: string[] }
@@ -105,20 +115,26 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
   const mergedOsInfo = osByOldest.reduce<Record<string, unknown>>((acc, a) => ({ ...acc, ...(a.osInfo ?? {}) }), {})
 
   // Device type keeps the survivor's source. A manual survivor type wins; else a
-  // manual loser type (user-confirmed) is taken over the survivor's auto guess; else
-  // the usual "survivor's non-unknown, else first non-unknown" auto pick.
+  // manual loser type (user-confirmed) is taken over the survivor's auto guess; else a
+  // type the machine's own agent reported; else the usual "survivor's non-unknown,
+  // else first non-unknown" auto pick. Ranking: manual > agent > auto.
   // (Before this change the merge ignored source entirely and always took the
   // survivor's non-unknown type, then the first non-unknown.)
   let mergedDeviceType: string
   let mergedDeviceTypeSource: string
+  const known = (a: MergeAsset) => !!a.deviceType && a.deviceType !== 'unknown'
   if (survivor.deviceTypeSource === 'manual') {
     mergedDeviceType = survivor.deviceType
     mergedDeviceTypeSource = 'manual'
   } else {
-    const manualLoser = losers.find(l => l.deviceTypeSource === 'manual' && !!l.deviceType && l.deviceType !== 'unknown')
+    const manualLoser = losers.find(l => l.deviceTypeSource === 'manual' && known(l))
+    const agentReported = all.find(a => a.deviceTypeSource === 'agent' && known(a))
     if (manualLoser) {
       mergedDeviceType = manualLoser.deviceType
       mergedDeviceTypeSource = 'manual'
+    } else if (agentReported) {
+      mergedDeviceType = agentReported.deviceType
+      mergedDeviceTypeSource = 'agent'
     } else {
       mergedDeviceType = (survivor.deviceType && survivor.deviceType !== 'unknown')
         ? survivor.deviceType
@@ -153,6 +169,14 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     macAddress: latest.macAddress,          // "latest seen"
     updatedAt: now,
   }
+  // The newest endpoint inventory survives (one machine, so the latest report wins).
+  const newestInventory = [...all]
+    .filter(a => a.endpointInventory != null)
+    .sort((a, b) => ms(b.inventoryCollectedAt) - ms(a.inventoryCollectedAt))[0]
+  if (newestInventory) {
+    mergedFields.endpointInventory = newestInventory.endpointInventory
+    mergedFields.inventoryCollectedAt = newestInventory.inventoryCollectedAt ?? null
+  }
 
   // ── Addresses: end colliding current scoped loser rows, then move all loser rows ──
   let addressesEnded = 0
@@ -179,6 +203,11 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     ops.push({ k: 'moveEvents', loserIds, survivorId })
     ops.push({ k: 'moveSboms', loserIds, survivorId })
     ops.push({ k: 'moveDependencies', loserIds, survivorId })
+    // Software: keep the list of the asset whose inventory is newest (else the survivor's).
+    const keepAssetId = newestInventory?.assetId ?? survivorId
+    ops.push({ k: 'keepSoftware', keepAssetId, dropAssetIds: all.map(a => a.assetId).filter(id => id !== keepAssetId), survivorId })
+    ops.push({ k: 'moveIdentifiers', loserIds, survivorId })
+    ops.push({ k: 'moveAgentBinding', loserIds, survivorId })
   }
 
   // After the move, the survivor's current-address set = every still-current row

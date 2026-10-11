@@ -6,15 +6,16 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
-import { agents, assets, assetAddresses, assetSoftware, events } from '../db/schema'
+import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, events } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
-import { computeCriticality } from '../lib/criticality'
+import { scoreAsset } from '../lib/rescore'
 import { deriveNetworkKey } from '../lib/identity'
 import {
-  chooseBinding, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, storedInventory,
-  type BindingCandidate, type InventoryPayload,
+  bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
+  resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
 } from '../lib/endpointInventory'
+import { machineIdentifiers } from '../lib/machineIdentity'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -241,8 +242,10 @@ router.post(
 
 // ── POST /:agentId/inventory — endpoint inventory of the agent's own machine ──
 // Agent API key auth. Binds the inventory to an asset (see lib/endpointInventory
-// chooseBinding), creating one in Discovered when none matches, stores the facts on
-// the asset and syncs asset_software by diff.
+// bindMachine: bound > hardware UUID > OS install id > MAC > hostname > IP, with the
+// VM-clone guard), creating one in Discovered when none matches. Stores the facts and
+// machine identifiers, follows the machine's address and self-reported device type
+// (recomputing criticality), and syncs asset_software by diff.
 const inventorySoftware = z.object({
   name: z.string().min(1).max(255),
   version: z.string().max(100).nullish(),
@@ -294,49 +297,120 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
     const macs = identityMacs(inv)
     const hostKey = inventoryHostKey(inv)
     const ips = inventoryIps(inv)
+    const identifiers = machineIdentifiers(inv)
+    const hardwareUuid = identifiers.find(i => i.kind === 'hardware_uuid')?.value ?? null
+    const osInstallId = identifiers.find(i => i.kind === 'os_install_id')?.value ?? null
     const hostname = inv.identity.hostname?.trim() || null
     const vendor = inv.hardware?.manufacturer?.trim() || null
+    const ip = ips[0] ?? null
+    const mac = primaryMac(inv)
+    const networkKey = ip ? deriveNetworkKey({ ip }) : null
+    const reportedType = deviceTypeFor(inv)
     const now = new Date()
     const parsedAt = new Date(inv.collected_at)
     const collectedAt = isNaN(parsedAt.getTime()) ? now : parsedAt
 
     // ── Candidate assets (one query per rule, all tenant-scoped) ──
     const hasMac = sql<boolean>`(${assets.macAddress} IS NOT NULL OR EXISTS (
-      SELECT 1 FROM ${assetAddresses} aa WHERE aa.asset_id = ${assets.assetId} AND aa.mac_address IS NOT NULL))`
+      SELECT 1 FROM ${assetAddresses} aa WHERE aa.asset_id = "assets"."asset_id" AND aa.mac_address IS NOT NULL))`
+    // Hardware UUIDs an agent reported for the candidate (the VM-clone guard needs them).
+    // Correlated subqueries name "assets"."asset_id" literally: in a select list Drizzle
+    // renders ${assets.assetId} unqualified, which inside the subquery would bind to the
+    // subquery's own asset_id column and make the condition always true.
+    const hardwareUuids = sql<string[]>`ARRAY(SELECT ai.value FROM ${assetIdentifiers} ai
+      WHERE ai.asset_id = "assets"."asset_id" AND ai.kind = 'hardware_uuid')::text[]`
     const candidates = (where: SQL | undefined): Promise<BindingCandidate[]> =>
       where
-        ? db.select({ assetId: assets.assetId, inMyAssets: assets.inMyAssets, lastScanned: assets.lastScanned, hasMac })
+        ? db.select({ assetId: assets.assetId, inMyAssets: assets.inMyAssets, lastScanned: assets.lastScanned, hasMac, hardwareUuids })
             .from(assets).where(and(eq(assets.tenantId, tenantId), where))
         : Promise.resolve([])
+    const byIdentifier = (kind: string, value: string | null) => candidates(value
+      ? inArray(assets.assetId, db.select({ id: assetIdentifiers.assetId }).from(assetIdentifiers).where(and(
+          eq(assetIdentifiers.tenantId, tenantId), eq(assetIdentifiers.kind, kind), eq(assetIdentifiers.value, value))))
+      : undefined)
 
-    const [bound, macMatches, hostKeyMatches, ipMatches] = await Promise.all([
-      agent.hostAssetId
-        ? db.select({ assetId: assets.assetId }).from(assets)
-            .where(and(eq(assets.assetId, agent.hostAssetId), eq(assets.tenantId, tenantId))).limit(1)
-        : Promise.resolve([]),
+    const [bound, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches] = await Promise.all([
+      agent.hostAssetId ? candidates(eq(assets.assetId, agent.hostAssetId)) : Promise.resolve([]),
+      byIdentifier('hardware_uuid', hardwareUuid),
+      byIdentifier('os_install_id', osInstallId),
       candidates(macs.length ? or(
         inArray(assets.macAddress, macs),
         inArray(assets.assetId, db.select({ id: assetAddresses.assetId }).from(assetAddresses)
           .where(and(eq(assetAddresses.tenantId, tenantId), inArray(assetAddresses.macAddress, macs)))),
+        inArray(assets.assetId, db.select({ id: assetIdentifiers.assetId }).from(assetIdentifiers)
+          .where(and(eq(assetIdentifiers.tenantId, tenantId), eq(assetIdentifiers.kind, 'mac'), inArray(assetIdentifiers.value, macs)))),
       ) : undefined),
       candidates(hostKey ? or(eq(assets.hostKey, hostKey), sql`lower(${assets.hostname}) = ${hostKey}`) : undefined),
       candidates(ips.length ? inArray(assets.ipAddress, ips) : undefined),
     ])
 
-    const decision = chooseBinding({ boundAssetId: bound[0]?.assetId ?? null, macMatches, hostKeyMatches, ipMatches })
+    const binding = bindMachine({
+      boundAssetId: bound[0]?.assetId ?? null, boundHardwareUuids: bound[0]?.hardwareUuids ?? [],
+      hardwareUuid, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches,
+    })
+    const decision = binding.decision
+    if (binding.differentHardware.length > 0) {
+      // Same OS install / MACs / name as another asset but different hardware: a cloned
+      // VM (or a new mainboard). Kept apart; Duplicates lists the pair for review.
+      console.log(`inventory: agent=${agentId} differs in hardware from asset(s) ${binding.differentHardware.join(',')}`)
+    }
     let assetId: string
     let created = false
+    const statements: unknown[] = []
 
     if (decision) {
       assetId = decision.assetId
+      // ── Matched: device type, criticality and address follow the machine's report ──
+      const [cur] = await db.select({
+        deviceType: assets.deviceType, deviceTypeSource: assets.deviceTypeSource, baselineState: assets.baselineState,
+        hostname: assets.hostname, owner: assets.owner, osInfo: assets.osInfo, isInternetFacing: assets.isInternetFacing,
+      }).from(assets).where(eq(assets.assetId, assetId)).limit(1)
+      if (!cur) return c.json({ detail: 'Asset disappeared while storing the inventory; retry' }, 409)
+      const dt = resolveAgentDeviceType(cur, reportedType)
+      const set: Record<string, unknown> = {
+        deviceType: dt.deviceType,
+        deviceTypeSource: dt.deviceTypeSource,
+        criticalityScore: scoreAsset({
+          deviceType: dt.deviceType, isInternetFacing: cur.isInternetFacing, hostname: cur.hostname ?? hostname,
+          osInfo: cur.osInfo as Record<string, unknown> | null, owner: cur.owner,
+        }),
+      }
+      // An automatic baseline still holding the old type moves with it (not drift).
+      const baseline = cur.baselineState as Record<string, unknown> | null
+      if (dt.changed && baseline?.['auto_set'] === true && baseline['device_type'] === cur.deviceType) {
+        set.baselineState = { ...baseline, device_type: dt.deviceType }
+      }
+      if (ip) {
+        set.ipAddress = ip
+        if (mac) set.macAddress = mac
+        const current = await db.select({
+          addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+          ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress,
+        }).from(assetAddresses).where(and(
+          eq(assetAddresses.tenantId, tenantId), isNull(assetAddresses.endedAt),
+          networkKey
+            ? or(eq(assetAddresses.assetId, assetId), and(eq(assetAddresses.networkKey, networkKey), eq(assetAddresses.ipAddress, ip)))
+            : eq(assetAddresses.assetId, assetId),
+        ))
+        for (const op of planAgentAddress(assetId, ip, mac, networkKey, current)) {
+          if (op.k === 'refresh') {
+            statements.push(db.update(assetAddresses).set({ lastSeen: now, macAddress: op.macAddress, networkKey: op.networkKey })
+              .where(eq(assetAddresses.addressId, op.addressId)))
+          } else if (op.k === 'end') {
+            statements.push(db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, op.addressId)))
+          } else {
+            statements.push(db.insert(assetAddresses).values({
+              assetId, tenantId, networkKey: op.networkKey, ipAddress: op.ipAddress, macAddress: op.macAddress, firstSeen: now, lastSeen: now,
+            }))
+          }
+        }
+      }
+      statements.push(db.update(assets).set(set).where(eq(assets.assetId, assetId)))
     } else {
       // ── No match: create the asset in Discovered ──
-      const ip = ips[0]
       if (!ip) return c.json({ detail: 'Inventory has no IPv4 address to identify this machine' }, 400)
       assetId = crypto.randomUUID()
       created = true
-      const deviceType = deviceTypeFor(inv)
-      const networkKey = deriveNetworkKey({ ip })
       // Another device may still hold this IP as its current address (DHCP reuse):
       // end that row first, as scan ingest does, so the unique current-address index holds.
       const holders = networkKey
@@ -344,22 +418,33 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
             eq(assetAddresses.tenantId, tenantId), eq(assetAddresses.networkKey, networkKey),
             eq(assetAddresses.ipAddress, ip), isNull(assetAddresses.endedAt)))
         : []
-      await db.batch([
+      const known = reportedType !== 'unknown'
+      statements.push(
         ...holders.map(h => db.update(assetAddresses).set({ endedAt: now }).where(eq(assetAddresses.addressId, h.addressId))),
         db.insert(assets).values({
-          assetId, tenantId, ipAddress: ip, hostname, macAddress: macs[0] ?? null, hostKey,
-          hardwareVendor: vendor, deviceType, deviceTypeSource: 'auto', osInfo: {},
-          criticalityScore: computeCriticality({ deviceType, isInternetFacing: false, hostname, owner: null, osInfo: {} }).score,
+          assetId, tenantId, ipAddress: ip, hostname, macAddress: mac, hostKey,
+          hardwareVendor: vendor, deviceType: reportedType, deviceTypeSource: known ? 'agent' : 'auto', osInfo: {},
+          criticalityScore: scoreAsset({ deviceType: reportedType, isInternetFacing: false, hostname, owner: null, osInfo: {} }),
           source: 'agent', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now,
         }),
         db.insert(assetAddresses).values({
-          assetId, tenantId, networkKey, ipAddress: ip, macAddress: macs[0] ?? null, firstSeen: now, lastSeen: now,
+          assetId, tenantId, networkKey, ipAddress: ip, macAddress: mac, firstSeen: now, lastSeen: now,
         }),
         db.insert(events).values({
           assetId, eventType: 'new_device', severity: 'medium',
-          details: { ip, mac: macs[0] ?? null, hostname, source: 'agent' },
+          details: { ip, mac, hostname, source: 'agent' },
         }),
-      ] as unknown as Parameters<typeof db.batch>[0])
+      )
+    }
+
+    // Machine identifiers: history, refreshed on every inventory.
+    if (identifiers.length > 0) {
+      statements.push(db.insert(assetIdentifiers)
+        .values(identifiers.map(i => ({ assetId, tenantId, kind: i.kind, value: i.value, source: 'agent', firstSeen: now, lastSeen: now })))
+        .onConflictDoUpdate({
+          target: [assetIdentifiers.assetId, assetIdentifiers.kind, assetIdentifiers.value],
+          set: { lastSeen: now },
+        }))
     }
 
     // ── Store facts; fill identity gaps only (never overwrite what a user or scan set) ──
@@ -369,7 +454,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
     }).from(assetSoftware).where(eq(assetSoftware.assetId, assetId))
     const diff = diffSoftware(existingSoftware, inv.software)
 
-    const statements: unknown[] = [
+    statements.push(
       db.update(assets).set({
         endpointInventory: storedInventory(inv),
         inventoryCollectedAt: collectedAt,
@@ -380,7 +465,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         hostKey: sql`COALESCE(${assets.hostKey}, ${hostKey})`,
       }).where(eq(assets.assetId, assetId)),
       db.update(agents).set({ hostAssetId: assetId }).where(eq(agents.agentId, agentId)),
-    ]
+    )
     for (let i = 0; i < diff.deleteIds.length; i += 500) {
       statements.push(db.delete(assetSoftware).where(inArray(assetSoftware.softwareId, diff.deleteIds.slice(i, i + 500))))
     }
@@ -398,6 +483,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       asset_id: assetId,
       created,
       matched_by: decision?.matchedBy ?? null,
+      different_hardware: binding.differentHardware,
       software: { added: diff.insert.length, removed: diff.deleteIds.length, unchanged: diff.unchanged },
     })
   } catch (err) {

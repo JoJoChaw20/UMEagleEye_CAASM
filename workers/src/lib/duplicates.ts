@@ -9,6 +9,7 @@
  * the evidence rules never diverge from the resolver. Tested by identity-demo.ts.
  */
 import { classifyMac, isSharedVirtualMac } from './identity'
+import { differentHardware } from './machineIdentity'
 
 // Report-specific generic-hostname filter — intentionally NOT sanitizeHostKey
 // (that is tuned for ingest and must not change). Ignores localhost, default
@@ -47,6 +48,12 @@ export interface DupAddress {
   macAddress: string | null
   endedAt: string | Date | null
 }
+/** A machine identifier an agent reported (asset_identifiers). */
+export interface DupIdentifier {
+  assetId: string
+  kind: string     // hardware_uuid | os_install_id | mac
+  value: string
+}
 export interface DuplicateGroupAsset {
   assetId: string
   hostname: string | null
@@ -84,6 +91,7 @@ export function findDuplicateGroups(
   assets: DupAsset[],
   addresses: DupAddress[],
   eventCounts?: Map<string, number>,
+  identifiers: DupIdentifier[] = [],
 ): DuplicateGroup[] {
   const assetById = new Map(assets.map(a => [a.assetId, a]))
   const addrByAsset = new Map<string, DupAddress[]>()
@@ -193,6 +201,57 @@ export function findDuplicateGroups(
       if (!differentNetworks) continue
       edges.push({ a: uniq[i]!, b: uniq[j]!, confidence: 'review', reason: `same host_key "${hk}" on different networks` })
       union(uniq[i]!, uniq[j]!)
+    }
+  }
+
+  // ── Machine identifiers reported by agents ──
+  const idsOf = (kind: string) => {
+    const byAsset = new Map<string, string[]>()
+    const byValue = new Map<string, string[]>()
+    for (const i of identifiers) {
+      if (i.kind !== kind || !assetById.has(i.assetId)) continue
+      const a = byAsset.get(i.assetId) ?? []; if (!a.includes(i.value)) a.push(i.value); byAsset.set(i.assetId, a)
+      const v = byValue.get(i.value) ?? []; if (!v.includes(i.assetId)) v.push(i.assetId); byValue.set(i.value, v)
+    }
+    return { byAsset, byValue }
+  }
+  const hw = idsOf('hardware_uuid')
+  const hwOf = (id: string) => hw.byAsset.get(id)
+  const pairs = (ids: string[], each: (x: string, y: string) => void) => {
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) each(ids[i]!, ids[j]!)
+  }
+  // Same hardware UUID = same (virtual) machine.
+  for (const [value, ids] of hw.byValue) {
+    pairs(ids, (x, y) => { edges.push({ a: x, b: y, confidence: 'safe', reason: `same hardware UUID ${value}` }); union(x, y) })
+  }
+  // Same OS installation: the same machine, unless the hardware differs (cloned VM).
+  for (const [value, ids] of idsOf('os_install_id').byValue) {
+    pairs(ids, (x, y) => {
+      edges.push(differentHardware(hwOf(x), hwOf(y))
+        ? { a: x, b: y, confidence: 'review', reason: `same OS installation ID ${value} on different hardware (cloned VM or replaced mainboard)` }
+        : { a: x, b: y, confidence: 'safe', reason: `same OS installation ID ${value}` })
+      union(x, y)
+    })
+  }
+  // A MAC the agent reported for its own NIC, seen on another asset by a scan or agent.
+  const agentMacs = idsOf('mac')
+  for (const [mac, owners] of agentMacs.byValue) {
+    if (isSharedVirtualMac(mac)) continue
+    const others = new Set<string>([...(byMac.get(mac)?.entries.map(e => e.assetId) ?? []), ...owners])
+    for (const owner of owners) {
+      for (const other of others) {
+        if (other === owner || (owners.includes(other) && other < owner)) continue
+        edges.push({ a: owner, b: other, confidence: 'safe', reason: `MAC ${mac} reported by the agent on this machine` })
+        union(owner, other)
+      }
+    }
+  }
+  // VM-clone guard: two assets with different known hardware UUIDs are different
+  // machines, so no evidence makes them a safe merge.
+  for (const e of edges) {
+    if (e.confidence === 'safe' && differentHardware(hwOf(e.a), hwOf(e.b))) {
+      e.confidence = 'review'
+      e.reason += ', but the hardware UUIDs differ'
     }
   }
 

@@ -313,6 +313,28 @@ export const assetSoftware = pgTable('asset_software', {
   index('idx_software_name').on(t.name),
 ])
 
+// ─── Machine identifiers (endpoint inventory) ───────────────────
+// Facts that identify one machine, as reported by the agent running ON it:
+//   hardware_uuid  – SMBIOS system UUID (Windows/Linux) / IOPlatformUUID (macOS)
+//   os_install_id  – Windows MachineGuid / Linux machine-id (one OS installation)
+//   mac            – every physical NIC's burned-in MAC, not just the one a scan sees
+// Kept as history (rows are never removed by a later inventory), so an asset keeps
+// matching a MAC it had. The same value may sit on two assets (a cloned VM keeps its
+// os_install_id), so only (asset, kind, value) is unique. See lib/machineIdentity.ts.
+export const assetIdentifiers = pgTable('asset_identifiers', {
+  identifierId: uuid('identifier_id').primaryKey().default(newUuid()),
+  assetId: uuid('asset_id').notNull().references(() => assets.assetId, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  kind: varchar('kind', { length: 16 }).notNull(),
+  value: varchar('value', { length: 64 }).notNull(),
+  source: varchar('source', { length: 16 }).notNull().default('agent'),
+  firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
+  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  uniqueIndex('idx_identifier_asset_kind_value').on(t.assetId, t.kind, t.value),
+  index('idx_identifier_lookup').on(t.tenantId, t.kind, t.value),
+])
+
 // ─── Table 13: Topology Nodes ────────────────────────────────────
 export const topologyNodes = pgTable('topology_nodes', {
   nodeId: uuid('node_id').primaryKey().default(newUuid()),

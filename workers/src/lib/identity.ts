@@ -11,7 +11,7 @@
  */
 import { and, asc, desc, eq, inArray, isNull, or } from 'drizzle-orm'
 import type { DB } from '../db/client'
-import { assets, assetAddresses } from '../db/schema'
+import { assets, assetAddresses, assetIdentifiers } from '../db/schema'
 import { normalizeMac } from './mac'
 import type { IdentityPrefetch } from './ingest-plan'
 import type { AssetBaseline } from '../services/drift'
@@ -94,7 +94,7 @@ export function deriveNetworkKey(input: { ip: string; isManualSource?: boolean }
 }
 
 // ── Pure matcher ─────────────────────────────────────────────────
-export type MatchRuleLabel = 1 | 2 | 3 | 4 | 5 | 6 | '1-possible-duplicate'
+export type MatchRuleLabel = 1 | '1-agent' | 2 | 3 | 4 | 5 | 6 | '1-possible-duplicate'
 
 export interface MatcherInput {
   macClass: MacClass
@@ -120,10 +120,14 @@ export interface MatcherCandidates {
   hostKeyAssetIds: string[]
   /** Current addresses matching (networkKey+ip), or an unscoped row with that ip. */
   netIpAddresses: CandidateAddress[]
+  /** Assets whose own agent reported input.mac as one of its physical NICs
+   *  (asset_identifiers kind 'mac'), preferred asset first. */
+  agentMacAssetIds?: string[]
 }
 
 export type MatchDecision =
   | { rule: 1; assetId: string; matchedAddressId: string }
+  | { rule: '1-agent'; assetId: string; matchedAddressId: null }
   | { rule: '1-possible-duplicate'; assetId: null; possibleDuplicateOf: string }
   | { rule: 2; assetId: string; matchedAddressId: string }
   | { rule: 3; assetId: string; matchedAddressId: null }
@@ -157,6 +161,13 @@ export function matchAsset(input: MatcherInput, cand: MatcherCandidates): MatchD
       return { rule: '1-possible-duplicate', assetId: null, possibleDuplicateOf: hit.assetId }
     }
     return { rule: 1, assetId: hit.assetId, matchedAddressId: hit.addressId }
+  }
+
+  // Rule 1-agent — global MAC that the agent on a machine reported for one of its own
+  // NICs, although no scan has seen it there yet (a laptop scanned on Wi-Fi whose agent
+  // also lists its Ethernet MAC). The machine vouches for it, so any network matches.
+  if (input.macClass === 'global' && cand.agentMacAssetIds?.length) {
+    return { rule: '1-agent', assetId: cand.agentMacAssetIds[0]!, matchedAddressId: null }
   }
 
   // Rule 2 — local MAC + same network. An unscoped address (network_key NULL) is
@@ -293,9 +304,18 @@ export async function resolveAssetIdentity(db: DB, input: ResolveInput): Promise
     .orderBy(...tiebreak)
   const netIpAddresses = netIpRows as CandidateAddress[]
 
+  // Candidate set 4 — assets whose agent reported this (global) MAC.
+  let agentMacAssetIds: string[] = []
+  if (macClass === 'global' && mac && input.tenantId) {
+    const rows = await db.select({ assetId: assetIdentifiers.assetId }).from(assetIdentifiers)
+      .where(and(eq(assetIdentifiers.tenantId, input.tenantId), eq(assetIdentifiers.kind, 'mac'), eq(assetIdentifiers.value, mac)))
+      .orderBy(desc(assetIdentifiers.lastSeen), asc(assetIdentifiers.assetId))
+    agentMacAssetIds = [...new Set(rows.map(r => r.assetId))]
+  }
+
   const decision = matchAsset(
     { macClass, mac, ip: input.ip, hostKey, networkKey },
-    { macAddresses, hostKeyAssetIds, netIpAddresses },
+    { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds },
   )
 
   // For an UPDATE match, find the asset's current address on THIS network so the
@@ -425,6 +445,23 @@ export async function prefetchIdentity(
       .where(and(tCondAsset, inArray(assets.hostKey, hostKeys)))
     for (const r of rows) absorb(r as Record<string, unknown>)
   }
+  // MACs an agent reported for its own machine (rule 1-agent), with those assets'
+  // current addresses so the planner can update them. Agents always have a tenant.
+  const agentMacs: { mac: string; assetId: string }[] = []
+  if (macs.length > 0 && tenantId) {
+    const idRows = await db.select({ mac: assetIdentifiers.value, assetId: assetIdentifiers.assetId })
+      .from(assetIdentifiers)
+      .where(and(eq(assetIdentifiers.tenantId, tenantId), eq(assetIdentifiers.kind, 'mac'), inArray(assetIdentifiers.value, macs)))
+      .orderBy(desc(assetIdentifiers.lastSeen), asc(assetIdentifiers.assetId))
+    agentMacs.push(...idRows)
+    const missing = [...new Set(idRows.map(r => r.assetId))].filter(id => !assetById.has(id))
+    if (missing.length > 0) {
+      const rows = await db.select(sel).from(assets)
+        .innerJoin(assetAddresses, and(eq(assetAddresses.assetId, assets.assetId), isNull(assetAddresses.endedAt)))
+        .where(and(tCondAsset, inArray(assets.assetId, missing)))
+      for (const r of rows) absorb(r as Record<string, unknown>)
+    }
+  }
 
-  return { addresses: [...addrById.values()], assets: [...assetById.values()] }
+  return { addresses: [...addrById.values()], assets: [...assetById.values()], agentMacs }
 }

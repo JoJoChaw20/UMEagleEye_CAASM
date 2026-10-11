@@ -6,6 +6,7 @@
  * software list. Tested by scripts/endpoint-inventory-demo.ts.
  */
 import { classifyMac, sanitizeHostKey } from './identity'
+import { differentHardware, physicalMacs } from './machineIdentity'
 
 // ── Payload (validated by the route's zod schema) ────────────────
 export interface InventorySoftware {
@@ -38,13 +39,21 @@ export interface InventoryPayload {
 /** Burned-in (global) MACs of the machine's physical NICs. Locally administered,
  *  virtual and shared MACs are excluded: they don't identify one device. */
 export function identityMacs(inv: InventoryPayload): string[] {
-  const out = new Set<string>()
+  return physicalMacs(inv)
+}
+
+/** MAC of the NIC that holds the primary IP (what a network scan of that IP sees);
+ *  else the first physical global MAC. Locally administered MACs count here, since a
+ *  scan on that network sees them too. */
+export function primaryMac(inv: InventoryPayload): string | null {
+  const primary = inventoryIps(inv)[0]
   for (const nic of inv.network.interfaces ?? []) {
-    if (!nic.physical) continue
-    const { mac, macClass } = classifyMac(nic.mac)
-    if (mac && macClass === 'global') out.add(mac)
+    if (primary && (nic.ipv4 ?? []).includes(primary)) {
+      const { mac } = classifyMac(nic.mac)
+      if (mac) return mac
+    }
   }
-  return [...out]
+  return identityMacs(inv)[0] ?? null
 }
 
 /** The host key the identity resolver would derive from this machine's name. */
@@ -71,16 +80,30 @@ export interface BindingCandidate {
   lastScanned: string | Date | null
   /** Does the asset already have any MAC on record (row or address history)? */
   hasMac: boolean
+  /** Hardware UUIDs an agent reported for this asset (none for agentless assets). */
+  hardwareUuids?: string[]
 }
 export interface BindingInput {
   /** Asset the agent was bound to last time, if it still exists in the tenant. */
   boundAssetId: string | null
+  /** Hardware UUIDs on record for the bound asset. */
+  boundHardwareUuids?: string[]
+  /** This machine's hardware UUID (placeholders already dropped), if known. */
+  hardwareUuid?: string | null
+  hardwareUuidMatches?: BindingCandidate[]
+  osInstallIdMatches?: BindingCandidate[]
   macMatches: BindingCandidate[]
   hostKeyMatches: BindingCandidate[]
   ipMatches: BindingCandidate[]
 }
-export type MatchedBy = 'bound' | 'mac' | 'hostname' | 'ip'
+export type MatchedBy = 'bound' | 'hardware_uuid' | 'os_install_id' | 'mac' | 'hostname' | 'ip'
 export interface BindingDecision { assetId: string; matchedBy: MatchedBy }
+export interface BindingResult {
+  decision: BindingDecision | null
+  /** Assets that matched on OS install id, MAC, hostname or IP but have a different
+   *  hardware UUID: a cloned VM (or a replaced mainboard). Never bound; reported. */
+  differentHardware: string[]
+}
 
 const ts = (v: string | Date | null) => (v ? new Date(v).getTime() : 0)
 function best(cands: BindingCandidate[]): BindingCandidate {
@@ -94,27 +117,55 @@ const uniq = (cands: BindingCandidate[]) => [...new Map(cands.map(c => [c.assetI
 /**
  * Which asset is this machine?
  *   1. the asset it was bound to before (stable across DHCP and renames);
- *   2. a physical NIC's global MAC (strong evidence; several matches = duplicates,
- *      pick the My Assets / most recent one);
- *   3. the same specific hostname, only when exactly one asset has it;
- *   4. the same IP, only when exactly one asset has it AND that asset has no MAC on
+ *   2. the same hardware UUID (the strongest evidence; survives OS reinstalls);
+ *   3. the same OS install id (MachineGuid / machine-id);
+ *   4. a physical NIC's global MAC;
+ *   5. the same specific hostname, only when exactly one asset has it;
+ *   6. the same IP, only when exactly one asset has it AND that asset has no MAC on
  *      record (otherwise a MAC rule would have matched, so a different MAC = a
  *      different device that reused the IP).
- * null = no match: the caller creates a new asset.
+ * Several matches for 2-4 = duplicates: pick the My Assets / most recent one.
+ *
+ * VM-clone guard: a candidate whose recorded hardware UUID differs from this
+ * machine's is a different machine, whatever else matches (a clone keeps the OS
+ * install id, hostname and often the MACs). That includes the bound asset: an agent
+ * copied along with its VM must not keep writing into the original's asset.
+ * decision null = no match: the caller creates a new asset.
  */
 export function chooseBinding(input: BindingInput): BindingDecision | null {
-  if (input.boundAssetId) return { assetId: input.boundAssetId, matchedBy: 'bound' }
-  const mac = uniq(input.macMatches)
-  if (mac.length > 0) return { assetId: best(mac).assetId, matchedBy: 'mac' }
-  const host = uniq(input.hostKeyMatches)
-  if (host.length === 1) return { assetId: host[0]!.assetId, matchedBy: 'hostname' }
-  const ip = uniq(input.ipMatches).filter(c => !c.hasMac)
-  if (ip.length === 1) return { assetId: ip[0]!.assetId, matchedBy: 'ip' }
-  return null
+  return bindMachine(input).decision
 }
 
-/** Device type for an asset created from an inventory (existing assets keep theirs;
- *  the full device-type revision is a later phase). */
+export function bindMachine(input: BindingInput): BindingResult {
+  const hw = input.hardwareUuid ? [input.hardwareUuid] : []
+  const conflicts = new Set<string>()
+  const sameMachine = (cands: BindingCandidate[]) => uniq(cands).filter(c => {
+    if (differentHardware(hw, c.hardwareUuids)) { conflicts.add(c.assetId); return false }
+    return true
+  })
+  const result = (decision: BindingDecision | null): BindingResult => {
+    if (decision) conflicts.delete(decision.assetId)
+    return { decision, differentHardware: [...conflicts].sort() }
+  }
+
+  if (input.boundAssetId) {
+    if (!differentHardware(hw, input.boundHardwareUuids)) return result({ assetId: input.boundAssetId, matchedBy: 'bound' })
+    conflicts.add(input.boundAssetId)
+  }
+  const byHw = uniq(input.hardwareUuidMatches ?? [])
+  if (byHw.length > 0) return result({ assetId: best(byHw).assetId, matchedBy: 'hardware_uuid' })
+  const byOs = sameMachine(input.osInstallIdMatches ?? [])
+  if (byOs.length > 0) return result({ assetId: best(byOs).assetId, matchedBy: 'os_install_id' })
+  const mac = sameMachine(input.macMatches)
+  if (mac.length > 0) return result({ assetId: best(mac).assetId, matchedBy: 'mac' })
+  const host = sameMachine(input.hostKeyMatches)
+  if (host.length === 1) return result({ assetId: host[0]!.assetId, matchedBy: 'hostname' })
+  const ip = sameMachine(input.ipMatches).filter(c => !c.hasMac)
+  if (ip.length === 1) return result({ assetId: ip[0]!.assetId, matchedBy: 'ip' })
+  return result(null)
+}
+
+/** Device type the machine reports about itself (OS role, then chassis). */
 export function deviceTypeFor(inv: InventoryPayload): 'server' | 'workstation' | 'unknown' {
   const role = inv.os?.role
   if (role === 'server' || role === 'domain_controller') return 'server'
@@ -122,6 +173,66 @@ export function deviceTypeFor(inv: InventoryPayload): 'server' | 'workstation' |
   if (ff === 'server') return 'server'
   if (role === 'workstation' || ff === 'laptop' || ff === 'desktop') return 'workstation'
   return 'unknown'
+}
+
+/**
+ * Device type after an inventory. Sources rank manual > agent > auto (scans):
+ *  - a manual known type is never changed (the user's choice);
+ *  - otherwise a concrete type reported by the machine itself wins and is marked
+ *    'agent' ("confirmed by agent"), so later scans can no longer flip it
+ *    (see ingest-plan resolveIngestDeviceType);
+ *  - 'unknown' from the agent changes nothing.
+ */
+export function resolveAgentDeviceType(
+  existing: { deviceType: string; deviceTypeSource: string | null } | null,
+  reported: string,
+): { deviceType: string; deviceTypeSource: string; changed: boolean } {
+  const cur = existing ?? { deviceType: 'unknown', deviceTypeSource: 'auto' }
+  const curSource = cur.deviceTypeSource ?? 'auto'
+  const keep = { deviceType: cur.deviceType, deviceTypeSource: curSource, changed: false }
+  if (reported === 'unknown') return keep
+  if (curSource === 'manual' && cur.deviceType && cur.deviceType !== 'unknown') return keep
+  return { deviceType: reported, deviceTypeSource: 'agent', changed: reported !== cur.deviceType || curSource !== 'agent' }
+}
+
+// ── Address bookkeeping ──────────────────────────────────────────
+export interface AgentAddressRow {
+  addressId: string
+  assetId: string
+  networkKey: string | null
+  ipAddress: string
+  macAddress: string | null
+}
+export type AgentAddressOp =
+  | { k: 'refresh'; addressId: string; macAddress: string | null; networkKey: string | null }
+  | { k: 'end'; addressId: string }
+  | { k: 'insert'; networkKey: string | null; ipAddress: string; macAddress: string | null }
+
+/**
+ * Keep asset_addresses in step with where the machine says it is, the way scan ingest
+ * does for a matched host:
+ *  - already at this IP on this network (or an unscoped row with this IP): refresh it
+ *    and fill a missing MAC / network;
+ *  - otherwise end its old current address on this network (DHCP change), end another
+ *    asset's current hold on this (network, IP) (the IP was reused), and insert the new one.
+ * Addresses on other networks are left alone, as in scan ingest.
+ * `current` = current rows of this asset plus current holders of (networkKey, ip).
+ */
+export function planAgentAddress(
+  assetId: string, ip: string, mac: string | null, networkKey: string | null, current: AgentAddressRow[],
+): AgentAddressOp[] {
+  const mine = current.filter(r => r.assetId === assetId)
+  const here = mine.find(r => r.ipAddress === ip && (r.networkKey === networkKey || r.networkKey === null))
+  if (here) return [{ k: 'refresh', addressId: here.addressId, macAddress: here.macAddress ?? mac, networkKey: here.networkKey ?? networkKey }]
+  const ops: AgentAddressOp[] = []
+  if (networkKey !== null) {
+    for (const r of mine) if (r.networkKey === networkKey) ops.push({ k: 'end', addressId: r.addressId })
+    for (const r of current) {
+      if (r.assetId !== assetId && r.networkKey === networkKey && r.ipAddress === ip) ops.push({ k: 'end', addressId: r.addressId })
+    }
+  }
+  ops.push({ k: 'insert', networkKey, ipAddress: ip, macAddress: mac })
+  return ops
 }
 
 // ── Software sync ────────────────────────────────────────────────

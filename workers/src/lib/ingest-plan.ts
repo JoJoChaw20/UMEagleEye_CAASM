@@ -51,6 +51,8 @@ export interface PrefetchAsset {
 export interface IdentityPrefetch {
   addresses: PrefetchAddress[]
   assets: PrefetchAsset[]
+  /** MACs agents reported for their own machines (rule 1-agent), preferred first. */
+  agentMacs?: { mac: string; assetId: string }[]
 }
 
 export type DeviceTypeStr = 'server' | 'workstation' | 'network' | 'iot' | 'unknown'
@@ -136,9 +138,13 @@ export function resolveIngestDeviceType(
   existing: { deviceType: string; deviceTypeSource: string | null } | null,
   incoming: string,
   isPassive: boolean,
-): { deviceType: string; deviceTypeSource: 'auto' | 'manual'; corrected: boolean } {
+): { deviceType: string; deviceTypeSource: 'auto' | 'manual' | 'agent'; corrected: boolean } {
   if (!existing) return { deviceType: incoming, deviceTypeSource: 'auto', corrected: false }
   const known = !!existing.deviceType && existing.deviceType !== 'unknown'
+  // Reported by the agent running on the machine itself: scans never change it.
+  if (existing.deviceTypeSource === 'agent' && known) {
+    return { deviceType: existing.deviceType, deviceTypeSource: 'agent', corrected: false }
+  }
   if (existing.deviceTypeSource === 'manual') {
     if (known) return { deviceType: existing.deviceType, deviceTypeSource: 'manual', corrected: false }
     // manual + unknown → a concrete scan result fills it and becomes auto; else untouched.
@@ -215,9 +221,13 @@ export function planIngest(
       hostKeyAssetIds = [...ids]
     }
 
+    const agentMacAssetIds = (macClass === 'global' && mac)
+      ? [...new Set((prefetch.agentMacs ?? []).filter(m => m.mac === mac).map(m => m.assetId))].filter(id => assetState.has(id))
+      : []
+
     const decision = matchAsset(
       { macClass, mac, ip: host.ip, hostKey, networkKey },
-      { macAddresses, hostKeyAssetIds, netIpAddresses },
+      { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds },
     )
 
     let assetId: string

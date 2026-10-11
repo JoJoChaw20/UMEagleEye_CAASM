@@ -340,7 +340,7 @@ export default function AssetDetailPage() {
             <Field label="Vendor">{asset.hardwareVendor}</Field>
             <Field label="Device type">
               {deviceMeta.label}
-              <span className="block text-[11px] text-dark-400">{asset.deviceTypeSource === 'manual' ? 'Set by hand' : 'Inferred from scans'}</span>
+              <span className="block text-[11px] text-dark-400">{asset.deviceTypeSource === 'manual' ? 'Set by hand' : asset.deviceTypeSource === 'agent' ? 'Confirmed by agent' : 'Inferred from scans'}</span>
             </Field>
             <Field label="Owner">{asset.owner}</Field>
             <Field label="Host key">{asset.hostKey}</Field>

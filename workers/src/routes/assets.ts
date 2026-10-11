@@ -5,13 +5,13 @@ import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, t
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, assetAddresses, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
+import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs } from '../db/schema'
 import { rescoreAssets, scoreAsset } from '../lib/rescore'
 import { computeCriticality } from '../lib/criticality'
 import { normalizeMac } from '../lib/mac'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
-import { findDuplicateGroups, type DupAsset, type DupAddress } from '../lib/duplicates'
+import { findDuplicateGroups, type DupAsset, type DupAddress, type DupIdentifier } from '../lib/duplicates'
 import { planMerge, type MergeAsset, type MergeOp, type MergeRelated } from '../lib/merge'
 import { buildBaseline, buildManualBaseline, extractPorts, extractOsVersion, mergeBaselineFields, type AssetBaseline } from '../services/drift'
 
@@ -22,9 +22,35 @@ const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin']
 const DELETE_ROLES = ['tenant_superadmin']
 const MERGE_ROLES  = ['tenant_superadmin']   // same guard as delete (destructive, irreversible)
 
-// Map a pure MergeOp to a Drizzle statement for one db.batch. userId/tenantId are
+// Map a pure MergeOp to the Drizzle statement(s) for one db.batch. userId/tenantId are
 // supplied here (the pure planner has no request context).
-function mergeOpToStmt(db: ReturnType<typeof getDb>, op: MergeOp, ctx: { userId: string; tenantId: string | null }): unknown {
+function mergeOpToStmts(db: ReturnType<typeof getDb>, op: MergeOp, ctx: { userId: string; tenantId: string | null }): unknown[] {
+  switch (op.k) {
+    case 'keepSoftware': return [
+      db.delete(assetSoftware).where(inArray(assetSoftware.assetId, op.dropAssetIds)),
+      ...(op.keepAssetId !== op.survivorId
+        ? [db.update(assetSoftware).set({ assetId: op.survivorId }).where(eq(assetSoftware.assetId, op.keepAssetId))]
+        : []),
+    ]
+    // Drop loser rows whose (kind, value) the survivor (or an earlier loser row) already
+    // has, so the move cannot hit the (asset, kind, value) unique index.
+    case 'moveIdentifiers': return [
+      db.delete(assetIdentifiers).where(and(
+        inArray(assetIdentifiers.assetId, op.loserIds),
+        sql`EXISTS (SELECT 1 FROM ${assetIdentifiers} b WHERE b.kind = ${assetIdentifiers.kind} AND b.value = ${assetIdentifiers.value}
+          AND b.identifier_id <> ${assetIdentifiers.identifierId}
+          AND (b.asset_id = ${op.survivorId}::uuid OR (b.asset_id IN ${op.loserIds} AND b.identifier_id < ${assetIdentifiers.identifierId})))`,
+      )),
+      db.update(assetIdentifiers).set({ assetId: op.survivorId }).where(inArray(assetIdentifiers.assetId, op.loserIds)),
+    ]
+    case 'moveAgentBinding': return [
+      db.update(agents).set({ hostAssetId: op.survivorId }).where(inArray(agents.hostAssetId, op.loserIds)),
+    ]
+    default: return [mergeOpToStmt(db, op, ctx)]
+  }
+}
+
+function mergeOpToStmt(db: ReturnType<typeof getDb>, op: Exclude<MergeOp, { k: 'keepSoftware' | 'moveIdentifiers' | 'moveAgentBinding' }>, ctx: { userId: string; tenantId: string | null }): unknown {
   switch (op.k) {
     case 'endAddress':        return db.update(assetAddresses).set({ endedAt: new Date() }).where(eq(assetAddresses.addressId, op.addressId))
     case 'endAddressAt':      return db.update(assetAddresses).set({ endedAt: new Date(op.endedAt) }).where(eq(assetAddresses.addressId, op.addressId))
@@ -253,8 +279,14 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   }
 })
 
-// ── GET /duplicates ─── detect legacy duplicate asset groups (tenant-scoped) ──
-// Subrequests: 2 (tenant assets, tenant addresses).
+// Machine identifiers agents reported for these assets (duplicate evidence).
+function tenantIdentifiers(db: ReturnType<typeof getDb>, assetIds: string[]): Promise<DupIdentifier[]> {
+  return db.select({ assetId: assetIdentifiers.assetId, kind: assetIdentifiers.kind, value: assetIdentifiers.value })
+    .from(assetIdentifiers).where(inArray(assetIdentifiers.assetId, assetIds))
+}
+
+// ── GET /duplicates ─── detect duplicate asset groups (tenant-scoped) ──
+// Subrequests: 3 (tenant assets, tenant addresses, agent-reported machine identifiers).
 app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -275,7 +307,8 @@ app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) =>
         }).from(assetAddresses).where(inArray(assetAddresses.assetId, ids))
       : []
 
-    const groups = findDuplicateGroups(assetRows as DupAsset[], addrRows as DupAddress[])
+    const idRows = ids.length ? await tenantIdentifiers(db, ids) : []
+    const groups = findDuplicateGroups(assetRows as DupAsset[], addrRows as DupAddress[], undefined, idRows)
     return c.json({ groups, count: groups.length, safe_count: groups.filter(g => g.confidence === 'safe').length })
   } catch (err) {
     console.error('assets GET /duplicates error:', err)
@@ -336,7 +369,7 @@ app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('jso
       })
     }
 
-    const stmts = plan.ops.map(op => mergeOpToStmt(db, op, { userId: user.userId, tenantId }))
+    const stmts = plan.ops.flatMap(op => mergeOpToStmts(db, op, { userId: user.userId, tenantId }))
     await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
     return c.json({ merged: true, survivor_id, removed: uniqueLosers, counts: plan.counts })
   } catch (err) {
@@ -347,7 +380,7 @@ app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('jso
 
 // ── POST /duplicates/merge-safe ─── auto-merge up to 4 SAFE groups ──
 // Groups are RECOMPUTED server-side (client group contents are never trusted).
-// Subrequests: 2 (assets, addresses) + 2 (relationships, topology) + up to 4 batches = ~8.
+// Subrequests: 3 (assets, addresses, identifiers) + 2 (relationships, topology) + up to 4 batches = ~9.
 const mergeSafeSchema = z.object({ group_ids: z.array(z.string()).optional(), dry_run: z.boolean().optional() })
 app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('json', mergeSafeSchema), async (c) => {
   try {
@@ -367,7 +400,8 @@ app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES),
         }).from(assetAddresses).where(inArray(assetAddresses.assetId, allAssetIds))
       : []
 
-    let groups = findDuplicateGroups(assetRows as unknown as DupAsset[], addrRows as DupAddress[])
+    const idRows = allAssetIds.length ? await tenantIdentifiers(db, allAssetIds) : []
+    let groups = findDuplicateGroups(assetRows as unknown as DupAsset[], addrRows as DupAddress[], undefined, idRows)
       .filter(g => g.confidence === 'safe')
     if (group_ids && group_ids.length) groups = groups.filter(g => group_ids.includes(g.groupId))
 
@@ -401,7 +435,7 @@ app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES),
       const plan = planMerge(survivor as MergeAsset, losers as MergeAsset[], related)
       if (dry_run) { merged.push({ group_id: g.groupId, survivor_id: survivorId, removed: losers.map(l => l.assetId) }); continue }
       try {
-        const stmts = plan.ops.map(op => mergeOpToStmt(db, op, { userId: user.userId, tenantId: survivor.tenantId }))
+        const stmts = plan.ops.flatMap(op => mergeOpToStmts(db, op, { userId: user.userId, tenantId: survivor.tenantId }))
         await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
         merged.push({ group_id: g.groupId, survivor_id: survivorId, removed: losers.map(l => l.assetId) })
       } catch (e) {
@@ -467,8 +501,9 @@ app.get('/:assetId/software', authMiddleware, requireRoles(...READ_ROLES), async
 })
 
 // ── DELETE /:assetId/inventory — remove the agent-reported inventory of one asset ──
-// Clears the stored endpoint inventory and the installed-software list (personal-data
-// removal on request). The asset itself, its scans and alerts stay. The agent on that
+// Clears the stored endpoint inventory, the installed-software list and the machine
+// identifiers the agent reported (personal-data removal on request). The asset itself,
+// its scans and alerts stay. The agent on that
 // machine sends a fresh inventory at its next run unless it is stopped or set to
 // --no-inventory. Subrequests: 1 (asset) + 1 (count) + 1 (batch).
 app.delete('/:assetId/inventory', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
@@ -488,6 +523,7 @@ app.delete('/:assetId/inventory', authMiddleware, requireRoles(...WRITE_ROLES), 
     const softwareRemoved = counted?.n ?? 0
     await db.batch([
       db.delete(assetSoftware).where(eq(assetSoftware.assetId, assetId)),
+      db.delete(assetIdentifiers).where(eq(assetIdentifiers.assetId, assetId)),
       db.update(assets).set({ endpointInventory: null, inventoryCollectedAt: null, updatedAt: new Date() }).where(eq(assets.assetId, assetId)),
       db.insert(auditLogs).values({
         userId: user.userId, tenantId: asset.tenantId, actionType: 'asset.inventory_clear', targetEntity: assetId,

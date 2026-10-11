@@ -45,12 +45,17 @@ older version keeps working; its secrets move to the credential store the next t
 ## Endpoint inventory
 While `run` is active the agent collects the inventory of its own machine on the first poll and then every
 `inventory_interval` seconds (default 6 hours), and posts it to `POST /agents/:id/inventory`. The server matches it
-to the machine's asset (previous binding, then physical-NIC MAC, then a unique hostname, then a unique IP held by an
-asset with no MAC) or creates a new asset in Discovered, stores the facts on the asset and syncs its software list.
+to the machine's asset (previous binding, then hardware UUID, then MachineGuid, then a physical-NIC MAC, then a unique
+hostname, then a unique IP held by an asset with no MAC) or creates a new asset in Discovered. A candidate whose recorded
+hardware UUID differs is never matched (a cloned VM keeps its MachineGuid, name and often its MACs, but not its
+hardware UUID); such pairs show up under Duplicates for review. The server stores the facts and the machine
+identifiers (`asset_identifiers`), moves the asset's address with the machine, marks its device type "confirmed by
+agent" (a type set by hand is kept), recomputes criticality and syncs the software list. A network scan that sees
+any NIC the agent listed (for example the Ethernet MAC of a laptop first seen on Wi-Fi) updates the same asset.
 
 | Section | Source on Windows | Used in the system |
 |---|---|---|
-| Identity (hostname, domain, MachineGuid, SMBIOS UUID, serial) | registry, CIM | binding to the right asset; later: identity resolver and duplicates |
+| Identity (hostname, domain, MachineGuid, SMBIOS UUID, serial) | registry, CIM | binding to the right asset, scan matching and duplicate detection (placeholder UUIDs ignored; serial shown only) |
 | Hardware (model, form factor, CPU, RAM, disks, BIOS) | CIM, Storage module | asset detail; later: device-type classification |
 | OS and patches (build, role, last update, pending restart) | CIM, Get-HotFix, registry | asset detail; later: criticality and posture |
 | Security posture (firewall, antivirus, BitLocker, Secure Boot, TPM, UAC, RDP, SMBv1, local admins) | NetSecurity, Defender, SecurityCenter2, registry | asset detail; later: posture score and alerts |
