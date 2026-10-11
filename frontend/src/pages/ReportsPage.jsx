@@ -107,7 +107,7 @@ function buildPdf(data, reportType) {
 
   // ── 3. Asset Distribution ────────────────────────────────────────
   sectionTitle('ASSET DISTRIBUTION BY TYPE')
-  const typeColors = { server:[30,64,175], workstation:[22,163,74], network:[124,58,237], iot:[217,119,6], unknown:[100,116,139] }
+  const typeColors = { server:[30,64,175], workstation:[22,163,74], network:[124,58,237], iot:[217,119,6], mobile:[219,39,119], unknown:[100,116,139] }
   const byType = data.asset_by_type ?? []
   const total  = byType.reduce((a,r)=>a+(r.count??0),0)||1
   let tx = ml

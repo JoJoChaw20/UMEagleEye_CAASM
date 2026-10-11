@@ -8,6 +8,7 @@ const TYPE_COLORS = {
   workstation: '#00e5ff',
   network:     '#ffc400',
   iot:         '#ff9800',
+  mobile:      '#ec4899',
   unknown:     '#7b7f87',
 }
 const EDGE_GRAPH_COLORS = {
@@ -32,7 +33,7 @@ const EDGE_LABELS = {
   exposes_service:  'Exposes',
 }
 
-const ALL_TYPES    = ['server', 'workstation', 'network', 'iot', 'unknown']
+const ALL_TYPES    = ['server', 'workstation', 'network', 'iot', 'mobile', 'unknown']
 
 // The asset's /24 for the "no network device" notice; falls back for non-IPv4.
 const subnet24 = (ip) =>

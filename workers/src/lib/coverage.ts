@@ -4,7 +4,7 @@
  * Only machines with an agent have a posture, so every aggregate says how many
  * assets it covers (fairness rule 4): "posture 78 across 12 assessed; 57 unassessed".
  * Unassessed is its own state and never averaged in as good (rule 1). Servers and
- * workstations are the assets an agent can run on; network and IoT devices are
+ * workstations are the assets an agent can run on; network, IoT and mobile devices are
  * reported as "not applicable", unidentified devices separately (their type is not
  * known yet, so whether an agent could run there is not known either).
  * Tested by scripts/scoring-v2-demo.ts.
@@ -57,7 +57,7 @@ export function summarizeCoverage(rows: CoverageAsset[]) {
     total_assets: rows.length,
     agent_capable: capable.length,
     with_agent: withAgent.length,
-    not_applicable: rows.filter(a => a.device_type === 'network' || a.device_type === 'iot').length,
+    not_applicable: rows.filter(a => ['network', 'iot', 'mobile'].includes(a.device_type)).length,
     unidentified: rows.filter(a => a.device_type === 'unknown' && a.inventory_at == null).length,
     no_agent: { count: noAgent.length, items: noAgent.slice(0, 8).map(a => ({ ...brief(a), criticality: a.criticality })) },
     posture: {

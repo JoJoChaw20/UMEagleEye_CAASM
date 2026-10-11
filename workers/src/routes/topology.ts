@@ -51,7 +51,7 @@ export function classifyAsset(asset: typeof assets.$inferSelect): { nodeType: No
 
   if (dt === 'server')      return { nodeType: 'host', layer: asset.isInternetFacing ? 2 : 4 }
   if (dt === 'workstation') return { nodeType: 'host', layer: 5 }
-  if (dt === 'iot')         return { nodeType: 'host', layer: 6 }
+  if (dt === 'iot' || dt === 'mobile') return { nodeType: 'host', layer: 6 }
   return { nodeType: 'host', layer: 4 }
 }
 

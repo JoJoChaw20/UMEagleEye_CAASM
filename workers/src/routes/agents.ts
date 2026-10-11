@@ -472,7 +472,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         ...postureColumns(stored, collectedAt),
         lastScanned: now,
         updatedAt: now,
-        hostname: sql`COALESCE(${assets.hostname}, ${hostname})`,
+        hostname: sql`COALESCE(NULLIF(${assets.hostname}, ''), ${hostname})`,
         hardwareVendor: sql`COALESCE(${assets.hardwareVendor}, ${vendor})`,
         hostKey: sql`COALESCE(${assets.hostKey}, ${hostKey})`,
       }).where(eq(assets.assetId, assetId)),

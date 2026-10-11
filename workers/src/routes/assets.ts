@@ -134,7 +134,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 
     if (device_type) {
       conditions.push(
-        eq(assets.deviceType, device_type as 'server' | 'workstation' | 'network' | 'iot' | 'unknown'),
+        eq(assets.deviceType, device_type as 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown'),
       )
     }
 
@@ -595,7 +595,7 @@ const createAssetSchema = z.object({
   hostname: z.string().max(255).nullish(),
   mac_address: z.string().max(17).nullish(),
   owner: z.string().max(255).optional(),
-  device_type: z.enum(['server', 'workstation', 'network', 'iot', 'unknown']).optional(),
+  device_type: z.enum(['server', 'workstation', 'network', 'iot', 'mobile', 'unknown']).optional(),
   hardware_vendor: z.string().max(255).optional(),
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
@@ -734,7 +734,7 @@ const updateAssetSchema = z.object({
   hostname: z.string().max(255).optional(),
   mac_address: z.string().max(17).optional(),
   owner: z.string().max(255).optional(),
-  device_type: z.enum(['server', 'workstation', 'network', 'iot', 'unknown']).optional(),
+  device_type: z.enum(['server', 'workstation', 'network', 'iot', 'mobile', 'unknown']).optional(),
   hardware_vendor: z.string().max(255).optional(),
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
@@ -769,7 +769,8 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
 
     const updateData: Partial<typeof assets.$inferInsert> = { updatedAt: new Date() }
     if (body.ip_address !== undefined) updateData.ipAddress = body.ip_address
-    if (body.hostname !== undefined) updateData.hostname = body.hostname
+    // An emptied name field means "no name" (NULL), so scans can fill it again.
+    if (body.hostname !== undefined) updateData.hostname = body.hostname.trim() || null
     if (body.mac_address !== undefined) {
       const nm = normalizeMac(body.mac_address)
       if (body.mac_address.trim() !== '' && nm === null) {
@@ -777,7 +778,8 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
       }
       updateData.macAddress = nm
     }
-    if (body.owner !== undefined) updateData.owner = body.owner
+    // An emptied owner field means "no owner" (NULL), like the hostname.
+    if (body.owner !== undefined) updateData.owner = body.owner.trim() || null
     // A hand-set device type is user-owned: mark it manual so scans never change it.
     if (body.device_type !== undefined) {
       updateData.deviceType = body.device_type
@@ -1076,7 +1078,7 @@ function parseCSVRow(line: string): string[] {
   return result
 }
 
-const VALID_DEVICE_TYPES = new Set(['server', 'workstation', 'network', 'iot', 'unknown'])
+const VALID_DEVICE_TYPES = new Set(['server', 'workstation', 'network', 'iot', 'mobile', 'unknown'])
 
 app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
@@ -1119,7 +1121,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       hostname?: string
       macAddress?: string
       owner?: string
-      deviceType: 'server' | 'workstation' | 'network' | 'iot' | 'unknown'
+      deviceType: 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown'
       hardwareVendor?: string
       osInfo: Record<string, unknown>
       criticalityScore: number

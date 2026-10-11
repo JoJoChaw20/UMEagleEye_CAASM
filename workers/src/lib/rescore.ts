@@ -20,6 +20,7 @@ import { assets, tenants } from '../db/schema'
 import { computeCriticality, type ScoringResult } from './criticality'
 import { computeCriticalityV2, type ScoringResultV2 } from './criticalityV2'
 import { POSTURE_MODEL, evaluatePosture } from './endpointPosture'
+import { applyHint, deviceTypeHint, type DeviceTypeHint } from './deviceHints'
 
 type DbClient = ReturnType<typeof getDb>
 
@@ -31,6 +32,11 @@ export interface RescoreChange {
   assetId: string
   score: number
   model: CriticalityModel
+  /** Classifier v2: refreshed hint, and the type when a high-confidence hint filled an unknown one. */
+  hint?: DeviceTypeHint | null
+  deviceType?: string
+  deviceTypeSource?: string
+  baselineState?: unknown
   posture?: { postureScore: number | null; postureModel: number; postureChecks: unknown; postureAssessedAt: Date | null }
 }
 export interface RescorePlan { scanned: number; changes: RescoreChange[] }
@@ -46,6 +52,8 @@ export interface ScoreInput {
   internetFacingOverride?: boolean | null
   /** OS role the machine's agent reported (endpoint_inventory.os.role). */
   agentRole?: string | null
+  /** Classifier v2 hint stored on the asset (assets.device_type_hint). */
+  deviceTypeHint?: DeviceTypeHint | null
 }
 
 /** The OS role an agent reported, from a stored endpoint inventory. */
@@ -61,7 +69,7 @@ export function scoreDetail(input: ScoreInput, model: CriticalityModel): Scoring
     return computeCriticalityV2({
       deviceType: input.deviceType, deviceTypeSource: input.deviceTypeSource,
       isInternetFacing: input.isInternetFacing, internetFacingOverride: input.internetFacingOverride,
-      hostname: input.hostname, osInfo, agentRole: input.agentRole,
+      hostname: input.hostname, osInfo, agentRole: input.agentRole, deviceTypeHint: input.deviceTypeHint,
     })
   }
   return computeCriticality({
@@ -82,12 +90,13 @@ export function scoreAsset(input: ScoreInput, model: CriticalityModel = 1): numb
 
 /** Scoring inputs from a full assets row. */
 export function scoreInputOf(row: Pick<typeof assets.$inferSelect,
-  'deviceType' | 'deviceTypeSource' | 'isInternetFacing' | 'internetFacingOverride' | 'hostname' | 'osInfo' | 'owner' | 'endpointInventory'>): ScoreInput {
+  'deviceType' | 'deviceTypeSource' | 'isInternetFacing' | 'internetFacingOverride' | 'hostname' | 'osInfo' | 'owner' | 'endpointInventory'>
+  & Partial<Pick<typeof assets.$inferSelect, 'deviceTypeHint'>>): ScoreInput {
   return {
     deviceType: row.deviceType, deviceTypeSource: row.deviceTypeSource,
     isInternetFacing: row.isInternetFacing, internetFacingOverride: row.internetFacingOverride,
     hostname: row.hostname, osInfo: row.osInfo as Record<string, unknown> | null, owner: row.owner,
-    agentRole: agentRoleOf(row.endpointInventory),
+    agentRole: agentRoleOf(row.endpointInventory), deviceTypeHint: (row.deviceTypeHint as DeviceTypeHint | null) ?? null,
   }
 }
 
@@ -101,25 +110,34 @@ export async function tenantCriticalityModel(db: DbClient, tenantId: string | nu
 type RescoreRow = Pick<typeof assets.$inferSelect,
   'assetId' | 'deviceType' | 'isInternetFacing' | 'hostname' | 'osInfo' | 'criticalityScore' | 'owner'>
   & Partial<Pick<typeof assets.$inferSelect,
-    'deviceTypeSource' | 'internetFacingOverride' | 'endpointInventory' | 'inventoryCollectedAt' | 'criticalityModel' | 'postureModel' | 'postureScore'>>
+    'deviceTypeSource' | 'internetFacingOverride' | 'endpointInventory' | 'inventoryCollectedAt' | 'criticalityModel' | 'postureModel' | 'postureScore'
+    | 'macAddress' | 'hardwareVendor' | 'deviceTypeHint' | 'baselineState'>>
 
 /**
  * PURE: recompute scores in memory and return only the assets whose score or model
  * differs from the stored value, plus agent assets whose posture is missing or from
- * an older posture model. No DB access — unit-testable (see rescore-demo).
+ * an older posture model, plus assets whose classifier v2 hint changed (a
+ * high-confidence hint also fills an unknown type). No DB access — unit-testable
+ * (see rescore-demo, device-hints-demo).
  */
 export function planRescore(rows: RescoreRow[], model: CriticalityModel = 1): RescorePlan {
   const changes: RescoreChange[] = []
   for (const asset of rows) {
+    const osInfo = asset.osInfo as Record<string, unknown> | null
+    const hint = deviceTypeHint({ hostname: asset.hostname, mac: asset.macAddress, vendor: asset.hardwareVendor, osInfo })
+    const typed = applyHint({ deviceType: asset.deviceType, deviceTypeSource: asset.deviceTypeSource ?? null }, hint)
+    // Rows read without the hint column (older callers) never count as a hint change.
+    const hintChanged = 'deviceTypeHint' in asset && JSON.stringify(hint) !== JSON.stringify(asset.deviceTypeHint ?? null)
     const score = scoreAsset({
-      deviceType: asset.deviceType,
-      deviceTypeSource: asset.deviceTypeSource ?? null,
+      deviceType: typed.deviceType,
+      deviceTypeSource: typed.deviceTypeSource,
       isInternetFacing: asset.isInternetFacing,
       internetFacingOverride: asset.internetFacingOverride ?? null,
       hostname: asset.hostname,
-      osInfo: asset.osInfo as Record<string, unknown> | null,
+      osInfo,
       owner: asset.owner,
       agentRole: agentRoleOf(asset.endpointInventory),
+      deviceTypeHint: hint,
     }, model)
     const storedModel = asset.criticalityModel ?? 1
     let posture: RescoreChange['posture']
@@ -128,8 +146,18 @@ export function planRescore(rows: RescoreRow[], model: CriticalityModel = 1): Re
       // Assessed = when the agent collected the facts, not when they were scored.
       posture = { postureScore: r.score, postureModel: r.model, postureChecks: r.checks, postureAssessedAt: asset.inventoryCollectedAt ?? null }
     }
-    if (score !== asset.criticalityScore || storedModel !== model || posture) {
-      changes.push({ assetId: asset.assetId, score, model, ...(posture ? { posture } : {}) })
+    let typeChange: Pick<RescoreChange, 'deviceType' | 'deviceTypeSource' | 'baselineState'> = {}
+    if (typed.changed) {
+      typeChange = { deviceType: typed.deviceType, deviceTypeSource: typed.deviceTypeSource }
+      // Filling an unknown type is classification, not drift: move an automatic baseline with it.
+      const b = asset.baselineState as Record<string, unknown> | null | undefined
+      if (b && b['auto_set'] === true && b['device_type'] === asset.deviceType) typeChange.baselineState = { ...b, device_type: typed.deviceType }
+    }
+    if (score !== asset.criticalityScore || storedModel !== model || posture || hintChanged || typed.changed) {
+      changes.push({
+        assetId: asset.assetId, score, model, ...(posture ? { posture } : {}),
+        ...(hintChanged || typed.changed ? { hint } : {}), ...typeChange,
+      })
     }
   }
   return { scanned: rows.length, changes }
@@ -176,6 +204,9 @@ export async function rescoreAssets(
     const stmts = slice.map(ch => db.update(assets).set({
       criticalityScore: ch.score, criticalityModel: ch.model, updatedAt: now,
       ...(ch.posture ?? {}),
+      ...('hint' in ch ? { deviceTypeHint: ch.hint ?? null } : {}),
+      ...(ch.deviceType ? { deviceType: ch.deviceType as typeof assets.$inferInsert['deviceType'], deviceTypeSource: ch.deviceTypeSource } : {}),
+      ...(ch.baselineState ? { baselineState: ch.baselineState } : {}),
     }).where(eq(assets.assetId, ch.assetId)))
     await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
   }

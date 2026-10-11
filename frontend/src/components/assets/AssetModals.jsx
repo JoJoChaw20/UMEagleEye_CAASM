@@ -4,6 +4,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { Plus, X, Save, ToggleLeft, ToggleRight, Upload, Download, FileText } from 'lucide-react'
 import client from '../../api/client'
+import { DEVICE_TYPE_META } from './assetMeta'
+
+// Built from DEVICE_TYPE_META so a new type (e.g. mobile) can never be missing here: a
+// value the list lacks makes the browser show the first option instead, and saving then
+// silently writes the old value back.
+function DeviceTypeOptions() {
+  return Object.entries(DEVICE_TYPE_META).map(([value, m]) => <option key={value} value={value}>{m.label}</option>)
+}
 
 // ── Add Asset Modal ───────────────────────────────────────────────
 export function AddAssetModal({ onClose, onSave }) {
@@ -97,11 +105,7 @@ export function AddAssetModal({ onClose, onSave }) {
           <div>
             <label className="block text-xs text-dark-400 mb-1">Device Type</label>
             <select value={form.device_type} onChange={set('device_type')} className="input-field w-full text-sm">
-              <option value="unknown">Unknown</option>
-              <option value="server">Server</option>
-              <option value="workstation">Workstation</option>
-              <option value="network">Network Device</option>
-              <option value="iot">IoT</option>
+              <DeviceTypeOptions />
             </select>
           </div>
 
@@ -175,13 +179,16 @@ export function EditAssetModal({ asset, onClose, onSave }) {
     e.preventDefault()
     setSaving(true); setError(null)
     try {
-      await onSave({
-        owner: form.owner,
-        device_type: form.device_type,
-        hostname: form.hostname,
-        is_internet_facing: form.is_internet_facing,
-        ...(showBaselineOption ? { update_baseline: updateBaseline } : {}),
-      })
+      // Send only what was changed: the server treats a sent exposure as an analyst
+      // confirmation and a sent type as "set by hand", so untouched fields must stay out.
+      const changes = {}
+      if (form.owner !== (asset.owner ?? '')) changes.owner = form.owner
+      if (form.device_type !== (asset.deviceType ?? 'unknown')) changes.device_type = form.device_type
+      if (form.hostname !== (asset.hostname ?? '')) changes.hostname = form.hostname
+      if (form.is_internet_facing !== !!asset.isInternetFacing) changes.is_internet_facing = form.is_internet_facing
+      if (Object.keys(changes).length) {
+        await onSave({ ...changes, ...(showBaselineOption ? { update_baseline: updateBaseline } : {}) })
+      }
       onClose()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to save changes')
@@ -233,11 +240,7 @@ export function EditAssetModal({ asset, onClose, onSave }) {
           <div>
             <label className="block text-xs text-dark-400 mb-1">Device Type</label>
             <select value={form.device_type} onChange={set('device_type')} className="input-field w-full text-sm">
-              <option value="unknown">Unknown</option>
-              <option value="server">Server</option>
-              <option value="workstation">Workstation</option>
-              <option value="network">Network Device</option>
-              <option value="iot">IoT</option>
+              <DeviceTypeOptions />
             </select>
           </div>
           <div>

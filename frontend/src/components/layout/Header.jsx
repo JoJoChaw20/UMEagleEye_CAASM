@@ -11,7 +11,7 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System', Icon: Monitor },
 ]
 
-const DEVICE_ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡' }
+const DEVICE_ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡', mobile: '📱' }
 
 function formatRelTime(ts) {
   const diff = (Date.now() - new Date(ts).getTime()) / 1000

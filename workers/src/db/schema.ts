@@ -10,8 +10,9 @@ const now = () => sql`now()`
 const newUuid = () => sql`gen_random_uuid()`
 
 // ─── Enums ─────────────────────────────────────────────────────
+// 'mobile' (phones, tablets) added in Phase C; before that phones were filed under iot.
 export const deviceTypeEnum = pgEnum('device_type', [
-  'server', 'workstation', 'network', 'iot', 'unknown'
+  'server', 'workstation', 'network', 'iot', 'unknown', 'mobile'
 ])
 export const severityEnum = pgEnum('severity', [
   'low', 'medium', 'high', 'critical'
@@ -94,6 +95,9 @@ export const assets = pgTable('assets', {
   // PATCH). A manual type is never changed by a scan; an auto type may be corrected by
   // a later active scan. Default 'auto' is a safety net — the code sets it explicitly.
   deviceTypeSource: text('device_type_source').notNull().default('auto'),
+  // Classifier v2 hint (lib/deviceHints.ts): suggested type with rule, evidence and
+  // confidence. High-confidence hints fill an unknown type; the rest wait for an analyst.
+  deviceTypeHint: jsonb('device_type_hint'),
   hardwareVendor: varchar('hardware_vendor', { length: 255 }),
   osInfo: jsonb('os_info').default({}),
   criticalityScore: smallint('criticality_score').notNull().default(5),

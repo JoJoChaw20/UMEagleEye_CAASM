@@ -158,7 +158,11 @@ console.log('\n=== S4 name traps ===')
 {
   const r = runScenario(S4_NAME_TRAPS)
   check('S4 .254 workstation stays workstation', r.get('ws')!.dev, 'workstation')
-  check('S4 .1 IoT stays iot (not promoted to network)', r.get('iot')!.dev, 'iot')
+  // Phase C: an "android" OS now maps to mobile (it was iot). This fixture is an Android-based
+  // camera, so the OS rule alone files it as mobile — a known ambiguity (Android also runs TV
+  // boxes and cameras) that an analyst corrects by hand. What this case guards is unchanged:
+  // a device at .1 must not be promoted to network.
+  check('S4 .1 Android device stays an endpoint (not promoted to network)', r.get('iot')!.dev, 'mobile')
   check('S4 a .1 host WITH real network evidence is still network', r.get('net')!.dev, 'network')
   check('S4 a server named like a switch stays a server (host)', [r.get('db')!.dev, r.get('db')!.nodeType], ['server', 'host'])
   check('S4 a real switch (SNMP, no hostname) is network', r.get('sw')!.dev, 'network')

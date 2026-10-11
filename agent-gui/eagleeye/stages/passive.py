@@ -8,22 +8,34 @@ from ..pipeline.runner import PipelineContext, Stage, StageError
 
 
 def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite) -> list[HostRecord]:
-    """Enrich ARP-discovered hosts with mDNS/NetBIOS hostnames and DHCP fingerprints.
+    """Enrich ARP-discovered hosts with mDNS/NetBIOS names and services and DHCP
+    fingerprints, matched by IP and, failing that, by MAC (phones announce over IPv6
+    from the same MAC that ARP saw for their IPv4 address).
 
     Can only add or improve, never downgrade:
-      hostname: mDNS/NetBIOS > DHCP option 12 > existing reverse DNS
-      os:       DHCP fingerprint fields merged additively; existing keys win
+      hostname: mDNS/NetBIOS (by IP, then by MAC) > DHCP option 12 > existing reverse DNS
+      os:       DHCP fingerprint fields, mdns_services, mdns_name and netbios_name
+                merged additively; existing keys win
     """
     for host in hosts:
+        mac = (host.mac or "").lower() or None
         mdns_name = suite.mdns.get_hostname(host.ip) if suite.mdns else None
+        mac_info_of = getattr(suite.mdns, "get_mac_info", None) if suite.mdns else None
+        mac_info = mac_info_of(mac) if mac_info_of and mac else {}
         dhcp_info = suite.dhcp.get_info(host.ip) if suite.dhcp else {}
+        if not dhcp_info and suite.dhcp and mac and hasattr(suite.dhcp, "get_info_by_mac"):
+            dhcp_info = suite.dhcp.get_info_by_mac(mac)
 
-        host.hostname = mdns_name or dhcp_info.get("dhcp_hostname") or host.hostname
+        host.hostname = mdns_name or mac_info.get("hostname") or dhcp_info.get("dhcp_hostname") or host.hostname
 
-        if dhcp_info:
+        extra = {k: v for k, v in dhcp_info.items() if k != "dhcp_hostname"}
+        for key in ("mdns_services", "mdns_name", "netbios_name"):
+            if mac_info.get(key):
+                extra[key] = mac_info[key]
+        if extra:
             merged = dict(host.os) if isinstance(host.os, dict) else {}
-            for key, value in dhcp_info.items():
-                if key not in merged and key != "dhcp_hostname":
+            for key, value in extra.items():
+                if key not in merged:
                     merged[key] = value
             host.os = merged or None
     return hosts

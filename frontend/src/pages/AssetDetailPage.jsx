@@ -151,6 +151,18 @@ export default function AssetDetailPage() {
     }
   }
 
+  // Confirming a suggested type sets it by hand (PATCH marks it manual), so scans and
+  // hints never change it afterwards.
+  const handleConfirmType = async (type) => {
+    try {
+      await client.patch(`/assets/${assetId}`, { device_type: type })
+      setNotice(`Device type set to ${DEVICE_TYPE_META[type]?.label ?? type}.`)
+      await refresh()
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Failed to set the device type')
+    }
+  }
+
   const handleBaseline = async () => {
     if (!confirm('Set the baseline to this asset\'s current state?\n\nThis replaces the current baseline (ports, packages, hostname, MAC, exposure and device type).')) return
     try {
@@ -340,7 +352,8 @@ export default function AssetDetailPage() {
             <Field label="Vendor">{asset.hardwareVendor}</Field>
             <Field label="Device type">
               {deviceMeta.label}
-              <span className="block text-[11px] text-dark-400">{asset.deviceTypeSource === 'manual' ? 'Set by hand' : asset.deviceTypeSource === 'agent' ? 'Confirmed by agent' : 'Inferred from scans'}</span>
+              <span className="block text-[11px] text-dark-400">{typeSourceText(asset)}</span>
+              <TypeSuggestion asset={asset} canConfirm={!isReadOnly} onConfirm={handleConfirmType} />
             </Field>
             <Field label="Owner">{asset.owner}</Field>
             <Field label="Host key">{asset.hostKey}</Field>
@@ -581,5 +594,34 @@ function CriticalityExplain({ score, stored }) {
         </div>
       )}
     </>
+  )
+}
+
+// ── Device type: where it came from, and a pending suggestion (classifier v2) ──
+function typeSourceText(asset) {
+  const hint = asset.deviceTypeHint
+  if (asset.deviceTypeSource === 'manual') return 'Set by hand'
+  if (asset.deviceTypeSource === 'agent') return 'Confirmed by agent'
+  if (asset.deviceType === 'unknown') return 'Not identified yet'
+  if (hint?.auto && hint.type === asset.deviceType) return `Inferred from ${hint.evidence}`
+  return 'Inferred from scans'
+}
+
+const HINT_CONF_CLS = { high: 'text-green-400', medium: 'text-amber-400', low: 'text-dark-300' }
+
+function TypeSuggestion({ asset, canConfirm, onConfirm }) {
+  const hint = asset.deviceTypeHint
+  if (!hint || asset.deviceType !== 'unknown') return null
+  return (
+    <span className="block mt-1.5 rounded border border-dark-700/60 bg-dark-900/40 px-2 py-1.5 text-[11px] text-dark-300">
+      Suggested: <span className="text-dark-100">{hint.label}</span>
+      {' '}(<span className={HINT_CONF_CLS[hint.confidence]}>{hint.confidence} confidence</span>), from {hint.evidence}.
+      {hint.type && canConfirm && (
+        <button onClick={() => onConfirm(hint.type)} className="block mt-1 text-eagle-400 hover:underline">
+          Confirm as {DEVICE_TYPE_META[hint.type]?.label ?? hint.type}
+        </button>
+      )}
+      {!hint.type && <span className="block mt-1 text-dark-400">The exact type is not known; set it with Edit.</span>}
+    </span>
   )
 }

@@ -385,6 +385,7 @@ export default function AlertsPage() {
           <option value="workstation">Workstation</option>
           <option value="network">Network</option>
           <option value="iot">IoT</option>
+          <option value="mobile">Mobile</option>
           <option value="unknown">Unknown</option>
         </select>
         <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer">

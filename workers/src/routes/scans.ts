@@ -7,6 +7,7 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, assetAddresses, events } from '../db/schema'
 import { agentRoleOf, scoreAsset, tenantCriticalityModel } from '../lib/rescore'
+import { applyHint, deviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
 import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
@@ -62,7 +63,7 @@ export function inferDeviceType(
   ip?: string,
   os?: Record<string, unknown> | null,
   defaultGateway?: string,
-): 'server' | 'workstation' | 'network' | 'iot' | 'unknown' {
+): 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown' {
   // Only a real signal makes a device 'network': the agent-reported default gateway
   // is evidence; a bare .1/.254 position is NOT (it made ordinary hosts look like
   // gateways — removed). Port/product/SNMP/OS rules below carry the real evidence.
@@ -78,7 +79,7 @@ export function inferDeviceType(
   if (os) {
     const hint = String(os.dhcp_device_hint ?? os.name ?? os.fingerbank_device ?? '').toLowerCase()
     if (/windows|macos|darwin|desktop|workstation|laptop/.test(hint)) return 'workstation'
-    if (/android|iphone|ipad|mobile/.test(hint)) return 'iot'
+    if (/android|iphone|ipad|mobile/.test(hint)) return 'mobile'
     if (/server/.test(hint) || (/linux|ubuntu|debian|centos|rhel/.test(hint) && !/desktop/.test(hint))) return 'server'
     if (/cisco|router|switch|ap |access.point|aruba|ubiquiti/.test(hint)) return 'network'
   }
@@ -860,12 +861,12 @@ Example:
               const parsedArray = parsed as LlmHost[]
               enhancedHosts = hosts.map(h => {
                 const match = parsedArray.find((p) => p.ip?.trim() === h.ip?.trim())
-                return match ? { ...h, description: match.description, suggestion: match.suggestion } : h
+                return match ? { ...h, description: match.description, suggestion: match.suggestion, aiDescribed: true } : h
               })
             } else if (parsed && Array.isArray(parsed.hosts)) {
               enhancedHosts = (hosts as typeof enhancedHosts).map(h => {
                 const match = (parsed.hosts as LlmHost[]).find((p) => p.ip?.trim() === h.ip?.trim())
-                return match ? { ...h, description: match.description, suggestion: match.suggestion } : { ...h }
+                return match ? { ...h, description: match.description, suggestion: match.suggestion, aiDescribed: true } : { ...h }
               })
             }
           } catch (parseErr) {
@@ -953,14 +954,15 @@ Example:
       if (deviceType === 'unknown' && isNetworkBySnmp(host.snmp_sysdescr, host.snmp_interfaces)) {
         deviceType = 'network'   // SNMP is a strong, direct signal (before LLM fallback)
       }
-      if (deviceType === 'unknown') {
-        const llmDesc = String((host as Record<string, unknown>)['description'] ?? '').toLowerCase()
-        if (/workstation|laptop|desktop|windows pc/.test(llmDesc)) deviceType = 'workstation'
-        else if (/server/.test(llmDesc)) deviceType = 'server'
-        else if (/router|gateway|switch|access.point/.test(llmDesc)) deviceType = 'network'
-        else if (/iot|camera|printer|sensor/.test(llmDesc)) deviceType = 'iot'
-      }
+      // The LLM's description no longer sets the type (Phase C): it is kept as
+      // os_info.ai_description and becomes a low-confidence "ai_guess" suggestion in
+      // lib/deviceHints.ts, confirmed by an analyst like the other weak hints. Only real
+      // LLM answers are kept, not the deterministic fallback text.
       const observedOsInfo = buildOsInfo(host.os as Record<string, unknown> | null, ports, isPassive)
+      const hostAny = host as Record<string, unknown>
+      if (hostAny['aiDescribed'] && typeof hostAny['description'] === 'string' && hostAny['description'].trim()) {
+        observedOsInfo.ai_description = String(hostAny['description']).trim().slice(0, 200)
+      }
       if (host.snmp_sysdescr) observedOsInfo.snmp_sysdescr = host.snmp_sysdescr
       if (host.snmp_sysobjectid) observedOsInfo.snmp_sysobjectid = host.snmp_sysobjectid
       if (host.snmp_interfaces) observedOsInfo.snmp_interfaces = host.snmp_interfaces
@@ -1014,19 +1016,22 @@ Example:
         const [existing] = await db.select().from(assets).where(eq(assets.assetId, resolution.assetId)).limit(1)
         const { merged } = mergeOsInfo(existing?.osInfo as Record<string, unknown> | null, p.observedOsInfo, p.isPassive)
         const dt = resolveIngestDeviceType(existing ? { deviceType: existing.deviceType, deviceTypeSource: existing.deviceTypeSource ?? null } : null, p.deviceType, p.isPassive)
-        const resolvedDeviceType = dt.deviceType
+        const slowHint = deviceTypeHint({ hostname: p.hostname ?? existing?.hostname, mac: mac ?? existing?.macAddress, vendor: p.hardwareVendor ?? existing?.hardwareVendor, osInfo: merged })
+        const hinted = applyHint({ deviceType: dt.deviceType, deviceTypeSource: dt.deviceTypeSource }, slowHint)
+        const resolvedDeviceType = hinted.deviceType
         const exposed = existing?.internetFacingOverride ?? p.internetFacing
-        const crit = scoreAsset({ deviceType: resolvedDeviceType, deviceTypeSource: dt.deviceTypeSource, isInternetFacing: exposed, internetFacingOverride: existing?.internetFacingOverride ?? null, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged, agentRole: agentRoleOf(existing?.endpointInventory) }, criticalityModel)
+        const crit = scoreAsset({ deviceType: resolvedDeviceType, deviceTypeSource: hinted.deviceTypeSource, deviceTypeHint: slowHint, isInternetFacing: exposed, internetFacingOverride: existing?.internetFacingOverride ?? null, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged, agentRole: agentRoleOf(existing?.endpointInventory) }, criticalityModel)
         const baselineForUpdate = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? existing?.hostname ?? null, macAddress: mac ?? existing?.macAddress ?? null, isInternetFacing: exposed, deviceType: resolvedDeviceType, autoSet: true, portsKnown: !p.isPassive })
         await db.update(assets).set({
           ipAddress: p.ip,
-          hostname: existing?.hostname ?? p.hostname ?? null,
+          hostname: existing?.hostname || p.hostname || null,
           macAddress: mac ?? existing?.macAddress ?? null,
           hostKey: existing?.hostKey ?? resolution.hostKey ?? null,
           hardwareVendor: p.hardwareVendor ?? existing?.hardwareVendor ?? null,
           osInfo: merged,
           deviceType: resolvedDeviceType as typeof p.deviceType,
-          deviceTypeSource: dt.deviceTypeSource,
+          deviceTypeSource: hinted.deviceTypeSource,
+          deviceTypeHint: slowHint,
           isInternetFacing: exposed,
           criticalityScore: crit,
           criticalityModel,
@@ -1039,10 +1044,12 @@ Example:
       }
       const newAssetId = crypto.randomUUID()
       const { merged } = mergeOsInfo(null, p.observedOsInfo, p.isPassive)
-      const crit = scoreAsset({ deviceType: p.deviceType, deviceTypeSource: 'auto', isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }, criticalityModel)
-      const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: p.deviceType, autoSet: true, portsKnown: !p.isPassive })
+      const newHint = deviceTypeHint({ hostname: p.hostname, mac, vendor: p.hardwareVendor, osInfo: merged })
+      const newType = applyHint({ deviceType: p.deviceType, deviceTypeSource: 'auto' }, newHint).deviceType as typeof p.deviceType
+      const crit = scoreAsset({ deviceType: newType, deviceTypeSource: 'auto', deviceTypeHint: newHint, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }, criticalityModel)
+      const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: newType, autoSet: true, portsKnown: !p.isPassive })
       const now = new Date()
-      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: p.deviceType, deviceTypeSource: 'auto' as const, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, criticalityModel, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
+      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: newType, deviceTypeSource: 'auto' as const, deviceTypeHint: newHint, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, criticalityModel, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
       const addressValues = { assetId: newAssetId, tenantId: tenantId ?? null, networkKey, ipAddress: p.ip, macAddress: mac, firstSeen: now, lastSeen: now }
       if (resolution.endAddressId) {
         await db.batch([

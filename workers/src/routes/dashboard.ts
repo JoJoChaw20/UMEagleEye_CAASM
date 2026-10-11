@@ -180,7 +180,7 @@ app.get('/summary', authMiddleware, async (c) => {
     const brief = (a: typeof assetRows[number]) => ({ asset_id: a.assetId, hostname: a.hostname, ip: a.ip, device_type: a.deviceType })
 
     const risky = new Map<number, { port: number; service: string; hosts: ReturnType<typeof brief>[]; internet_facing: number }>()
-    const deviceMix: Record<string, number> = { server: 0, workstation: 0, network: 0, iot: 0, unknown: 0 }
+    const deviceMix: Record<string, number> = { server: 0, workstation: 0, network: 0, iot: 0, mobile: 0, unknown: 0 }
     const osCounts = new Map<string, number>()
     const internetFacing = []
     const networkDevices = []

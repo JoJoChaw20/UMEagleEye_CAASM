@@ -35,6 +35,8 @@ export interface ScoringInputV2 {
   osInfo: Record<string, unknown>
   /** OS role the agent on the machine reported (workstation | server | domain_controller). */
   agentRole?: string | null
+  /** Classifier v2 hint (lib/deviceHints.ts): names where an inferred type came from. */
+  deviceTypeHint?: { type: string | null; label: string; confidence: string; auto: boolean; evidence: string } | null
 }
 
 export interface ScoringBreakdownV2 {
@@ -55,8 +57,10 @@ export interface ScoringResultV2 {
   unknowns: string[]
 }
 
-const BASE_SCORE: Record<string, number> = { network: 6, server: 5, iot: 4, workstation: 3, unknown: 3 }
-const TYPE_LABEL: Record<string, string> = { network: 'Network device', server: 'Server', iot: 'IoT device', workstation: 'Workstation', unknown: 'Unidentified device' }
+// mobile = 3 like a workstation (v1 has no mobile entry and also falls back to 3), so filing a
+// phone as mobile never raises its importance.
+const BASE_SCORE: Record<string, number> = { network: 6, server: 5, iot: 4, workstation: 3, mobile: 3, unknown: 3 }
+const TYPE_LABEL: Record<string, string> = { network: 'Network device', server: 'Server', iot: 'IoT device', mobile: 'Mobile device', workstation: 'Workstation', unknown: 'Unidentified device' }
 const HIGH_RISK_PORTS: Record<number, string> = { 21: 'FTP', 23: 'Telnet', 445: 'SMB', 1433: 'MSSQL', 3389: 'RDP', 4444: 'Metasploit', 5900: 'VNC' }
 const DB_PORTS = new Set([1521, 3306, 5432, 5984, 6379, 9200, 27017])
 const KERBEROS = 88
@@ -81,11 +85,16 @@ export function computeCriticalityV2(input: ScoringInputV2): ScoringResultV2 {
   const type = BASE_SCORE[input.deviceType] !== undefined ? input.deviceType : 'unknown'
   const typeSource: FactorSource = input.deviceTypeSource === 'manual' ? 'manual'
     : input.deviceTypeSource === 'agent' ? 'agent' : 'scan'
+  const typeHint = input.deviceTypeHint
+  const fromHint = typeSource === 'scan' && !!typeHint?.auto && typeHint.type === type
   const typeHow = type === 'unknown' ? 'type not identified'
-    : typeSource === 'manual' ? 'set by hand' : typeSource === 'agent' ? 'confirmed by agent' : 'inferred from scans'
+    : typeSource === 'manual' ? 'set by hand' : typeSource === 'agent' ? 'confirmed by agent'
+      : fromHint ? `inferred from ${typeHint!.evidence}` : 'inferred from scans'
   const base = BASE_SCORE[type]!
   add(`${TYPE_LABEL[type]} (${typeHow})`, base, typeSource)
-  if (type === 'unknown') unknowns.push('device type')
+  if (type === 'unknown') {
+    unknowns.push(typeHint ? `device type (suggested: ${typeHint.label}, ${typeHint.confidence} confidence)` : 'device type')
+  }
 
   // ── Network-reachable services (scan-observed only) ──
   const portsScanned = Array.isArray(input.osInfo?.['ports'])

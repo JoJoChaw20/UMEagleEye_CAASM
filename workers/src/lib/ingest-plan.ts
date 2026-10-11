@@ -20,6 +20,7 @@ import {
 } from './identity'
 import { mergeOsInfo } from './osInfo'
 import { scoreAsset, type CriticalityModel } from './rescore'
+import { applyHint, deviceTypeHint } from './deviceHints'
 import { buildBaseline, type AssetBaseline } from '../services/drift'
 
 // ── Prefetched candidate data (filled by identity.prefetchIdentity) ──
@@ -56,7 +57,7 @@ export interface IdentityPrefetch {
   agentMacs?: { mac: string; assetId: string }[]
 }
 
-export type DeviceTypeStr = 'server' | 'workstation' | 'network' | 'iot' | 'unknown'
+export type DeviceTypeStr = 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown'
 
 // ── One host to resolve (caller precomputes deviceType + observedOsInfo) ──
 export interface PlanHost {
@@ -245,21 +246,28 @@ export function planIngest(
       // Device type: manual is protected; an auto type may be corrected by an active
       // scan (never a passive one). See resolveIngestDeviceType.
       const dt = resolveIngestDeviceType({ deviceType: st.deviceType, deviceTypeSource: st.deviceTypeSource ?? null }, host.deviceType, host.isPassive)
-      const resolvedDeviceType = dt.deviceType
-      // Analyst-confirmed exposure wins; otherwise the scan's gateway inference
-      const exposed = st.internetFacingOverride ?? host.internetFacing
-      const crit = scoreAsset({
-        deviceType: resolvedDeviceType, deviceTypeSource: dt.deviceTypeSource, isInternetFacing: exposed,
-        internetFacingOverride: st.internetFacingOverride ?? null,
-        hostname: host.hostname ?? st.hostname, owner: st.owner ?? null, osInfo: merged, agentRole: st.agentRole ?? null,
-      }, model)
       // source = last observation method. Membership (in_my_assets) is NEVER
       // changed by ingest, so a rescan no longer needs the old sticky-manual CASE.
       const resolvedSource = host.isPassive ? 'scan_passive' : 'scan_active'
-      const newHostname = st.hostname ?? host.hostname ?? null
+      // Fill-only: an empty stored name (e.g. saved from an empty Edit field) counts as missing.
+      const newHostname = st.hostname || host.hostname || null
       const newMac = mac ?? st.macAddress ?? null
       const newHostKey = st.hostKey ?? hostKey ?? null
       const newVendor = host.hardwareVendor ?? st.hardwareVendor ?? null
+      // Classifier v2: a high-confidence hint (the device's own name, Android's DHCP
+      // class) fills a type the port/OS rules left unknown; weaker hints are stored only.
+      const typeHint = deviceTypeHint({ hostname: host.hostname ?? st.hostname, mac: newMac, vendor: newVendor, osInfo: merged })
+      const hinted = applyHint({ deviceType: dt.deviceType, deviceTypeSource: dt.deviceTypeSource }, typeHint)
+      const resolvedDeviceType = hinted.deviceType
+      const resolvedTypeSource = hinted.deviceTypeSource
+      // Analyst-confirmed exposure wins; otherwise the scan's gateway inference
+      const exposed = st.internetFacingOverride ?? host.internetFacing
+      const crit = scoreAsset({
+        deviceType: resolvedDeviceType, deviceTypeSource: resolvedTypeSource, isInternetFacing: exposed,
+        internetFacingOverride: st.internetFacingOverride ?? null,
+        hostname: host.hostname ?? st.hostname, owner: st.owner ?? null, osInfo: merged, agentRole: st.agentRole ?? null,
+        deviceTypeHint: typeHint,
+      }, model)
 
       const set: Record<string, unknown> = {
         ipAddress: host.ip,
@@ -269,7 +277,8 @@ export function planIngest(
         hardwareVendor: newVendor,
         osInfo: merged,
         deviceType: resolvedDeviceType,
-        deviceTypeSource: dt.deviceTypeSource,
+        deviceTypeSource: resolvedTypeSource,
+        deviceTypeHint: typeHint,
         isInternetFacing: exposed,
         criticalityScore: crit,
         criticalityModel: model,
@@ -308,6 +317,12 @@ export function planIngest(
           set.baselineState = nextBaseline
         }
       }
+      // A hint filling an unknown type is classification, not drift: an automatic
+      // baseline that still says "unknown" moves with it (also on passive scans).
+      if (hinted.changed && nextBaseline && nextBaseline.auto_set === true && nextBaseline.device_type === st.deviceType) {
+        nextBaseline = { ...nextBaseline, device_type: resolvedDeviceType }
+        set.baselineState = nextBaseline
+      }
       ops.push({ k: 'updateAsset', assetId, set })
 
       // Address bookkeeping — same IP: refresh; IP changed: end + insert; none: insert.
@@ -327,7 +342,7 @@ export function planIngest(
       }
 
       assetState.set(assetId, {
-        ...st, osInfo: merged, deviceType: resolvedDeviceType, deviceTypeSource: dt.deviceTypeSource, hostKey: newHostKey,
+        ...st, osInfo: merged, deviceType: resolvedDeviceType, deviceTypeSource: resolvedTypeSource, hostKey: newHostKey,
         hardwareVendor: newVendor, source: resolvedSource, hasBaseline: true,
         hostname: newHostname, macAddress: newMac, baseline: nextBaseline,
       })
@@ -336,13 +351,15 @@ export function planIngest(
       assetId = newId()
       isNew = true
       const merged = mergeOsInfo(null, host.observedOsInfo, host.isPassive).merged
+      const typeHint = deviceTypeHint({ hostname: host.hostname, mac, vendor: host.hardwareVendor, osInfo: merged })
+      const createdType = applyHint({ deviceType: host.deviceType, deviceTypeSource: 'auto' }, typeHint).deviceType
       const crit = scoreAsset({
-        deviceType: host.deviceType, deviceTypeSource: 'auto', isInternetFacing: host.internetFacing,
-        hostname: host.hostname, owner: null, osInfo: merged,
+        deviceType: createdType, deviceTypeSource: 'auto', isInternetFacing: host.internetFacing,
+        hostname: host.hostname, owner: null, osInfo: merged, deviceTypeHint: typeHint,
       }, model)
       const baseline = buildBaseline({
         ports: host.ports, osInfo: merged, hostname: host.hostname ?? null, macAddress: mac ?? null,
-        isInternetFacing: host.internetFacing, deviceType: host.deviceType, autoSet: true,
+        isInternetFacing: host.internetFacing, deviceType: createdType, autoSet: true,
         // A passive first sighting sees no ports; the first active scan fills
         // them in instead of raising "port opened" for every service.
         portsKnown: !host.isPassive,
@@ -358,7 +375,7 @@ export function planIngest(
       ops.push({ k: 'insertAsset', values: {
         assetId, tenantId: host.tenantId, ipAddress: host.ip, hostname: host.hostname ?? null,
         macAddress: mac ?? null, hostKey: hostKey ?? null, hardwareVendor: host.hardwareVendor ?? null,
-        deviceType: host.deviceType, deviceTypeSource: 'auto', osInfo: merged, isInternetFacing: host.internetFacing,
+        deviceType: createdType, deviceTypeSource: 'auto', deviceTypeHint: typeHint, osInfo: merged, isInternetFacing: host.internetFacing,
         criticalityScore: crit, criticalityModel: model, baselineState: baseline, source, inMyAssets: false,
         lastScanned: now, createdAt: now, updatedAt: now,
       } })
@@ -370,11 +387,11 @@ export function planIngest(
       } })
 
       assetState.set(assetId, {
-        assetId, deviceType: host.deviceType, deviceTypeSource: 'auto', hostKey, osInfo: merged, hostname: host.hostname ?? null,
+        assetId, deviceType: createdType, deviceTypeSource: 'auto', hostKey, osInfo: merged, hostname: host.hostname ?? null,
         owner: null, hardwareVendor: host.hardwareVendor ?? null, macAddress: mac ?? null, source, hasBaseline: true,
         baseline, internetFacingOverride: null,
       })
-      workAddrs.unshift({ addressId: nid, assetId, networkKey, ipAddress: host.ip, macAddress: mac, deviceType: host.deviceType, lastSeen: now.getTime(), assetCreatedAt: now.getTime(), ended: false })
+      workAddrs.unshift({ addressId: nid, assetId, networkKey, ipAddress: host.ip, macAddress: mac, deviceType: createdType, lastSeen: now.getTime(), assetCreatedAt: now.getTime(), ended: false })
     }
 
     const possibleDuplicateOf = decision.rule === '1-possible-duplicate' ? decision.possibleDuplicateOf : null

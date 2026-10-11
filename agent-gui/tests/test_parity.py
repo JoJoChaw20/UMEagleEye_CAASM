@@ -130,3 +130,46 @@ def test_snmp_protocol_tables_match_old(old):
     source = inspect.getsource(old.query_snmp_v3)
     for name in list(snmp_poll._AUTH_PROTOCOLS.values()) + list(snmp_poll._PRIV_PROTOCOLS.values()):
         assert name in source
+
+
+def test_original_passive_parsers_are_a_known_broken_reference(old, monkeypatch):
+    """Deliberate divergence (Phase C): the original DHCP and NetBIOS parsers extract
+    nothing from real packets, so the rewritten ones must NOT match them. Shown here
+    on one DHCP Request and one NetBIOS registration."""
+    scapy_all = pytest.importorskip("scapy.all")
+    from scapy.all import BOOTP, DHCP, IP, UDP, Ether, load_layer
+    load_layer("netbios")
+    from scapy.layers.netbios import NBNSHeader, NBNSRegistrationRequest
+    from eagleeye.passive.sniffers import MdnsNetbiosSniffer
+
+    packets = [Ether(bytes(p)) for p in (
+        Ether() / IP(src="0.0.0.0", dst="255.255.255.255") / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=bytes.fromhex("c4fe5ba94405")) / DHCP(options=[
+            ("message-type", "request"), ("requested_addr", "192.168.1.20"), ("hostname", b"phone"), "end"]),
+        Ether() / IP(src="192.168.1.10", dst="192.168.1.255") / UDP(sport=137, dport=137)
+        / NBNSHeader(OPCODE=5) / NBNSRegistrationRequest(QUESTION_NAME="DESKTOP-ABC", SUFFIX=0x4141, G=0, NB_ADDRESS="192.168.1.10"),
+    )]
+
+    class Done(Exception):
+        pass
+
+    def fake_sniff(prn=None, **_kwargs):
+        for p in packets:
+            prn(p)
+        raise Done
+
+    monkeypatch.setattr(scapy_all, "sniff", fake_sniff)
+    old_mdns, old_dhcp = old.MdnsNetbiosSniffer(), old.DhcpSniffer()
+    for sniffer in (old_mdns, old_dhcp):
+        try:
+            sniffer._sniff_loop()
+        except Done:
+            pass
+    assert old_dhcp.get_info("192.168.1.20") == {} and old_mdns.get_hostname("192.168.1.10") is None
+
+    new_mdns, new_dhcp = MdnsNetbiosSniffer(), DhcpSniffer()
+    for p in packets:
+        new_mdns._make_handler()(p)
+        new_dhcp._make_handler()(p)
+    assert new_dhcp.get_info("192.168.1.20") == {"dhcp_hostname": "phone"}
+    assert new_mdns.get_hostname("192.168.1.10") == "DESKTOP-ABC"

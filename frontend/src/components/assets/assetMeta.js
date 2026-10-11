@@ -5,6 +5,7 @@ export const DEVICE_TYPE_META = {
   workstation: { icon: '💻', label: 'Workstation' },
   network:     { icon: '🌐', label: 'Network' },
   iot:         { icon: '📡', label: 'IoT' },
+  mobile:      { icon: '📱', label: 'Mobile' },
   unknown:     { icon: '❓', label: 'Unknown' },
 }
 
