@@ -128,8 +128,6 @@ def check_all() -> list[DepStatus]:
         pcap_detail if pcap_ok else f"{pcap_detail} - passive sniffing unavailable", "" if pcap_ok else _hint("pcap"),
     ))
 
-    results.append(_module("requests", "requests", True, "cannot reach the server"))
-    results.append(_module("nmap", "python-nmap", False, "needed to drive Nmap"))
     results.append(_module("scapy", "scapy", False, "needed for passive sniffing"))
     results.append(_module("pysnmp", "pysnmp", False, "needed for SNMPv3 polling"))
 

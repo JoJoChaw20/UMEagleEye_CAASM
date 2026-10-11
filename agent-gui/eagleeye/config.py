@@ -174,7 +174,9 @@ def load_settings(
                 log.warning("The config file keeps its secrets in the OS credential store, which is not available")
             for name in SECRET_FIELDS:
                 if not getattr(settings, name):
-                    setattr(settings, name, store.get(name) or "")
+                    # Entries are per agent; the unscoped name is the pre-2.0 layout.
+                    value = store.get(secret_entry(settings.agent_id, name)) or store.get(name)
+                    setattr(settings, name, value or "")
 
     for name, var in _ENV_VARS.items():
         raw = env.get(var)
@@ -190,6 +192,13 @@ def load_settings(
     return settings
 
 
+def secret_entry(agent_id: str, name: str) -> str:
+    """Credential-store entry for one secret of one agent, e.g. "2f5d.../api_key".
+    Scoped by agent so two configs (or two agents on one machine) never overwrite
+    each other's keys."""
+    return f"{agent_id or 'unregistered'}/{name}"
+
+
 def save_settings(settings: Settings, path: Optional[Path] = None, keychain: Optional[Keychain] = None) -> Path:
     """Write settings as JSON. With a usable `keychain` the secrets go to the OS
     credential store and the file keeps blanks; otherwise they are written in plain
@@ -198,7 +207,8 @@ def save_settings(settings: Settings, path: Optional[Path] = None, keychain: Opt
     target.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = asdict(settings)
     if keychain is not None and keychain.available():
-        if all(keychain.set(name, data[name]) for name in SECRET_FIELDS):
+        entries = {name: secret_entry(settings.agent_id, name) for name in SECRET_FIELDS}
+        if all(keychain.set(entries[name], data[name]) for name in SECRET_FIELDS):
             data.update({name: "" for name in SECRET_FIELDS})
             data[KEYCHAIN_MARKER] = True
         else:

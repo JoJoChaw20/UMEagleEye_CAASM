@@ -8,8 +8,6 @@ description = "EagleEye pipeline agent for the UMEagleEye CAASM platform"
 requires-python = ">=3.12"
 dynamic = ["version"]
 dependencies = [
-    "requests>=2.31.0",
-    "python-nmap>=0.7.1",
     "keyring>=25.0",                # secrets in the OS credential store
 ]
 
@@ -18,7 +16,7 @@ passive = ["scapy>=2.5.0"]          # ARP / mDNS / NetBIOS / DHCP sniffing
 snmp    = ["pysnmp>=6.2"]           # SNMPv3 polling of network devices
 gui     = ["PySide6>=6.7"]          # the desktop app
 build   = ["pyinstaller>=6.10"]     # packaging/build.ps1
-dev     = ["pytest>=8.0"]
+dev     = ["pytest>=8.0", "python-nmap>=0.7.1", "requests>=2.31.0"]   # python-nmap, requests: only to run the original agent in tests/test_parity.py
 
 [project.scripts]
 eagleeye = "eagleeye.cli:main"

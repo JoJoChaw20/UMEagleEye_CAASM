@@ -13,8 +13,8 @@ import threading
 import time
 from typing import Any, Optional
 
-import requests
 
+from .. import httpclient
 from ..pipeline.record import HostRecord
 
 log = logging.getLogger("eagleeye.passive")
@@ -315,7 +315,7 @@ class DhcpSniffer(_Sniffer):
 
     def _fingerbank_lookup(self, ip: str, param_list: str, vendor_class: str) -> None:
         try:
-            resp = requests.post(
+            resp = httpclient.Session().post(
                 "https://api.fingerbank.org/api/v2/combinations/interrogate",
                 params={"key": self.fingerbank_key},
                 json={"dhcp_fingerprint": param_list, "vendor_class_identifier": vendor_class},

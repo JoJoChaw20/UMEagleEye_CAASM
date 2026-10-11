@@ -7,14 +7,14 @@ import pytest
 from eagleeye.pipeline import PipelineContext
 from eagleeye.stages import scan_nmap
 from eagleeye.stages.scan_nmap import (
-    NmapScanStage, hosts_from_scanner, parse_arp_table, validate_target,
+    NmapScanStage, hosts_from_nmap_xml, parse_arp_table, validate_target,
 )
 
 
 # ── parsing ──
 def test_hosts_from_recorded_xml(scanner):
-    hosts = {h.ip: h for h in hosts_from_scanner(scanner)}
-    assert set(hosts) == {"192.168.1.10", "192.168.1.50", "172.17.0.5", "172.17.0.6", "192.168.1.77"}   # 'down' host skipped
+    hosts = {h.ip: h for h in hosts_from_nmap_xml(scanner)}
+    assert set(hosts) == {"192.168.1.10", "192.168.1.50", "172.17.0.5", "172.17.0.6", "192.168.1.77", "192.168.1.88"}   # 'down' host skipped
 
     linux = hosts["192.168.1.10"]
     assert linux.hostname == "server-01.lan"
@@ -108,7 +108,7 @@ def test_stage_uses_nmap_when_present(monkeypatch, fake_nmap):
     monkeypatch.setattr(scan_nmap.deps, "find_nmap", lambda: "C:/nmap.exe")
     ctx = PipelineContext("active", subnet="192.168.1.0/24")
     NmapScanStage("192.168.1.0/24").run(ctx)
-    assert len(ctx.hosts) == 5
+    assert len(ctx.hosts) == 6
     assert ctx.summary["scanner"] == "nmap"
 
 
@@ -119,3 +119,35 @@ def test_stage_rejects_bad_target_before_running_anything(monkeypatch):
     with pytest.raises(ValueError):
         NmapScanStage("192.168.1.0/24; calc").run(PipelineContext("active"))
     assert not called
+
+
+def test_xml_edge_cases_follow_python_nmap(scanner):
+    host = {h.ip: h for h in hosts_from_nmap_xml(scanner)}["192.168.1.88"]
+    assert host.hostname == "given-name-88"            # a 'user' hostname wins over PTR
+    assert [(p["port"], p["service"]) for p in host.ports] == [(23, ""), (161, None)]
+
+
+def test_nmap_command_line_matches_python_nmap():
+    cmd = scan_nmap.nmap_command("10.0.0.0/24", "C:/Nmap/nmap.exe")
+    assert cmd[:4] == ["C:/Nmap/nmap.exe", "-oX", "-", "10.0.0.0/24"]
+    assert " ".join(cmd[4:]) == scan_nmap.NMAP_ARGS
+
+
+def test_nmap_failure_is_reported(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    monkeypatch.setattr(scan_nmap.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stdout=b"", stderr=b"Failed to resolve"))
+    with pytest.raises(RuntimeError, match="Nmap failed: Failed to resolve"):
+        scan_nmap.run_nmap("10.0.0.0/24", "nmap")
+
+    def timeout(*a, **k):
+        raise subprocess.TimeoutExpired("nmap", 3600)
+    monkeypatch.setattr(scan_nmap.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="did not finish within 60 minutes"):
+        scan_nmap.run_nmap("10.0.0.0/24", "nmap")
+
+
+def test_unreadable_xml_is_reported():
+    with pytest.raises(RuntimeError, match="could not be read"):
+        hosts_from_nmap_xml("<nmaprun><host>")

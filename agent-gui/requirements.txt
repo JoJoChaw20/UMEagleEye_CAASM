@@ -1,7 +1,10 @@
-requests>=2.31.0
-python-nmap>=0.7.1
 keyring>=25.0
 scapy>=2.5.0
 pysnmp>=6.2
 PySide6>=6.7
 pytest>=8.0
+# tests only: tests/test_parity.py runs the original agent, which uses python-nmap and requests.
+# The agent itself uses neither, and they are not packaged (GPL-3.0 / Apache-2.0 cannot be
+# combined with scapy's GPL-2.0-only; see packaging/THIRD-PARTY-NOTICES.txt).
+python-nmap>=0.7.1
+requests>=2.31.0

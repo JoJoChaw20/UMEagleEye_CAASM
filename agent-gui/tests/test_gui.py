@@ -68,7 +68,7 @@ def test_settings_page_saves_secrets_to_the_keychain_only(window):
     page._save()
     text = (window.store.path).read_text()
     assert "super-secret-key" not in text
-    assert window.store.keychain.items["api_key"] == "super-secret-key"
+    assert window.store.keychain.items["00000000-0000-0000-0000-000000000001/api_key"] == "super-secret-key"
     assert page.api_key.text() == "" and "saved" in page.api_key.placeholderText()
     # leaving the field empty keeps the stored key
     page._save()

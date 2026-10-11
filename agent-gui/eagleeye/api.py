@@ -12,9 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-import requests
-
-from . import VERSION
+from . import VERSION, httpclient
 from .netinfo import default_gateway, local_ip
 
 log = logging.getLogger("eagleeye.api")
@@ -46,13 +44,14 @@ class AgentClient:
         api_url: str,
         api_key: str,
         agent_id: str,
-        session: Optional[requests.Session] = None,
+        session: Optional[httpclient.Session] = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.agent_id = agent_id
         self._sleep = sleep
-        self.session = session or requests.Session()
+        # No redirects: the API key must never be sent anywhere but the configured server.
+        self.session = session or httpclient.Session(follow_redirects=False)
         self.session.headers.update({
             "Authorization": f"Bearer {api_key}",
             "X-Agent-ID": agent_id,
@@ -61,7 +60,7 @@ class AgentClient:
         })
 
     # ── internals ──
-    def _request(self, method: str, path: str, timeout: float, **kwargs: Any) -> requests.Response:
+    def _request(self, method: str, path: str, timeout: float, **kwargs: Any) -> httpclient.Response:
         """One request with retry on connection errors, timeouts and 5xx."""
         url = f"{self.api_url}{path}"
         last_exc: Optional[Exception] = None
@@ -70,18 +69,18 @@ class AgentClient:
                 self._sleep(RETRY_DELAYS[attempt - 1])
             try:
                 resp = self.session.request(method, url, timeout=timeout, **kwargs)
-            except (requests.ConnectionError, requests.Timeout) as exc:
+            except (httpclient.ConnectionError, httpclient.Timeout) as exc:
                 last_exc = exc
                 continue
             if resp.status_code >= 500:
-                last_exc = requests.HTTPError(f"{resp.status_code} from {path}", response=resp)
+                last_exc = httpclient.HTTPError(f"{resp.status_code} from {path}", response=resp)
                 continue
             return resp
         assert last_exc is not None
         raise last_exc
 
     @staticmethod
-    def _detail(resp: requests.Response) -> str:
+    def _detail(resp: httpclient.Response) -> str:
         try:
             body = resp.json()
             if isinstance(body, dict) and body.get("detail"):
@@ -100,7 +99,7 @@ class AgentClient:
             resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
             resp.raise_for_status()
             return True
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             log.warning("Heartbeat failed: %s", exc)
             return False
 
@@ -109,7 +108,7 @@ class AgentClient:
         payload = {"version": VERSION, "gateway_ip": local_ip()}
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             return False, f"Could not reach the server: {exc}"
         if resp.ok:
             return True, "Connected. The dashboard now shows this agent as online."
@@ -124,7 +123,7 @@ class AgentClient:
             resp = self._request("GET", "/scans/pending", 30)
             resp.raise_for_status()
             return resp.json().get("scans", [])
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             log.error("Failed to fetch pending scans: %s", exc)
             return []
 
@@ -134,7 +133,7 @@ class AgentClient:
         body = {"subnet": subnet, "trigger": trigger}
         try:
             resp = self._request("POST", "/scans/agent-start", 15, data=json.dumps(body))
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             return None, f"could not reach the server: {exc}"
         if not resp.ok:
             return None, f"the server did not start the scan ({self._detail(resp)})"
@@ -148,14 +147,14 @@ class AgentClient:
             resp = self._request("POST", "/scans/agent-reset", 15, data="{}")
             resp.raise_for_status()
             return int(resp.json().get("interrupted") or 0)
-        except (requests.RequestException, ValueError) as exc:
+        except (httpclient.RequestException, ValueError) as exc:
             log.warning("Could not tidy up interrupted scans: %s", exc)
             return 0
 
     def mark_scan_running(self, scan_id: str) -> None:
         try:
             self.session.post(f"{self.api_url}/scans/{scan_id}/start", timeout=10)
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             log.warning("Could not mark scan %s as running: %s", scan_id[:8], exc)
 
     def get_scan_status(self, scan_id: str) -> Optional[str]:
@@ -164,7 +163,7 @@ class AgentClient:
             resp = self.session.get(f"{self.api_url}/scans/agent-status/{scan_id}", timeout=10)
             resp.raise_for_status()
             return resp.json().get("status")
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             log.warning("Could not check scan %s status: %s", scan_id[:8], exc)
             return None
 
@@ -173,7 +172,7 @@ class AgentClient:
         body = {"agent_id": self.agent_id, "scan_id": scan_id, "reason": reason[:1000]}
         try:
             self._request("POST", "/scans/fail", 15, data=json.dumps(body)).raise_for_status()
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             log.warning("Could not mark scan %s as failed: %s", scan_id[:8], exc)
 
     def ingest(
@@ -192,7 +191,7 @@ class AgentClient:
             payload["network"] = network
         try:
             resp = self._request("POST", "/scans/ingest", 120, data=json.dumps(payload))
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             return IngestResult(False, error=f"could not reach the server: {exc}")
         if not resp.ok:
             return IngestResult(False, error=f"server rejected the results ({self._detail(resp)})")
@@ -204,7 +203,7 @@ class AgentClient:
         The server binds it to the matching asset (or creates one in Discovered)."""
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/inventory", 120, data=json.dumps(inventory))
-        except requests.RequestException as exc:
+        except httpclient.RequestException as exc:
             return InventoryResult(False, error=f"could not reach the server: {exc}")
         if not resp.ok:
             return InventoryResult(False, error=f"server rejected the inventory ({self._detail(resp)})")

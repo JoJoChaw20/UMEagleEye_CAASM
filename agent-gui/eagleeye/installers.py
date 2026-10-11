@@ -23,9 +23,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
-import requests
-
-from . import VERSION
+from . import VERSION, httpclient
 
 TRUSTED_PUBLISHERS = ("Nmap Software LLC", "Insecure.Com LLC")
 MAX_BYTES = 200 * 1024 * 1024
@@ -83,18 +81,18 @@ def find_latest(tool: Tool, page_html: str) -> Installer:
     return Installer(tool, f"https://{tool.host}/dist/{filename}", version)
 
 
-def _session() -> requests.Session:
-    s = requests.Session()
+def _session() -> httpclient.Session:
+    s = httpclient.Session()
     s.headers["User-Agent"] = f"EagleEye-Agent/{VERSION}"
     return s
 
 
-def latest_installer(tool: Tool, session: Optional[requests.Session] = None) -> Installer:
+def latest_installer(tool: Tool, session: Optional[httpclient.Session] = None) -> Installer:
     session = session or _session()
     try:
         resp = session.get(tool.page, timeout=20)
         resp.raise_for_status()
-    except requests.RequestException as exc:
+    except httpclient.RequestException as exc:
         raise InstallError(f"could not open {tool.page}: {exc}") from None
     return find_latest(tool, resp.text)
 
@@ -104,7 +102,7 @@ def download(
     dest_dir: Optional[Path] = None,
     progress: Callable[[int, Optional[int]], None] = lambda done, total: None,
     cancelled: Callable[[], bool] = lambda: False,
-    session: Optional[requests.Session] = None,
+    session: Optional[httpclient.Session] = None,
 ) -> Path:
     """Download to a new private temporary folder. Only HTTPS from the tool's own site."""
     parsed = urlparse(installer.url)
@@ -132,7 +130,7 @@ def download(
                     if done > MAX_BYTES:
                         raise InstallError("the installer is unexpectedly large; stopped")
                     progress(done, total)
-    except requests.RequestException as exc:
+    except httpclient.RequestException as exc:
         target.unlink(missing_ok=True)
         raise InstallError(f"download failed: {exc}") from None
     except InstallError:

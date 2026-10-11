@@ -37,7 +37,8 @@ Precedence: config file < `EAGLEEYE_*` environment variables < command-line flag
 same as the original agent's. Config file: `%APPDATA%\EagleEye\config.json` on Windows,
 `~/Library/Application Support/EagleEye/config.json` on macOS, `~/.config/eagleeye/config.json` on Linux
 (override with `EAGLEEYE_CONFIG`). Secrets (API key, SNMP and Fingerbank keys) are saved in the OS credential store
-(Windows Credential Manager, entries named "EagleEye Agent") by both the app and `config init`; the file then holds blanks
+(Windows Credential Manager: "EagleEye Agent" entries named `<agent id>/api_key` and so on, so two agents or two
+config files never share a key) by both the app and `config init`; the file then holds blanks
 and `"secrets_in_keychain": true`. Where no credential store is available they stay in the file. A config written by an
 older version keeps working; its secrets move to the credential store the next time it is saved.
 

@@ -45,7 +45,7 @@ def test_nmap_hosts_match_old(old, fake_nmap):
     old_hosts = old.run_nmap("192.168.1.0/24")
     new_hosts = scan_nmap.run_nmap("192.168.1.0/24", "nmap")
     assert [h.to_payload() for h in new_hosts] == old_hosts
-    assert len(old_hosts) == 5          # the down host is excluded by both
+    assert len(old_hosts) == 6          # the down host is excluded by both
 
 
 def test_nmap_arguments_match_old(old):

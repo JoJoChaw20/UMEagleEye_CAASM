@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-import requests
+from eagleeye import httpclient
 
 from eagleeye import VERSION
 from eagleeye.api import AgentClient
@@ -24,7 +24,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if not self.ok:
-            raise requests.HTTPError(f"{self.status_code}", response=self)
+            raise httpclient.HTTPError(f"{self.status_code}", response=self)
 
 
 class FakeSession:
@@ -91,7 +91,7 @@ def test_ingest_passive_without_scan_id_omits_it():
 
 
 def test_retries_connection_errors_then_succeeds():
-    c, session, sleeps = client(requests.ConnectionError("down"), requests.Timeout("slow"), FakeResponse(200, {"hosts_discovered": 1}))
+    c, session, sleeps = client(httpclient.ConnectionError("down"), httpclient.Timeout("slow"), FakeResponse(200, {"hosts_discovered": 1}))
     assert c.ingest("active", [], scan_id="s").ok
     assert len(session.calls) == 3 and sleeps == [2.0, 5.0]
 
@@ -119,14 +119,14 @@ def test_heartbeat_payload_and_failure(monkeypatch):
     assert url.endswith(f"/agents/{AGENT}/heartbeat")
     assert json.loads(kwargs["data"]) == {"version": VERSION, "gateway_ip": "192.168.1.20", "default_gateway": "192.168.1.1"}
 
-    c2, _, _ = client(requests.ConnectionError("x"), requests.ConnectionError("x"), requests.ConnectionError("x"))
+    c2, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
     assert c2.send_heartbeat() is False
 
 
 def test_pending_scans_and_failures_are_tolerated():
     c, _, _ = client(FakeResponse(200, {"scans": [{"scanId": "a"}]}))
     assert c.get_pending_scans() == [{"scanId": "a"}]
-    c2, _, _ = client(requests.ConnectionError("x"), requests.ConnectionError("x"), requests.ConnectionError("x"))
+    c2, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
     assert c2.get_pending_scans() == []
 
 

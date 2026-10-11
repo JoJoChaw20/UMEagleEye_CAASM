@@ -11,12 +11,13 @@ Python 3.12+ runtime            PSF License                   https://docs.pytho
 PySide6 / Qt 6 (Qt for Python)  LGPL-3.0                      https://www.qt.io/licensing/open-source-lgpl-obligations
     Qt libraries are shipped as separate DLLs in this folder and may be replaced
     with compatible versions (LGPL-3.0 section 4).
-requests, urllib3, idna,        Apache-2.0 / MIT / BSD / MPL  https://github.com/psf/requests
-  certifi, charset-normalizer
 keyring, pywin32-ctypes         MIT / BSD-3-Clause            https://github.com/jaraco/keyring
-python-nmap                     GPL-3.0-or-later              https://xael.org/pages/python-nmap-en.html
 scapy                           GPL-2.0-only                  https://github.com/secdev/scapy
 pysnmp, pyasn1                  BSD-2-Clause                  https://github.com/lextudio/pysnmp
+
+Because scapy is GPL-2.0-only, this package as a whole is distributed under the
+GPL-2.0; its complete source code is agent-gui/ in the EagleEye repository. PySide6
+is used under its GPL-2.0 option (it is offered as LGPL-3.0, GPL-2.0 or GPL-3.0).
 
 NOT included (downloaded from the official site only if you ask for it)
 ----------------------------------------------------------------------

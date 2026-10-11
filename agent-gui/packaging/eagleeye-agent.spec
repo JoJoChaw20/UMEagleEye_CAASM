@@ -26,7 +26,12 @@ hiddenimports = (
 )
 
 excludes = ["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
-            "PySide6.QtMultimedia", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf", "pytest"]
+            "PySide6.QtMultimedia", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf", "pytest",
+            # Test-only dependencies whose licences cannot be combined with scapy (GPL-2.0-only):
+            # python-nmap (GPL-3.0) and requests (Apache-2.0, with its helpers). Never bundle them.
+            "nmap", "requests", "urllib3", "charset_normalizer", "chardet", "idna", "certifi",
+            # Build tooling, not needed at run time; setuptools also vendors Apache-2.0 code.
+            "setuptools", "pkg_resources", "_distutils_hack", "wheel"]
 
 
 def analysis(script):

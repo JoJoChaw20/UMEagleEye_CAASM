@@ -12,10 +12,13 @@ import ipaddress
 import logging
 import platform
 import re
+import shlex
 import socket
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+from xml.etree import ElementTree
 
 from .. import deps
 from ..pipeline.record import HostRecord
@@ -75,22 +78,88 @@ def parse_smb_os_discovery(script_output: str) -> dict[str, str]:
     return result
 
 
-def hosts_from_scanner(nm: Any) -> list[HostRecord]:
-    """Turn a python-nmap PortScanner result into HostRecords.
+# ── Nmap XML ──────────────────────────────────────────────────────────────
+# The agent runs Nmap as a separate program and reads its XML report itself
+# (python-nmap is not used: its GPL-3.0 licence cannot be combined with scapy's
+# GPL-2.0-only in one distributed program). The reading rules below copy
+# python-nmap 0.7.1's, so the host data is unchanged (tests/test_parity.py).
+
+@dataclass
+class _XmlHost:
+    state: str = ""
+    hostnames: list[dict[str, str]] = field(default_factory=list)
+    addresses: dict[str, str] = field(default_factory=dict)
+    ports: dict[str, dict[int, dict[str, Any]]] = field(default_factory=dict)   # proto -> port -> info
+    osmatch: list[dict[str, str]] = field(default_factory=list)
+
+    def hostname(self) -> str:
+        """python-nmap's rule: a 'user' hostname if any, otherwise the first one."""
+        for h in self.hostnames:
+            if h.get("type") == "user":
+                return h.get("name") or ""
+        return (self.hostnames[0].get("name") or "") if self.hostnames else ""
+
+
+def parse_nmap_xml(text: str) -> dict[str, _XmlHost]:
+    """Hosts of an Nmap XML report, keyed by IPv4 address."""
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError as exc:
+        raise RuntimeError(f"Nmap returned output that could not be read: {exc}") from None
+    hosts: dict[str, _XmlHost] = {}
+    for dhost in root.findall("host"):
+        h = _XmlHost()
+        status = dhost.find("status")
+        h.state = status.get("state", "") if status is not None else ""
+        key: Optional[str] = None
+        for address in dhost.findall("address"):
+            kind, addr = address.get("addrtype", ""), address.get("addr", "")
+            h.addresses[kind] = addr
+            if kind == "ipv4":
+                key = addr
+        if key is None:
+            first = dhost.find("address")
+            if first is None:
+                continue
+            key = first.get("addr", "")
+        names = dhost.findall("hostnames/hostname")
+        h.hostnames = [{"name": n.get("name", ""), "type": n.get("type", "")} for n in names] or [{"name": "", "type": ""}]
+        for dport in dhost.findall("ports/port"):
+            proto, portid = dport.get("protocol", ""), int(dport.get("portid", "0"))
+            state = dport.find("state")
+            info: dict[str, Any] = {"state": state.get("state", "") if state is not None else "",
+                                    "name": "", "product": "", "version": ""}
+            for service in dport.findall("service"):
+                info["name"] = service.get("name")
+                if service.get("product"):
+                    info["product"] = service.get("product")
+                if service.get("version"):
+                    info["version"] = service.get("version")
+            for script in dport.findall("script"):
+                info.setdefault("script", {})[script.get("id")] = script.get("output")
+            h.ports.setdefault(proto, {})[portid] = info
+        h.osmatch = [{"name": m.get("name", ""), "accuracy": m.get("accuracy", "")} for m in dhost.findall("os/osmatch")]
+        hosts[key] = h
+    return hosts
+
+
+def hosts_from_nmap_xml(text: str) -> list[HostRecord]:
+    """Turn an Nmap XML report into HostRecords.
 
     OS: smb-os-discovery (most accurate) -> Nmap osmatch fallback.
     Hostname: SMB computer name (most reliable) -> Nmap reverse DNS, ignoring
     Docker-internal names.
     """
+    parsed = parse_nmap_xml(text)
     hosts: list[HostRecord] = []
-    for ip in nm.all_hosts():
-        host = nm[ip]
-        if host.state() != "up":
+    for ip in sorted(parsed):                  # python-nmap's all_hosts() order (string sort)
+        host = parsed[ip]
+        if host.state != "up":
             continue
 
         ports: list[dict[str, Any]] = []
-        for proto in host.all_protocols():
-            for port_num, port_info in host[proto].items():
+        for proto in sorted(host.ports):
+            for port_num, port_info in host.ports[proto].items():
                 if port_info.get("state") == "open":
                     entry: dict[str, Any] = {
                         "port": port_num,
@@ -105,14 +174,15 @@ def hosts_from_scanner(nm: Any) -> list[HostRecord]:
                     ports.append(entry)
 
         os_info: dict[str, Any] = {}
+        tcp = host.ports.get("tcp", {})
         smb_script = (
-            host.get("tcp", {}).get(445, {}).get("script", {}).get("smb-os-discovery")
-            or host.get("tcp", {}).get(139, {}).get("script", {}).get("smb-os-discovery")
+            tcp.get(445, {}).get("script", {}).get("smb-os-discovery")
+            or tcp.get(139, {}).get("script", {}).get("smb-os-discovery")
         )
         if smb_script:
             os_info = parse_smb_os_discovery(smb_script)
-        elif "osmatch" in host and host["osmatch"]:
-            best = host["osmatch"][0]
+        elif host.osmatch:
+            best = host.osmatch[0]
             os_info = {"name": best.get("name", ""), "accuracy": best.get("accuracy", "")}
 
         smb_computer_name = os_info.get("smb_computer_name") or None
@@ -123,25 +193,38 @@ def hosts_from_scanner(nm: Any) -> list[HostRecord]:
         hosts.append(HostRecord(
             ip=ip,
             hostname=smb_computer_name or dns_hostname,
-            mac=host.get("addresses", {}).get("mac") or None,
+            mac=host.addresses.get("mac") or None,
             ports=ports,
             os=os_info or None,
         ))
     return hosts
 
 
-def run_nmap(subnet: str, nmap_path: str) -> list[HostRecord]:
-    import nmap  # type: ignore  # python-nmap
+def nmap_command(subnet: str, nmap_path: str) -> list[str]:
+    """Same command line python-nmap built: nmap -oX - <target> <arguments>."""
+    return [nmap_path, "-oX", "-", subnet, *shlex.split(NMAP_ARGS)]
 
-    log.info("Running Nmap on %s", subnet)
-    nm = nmap.PortScanner(nmap_search_path=(nmap_path,))
+
+def _execute_nmap(command: list[str], timeout: int) -> str:
+    """Run Nmap and return its XML report."""
     try:
-        nm.scan(hosts=subnet, arguments=NMAP_ARGS, timeout=NMAP_TIMEOUT_SECONDS)
-    except nmap.PortScannerTimeout:
-        raise RuntimeError(f"Nmap did not finish within {NMAP_TIMEOUT_SECONDS // 60} minutes") from None
-    except nmap.PortScannerError as exc:
-        raise RuntimeError(f"Nmap failed: {str(exc).strip()[:300]}") from None
-    hosts = hosts_from_scanner(nm)
+        proc = subprocess.run(command, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Nmap did not finish within {timeout // 60} minutes") from None
+    except OSError as exc:
+        raise RuntimeError(f"Nmap could not be started: {exc}") from None
+    out = proc.stdout.decode("utf-8", errors="replace")
+    err = proc.stderr.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0 or "<nmaprun" not in out:
+        raise RuntimeError(f"Nmap failed: {(err or f'exit code {proc.returncode}')[:300]}")
+    if err:
+        log.debug("Nmap messages: %s", err[:500])
+    return out
+
+
+def run_nmap(subnet: str, nmap_path: str) -> list[HostRecord]:
+    log.info("Running Nmap on %s", subnet)
+    hosts = hosts_from_nmap_xml(_execute_nmap(nmap_command(subnet, nmap_path), NMAP_TIMEOUT_SECONDS))
     log.info("Nmap found %d hosts on %s", len(hosts), subnet)
     return hosts
 
