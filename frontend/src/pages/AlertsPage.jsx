@@ -761,7 +761,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                   ['Last scanned', e.asset.last_scanned ? `${timeAgo(e.asset.last_scanned)} (${e.asset.source?.replace('scan_', '')})` : 'never'],
                 ]} />
                 <div className="flex items-center gap-4 mt-2">
-                  <Link to={assetHref(e.asset.asset_id, e.asset.hostname || e.asset.ip_address)} className="text-xs text-eagle-400 hover:underline">Open in Assets →</Link>
+                  <Link to={assetHref(e.asset.asset_id)} className="text-xs text-eagle-400 hover:underline">Open asset →</Link>
                   <button onClick={() => onAssetAlerts(e.asset)} className="text-xs text-eagle-400 hover:underline">All alerts on this asset →</button>
                 </div>
               </Section>
@@ -775,7 +775,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                     <li key={i} className="text-xs text-dark-300 flex items-center gap-2">
                       <span className="text-dark-500 w-16">{r.direction === 'outbound' ? '→' : '←'} {r.relationship.replace(/_/g, ' ')}</span>
                       {r.asset_id
-                        ? <Link to={assetHref(r.asset_id, r.hostname ?? r.ip)} className="text-eagle-300 hover:underline">{r.hostname ?? r.ip}</Link>
+                        ? <Link to={assetHref(r.asset_id)} className="text-eagle-300 hover:underline">{r.hostname ?? r.ip}</Link>
                         : <span>{r.hostname ?? r.ip}</span>}
                       <span className="text-dark-500 capitalize">{r.device_type}</span>
                     </li>
@@ -826,7 +826,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
   )
 }
 
-const assetHref = (id, label) => `/assets?${new URLSearchParams({ asset_id: id, ...(label ? { label } : {}) })}`
+const assetHref = (id) => `/inventory/${encodeURIComponent(id)}`
 
 function serviceOn(asset, port) {
   const s = asset?.services?.find(x => Number(x.port) === Number(port))

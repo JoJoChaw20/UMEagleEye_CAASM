@@ -1,6 +1,4 @@
 // Add / Edit / CSV-import modals for the Inventory page.
-// Copied unchanged from MyAssetsPage.jsx, which keeps its own copies until the old
-// pages are retired; after that this file is the single source.
 import { useState, useEffect, useRef } from 'react'
 import { Plus, X, Save, ToggleLeft, ToggleRight, Upload, Download, FileText } from 'lucide-react'
 import client from '../../api/client'

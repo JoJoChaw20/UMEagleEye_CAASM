@@ -1,7 +1,7 @@
 import { NavLink, Link } from 'react-router-dom'
 import {
-  LayoutDashboard, Server, Bell, FileSearch, Globe, FileText,
-  Settings, LogOut, Eye, Network, Radar, Bot, Building2,
+  LayoutDashboard, Bell, FileSearch, Globe, FileText,
+  Settings, LogOut, Eye, Radar, Bot, Building2,
   ChevronLeft, MessageCircle, Package, Boxes,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
@@ -28,8 +28,6 @@ function buildSections(role) {
 
   const assetItems = [
     { to: '/inventory', icon: Boxes,   label: 'Inventory' },
-    { to: '/my-assets', icon: Server,  label: 'My Assets' },
-    { to: '/assets',    icon: Network, label: 'All Assets' },
     ...(canSeeOps ? opsItems : []),
   ]
 

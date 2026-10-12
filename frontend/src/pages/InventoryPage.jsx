@@ -21,7 +21,7 @@ const PAGE_SIZE = 25
 
 // Exact filters that other pages link to (dashboard panels, alert drawer). A link
 // with no `scope` searches both scopes, so its count matches the card it came from.
-const LINK_FILTER_KEYS = ['asset_id', 'gap', 'port', 'internet_facing']
+const LINK_FILTER_KEYS = ['asset_id', 'gap', 'port', 'internet_facing', 'device_type']
 const GAP_LABELS = {
   new_7d:       'New devices this week',
   unidentified: 'Unidentified devices (no type, vendor or hostname)',
@@ -40,6 +40,7 @@ function readLinkFilter(sp) {
   if (params.gap) parts.push(GAP_LABELS[params.gap] ?? params.gap)
   if (params.port) parts.push(`${RISKY_PORTS[params.port] ? `${RISKY_PORTS[params.port]} ` : ''}port ${params.port} open`)
   if (params.internet_facing) parts.push('Internet-facing')
+  if (params.device_type) parts.push(`Type: ${DEVICE_TYPE_META[params.device_type]?.label ?? params.device_type}`)
   return { params, label: parts.join(' · ') }
 }
 
@@ -109,6 +110,20 @@ export default function InventoryPage() {
     const params = next === 'mine' ? {} : { scope: next }
     if (search) params.q = search
     setSearchParams(params, { replace: true })
+  }
+
+  // A device type that came in with a link lives in the URL (it is part of the link
+  // filter); change it there so the banner and the list stay in step.
+  const changeDeviceType = (value) => {
+    if (linkFilter?.params.device_type) {
+      const next = new URLSearchParams(searchParams)
+      if (value) next.set('device_type', value)
+      else next.delete('device_type')
+      setSearchParams(next, { replace: true })
+      return
+    }
+    setDeviceTypeFilter(value)
+    setPage(1)
   }
 
   const clearLinkFilter = () => setSearchParams(scope === 'discovered' ? { scope } : {}, { replace: true })
@@ -451,7 +466,7 @@ export default function InventoryPage() {
                 aria-label="Search assets"
               />
             </div>
-            <select value={deviceTypeFilter} onChange={(e) => { setDeviceTypeFilter(e.target.value); setPage(1) }} className="input-field text-sm py-1.5 w-44" aria-label="Device type">
+            <select value={deviceTypeFilter} onChange={(e) => changeDeviceType(e.target.value)} className="input-field text-sm py-1.5 w-44" aria-label="Device type">
               <option value="">All Types</option>
               {Object.entries(DEVICE_TYPE_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
             </select>

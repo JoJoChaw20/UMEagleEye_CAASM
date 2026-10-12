@@ -1,10 +1,8 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import MainLayout from './components/layout/MainLayout'
 import ProtectedRoute from './components/common/ProtectedRoute'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
-import AssetsPage from './pages/AssetsPage'
-import MyAssetsPage from './pages/MyAssetsPage'
 import InventoryPage from './pages/InventoryPage'
 import AssetDetailPage from './pages/AssetDetailPage'
 import DiscoveryPage from './pages/DiscoveryPage'
@@ -26,6 +24,19 @@ const TENANT_MGMT      = ['superadmin']
 const USER_MGMT_ROLES  = ['superadmin', 'tenant_superadmin', 'tenant_admin']
 const SETTINGS_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin']
 
+// The old /assets (All Assets) and /my-assets pages were retired for /inventory. Old
+// links and bookmarks keep working: a single-asset link opens that asset's page, any
+// other query (filters) is carried over to the inventory.
+function LegacyAssetsRedirect({ scope }) {
+  const { search } = useLocation()
+  const params = new URLSearchParams(search)
+  const assetId = params.get('asset_id')
+  if (assetId) return <Navigate to={`/inventory/${encodeURIComponent(assetId)}`} replace />
+  if (scope && !params.has('scope')) params.set('scope', scope)
+  const qs = params.toString()
+  return <Navigate to={`/inventory${qs ? `?${qs}` : ''}`} replace />
+}
+
 export default function App() {
   return (
     <Routes>
@@ -37,10 +48,9 @@ export default function App() {
         <Route index element={<DashboardPage />} />
 
         {/* ASSETS — all roles can view; write restricted on backend */}
-        <Route path="assets"    element={<ProtectedRoute allowedRoles={ALL_ROLES}><AssetsPage /></ProtectedRoute>} />
-        <Route path="my-assets" element={<ProtectedRoute allowedRoles={ALL_ROLES}><MyAssetsPage /></ProtectedRoute>} />
-        {/* New merged inventory (My Assets + Discovered) and asset detail. Runs beside the
-            old pages until they are retired; then it moves to /assets. */}
+        {/* Merged inventory (My Assets + Discovered) and asset detail. */}
+        <Route path="assets"    element={<LegacyAssetsRedirect />} />
+        <Route path="my-assets" element={<LegacyAssetsRedirect scope="mine" />} />
         <Route path="inventory"          element={<ProtectedRoute allowedRoles={ALL_ROLES}><InventoryPage /></ProtectedRoute>} />
         <Route path="inventory/:assetId" element={<ProtectedRoute allowedRoles={ALL_ROLES}><AssetDetailPage /></ProtectedRoute>} />
 

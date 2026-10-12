@@ -2,15 +2,14 @@ import { useState, useRef, useEffect, useCallback, useId } from 'react'
 import { createPortal } from 'react-dom'
 import client from '../../api/client'
 
-// Shared criticality badge + breakdown tooltip, used by BOTH All Assets and My Assets
-// so the two can't drift. The breakdown is fetched lazily from GET /assets/:id/score
-// (the same source My Assets already used — server-side computeCriticality, 1 query,
-// cached after first open). The tooltip renders in a portal so the table's overflow /
-// page edges never clip it, and flips above/below depending on room.
+// Shared criticality badge + breakdown tooltip (Inventory list and asset page). The
+// breakdown is fetched lazily from GET /assets/:id/score (server-side, 1 query, cached
+// after first open). The tooltip renders in a portal so the table's overflow / page
+// edges never clip it, and flips above/below depending on room.
 //
 // footer:
-//   'slider'   → My Assets (has a manual slider): "…Drag slider to override."
-//   'computed' → All Assets (no slider):          "…Use Rescore Criticality to refresh."
+//   'slider'   → a view with a manual criticality slider: "…Drag slider to override."
+//   'computed' → no slider (Inventory, asset page):      "…Use Rescore Criticality to refresh."
 
 const FOOTERS = {
   slider:   'Hover score = computed value. Drag slider to override.',

@@ -76,10 +76,8 @@ export default function DashboardPage() {
   const openInventory = (q) => navigate(`/inventory?${new URLSearchParams(q).toString()}`)
   const inventoryAsset = (a) => navigate(`/inventory/${a.asset_id}`)
   const openAlerts = (q) => navigate(`/alerts?${new URLSearchParams(q).toString()}`)
-  const openAssets = (q) => navigate(`/assets?${new URLSearchParams(q).toString()}`)
   // Exact-asset links (never a text search: "192.168.0.1" would also match .10–.19)
   const assetAlerts = (a) => openAlerts({ asset_id: a.asset_id, label: a.hostname || a.ip })
-  const assetPage = (a) => openAssets({ asset_id: a.asset_id, label: a.hostname || a.ip })
 
   return (
     <div className="space-y-6">
@@ -196,10 +194,10 @@ export default function DashboardPage() {
             {loading ? <Skeleton rows={5} /> : surface?.internet_facing?.length ? (
               <>
                 <div className="flex flex-wrap gap-2 mb-4">
-                  <SummaryPill value={surface.internet_facing_total} label="reachable from the internet" onClick={() => openAssets({ internet_facing: 'true' })} />
+                  <SummaryPill value={surface.internet_facing_total} label="reachable from the internet" onClick={() => openInventory({ internet_facing: 'true' })} />
                   <SummaryPill value={surface.internet_facing_risky ?? 0} label="expose a risky service" tone={surface.internet_facing_risky ? 'bad' : 'ok'} />
                   <SummaryPill value={surface.internet_facing_inferred ?? 0} label="inferred, not confirmed" tone="muted"
-                    title="Inferred from the agent's default gateway. Confirm or correct the exposure in Assets." />
+                    title="Inferred from the agent's default gateway. Confirm or correct the exposure in Inventory." />
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -213,7 +211,7 @@ export default function DashboardPage() {
                     </thead>
                     <tbody>
                       {surface.internet_facing.map(a => (
-                        <tr key={a.asset_id} onClick={() => assetPage(a)} title="Open this asset"
+                        <tr key={a.asset_id} onClick={() => inventoryAsset(a)} title="Open this asset"
                           className="border-b border-dark-700/40 hover:bg-dark-700/20 cursor-pointer align-top">
                           <td className="py-2.5 pr-3">
                             <p className="text-dark-100 font-medium">{a.hostname || a.ip}</p>
@@ -238,8 +236,8 @@ export default function DashboardPage() {
                   </table>
                 </div>
                 {surface.internet_facing_total > surface.internet_facing.length && (
-                  <Link to="/assets?internet_facing=true" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
-                    {surface.internet_facing_total - surface.internet_facing.length} more in Assets <ChevronRight className="w-3.5 h-3.5" />
+                  <Link to="/inventory?internet_facing=true" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+                    {surface.internet_facing_total - surface.internet_facing.length} more in Inventory <ChevronRight className="w-3.5 h-3.5" />
                   </Link>
                 )}
               </>
@@ -252,7 +250,7 @@ export default function DashboardPage() {
               <ul className="divide-y divide-dark-700/50">
                 {surface.risky_services.slice(0, 8).map(r => (
                   <li key={r.port}>
-                    <button onClick={() => openAssets({ port: r.port })}
+                    <button onClick={() => openInventory({ port: r.port })}
                       title={`Show the ${r.host_count} host${r.host_count === 1 ? '' : 's'} with ${r.service} open: ${r.hosts.map(h => h.hostname || h.ip).join(', ')}`}
                       className="w-full text-left flex items-center gap-3 py-2.5 hover:bg-dark-700/20 rounded px-1">
                       <div className="min-w-0 flex-1">
@@ -276,7 +274,7 @@ export default function DashboardPage() {
         <div className="glass-card p-5 xl:col-span-2">
           <PanelHead icon={Network} title="Network devices" sub="Routers, switches and firewalls. Their firmware is checked over SNMPv3." />
           {loading ? <Skeleton rows={5} /> : surface?.network_devices?.length ? (
-            <NetworkDevices surface={surface} onAsset={assetPage} onAlerts={assetAlerts} />
+            <NetworkDevices surface={surface} onAsset={inventoryAsset} onAlerts={assetAlerts} />
           ) : <Empty text="No routers or switches identified yet." />}
         </div>
 
@@ -287,7 +285,7 @@ export default function DashboardPage() {
               {Object.entries(surface.device_mix).sort((x, y) => y[1] - x[1]).map(([type, n]) => {
                 const totalAssets = Object.values(surface.device_mix).reduce((s, x) => s + x, 0) || 1
                 return (
-                  <button key={type} onClick={() => openAssets({ device_type: type })} title={`Show ${n} ${type} assets`}
+                  <button key={type} onClick={() => openInventory({ device_type: type })} title={`Show ${n} ${type} assets`}
                     className="block w-full text-left rounded hover:bg-dark-700/20 -mx-1 px-1 py-0.5">
                     <div className="flex justify-between text-sm mb-1">
                       <span className="capitalize text-dark-200">{type === 'iot' ? 'IoT' : type}</span>
@@ -301,7 +299,7 @@ export default function DashboardPage() {
               })}
               {surface.device_mix.unknown > 0 && (
                 <p className="text-xs text-dark-400 pt-1">
-                  {surface.device_mix.unknown} unknown device{surface.device_mix.unknown === 1 ? '' : 's'} can't be risk-scored properly. Label them in <Link to="/assets?device_type=unknown" className="text-eagle-400 hover:underline">Assets</Link>.
+                  {surface.device_mix.unknown} unknown device{surface.device_mix.unknown === 1 ? '' : 's'} can't be risk-scored properly. Label them in <Link to="/inventory?device_type=unknown" className="text-eagle-400 hover:underline">Inventory</Link>.
                 </p>
               )}
             </div>
@@ -337,22 +335,22 @@ export default function DashboardPage() {
             why="Joined the network in the last 7 days."
             action="Confirm an owner; isolate if unclaimed after 24h"
             row={a => [a.hostname || a.ip, a.vendor ?? 'Unknown vendor']}
-            onOpen={() => openAssets({ gap: 'new_7d' })} onItem={assetPage} />
+            onOpen={() => openInventory({ gap: 'new_7d' })} onItem={inventoryAsset} />
           <HygieneCard icon={HelpCircle} title="Unidentified devices" data={hygiene?.unidentified} loading={loading}
             why="No type, vendor or hostname, so their risk can't be scored."
-            action="Label them in Assets"
+            action="Label them in Inventory"
             row={a => [a.ip, a.mac ?? 'No MAC']}
-            onOpen={() => openAssets({ gap: 'unidentified' })} onItem={assetPage} />
+            onOpen={() => openInventory({ gap: 'unidentified' })} onItem={inventoryAsset} />
           <HygieneCard icon={Clock} title={`Not seen in ${hygiene?.stale_after_days ?? 7} days`} data={hygiene?.stale_assets} loading={loading}
             why="No scan has reached them recently. Moved, retired, or out of coverage."
             action="Verify, then retire or fix scan coverage"
             row={a => [a.hostname || a.ip, a.last_scanned ? `last seen ${timeAgo(a.last_scanned)}` : 'never scanned']}
-            onOpen={() => openAssets({ gap: 'stale' })} onItem={assetPage} />
+            onOpen={() => openInventory({ gap: 'stale' })} onItem={inventoryAsset} />
           <HygieneCard icon={PackageSearch} title="Servers & PCs without SBOM" data={hygiene?.no_sbom} loading={loading}
             why="No software inventory, so their CVEs are invisible."
             action="Run an SBOM scan on them"
             row={a => [a.hostname || a.ip, a.device_type]}
-            onOpen={() => openAssets({ gap: 'no_sbom' })} onItem={assetPage} />
+            onOpen={() => openInventory({ gap: 'no_sbom' })} onItem={inventoryAsset} />
         </div>
       </section>
 
@@ -743,8 +741,8 @@ function NetworkDevices({ surface, onAsset, onAlerts }) {
         </table>
       </div>
       {total > shown.length && (
-        <Link to="/assets?device_type=network" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
-          {total - shown.length} more in Assets <ChevronRight className="w-3.5 h-3.5" />
+        <Link to="/inventory?device_type=network" className="text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 mt-3">
+          {total - shown.length} more in Inventory <ChevronRight className="w-3.5 h-3.5" />
         </Link>
       )}
     </>

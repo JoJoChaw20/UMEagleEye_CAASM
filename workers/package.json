@@ -12,6 +12,8 @@
     "db:migrate:prod": "node scripts/db/db.mjs migrate production",
     "db:baseline:prod": "node scripts/db/db.mjs baseline production",
     "db:baseline:prod:apply": "node scripts/db/db.mjs baseline production --apply",
+    "db:report:staging": "node scripts/db/report.mjs staging",
+    "db:report:prod": "node scripts/db/report.mjs production",
     "db:staging:mark": "node scripts/db/staging.mjs mark",
     "db:staging:sanitize": "node scripts/db/staging.mjs sanitize",
     "db:staging:sanitize:apply": "node scripts/db/staging.mjs sanitize --apply",
