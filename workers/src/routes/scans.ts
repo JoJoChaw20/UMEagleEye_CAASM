@@ -40,7 +40,6 @@ async function fetchMacVendor(mac: string | null | undefined): Promise<string | 
 }
 
 // SNMP sysDescr substrings that identify a host as a router/switch/network device.
-// Mirrors _NETWORK_DEVICE_SIGNATURES in backend/app/tasks/discovery_tasks.py.
 const NETWORK_DEVICE_SIGNATURES = [
   'cisco ios', 'cisco nx-os', 'cisco adaptive security appliance', 'cisco asa',
   'junos', 'arista networks eos', 'mikrotik routeros', 'fortigate', 'pan-os',

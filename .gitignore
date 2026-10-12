@@ -39,6 +39,7 @@ frontend/.env.local
 .tunnel-pid
 
 # Wrangler
+.wrangler/
 workers/.wrangler/
 
 # OS

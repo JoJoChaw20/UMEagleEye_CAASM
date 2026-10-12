@@ -213,8 +213,8 @@ UMEagleEye2.0/
 │   │   ├── pages/
 │   │   │   ├── LoginPage.jsx
 │   │   │   ├── DashboardPage.jsx
-│   │   │   ├── AssetsPage.jsx           # All assets + relationship graph; tenant filter
-│   │   │   ├── MyAssetsPage.jsx         # Manual assets — add, import CSV, baseline
+│   │   │   ├── InventoryPage.jsx        # Asset inventory: My Assets / Discovered, filters, add, import CSV, graph
+│   │   │   ├── AssetDetailPage.jsx      # One asset: identity, criticality, endpoint inventory, posture, alerts
 │   │   │   ├── DiscoveryPage.jsx        # Scan dispatch (active + passive) + scan history
 │   │   │   ├── SBOMPage.jsx             # SBOM inventory, dependency explorer, charts
 │   │   │   ├── AlertsPage.jsx           # Security events with severity/type filters
@@ -222,7 +222,6 @@ UMEagleEye2.0/
 │   │   │   ├── ThreatIntelPage.jsx      # CTI indicators + MITRE heatmap
 │   │   │   ├── ReportsPage.jsx          # Report generation + secure blob download
 │   │   │   ├── SettingsPage.jsx         # Profile, password change, integrations
-│   │   │   ├── TopologyPage.jsx         # Collapsible tree; per-tenant sections; DMZ + criticality badges
 │   │   │   ├── AgentsPage.jsx           # Agent registry + RBAC config modal
 │   │   │   ├── TenantsPage.jsx          # SuperAdmin only — platform-wide tenant + user management
 │   │   │   ├── TenantSettingsPage.jsx   # Tenant self-management (tenant_superadmin edits own tenant/users)
@@ -236,14 +235,11 @@ UMEagleEye2.0/
 │   ├── eagleeye_agent.py        # Main agent: active + passive scanning loop
 │   ├── requirements.txt         # requests, python-nmap, scapy, pysnmp
 │   └── README.md
-├── cyberforce_corporation_assets.csv  # Sample dataset — 33 assets (CyberForce Corp)
-├── vanilla_corporation_assets.csv     # Sample dataset — 30 assets (Vanilla Corp)
 ├── AGENT_SETUP_GUIDE.md         # Step-by-step agent deployment guide
-├── STAGING.md                   # Staging environment runbook
-├── deploy-workers.ps1           # One-shot full deployment script
-├── .env                         # All secrets (git-ignored)
-└── .env.example                 # Template for required variables
+└── STAGING.md                   # Staging environment runbook
 ```
+
+Secrets are not kept in files in the repository: the Worker's secrets live in Cloudflare (`wrangler secret put`), and the only local credential files are the git-ignored `workers/.env.staging` / `workers/.env.production` (database URLs for migrations) and `frontend/.env.production` / `.env.staging` (public build settings).
 
 ## Role-Based Access Control (RBAC)
 
@@ -758,29 +754,31 @@ Staging exists so changes can be tested against realistic data while production 
 ### First-time deployment
 
 ```powershell
-# 1. Copy and fill in all secrets
-cp .env.example .env
+# 1. Install Workers dependencies (wrangler logged in: npx wrangler login)
+cd workers ; npm install
 
-# 2. Install Workers dependencies
-cd workers && npm install && cd ..
-
-# 3. Create the schema on an empty Neon database (see Database migrations)
-cd workers
+# 2. Create the schema on an empty Neon database (see Database migrations)
 cp .env.production.example .env.production   # set DB_TARGET=production and DATABASE_URL
 npm run db:migrate:prod
-cd ..
 
-# 4. Deploy everything (secrets + Worker + frontend)
-.\deploy-workers.ps1
+# 3. Set the Worker's secrets; each command prompts for the value (see Environment Variables)
+npx wrangler secret put DATABASE_URL
+npx wrangler secret put JWT_SECRET_KEY
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put OPENROUTER_API_KEY      # and/or DEEPSEEK_API_KEY
+npx wrangler secret put OTX_API_KEY
+npx wrangler secret put THREATFOX_API_KEY
+npx wrangler secret put NVD_API_KEY
+
+# 4. Deploy the Worker, then the frontend
+npm run deploy
+cd ../frontend
+# frontend/.env.production: VITE_API_URL=https://umeagleeye-api.<subdomain>.workers.dev/api/v1
+#                           VITE_GOOGLE_CLIENT_ID=<same client id>
+npm install ; npm run deploy
 ```
 
-The `deploy-workers.ps1` script:
-1. Pushes all secrets from `.env` to Cloudflare Workers via `wrangler secret put`
-2. Deploys the Worker to `https://umeagleeye-api.<subdomain>.workers.dev`
-3. Updates `frontend/.env.production` with the Workers URL
-4. Builds and deploys the frontend to Cloudflare Pages (`umeagleeye-caasm`)
-
-> The script **re-uploads every secret from `.env` on each run**, so use it for first-time setup only. For routine releases deploy each part separately, as below.
+Secrets are entered once per secret and never stored in the repository. To change one later, run its `wrangler secret put` again; nothing else is re-uploaded. A random `JWT_SECRET_KEY`: `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
 
 ### Releasing a change
 
@@ -829,12 +827,11 @@ Accounts listed in `KEEP_EMAILS` (in `workers/.env.staging`) keep their login; a
 
 ## Environment Variables
 
-See `.env.example` for the full list. Key variables:
+Worker secrets (set with `npx wrangler secret put <NAME>`; add `--env staging` for staging). Non-secret settings such as `OPENROUTER_MODEL`, `JWT_EXPIRE_MINUTES`, `FRONTEND_URL` and `SCAN_DEFAULT_SUBNET` are `[vars]` in `workers/wrangler.toml`.
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | Neon PostgreSQL connection string (used by the legacy Python backend) |
-| `DATABASE_URL_SYNC` | Plain Neon PostgreSQL connection string used by the Cloudflare Worker; do not point this to Hyperdrive |
+| `DATABASE_URL` | Plain Neon PostgreSQL connection string (`postgresql://…`) used by the Cloudflare Worker; do not point this to Hyperdrive |
 | `JWT_SECRET_KEY` | HS256 signing secret (min 32 chars) |
 | `GOOGLE_CLIENT_ID` | Google OAuth Client ID |
 | `OPENROUTER_API_KEY` | DeepSeek AI via OpenRouter (used if `DEEPSEEK_API_KEY` is not set) |
@@ -843,11 +840,11 @@ See `.env.example` for the full list. Key variables:
 | `OTX_API_KEY` | AlienVault OTX threat intelligence |
 | `THREATFOX_API_KEY` | ThreatFox threat intelligence |
 | `NVD_API_KEY` | NIST NVD API key — optional but recommended; increases rate limit from 5 req/30s to 50 req/30s for CWE enrichment |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token (for wrangler deployments) |
+| `CLOUDFLARE_API_TOKEN` | Optional, in your shell (not a Worker secret): lets wrangler deploy without `wrangler login` |
 
 Per-environment database credentials for migrations live in `workers/.env.staging` and `workers/.env.production` (`DB_TARGET`, `DATABASE_URL`, and optionally `KEEP_EMAILS` for staging). The staging Worker has its own secrets, set with `wrangler secret put <NAME> --env staging`; use a different `JWT_SECRET_KEY` there.
 
-All variables are stored as **Cloudflare Workers secrets** (never in code). The frontend needs `VITE_API_URL` and `VITE_GOOGLE_CLIENT_ID` in `frontend/.env.production` (git-ignored; set by deploy script).
+All variables are stored as **Cloudflare Workers secrets** (never in code). The frontend needs `VITE_API_URL` and `VITE_GOOGLE_CLIENT_ID` in `frontend/.env.production` (git-ignored; staging uses `frontend/.env.staging`, template `.env.staging.example`).
 
 ## Local Development
 
@@ -858,12 +855,12 @@ cd workers && npx wrangler dev
 
 # Frontend
 cd frontend
-cp .env.example .env.local
-# Set VITE_API_URL=http://localhost:8787/api/v1
+cp .env.staging.example .env.local
+# In .env.local set VITE_API_URL=http://localhost:8787/api/v1
 npm run dev
 ```
 
-> The legacy `backend/` directory (FastAPI/Python/Docker) is retained for reference but is no longer the active backend.
+> The earlier FastAPI/Python/Docker backend was removed in Phase D; it is kept in git history under the `legacy-archive` tag.
 
 ---
 
