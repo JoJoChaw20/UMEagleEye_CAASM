@@ -29,15 +29,27 @@ const JUNK_HARDWARE_UUIDS = new Set([
   '4c4c4544-0000-0000-0000-000000000000',
 ])
 
-/** Lowercase, braces stripped, valid UUID, not a known placeholder; else null. */
+/** The other byte order of an SMBIOS UUID: SMBIOS 2.6+ stores the first three fields
+ *  little-endian, and Windows (WMI) and Linux (/sys/class/dmi/id/product_uuid) disagree
+ *  on whether to swap them: 564dd698-9a35-099c-… vs 98d64d56-359a-9c09-…. */
+export function swapUuidBytes(v: string): string {
+  const rev = (s: string) => s.match(/../g)!.reverse().join('')
+  const [a, b, c, ...rest] = v.split('-')
+  return [rev(a!), rev(b!), rev(c!), ...rest].join('-')
+}
+
+/** Lowercase, braces stripped, valid UUID, not a known placeholder; else null. The
+ *  result is byte-order independent (the smaller of the two orders), so the same
+ *  machine gives the same value under Windows and Linux (dual boot, reinstall). */
 export function normalizeHardwareUuid(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
   const v = raw.trim().toLowerCase().replace(/^\{|\}$/g, '')
   if (!UUID_RE.test(v)) return null
   const hex = v.replace(/-/g, '')
   if (/^(.)\1+$/.test(hex)) return null                     // 0000…, ffff…
-  if (JUNK_HARDWARE_UUIDS.has(v)) return null
-  return v
+  const swapped = swapUuidBytes(v)
+  if (JUNK_HARDWARE_UUIDS.has(v) || JUNK_HARDWARE_UUIDS.has(swapped)) return null
+  return v < swapped ? v : swapped
 }
 
 /** Windows MachineGuid (a GUID) or Linux machine-id (32 hex chars); else null. */
@@ -80,5 +92,13 @@ export function machineIdentifiers(inv: InventoryPayload): MachineIdentifier[] {
  */
 export function differentHardware(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
   if (!a?.length || !b?.length) return false
-  return !a.some(x => b.includes(x))
+  // Values stored before byte-order normalisation compare in their canonical form too.
+  const canon = (list: readonly string[]) => list.map(v => normalizeHardwareUuid(v) ?? v.toLowerCase())
+  const bb = canon(b)
+  return !canon(a).some(x => bb.includes(x))
+}
+
+/** Both spellings of a hardware UUID, for looking up rows stored in either form. */
+export function hardwareUuidForms(v: string): string[] {
+  return UUID_RE.test(v) ? [...new Set([v, swapUuidBytes(v)])] : [v]
 }

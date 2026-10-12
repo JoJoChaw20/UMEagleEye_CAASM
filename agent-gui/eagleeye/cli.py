@@ -215,7 +215,8 @@ def cmd_inventory(args: argparse.Namespace) -> int:
     inv = holder
     ident, hw, os_, sec, patches = inv["identity"], inv["hardware"], inv["os"], inv["security"], inv["patches"]
     nics = [n for n in inv["network"]["interfaces"] if n["physical"]]
-    joined = f"domain {ident['domain']}" if ident["part_of_domain"] else "workgroup"
+    joined = f"domain {ident['domain']}" if ident["part_of_domain"] else (
+        f"workgroup {ident['workgroup']}" if ident.get("workgroup") else "not in a domain")
     ram_gb = round((hw["memory_bytes"] or 0) / 2**30, 1)
     days = patches["days_since_last_patch"]
     antivirus = ", ".join(f"{a['name']} ({'on' if a['enabled'] else 'off'})" for a in sec["antivirus"]) or "-"

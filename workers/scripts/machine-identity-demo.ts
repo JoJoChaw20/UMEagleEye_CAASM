@@ -6,7 +6,7 @@
  *        --outfile=.machine-identity-demo.cjs && node .machine-identity-demo.cjs
  */
 import {
-  machineIdentifiers, normalizeHardwareUuid, normalizeOsInstallId, differentHardware,
+  machineIdentifiers, normalizeHardwareUuid, normalizeOsInstallId, differentHardware, hardwareUuidForms,
 } from '../src/lib/machineIdentity'
 import {
   bindMachine, chooseBinding, planAgentAddress, primaryMac, resolveAgentDeviceType,
@@ -25,13 +25,19 @@ function check(label: string, actual: unknown, expected: unknown) {
   ok ? pass++ : fail++
 }
 
-const UUID_A = '4c4c4544-0044-3510-8053-b4c04f564e32'
+// Canonical (byte-order independent) form of the Dell UUID 4C4C4544-0044-3510-8053-B4C04F564E32.
+const UUID_A = '44454c4c-4400-1035-8053-b4c04f564e32'
 const UUID_B = '6f1d2a90-3c55-4b8e-9d0a-1b2c3d4e5f60'
 const GUID = '9a8b7c6d-1111-2222-3333-444455556666'
 
 // ── 1. Normalising identifiers ──
 console.log('\n── identifiers ──')
 check('hardware UUID lowercased, braces stripped', normalizeHardwareUuid('{4C4C4544-0044-3510-8053-B4C04F564E32}'), UUID_A)
+check('same VM, Windows (WMI) and Linux (sysfs) byte orders -> one value',
+  normalizeHardwareUuid('564DD698-9A35-099C-B4BB-2E973F046C77'), normalizeHardwareUuid('98d64d56-359a-9c09-b4bb-2e973f046c77'))
+check('placeholder UUID caught in either byte order',
+  [normalizeHardwareUuid('03000200-0400-0500-0006-000700080009'), normalizeHardwareUuid('00020003-0004-0005-0006-000700080009')], [null, null])
+check('different machines stay different', normalizeHardwareUuid('564dd698-9a35-099c-b4bb-2e973f046c77') === normalizeHardwareUuid('564dd698-9a35-099c-b4bb-2e973f046c78'), false)
 check('all-zero UUID dropped', normalizeHardwareUuid('00000000-0000-0000-0000-000000000000'), null)
 check('all-F UUID dropped', normalizeHardwareUuid('FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'), null)
 check('"To be filled by O.E.M." placeholder UUID dropped', normalizeHardwareUuid('03000200-0400-0500-0006-000700080009'), null)
@@ -240,6 +246,21 @@ const m3 = planMerge(mAsset('s', { deviceType: 'iot', deviceTypeSource: 'manual'
 check('manual type still beats agent-confirmed', [m3.mergedFields.deviceType, m3.mergedFields.deviceTypeSource], ['iot', 'manual'])
 const m4 = planMerge(mAsset('s'), [mAsset('l')], related)
 check('no inventories: fields untouched, survivor keeps (no) software', ['endpointInventory' in m4.mergedFields, (m4.ops.find(o => o.k === 'keepSoftware') as { keepAssetId: string }).keepAssetId], [false, 's'])
+
+// ── 8. Rows stored before byte-order normalisation keep matching ──
+console.log('\n── upgrade: hardware UUIDs stored in the old (raw) spelling ──')
+const RAW_OLD = '4c4c4544-0044-3510-8053-b4c04f564e32'           // as stored before the change
+check('bound asset with the raw stored UUID stays bound to the canonical incoming one',
+  bindMachine({ ...NONE, boundAssetId: 'pc', boundHardwareUuids: [RAW_OLD], hardwareUuid: UUID_A }).decision,
+  { assetId: 'pc', matchedBy: 'bound' })
+check('OS-install-id candidate with the raw UUID is not mistaken for a clone',
+  bindMachine({ ...NONE, hardwareUuid: UUID_A, osInstallIdMatches: [cand('pc', { hardwareUuids: [RAW_OLD] })] }),
+  { decision: { assetId: 'pc', matchedBy: 'os_install_id' }, differentHardware: [] })
+check('lookup covers both spellings', hardwareUuidForms(UUID_A).sort(), [UUID_A, RAW_OLD].sort())
+check('duplicates: raw row on one asset + canonical row on another = same hardware (safe)',
+  groupsOf(findDuplicateGroups([dAsset('a'), dAsset('b')], [], undefined, [
+    { assetId: 'a', kind: 'hardware_uuid', value: RAW_OLD }, { assetId: 'b', kind: 'hardware_uuid', value: UUID_A }])).map(g => g.c),
+  ['safe'])
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

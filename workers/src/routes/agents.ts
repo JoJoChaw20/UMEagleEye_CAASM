@@ -16,7 +16,7 @@ import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
   resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
 } from '../lib/endpointInventory'
-import { machineIdentifiers } from '../lib/machineIdentity'
+import { hardwareUuidForms, machineIdentifiers } from '../lib/machineIdentity'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -326,9 +326,11 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         ? db.select({ assetId: assets.assetId, inMyAssets: assets.inMyAssets, lastScanned: assets.lastScanned, hasMac, hardwareUuids })
             .from(assets).where(and(eq(assets.tenantId, tenantId), where))
         : Promise.resolve([])
+    // Hardware UUIDs are looked up in both byte orders (rows stored before normalisation).
     const byIdentifier = (kind: string, value: string | null) => candidates(value
       ? inArray(assets.assetId, db.select({ id: assetIdentifiers.assetId }).from(assetIdentifiers).where(and(
-          eq(assetIdentifiers.tenantId, tenantId), eq(assetIdentifiers.kind, kind), eq(assetIdentifiers.value, value))))
+          eq(assetIdentifiers.tenantId, tenantId), eq(assetIdentifiers.kind, kind),
+          inArray(assetIdentifiers.value, kind === 'hardware_uuid' ? hardwareUuidForms(value) : [value]))))
       : undefined)
 
     const [bound, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches, criticalityModel] = await Promise.all([

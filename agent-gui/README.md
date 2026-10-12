@@ -63,8 +63,15 @@ any NIC the agent listed (for example the Ethernet MAC of a laptop first seen on
 | Installed software | Uninstall registry keys (machine and user) | `asset_software` table, asset detail; later: CVE matching and drift |
 
 BitLocker, TPM and SMBv1 need Administrator; without it they are reported as "needs Administrator". Settings:
-`inventory` (on/off, `--no-inventory`) and `inventory_interval` (`--inventory-interval`, minimum 300 s). Linux and
-macOS collectors are not written yet; on those systems the agent reports that once and stops trying.
+`inventory` (on/off, `--no-inventory`) and `inventory_interval` (`--inventory-interval`, minimum 300 s).
+
+**Linux** (`collectors/linux.py`) reports the same document from `/etc/os-release`, `/proc`, `/sys/class/dmi/id`,
+`/etc/machine-id`, `ip -j addr`, `ss -tulnp`, `lsblk`, `dpkg-query` / `rpm` and `snap`: patches from the apt or dnf
+history, firewall from ufw / firewalld / nftables, disk encryption from LUKS layers under `/`, `/home`, `/var`, `/srv`,
+Secure Boot, TPM, xrdp, Samba SMBv1 and members of the sudo / wheel / admin groups. The SMBIOS UUID and serial need
+root; run the agent with `sudo` (or as a root systemd service), otherwise they are reported as unavailable and the
+server's VM-clone guard cannot use them. A machine without a desktop session reports the role "server". The macOS
+collector is not written yet; there the agent reports that once and stops trying.
 
 ## Desktop app
 `python -m eagleeye gui`, or `EagleEyeAgent.exe` from the installer. One copy runs per user; it keeps running in the
@@ -164,7 +171,7 @@ eagleeye/
   gui/        desktop app: app (window, tray, single instance), pages, consent, controller
   pipeline/   HostRecord, events, runner (stages, optional stages, cancellation)
   stages/     scan_nmap (Nmap + built-in fallback), snmp_poll, passive, inventory, upload
-  collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser
+  collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser; linux.py
   passive/    ARP, mDNS/NetBIOS and DHCP sniffers
 packaging/    PyInstaller spec, Inno Setup script, build.ps1, third-party notices
 tests/        pytest suite, including side-by-side parity checks against ../agent/eagleeye_agent.py

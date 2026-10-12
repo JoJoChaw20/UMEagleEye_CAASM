@@ -9,7 +9,7 @@
  * the evidence rules never diverge from the resolver. Tested by identity-demo.ts.
  */
 import { classifyMac, isSharedVirtualMac } from './identity'
-import { differentHardware } from './machineIdentity'
+import { differentHardware, normalizeHardwareUuid } from './machineIdentity'
 
 // Report-specific generic-hostname filter — intentionally NOT sanitizeHostKey
 // (that is tuned for ingest and must not change). Ignores localhost, default
@@ -208,8 +208,10 @@ export function findDuplicateGroups(
   const idsOf = (kind: string) => {
     const byAsset = new Map<string, string[]>()
     const byValue = new Map<string, string[]>()
-    for (const i of identifiers) {
-      if (i.kind !== kind || !assetById.has(i.assetId)) continue
+    for (const raw of identifiers) {
+      if (raw.kind !== kind || !assetById.has(raw.assetId)) continue
+      // Hardware UUIDs group in their byte-order independent form (older rows are raw).
+      const i = kind === 'hardware_uuid' ? { ...raw, value: normalizeHardwareUuid(raw.value) ?? raw.value.toLowerCase() } : raw
       const a = byAsset.get(i.assetId) ?? []; if (!a.includes(i.value)) a.push(i.value); byAsset.set(i.assetId, a)
       const v = byValue.get(i.value) ?? []; if (!v.includes(i.assetId)) v.push(i.assetId); byValue.set(i.value, v)
     }

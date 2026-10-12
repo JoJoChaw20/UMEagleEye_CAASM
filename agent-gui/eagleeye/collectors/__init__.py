@@ -2,8 +2,8 @@
 
 `collect_inventory()` returns one normalised, versioned document (schema 1) with
 identity, hardware, OS, patches, security posture, network interfaces, listening
-services and installed software. Windows is implemented; Linux and macOS raise
-UnsupportedPlatform until their collectors are written.
+services and installed software. Windows and Linux are implemented; macOS raises
+UnsupportedPlatform until its collector is written.
 """
 
 from __future__ import annotations
@@ -26,4 +26,7 @@ def collect_inventory(user_software: bool = False, admin_names: bool = False) ->
     if sys.platform == "win32":
         from .windows import collect
         return collect(user_software=user_software, admin_names=admin_names)
-    raise UnsupportedPlatform(f"endpoint inventory is not available on {sys.platform} yet (Windows only for now)")
+    if sys.platform.startswith("linux"):
+        from .linux import collect as collect_linux
+        return collect_linux(user_software=user_software, admin_names=admin_names)
+    raise UnsupportedPlatform(f"endpoint inventory is not available on {sys.platform} yet (Windows and Linux only for now)")
