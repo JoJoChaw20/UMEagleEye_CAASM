@@ -19,6 +19,7 @@ import {
 import { RISKY_PORTS, SevBadge, StatusBadge, alertLabel, renderDetail, timeAgo } from '../components/common/alertMeta'
 import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
+import DeviceTypePicker from '../components/assets/DeviceTypePicker'
 
 // Human labels for the os_info keys written by scan ingest (active, passive, SNMP).
 const OS_FIELDS = [
@@ -351,7 +352,9 @@ export default function AssetDetailPage() {
             </Field>
             <Field label="Vendor">{asset.hardwareVendor}</Field>
             <Field label="Device type">
-              {deviceMeta.label}
+              {isReadOnly
+                ? deviceMeta.label
+                : <DeviceTypePicker asset={asset} onChanged={async () => { setNotice('Device type updated.'); await refresh() }} />}
               <span className="block text-[11px] text-dark-400">{typeSourceText(asset)}</span>
               <TypeSuggestion asset={asset} canConfirm={!isReadOnly} onConfirm={handleConfirmType} />
             </Field>
@@ -530,6 +533,7 @@ export default function AssetDetailPage() {
           tenantId={asset.tenantId ?? ''}
           centered
           canMerge={user?.role === 'tenant_superadmin'}
+          canDismiss={!isReadOnly}
           onClose={() => setShowDuplicates(false)}
           onMerged={refresh}
         />
@@ -539,8 +543,7 @@ export default function AssetDetailPage() {
 }
 
 // ── Criticality explanation ──
-// The tenant's formula (v1 or v2) with each factor and where it came from; while a
-// tenant is still on v1, the v2 result is shown underneath for review.
+// The formula (v2) with each factor and where it came from.
 const SOURCE_TAG = {
   agent: 'agent', manual: 'set by hand', scan: 'scan', analyst: 'analyst', inferred: 'inferred', hostname: 'hostname',
 }
@@ -570,28 +573,17 @@ function FactorList({ result }) {
 }
 
 function CriticalityExplain({ score, stored }) {
-  const v2 = score.v2
   return (
     <>
       <p className="text-xs text-dark-400 mb-2">
-        How important this asset is, from its own facts (formula v{score.model ?? 1}). Each line adds to or subtracts from the score.
+        How important this asset is if it were compromised, from its own facts. Each line adds to or subtracts from the score.
+        Security weaknesses (patches, antivirus, encryption) are in the posture score, not here.
         {score.confidence && <> Confidence: <span className={CONFIDENCE_CLS[score.confidence]}>{score.confidence}</span>.</>}
       </p>
       <FactorList result={score} />
       {score.unknowns?.length > 0 && <p className="mt-2 text-xs text-dark-400">Not known yet: {score.unknowns.join(', ')}.</p>}
       {(score.score !== stored || (score.stored_model != null && score.stored_model !== score.model)) && (
         <p className="mt-3 text-xs text-amber-400">The stored score ({stored}) is not from the current formula ({score.score}). Rescore to update it.</p>
-      )}
-      {score.model === 1 && v2 && (
-        <div className="mt-4 rounded-lg border border-dark-700/60 bg-dark-900/40 p-3">
-          <p className="text-xs text-dark-300 mb-2">
-            Formula v2 preview: <span className="font-semibold text-dark-100">{v2.score}/10</span>
-            {v2.score !== score.score && <span className="text-dark-400"> ({v2.score > score.score ? '+' : ''}{v2.score - score.score} vs v1)</span>}
-            , confidence <span className={CONFIDENCE_CLS[v2.confidence]}>{v2.confidence}</span>.
-            {' '}Importance only: no owner no longer adds a point; security weaknesses are in the posture score.
-          </p>
-          <FactorList result={v2} />
-        </div>
       )}
     </>
   )
@@ -621,7 +613,7 @@ function TypeSuggestion({ asset, canConfirm, onConfirm }) {
           Confirm as {DEVICE_TYPE_META[hint.type]?.label ?? hint.type}
         </button>
       )}
-      {!hint.type && <span className="block mt-1 text-dark-400">The exact type is not known; set it with Edit.</span>}
+      {!hint.type && <span className="block mt-1 text-dark-400">The exact type is not known; choose it above.</span>}
     </span>
   )
 }

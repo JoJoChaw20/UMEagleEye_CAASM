@@ -53,9 +53,9 @@ export const tenants = pgTable('tenants', {
   name: varchar('name', { length: 100 }).notNull(),
   slug: varchar('slug', { length: 50 }).notNull().unique(),
   isActive: boolean('is_active').notNull().default(true),
-  // Criticality formula this tenant's scores use (lib/rescore.ts): 1 = original,
-  // 2 = importance only, with sources. Switched by POST /assets/rescore?model=.
-  criticalityModel: smallint('criticality_model').notNull().default(1),
+  // Criticality formula of this tenant. Historical: since Release 2 every tenant
+  // scores with v2 (lib/rescore.ts ACTIVE_MODEL) and nothing switches it.
+  criticalityModel: smallint('criticality_model').notNull().default(2),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -101,8 +101,8 @@ export const assets = pgTable('assets', {
   hardwareVendor: varchar('hardware_vendor', { length: 255 }),
   osInfo: jsonb('os_info').default({}),
   criticalityScore: smallint('criticality_score').notNull().default(5),
-  // Which formula produced criticality_score (1 or 2; see tenants.criticality_model).
-  criticalityModel: smallint('criticality_model').notNull().default(1),
+  // Which formula produced criticality_score (1 = old v1, 2 = v2, the active one).
+  criticalityModel: smallint('criticality_model').notNull().default(2),
   // Endpoint posture (weakness, kept apart from criticality = importance): 0-100 from
   // the security checks in the agent's inventory (lib/endpointPosture.ts). NULL =
   // unassessed (no agent, or too few checks readable), never "good".
@@ -349,6 +349,24 @@ export const assetIdentifiers = pgTable('asset_identifiers', {
 }, (t) => [
   uniqueIndex('idx_identifier_asset_kind_value').on(t.assetId, t.kind, t.value),
   index('idx_identifier_lookup').on(t.tenantId, t.kind, t.value),
+])
+
+// ─── Duplicate dismissals ("Not a duplicate") ────────────────────
+// An analyst's decision that two assets flagged as duplicates are different machines.
+// One row per pair (asset_a < asset_b), with the evidence shown at the time: the pair
+// stays apart until undone, or until NEW strong evidence links it (lib/duplicates.ts).
+// Removed with either asset.
+export const duplicateDismissals = pgTable('duplicate_dismissals', {
+  dismissalId: uuid('dismissal_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  assetA: uuid('asset_a').notNull().references(() => assets.assetId, { onDelete: 'cascade' }),
+  assetB: uuid('asset_b').notNull().references(() => assets.assetId, { onDelete: 'cascade' }),
+  reasons: jsonb('reasons').notNull().default([]),
+  dismissedBy: uuid('dismissed_by').references(() => users.userId, { onDelete: 'set null' }),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  uniqueIndex('idx_dismissal_pair').on(t.assetA, t.assetB),
+  index('idx_dismissal_tenant').on(t.tenantId),
 ])
 
 // ─── Table 13: Topology Nodes ────────────────────────────────────

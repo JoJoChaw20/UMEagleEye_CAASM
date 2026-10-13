@@ -1,11 +1,12 @@
 /**
  * Criticality scoring entry point + bulk rescoring.
  *
- * Two formulas exist: v1 (lib/criticality.ts, the original) and v2
- * (lib/criticalityV2.ts, importance only, with sources). A tenant uses one of them
- * (tenants.criticality_model); every writer scores through scoreAsset(input, model)
- * so ingest, inventory, create/PATCH and rescore can never disagree. Each asset
- * records which model produced its score (assets.criticality_model).
+ * Every writer scores with ACTIVE_MODEL = v2 (lib/criticalityV2.ts: importance only,
+ * with sources) through scoreAsset(), so ingest, inventory, create/PATCH and rescore can
+ * never disagree. v1 (lib/criticality.ts, the original) is kept only for the read-only
+ * comparison script (scripts/compare-scorers.ts) and its tests; no app path uses it.
+ * Each asset records which model produced its score (assets.criticality_model), so a
+ * score still stored from v1 is rewritten by the next rescore.
  *
  * Bulk rescoring prefetches the tenant's assets in a constant number of queries,
  * recomputes every score IN MEMORY from each asset's own facts, and writes back only
@@ -16,7 +17,7 @@
  */
 import { eq, inArray, and } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { assets, tenants } from '../db/schema'
+import { assets } from '../db/schema'
 import { computeCriticality, type ScoringResult } from './criticality'
 import { computeCriticalityV2, type ScoringResultV2 } from './criticalityV2'
 import { POSTURE_MODEL, evaluatePosture } from './endpointPosture'
@@ -25,8 +26,8 @@ import { applyHint, deviceTypeHint, type DeviceTypeHint } from './deviceHints'
 type DbClient = ReturnType<typeof getDb>
 
 export type CriticalityModel = 1 | 2
-export const CRITICALITY_MODELS: CriticalityModel[] = [1, 2]
-export const asModel = (v: unknown): CriticalityModel => (Number(v) === 2 ? 2 : 1)
+/** The formula the app scores with. */
+export const ACTIVE_MODEL: CriticalityModel = 2
 
 export interface RescoreChange {
   assetId: string
@@ -54,6 +55,25 @@ export interface ScoreInput {
   agentRole?: string | null
   /** Classifier v2 hint stored on the asset (assets.device_type_hint). */
   deviceTypeHint?: DeviceTypeHint | null
+}
+
+/**
+ * Deep equality for JSON values, independent of key order. Postgres jsonb does not keep
+ * the key order it was given, so comparing a freshly built object with a stored one via
+ * JSON.stringify always differed (every rescore rewrote every hinted asset).
+ */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a == null || b == null || typeof a !== 'object' || typeof b !== 'object') return a === b
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a)) {
+    const bb = b as unknown[]
+    return a.length === bb.length && a.every((v, i) => sameJson(v, bb[i]))
+  }
+  const ao = a as Record<string, unknown>, bo = b as Record<string, unknown>
+  // An undefined property is not stored in jsonb, so it counts as absent.
+  const ak = Object.keys(ao).filter(k => ao[k] !== undefined), bk = Object.keys(bo).filter(k => bo[k] !== undefined)
+  return ak.length === bk.length && ak.every(k => Object.prototype.hasOwnProperty.call(bo, k) && sameJson(ao[k], bo[k]))
 }
 
 /** The OS role an agent reported, from a stored endpoint inventory. */
@@ -84,7 +104,7 @@ export function scoreDetail(input: ScoreInput, model: CriticalityModel): Scoring
  * and agent inventory. Derives the score from the asset's own facts only. It does NOT
  * take any topology input — criticality must never depend on the graph.
  */
-export function scoreAsset(input: ScoreInput, model: CriticalityModel = 1): number {
+export function scoreAsset(input: ScoreInput, model: CriticalityModel = ACTIVE_MODEL): number {
   return scoreDetail(input, model).score
 }
 
@@ -100,13 +120,6 @@ export function scoreInputOf(row: Pick<typeof assets.$inferSelect,
   }
 }
 
-/** The criticality model a tenant uses (1 when unknown). One query. */
-export async function tenantCriticalityModel(db: DbClient, tenantId: string | null | undefined): Promise<CriticalityModel> {
-  if (!tenantId) return 1
-  const [t] = await db.select({ model: tenants.criticalityModel }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
-  return asModel(t?.model)
-}
-
 type RescoreRow = Pick<typeof assets.$inferSelect,
   'assetId' | 'deviceType' | 'isInternetFacing' | 'hostname' | 'osInfo' | 'criticalityScore' | 'owner'>
   & Partial<Pick<typeof assets.$inferSelect,
@@ -120,14 +133,14 @@ type RescoreRow = Pick<typeof assets.$inferSelect,
  * high-confidence hint also fills an unknown type). No DB access — unit-testable
  * (see rescore-demo, device-hints-demo).
  */
-export function planRescore(rows: RescoreRow[], model: CriticalityModel = 1): RescorePlan {
+export function planRescore(rows: RescoreRow[], model: CriticalityModel = ACTIVE_MODEL): RescorePlan {
   const changes: RescoreChange[] = []
   for (const asset of rows) {
     const osInfo = asset.osInfo as Record<string, unknown> | null
     const hint = deviceTypeHint({ hostname: asset.hostname, mac: asset.macAddress, vendor: asset.hardwareVendor, osInfo })
     const typed = applyHint({ deviceType: asset.deviceType, deviceTypeSource: asset.deviceTypeSource ?? null }, hint)
     // Rows read without the hint column (older callers) never count as a hint change.
-    const hintChanged = 'deviceTypeHint' in asset && JSON.stringify(hint) !== JSON.stringify(asset.deviceTypeHint ?? null)
+    const hintChanged = 'deviceTypeHint' in asset && !sameJson(hint, asset.deviceTypeHint ?? null)
     const score = scoreAsset({
       deviceType: typed.deviceType,
       deviceTypeSource: typed.deviceTypeSource,
@@ -164,19 +177,19 @@ export function planRescore(rows: RescoreRow[], model: CriticalityModel = 1): Re
 }
 
 /**
- * Rescore a set of assets (by ID) within a tenant with the tenant's model (or the
- * model given). If assetIds is empty, rescores ALL assets for the tenant.
+ * Rescore a set of assets (by ID) with the active model. If assetIds is empty,
+ * rescores ALL assets for the tenant.
  *
- * Subrequests: 1 (tenant model, unless given) + 1 (assets) + ceil(changed / 100)
- * batch writes — constant regardless of asset count. (No topology read.)
+ * Subrequests: 1 (assets) + ceil(changed / 100) batch writes — constant regardless
+ * of asset count. (No topology read.)
  */
 export async function rescoreAssets(
   db: DbClient,
   tenantId: string | null,
   assetIds?: string[],
-  opts?: { myAssetsOnly?: boolean; discoveredOnly?: boolean; model?: CriticalityModel },
-): Promise<RescorePlan & { model: CriticalityModel }> {
-  const model = opts?.model ?? await tenantCriticalityModel(db, tenantId)
+  opts?: { myAssetsOnly?: boolean; discoveredOnly?: boolean },
+): Promise<RescorePlan & { model: CriticalityModel; scoresChanged: number }> {
+  const model = ACTIVE_MODEL
   // Fetch asset rows (1 query). scope=my_assets adds in_my_assets=true to the
   // tenant prefetch; scope=discovered adds in_my_assets=false.
   let rows: (typeof assets.$inferSelect)[]
@@ -190,11 +203,15 @@ export async function rescoreAssets(
       membership ? and(eq(assets.tenantId, tenantId), membership) : eq(assets.tenantId, tenantId),
     )
   } else {
-    return { scanned: 0, changes: [], model }
+    return { scanned: 0, changes: [], model, scoresChanged: 0 }
   }
-  if (rows.length === 0) return { scanned: 0, changes: [], model }
+  if (rows.length === 0) return { scanned: 0, changes: [], model, scoresChanged: 0 }
 
   const plan = planRescore(rows, model)
+  // A change may only refresh posture, a suggestion or the formula tag; count the
+  // assets whose criticality score itself moved.
+  const previous = new Map(rows.map(r => [r.assetId, r.criticalityScore]))
+  const scoresChanged = plan.changes.filter(ch => previous.get(ch.assetId) !== ch.score).length
 
   // Write only changed assets, in ~100-statement batches (one batch = one subrequest).
   const now = new Date()
@@ -211,5 +228,5 @@ export async function rescoreAssets(
     await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
   }
 
-  return { ...plan, model }
+  return { ...plan, model, scoresChanged }
 }

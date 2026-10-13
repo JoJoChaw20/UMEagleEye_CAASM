@@ -67,13 +67,31 @@ export interface DuplicateGroupAsset {
   addressCount: number
   eventCount?: number
 }
+export interface DuplicateEdge { a: string; b: string; confidence: 'safe' | 'review'; reason: string }
 export interface DuplicateGroup {
   groupId: string
   confidence: 'safe' | 'review'
   reasons: string[]
   assets: DuplicateGroupAsset[]
   suggestedSurvivorId: string
+  /** The evidence links inside the group (what "Not a duplicate" dismisses). */
+  edges: DuplicateEdge[]
+  /** A pair in this group was dismissed, but strong evidence appeared since. */
+  reraised: boolean
+  /** That new strong evidence (empty unless reraised). */
+  newEvidence: string[]
 }
+
+/**
+ * An analyst's "Not a duplicate" for one pair of assets, with the evidence shown when
+ * it was dismissed (duplicate_dismissals). The pair stays apart until it is undone, or
+ * until a SAFE link appears whose reason is not in `reasons` (new strong evidence,
+ * e.g. the same hardware UUID), which brings the pair back for review.
+ */
+export interface DupDismissal { assetA: string; assetB: string; reasons: string[] }
+
+/** Order-independent key of an asset pair; dismissals are stored with assetA < assetB. */
+export const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`)
 
 const ms = (v: string | Date | null | undefined): number => (v ? new Date(v).getTime() : 0)
 
@@ -85,13 +103,14 @@ function hashIds(ids: string[]): string {
   return 'grp_' + (h >>> 0).toString(16).padStart(8, '0')
 }
 
-interface Edge { a: string; b: string; confidence: 'safe' | 'review'; reason: string }
+type Edge = DuplicateEdge
 
 export function findDuplicateGroups(
   assets: DupAsset[],
   addresses: DupAddress[],
   eventCounts?: Map<string, number>,
   identifiers: DupIdentifier[] = [],
+  dismissals: DupDismissal[] = [],
 ): DuplicateGroup[] {
   const assetById = new Map(assets.map(a => [a.assetId, a]))
   const addrByAsset = new Map<string, DupAddress[]>()
@@ -150,7 +169,6 @@ export function findDuplicateGroups(
           } else {
             edges.push({ a: x.assetId, b: y.assetId, confidence: 'safe', reason: `same global MAC ${mac}` })
           }
-          union(x.assetId, y.assetId)
         } else {
           // local MAC — same non-null network, or one unscoped with equal IP.
           let matched: string | null = null
@@ -158,7 +176,7 @@ export function findDuplicateGroups(
             if (a.net != null && a.net === b.net) { matched = `same local MAC ${mac} on ${a.net}`; break outer }
             if ((a.net == null || b.net == null) && a.ip === b.ip) { matched = `same local MAC ${mac} at ${a.ip} (unscoped)`; break outer }
           }
-          if (matched) { edges.push({ a: x.assetId, b: y.assetId, confidence: 'safe', reason: matched }); union(x.assetId, y.assetId) }
+          if (matched) edges.push({ a: x.assetId, b: y.assetId, confidence: 'safe', reason: matched })
           // else: same local MAC on different networks → never grouped.
         }
       }
@@ -180,7 +198,6 @@ export function findDuplicateGroups(
       const mx = classifyMac(x.macAddress).mac, my = classifyMac(y.macAddress).mac
       if (mx && my && mx === my) continue   // same MAC already grouped as safe
       edges.push({ a: x.assetId, b: y.assetId, confidence: 'review', reason: `same hostname "${hn}", different MACs` })
-      union(x.assetId, y.assetId)
     }
   }
 
@@ -200,7 +217,6 @@ export function findDuplicateGroups(
       const differentNetworks = xn.size > 0 && yn.size > 0 && [...xn].every(n => !yn.has(n))
       if (!differentNetworks) continue
       edges.push({ a: uniq[i]!, b: uniq[j]!, confidence: 'review', reason: `same host_key "${hk}" on different networks` })
-      union(uniq[i]!, uniq[j]!)
     }
   }
 
@@ -224,7 +240,7 @@ export function findDuplicateGroups(
   }
   // Same hardware UUID = same (virtual) machine.
   for (const [value, ids] of hw.byValue) {
-    pairs(ids, (x, y) => { edges.push({ a: x, b: y, confidence: 'safe', reason: `same hardware UUID ${value}` }); union(x, y) })
+    pairs(ids, (x, y) => { edges.push({ a: x, b: y, confidence: 'safe', reason: `same hardware UUID ${value}` }) })
   }
   // Same OS installation: the same machine, unless the hardware differs (cloned VM).
   for (const [value, ids] of idsOf('os_install_id').byValue) {
@@ -232,7 +248,6 @@ export function findDuplicateGroups(
       edges.push(differentHardware(hwOf(x), hwOf(y))
         ? { a: x, b: y, confidence: 'review', reason: `same OS installation ID ${value} on different hardware (cloned VM or replaced mainboard)` }
         : { a: x, b: y, confidence: 'safe', reason: `same OS installation ID ${value}` })
-      union(x, y)
     })
   }
   // A MAC the agent reported for its own NIC, seen on another asset by a scan or agent.
@@ -244,7 +259,6 @@ export function findDuplicateGroups(
       for (const other of others) {
         if (other === owner || (owners.includes(other) && other < owner)) continue
         edges.push({ a: owner, b: other, confidence: 'safe', reason: `MAC ${mac} reported by the agent on this machine` })
-        union(owner, other)
       }
     }
   }
@@ -257,6 +271,26 @@ export function findDuplicateGroups(
     }
   }
 
+  // ── Dismissed pairs ("Not a duplicate") ──
+  // A dismissed pair loses all its links before grouping, so it can only end up in one
+  // group through OTHER assets (A~C~B is still a group when only A-B was dismissed).
+  // It comes back, with all its links, when a safe link appears that was not part of
+  // the evidence at dismissal time.
+  const dismissedReasons = new Map(dismissals.map(d => [pairKey(d.assetA, d.assetB), new Set(d.reasons)]))
+  const newEvidenceByPair = new Map<string, string[]>()
+  for (const e of edges) {
+    const known = dismissedReasons.get(pairKey(e.a, e.b))
+    if (known && e.confidence === 'safe' && !known.has(e.reason)) {
+      const k = pairKey(e.a, e.b)
+      newEvidenceByPair.set(k, [...(newEvidenceByPair.get(k) ?? []), e.reason])
+    }
+  }
+  const kept = edges.filter(e => {
+    const k = pairKey(e.a, e.b)
+    return !dismissedReasons.has(k) || newEvidenceByPair.has(k)
+  })
+  for (const e of kept) union(e.a, e.b)
+
   // ── Assemble groups ──
   const groupsByRoot = new Map<string, Set<string>>()
   for (const a of assets) {
@@ -268,7 +302,7 @@ export function findDuplicateGroups(
   for (const members of groupsByRoot.values()) {
     if (members.size < 2) continue
     const ids = [...members]
-    const groupEdges = edges.filter(e => members.has(e.a) && members.has(e.b))
+    const groupEdges = kept.filter(e => members.has(e.a) && members.has(e.b))
     const reasons = [...new Set(groupEdges.map(e => e.reason))]
     const confidence: 'safe' | 'review' = groupEdges.some(e => e.confidence === 'review') ? 'review' : 'safe'
 
@@ -291,7 +325,11 @@ export function findDuplicateGroups(
       return ms(x.createdAt) - ms(y.createdAt)
     })[0]!
 
-    out.push({ groupId: hashIds(ids), confidence, reasons, assets: groupAssets, suggestedSurvivorId: survivor.assetId })
+    const newEvidence = [...new Set(groupEdges.flatMap(e => newEvidenceByPair.get(pairKey(e.a, e.b)) ?? []))]
+    out.push({
+      groupId: hashIds(ids), confidence, reasons, assets: groupAssets, suggestedSurvivorId: survivor.assetId,
+      edges: groupEdges, reraised: newEvidence.length > 0, newEvidence,
+    })
   }
 
   // Deterministic order: review first (needs attention), then by size.

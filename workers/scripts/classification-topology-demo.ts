@@ -179,8 +179,8 @@ console.log('\n=== criticality is engine-only (no topology) ===')
   const bulk = planRescore([{ assetId: 'A', ...base, criticalityScore: 0 }])
   check('per-asset == bulk', bulk.changes[0]?.score, scoreAsset(base))
   // deltas unchanged
-  const unowned = scoreAsset({ ...base, owner: null })
-  check('owner penalty still +1', unowned - scoreAsset(base), 1)
+  const unowned = scoreAsset({ ...base, owner: null }, 1)
+  check('v1 owner penalty still +1', unowned - scoreAsset(base, 1), 1)
   check('internet-facing still +2', scoreAsset({ ...base, isInternetFacing: true }) - scoreAsset(base), 2)
   // S5: PATCH workstation→network is immediately correct, no topology refresh needed
   const net = scoreAsset({ deviceType: 'network', isInternetFacing: false, hostname: 'host-x', osInfo: { ports: [445] }, owner: null })

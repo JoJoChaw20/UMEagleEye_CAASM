@@ -5,13 +5,15 @@ import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, t
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, tenants } from '../db/schema'
-import { CRITICALITY_MODELS, agentRoleOf, asModel, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf, tenantCriticalityModel } from '../lib/rescore'
+import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
+import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
+import { automaticDeviceType } from '../lib/deviceClassify'
+import type { DeviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
-import { findDuplicateGroups, type DupAsset, type DupAddress, type DupIdentifier } from '../lib/duplicates'
+import { findDuplicateGroups, pairKey, type DupAsset, type DupAddress, type DupDismissal, type DupIdentifier } from '../lib/duplicates'
 import { planMerge, type MergeAsset, type MergeOp, type MergeRelated } from '../lib/merge'
 import { buildBaseline, buildManualBaseline, extractPorts, extractOsVersion, mergeBaselineFields, type AssetBaseline } from '../services/drift'
 
@@ -285,27 +287,26 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   }
 })
 
-// ── GET /scoring ─── the tenant's criticality formula ──
-app.get('/scoring', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
-  try {
-    const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
-    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') ?? null) : (user.tenantId ?? null)
-    return c.json({ model: await tenantCriticalityModel(db, tenantId), models: CRITICALITY_MODELS, tenant_id: tenantId })
-  } catch (err) {
-    console.error('assets GET /scoring error:', err)
-    return c.json({ detail: 'Failed to read scoring model' }, 500)
-  }
-})
-
 // Machine identifiers agents reported for these assets (duplicate evidence).
 function tenantIdentifiers(db: ReturnType<typeof getDb>, assetIds: string[]): Promise<DupIdentifier[]> {
   return db.select({ assetId: assetIdentifiers.assetId, kind: assetIdentifiers.kind, value: assetIdentifiers.value })
     .from(assetIdentifiers).where(inArray(assetIdentifiers.assetId, assetIds))
 }
 
+// "Not a duplicate" decisions in scope (tenant, or all for a superadmin without one).
+async function tenantDismissals(db: ReturnType<typeof getDb>, tenantId: string | null) {
+  const rows = await db.select({
+    dismissalId: duplicateDismissals.dismissalId, assetA: duplicateDismissals.assetA, assetB: duplicateDismissals.assetB,
+    reasons: duplicateDismissals.reasons, dismissedAt: duplicateDismissals.dismissedAt, dismissedBy: users.username,
+  }).from(duplicateDismissals)
+    .leftJoin(users, eq(users.userId, duplicateDismissals.dismissedBy))
+    .where(tenantId ? eq(duplicateDismissals.tenantId, tenantId) : undefined)
+  return rows.map(r => ({ ...r, reasons: Array.isArray(r.reasons) ? (r.reasons as string[]) : [] }))
+}
+
 // ── GET /duplicates ─── detect duplicate asset groups (tenant-scoped) ──
-// Subrequests: 3 (tenant assets, tenant addresses, agent-reported machine identifiers).
+// Subrequests: 4 (tenant assets, tenant addresses, agent-reported machine identifiers,
+// "Not a duplicate" dismissals). Also returns the dismissed pairs, for Undo.
 app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -327,11 +328,107 @@ app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) =>
       : []
 
     const idRows = ids.length ? await tenantIdentifiers(db, ids) : []
-    const groups = findDuplicateGroups(assetRows as DupAsset[], addrRows as DupAddress[], undefined, idRows)
-    return c.json({ groups, count: groups.length, safe_count: groups.filter(g => g.confidence === 'safe').length })
+    const dismissals = await tenantDismissals(db, tenantId)
+    const groups = findDuplicateGroups(assetRows as DupAsset[], addrRows as DupAddress[], undefined, idRows, dismissals)
+    const byId = new Map(assetRows.map(a => [a.assetId, a]))
+    const brief = (id: string) => { const a = byId.get(id)!; return { assetId: a.assetId, hostname: a.hostname, ipAddress: a.ipAddress, inMyAssets: a.inMyAssets } }
+    const reraisedPairs = new Set(groups.flatMap(g => g.reraised ? g.edges.map(e => pairKey(e.a, e.b)) : []))
+    const dismissed = dismissals
+      .filter(d => byId.has(d.assetA) && byId.has(d.assetB) && !reraisedPairs.has(pairKey(d.assetA, d.assetB)))
+      .map(d => ({ dismissal_id: d.dismissalId, assets: [brief(d.assetA), brief(d.assetB)], reasons: d.reasons, dismissed_at: d.dismissedAt, dismissed_by: d.dismissedBy }))
+    return c.json({ groups, count: groups.length, safe_count: groups.filter(g => g.confidence === 'safe').length, dismissed })
   } catch (err) {
     console.error('assets GET /duplicates error:', err)
     return c.json({ detail: 'Failed to detect duplicates' }, 500)
+  }
+})
+
+// ── POST /duplicates/dismiss ─── "Not a duplicate" ──
+// The analyst says these assets (all in ONE current duplicate group) are different
+// machines. Every evidence link between them is recorded as a dismissed pair, with the
+// evidence shown now; the pair leaves the Duplicates list until undone, or until new
+// strong evidence links it. Groups are recomputed server-side (client contents are never
+// trusted). Subrequests: 4 (as GET /duplicates) + 1 batch (pairs + audit).
+const dismissSchema = z.object({ asset_ids: z.array(z.string().uuid()).min(2).max(20) })
+app.post('/duplicates/dismiss', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', dismissSchema), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const askedIds = [...new Set(c.req.valid('json').asset_ids)]
+    if (askedIds.length < 2) return c.json({ detail: 'Choose at least two different assets' }, 400)
+
+    const [first] = await db.select({ tenantId: assets.tenantId }).from(assets).where(eq(assets.assetId, askedIds[0]!)).limit(1)
+    if (!first) return c.json({ detail: 'Asset not found' }, 404)
+    if (user.role !== 'superadmin' && user.tenantId && first.tenantId !== user.tenantId) return c.json({ detail: 'Asset not found' }, 404)
+    const tenantId = first.tenantId
+
+    const assetRows = await db.select({
+      assetId: assets.assetId, hostname: assets.hostname, ipAddress: assets.ipAddress, macAddress: assets.macAddress,
+      source: assets.source, inMyAssets: assets.inMyAssets, deviceType: assets.deviceType, lastScanned: assets.lastScanned, createdAt: assets.createdAt, hostKey: assets.hostKey,
+    }).from(assets).where(tenantId ? eq(assets.tenantId, tenantId) : isNull(assets.tenantId))
+    const ids = assetRows.map(a => a.assetId)
+    const addrRows = await db.select({
+      addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+      ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt,
+    }).from(assetAddresses).where(inArray(assetAddresses.assetId, ids))
+    const idRows = await tenantIdentifiers(db, ids)
+    const dismissals = await tenantDismissals(db, tenantId)
+
+    const groups = findDuplicateGroups(assetRows as DupAsset[], addrRows as DupAddress[], undefined, idRows, dismissals)
+    const asked = new Set(askedIds)
+    const group = groups.find(g => askedIds.every(id => g.assets.some(a => a.assetId === id)))
+    if (!group) return c.json({ detail: 'These assets are not (or no longer) in one duplicate group. Refresh the list.' }, 409)
+
+    // Every link between the chosen assets becomes one dismissed pair (evidence merged per pair).
+    const byPair = new Map<string, DupDismissal>()
+    for (const e of group.edges) {
+      if (!asked.has(e.a) || !asked.has(e.b)) continue
+      const [a, b] = e.a < e.b ? [e.a, e.b] : [e.b, e.a]
+      const d = byPair.get(pairKey(a, b)) ?? { assetA: a, assetB: b, reasons: [] }
+      if (!d.reasons.includes(e.reason)) d.reasons.push(e.reason)
+      byPair.set(pairKey(a, b), d)
+    }
+    if (byPair.size === 0) return c.json({ detail: 'No evidence links these assets directly. Choose assets that are linked, or merge the others first.' }, 400)
+
+    const now = new Date()
+    const pairs = [...byPair.values()]
+    await db.batch([
+      ...pairs.map(d => db.insert(duplicateDismissals)
+        .values({ tenantId, assetA: d.assetA, assetB: d.assetB, reasons: d.reasons, dismissedBy: user.userId, dismissedAt: now })
+        .onConflictDoUpdate({ target: [duplicateDismissals.assetA, duplicateDismissals.assetB], set: { reasons: d.reasons, dismissedBy: user.userId, dismissedAt: now } })),
+      db.insert(auditLogs).values({
+        userId: user.userId, tenantId, actionType: 'asset.duplicate_dismiss', targetEntity: group.groupId,
+        previousState: null, newState: { asset_ids: askedIds, pairs },
+      }),
+    ] as unknown as Parameters<typeof db.batch>[0])
+    return c.json({ dismissed: pairs.length, message: `Marked as not duplicates (${pairs.length} pair${pairs.length === 1 ? '' : 's'}).` })
+  } catch (err) {
+    console.error('assets POST /duplicates/dismiss error:', err)
+    return c.json({ detail: 'Failed to dismiss the duplicate group' }, 500)
+  }
+})
+
+// ── DELETE /duplicates/dismissals/:dismissalId ─── Undo "Not a duplicate" ──
+// The pair is detected again on the next duplicates read. Subrequests: 1 + 1 batch.
+app.delete('/duplicates/dismissals/:dismissalId', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const { dismissalId } = c.req.param()
+    if (!z.string().uuid().safeParse(dismissalId).success) return c.json({ detail: 'Invalid id' }, 400)
+    const [row] = await db.select().from(duplicateDismissals).where(eq(duplicateDismissals.dismissalId, dismissalId)).limit(1)
+    if (!row || (user.role !== 'superadmin' && user.tenantId && row.tenantId !== user.tenantId)) return c.json({ detail: 'Not found' }, 404)
+    await db.batch([
+      db.delete(duplicateDismissals).where(eq(duplicateDismissals.dismissalId, dismissalId)),
+      db.insert(auditLogs).values({
+        userId: user.userId, tenantId: row.tenantId, actionType: 'asset.duplicate_undismiss', targetEntity: dismissalId,
+        previousState: { asset_a: row.assetA, asset_b: row.assetB, reasons: row.reasons }, newState: null,
+      }),
+    ])
+    return c.json({ message: 'Undone: the pair is checked for duplicates again.' })
+  } catch (err) {
+    console.error('assets DELETE /duplicates/dismissals error:', err)
+    return c.json({ detail: 'Failed to undo' }, 500)
   }
 })
 
@@ -399,7 +496,7 @@ app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('jso
 
 // ── POST /duplicates/merge-safe ─── auto-merge up to 4 SAFE groups ──
 // Groups are RECOMPUTED server-side (client group contents are never trusted).
-// Subrequests: 3 (assets, addresses, identifiers) + 2 (relationships, topology) + up to 4 batches = ~9.
+// Subrequests: 4 (assets, addresses, identifiers, dismissals) + 2 (relationships, topology) + up to 4 batches = ~10.
 const mergeSafeSchema = z.object({ group_ids: z.array(z.string()).optional(), dry_run: z.boolean().optional() })
 app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('json', mergeSafeSchema), async (c) => {
   try {
@@ -420,7 +517,8 @@ app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES),
       : []
 
     const idRows = allAssetIds.length ? await tenantIdentifiers(db, allAssetIds) : []
-    let groups = findDuplicateGroups(assetRows as unknown as DupAsset[], addrRows as DupAddress[], undefined, idRows)
+    const dismissals = await tenantDismissals(db, tenantId)
+    let groups = findDuplicateGroups(assetRows as unknown as DupAsset[], addrRows as DupAddress[], undefined, idRows, dismissals)
       .filter(g => g.confidence === 'safe')
     if (group_ids && group_ids.length) groups = groups.filter(g => group_ids.includes(g.groupId))
 
@@ -645,7 +743,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
 
     // Preserve criticality from scan when device type is unchanged; recompute only
     // when the type improves. Scored from the asset's own facts (no topology).
-    const model = await tenantCriticalityModel(db, targetTenantId)
+    const model = ACTIVE_MODEL
     const keepScore = !!existing?.criticalityScore && deviceType === existing.deviceType
     const computedScore = keepScore
       ? existing!.criticalityScore
@@ -735,6 +833,9 @@ const updateAssetSchema = z.object({
   mac_address: z.string().max(17).optional(),
   owner: z.string().max(255).optional(),
   device_type: z.enum(['server', 'workstation', 'network', 'iot', 'mobile', 'unknown']).optional(),
+  // 'auto' = hand the type back to the system: recomputed now from the stored agent
+  // and scan facts (lib/deviceClassify.ts), and scans may change it again later.
+  device_type_source: z.literal('auto').optional(),
   hardware_vendor: z.string().max(255).optional(),
   os_info: z.record(z.unknown()).optional(),
   criticality_score: z.number().int().min(1).max(10).optional(),
@@ -781,7 +882,19 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     // An emptied owner field means "no owner" (NULL), like the hostname.
     if (body.owner !== undefined) updateData.owner = body.owner.trim() || null
     // A hand-set device type is user-owned: mark it manual so scans never change it.
-    if (body.device_type !== undefined) {
+    // "Automatic" gives it back: the type is recomputed from what is already stored.
+    if (body.device_type_source === 'auto') {
+      if (body.device_type !== undefined) return c.json({ detail: 'Send either device_type or device_type_source "auto", not both' }, 400)
+      const auto = automaticDeviceType({
+        ipAddress: existing.ipAddress, hostname: existing.hostname, macAddress: existing.macAddress,
+        hardwareVendor: existing.hardwareVendor, osInfo: existing.osInfo as Record<string, unknown> | null,
+        endpointInventory: existing.endpointInventory,
+        isInternetFacing: existing.isInternetFacing, internetFacingOverride: existing.internetFacingOverride,
+      })
+      updateData.deviceType = auto.deviceType
+      updateData.deviceTypeSource = auto.deviceTypeSource
+      updateData.deviceTypeHint = auto.hint
+    } else if (body.device_type !== undefined) {
       updateData.deviceType = body.device_type
       updateData.deviceTypeSource = 'manual'
     }
@@ -807,10 +920,11 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
       updateData.criticalityScore = body.criticality_score
     } else {
       const mergedOsInfo = (body.os_info ?? existing.osInfo ?? {}) as Record<string, unknown>
-      const model = await tenantCriticalityModel(db, existing.tenantId)
+      const model = ACTIVE_MODEL
       updateData.criticalityScore = scoreAsset({
-        deviceType: body.device_type ?? existing.deviceType,
+        deviceType: updateData.deviceType ?? existing.deviceType,
         deviceTypeSource: updateData.deviceTypeSource ?? existing.deviceTypeSource,
+        deviceTypeHint: (updateData.deviceTypeHint !== undefined ? updateData.deviceTypeHint : existing.deviceTypeHint) as DeviceTypeHint | null,
         isInternetFacing: updateData.isInternetFacing ?? existing.isInternetFacing,
         internetFacingOverride: updateData.internetFacingOverride !== undefined ? updateData.internetFacingOverride : existing.internetFacingOverride,
         hostname: body.hostname ?? existing.hostname,
@@ -827,7 +941,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     if (body.update_baseline && existing.baselineState) {
       const edits: { hostname?: string | null; device_type?: string; is_internet_facing?: boolean; mac_address?: string | null } = {}
       if (body.hostname !== undefined && body.hostname !== existing.hostname) edits.hostname = body.hostname
-      if (body.device_type !== undefined && body.device_type !== existing.deviceType) edits.device_type = body.device_type
+      if (updateData.deviceType !== undefined && updateData.deviceType !== existing.deviceType) edits.device_type = updateData.deviceType
       if (updateData.isInternetFacing !== undefined && updateData.isInternetFacing !== existing.isInternetFacing) edits.is_internet_facing = updateData.isInternetFacing as boolean
       if (updateData.macAddress !== undefined && updateData.macAddress !== existing.macAddress) edits.mac_address = updateData.macAddress as string | null
       if (Object.keys(edits).length > 0) {
@@ -853,6 +967,19 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
         tenantId: existing.tenantId,
         ip: updated.ipAddress,
         mac: updated.macAddress ?? null,
+      })
+    }
+
+    // Audit a classification change by an analyst (one row, only when type or source changed).
+    if (updateData.deviceType !== undefined
+      && (updated.deviceType !== existing.deviceType || updated.deviceTypeSource !== existing.deviceTypeSource)) {
+      await db.insert(auditLogs).values({
+        userId: user.userId,
+        tenantId: existing.tenantId,
+        actionType: 'asset.device_type',
+        targetEntity: existing.assetId,
+        previousState: { device_type: existing.deviceType, device_type_source: existing.deviceTypeSource },
+        newState: { device_type: updated.deviceType, device_type_source: updated.deviceTypeSource },
       })
     }
 
@@ -951,8 +1078,7 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
 })
 
 // ── POST /rescore ─── Bulk re-score tenant assets (scope=my_assets optional) ──
-// ?model=1|2 also switches the tenant's criticality formula (all its assets are then
-// rescored with it, whatever the scope). Without it, the tenant's current model is used.
+// Scores with the active formula (v2); a score still stored from v1 is rewritten.
 // Endpoint posture is refreshed from stored inventories in the same pass.
 app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
@@ -967,36 +1093,19 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
       ? (c.req.query('tenant_id') ?? user.tenantId ?? null)
       : user.tenantId!
 
-    const modelParam = c.req.query('model')
-    if (modelParam !== undefined) {
-      if (!CRITICALITY_MODELS.includes(Number(modelParam) as 1 | 2)) return c.json({ detail: 'model must be 1 or 2' }, 400)
-      if (!tenantId) return c.json({ detail: 'Choose a tenant to switch its scoring model' }, 400)
-      const model = asModel(modelParam)
-      const [before] = await db.select({ model: tenants.criticalityModel }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
-      if (!before) return c.json({ detail: 'Tenant not found' }, 404)
-      await db.batch([
-        db.update(tenants).set({ criticalityModel: model }).where(eq(tenants.tenantId, tenantId)),
-        db.insert(auditLogs).values({
-          userId: user.userId, tenantId, actionType: 'tenant.criticality_model', targetEntity: tenantId,
-          previousState: { criticality_model: before.model }, newState: { criticality_model: model },
-        }),
-      ])
-      const { scanned, changes } = await rescoreAssets(db, tenantId, undefined, { model })
-      return c.json({
-        model, previous_model: asModel(before.model), scanned, changed: changes.length, updated: changes.length,
-        message: `Criticality now uses formula v${model}: rescored ${scanned} assets, ${changes.length} changed`,
-      })
-    }
-
     // scope=my_assets / scope=discovered restrict by in_my_assets (same query count).
     const myAssetsOnly = c.req.query('scope') === 'my_assets'
     const discoveredOnly = c.req.query('scope') === 'discovered'
-    const { scanned, changes, model } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly, discoveredOnly })
+    const { scanned, changes, model, scoresChanged } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly, discoveredOnly })
     const changed = changes.length
     const noun = myAssetsOnly ? 'My Assets' : discoveredOnly ? 'discovered assets' : 'assets'
-    // Make the zero case explicit so "0 changed" doesn't read like a failure.
-    const suffix = changed === 0 ? ' (scores were already up to date)' : ''
-    return c.json({ updated: changed, scanned, changed, model, message: `Rescored ${scanned} ${noun}, ${changed} changed${suffix}` })
+    // Say what moved: scores first; other refreshes (suggestion, posture, formula tag) apart.
+    const refreshed = changed - scoresChanged
+    const message = changed === 0
+      ? `Rescored ${scanned} ${noun}: all scores were already up to date`
+      : `Rescored ${scanned} ${noun}: ${scoresChanged} score${scoresChanged === 1 ? '' : 's'} changed`
+        + (refreshed ? `, ${refreshed} other asset${refreshed === 1 ? '' : 's'} refreshed (type suggestion, posture or formula)` : '')
+    return c.json({ updated: changed, scanned, changed, scores_changed: scoresChanged, model, message })
   } catch (err) {
     console.error('assets POST /rescore error:', err)
     return c.json({ detail: 'Failed to rescore assets' }, 500)
@@ -1004,8 +1113,8 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
 })
 
 // ── GET /:assetId/score ─── Score breakdown for one asset ─────────
-// The tenant's active formula first (score, factors, breakdown), plus both formulas
-// side by side (v1, v2) so the change can be reviewed before switching.
+// Score, factors (with sources), breakdown, confidence and unknowns from the active
+// formula; stored_model says which formula produced the stored score.
 app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -1018,12 +1127,8 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
-    const model = await tenantCriticalityModel(db, asset.tenantId)
-    const input = scoreInputOf(asset)
-    const v1 = scoreDetail(input, 1)
-    const v2 = scoreDetail(input, 2)
-    const active = model === 2 ? v2 : v1
-    return c.json({ asset_id: assetId, model, stored_model: asset.criticalityModel, ...active, v1, v2 })
+    const detail = scoreDetail(scoreInputOf(asset), ACTIVE_MODEL)
+    return c.json({ asset_id: assetId, model: ACTIVE_MODEL, stored_model: asset.criticalityModel, ...detail })
   } catch (err) {
     console.error('assets GET /:assetId/score error:', err)
     return c.json({ detail: 'Failed to compute score' }, 500)
@@ -1031,9 +1136,9 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
 })
 
 // ── POST /:assetId/rescore ─── recompute ONE asset's criticality ──
-// Uses the same scorer and the tenant's model like the bulk run, so per-asset == bulk.
+// Uses the same scorer as the bulk run, so per-asset == bulk.
 // Scored from the asset's own facts (no topology). Writes only when something changed.
-// Subrequests: 1 (asset) + 1 (tenant model) + 1 (update, only if changed). Role: WRITE_ROLES.
+// Subrequests: 1 (asset) + 1 (re-read) + 1 (update, only if changed). Role: WRITE_ROLES.
 app.post('/:assetId/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -1088,7 +1193,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     const targetTenantId = user.role === 'superadmin'
       ? (c.req.query('tenant_id') || user.tenantId || null)
       : (user.tenantId ?? null)
-    const csvModel = await tenantCriticalityModel(db, targetTenantId)
+    const csvModel = ACTIVE_MODEL
 
     let formData: FormData
     try {

@@ -57,7 +57,7 @@ check('factors text carries the points', computeCriticalityV2(base).factors, ['S
 console.log('\n── scoreAsset(model) ──')
 const input = { ...base, owner: null, deviceTypeSource: 'agent' }
 check('model 1 = v1, model 2 = v2', [scoreAsset(input, 1), scoreAsset(input, 2)], [6, 5])
-check('default model is 1 (unchanged callers)', scoreAsset(input), 6)
+check('default model is 2 (the active formula)', scoreAsset(input), 5)
 check('scoreDetail(…, 2) is the v2 result', (scoreDetail(input, 2) as { model?: number }).model, 2)
 check('agent role read from a stored inventory', [agentRoleOf({ os: { role: 'domain_controller' } }), agentRoleOf(null), agentRoleOf({ os: {} })], ['domain_controller', null, null])
 
@@ -138,7 +138,8 @@ const vals = (m?: 1 | 2) => {
   const op = p.perHost[0]!.ops.find(o => o.k === 'insertAsset') as { values: Record<string, unknown> }
   return [op.values.criticalityScore, op.values.criticalityModel]
 }
-check('new asset under v1 (default): 6, model 1', vals(), [6, 1])
+check('new asset, default = active formula: 5, model 2', vals(), [5, 2])
+check('new asset under v1: 6, model 1', vals(1), [6, 1])
 check('new asset under v2: 5, model 2', vals(2), [5, 2])
 const updPlan = planIngest([host], {
   addresses: [{ addressId: 'ad', assetId: 'x', networkKey: '10.0.0.0/24', ipAddress: '10.0.0.5', macAddress: 'a4:bb:cc:dd:ee:01', deviceType: 'server', lastSeen: 1, assetCreatedAt: 1 }],
@@ -160,6 +161,20 @@ const m = planMerge(mAsset('s', { criticalityScore: 4, criticalityModel: 2 }),
   { addresses: [], relationships: [], topologyNodes: [] })
 check('posture follows the inventory', [m.mergedFields.postureScore, m.mergedFields.postureModel], [100, 1])
 check('kept score keeps its formula', [m.mergedFields.criticalityScore, m.mergedFields.criticalityModel], [4, 2])
+
+// ── 9. High-risk services beyond the +2 cap are named, not hidden ──
+console.log('\n── high-risk services beyond the cap ──')
+const manyRisky = computeCriticalityV2({ deviceType: 'network', isInternetFacing: true, internetFacingOverride: true, hostname: 'edge',
+  osInfo: { ports: [3389, 445, 5900, 23, 80] } })
+check('network 6 + internet 2 + risky capped at 2 = 10', [manyRisky.score, manyRisky.breakdown.portRisk], [10, 2])
+check('the two counted services, then the rest named as not counted',
+  manyRisky.details.find(d => d.label.startsWith('Reachable high-risk'))?.label,
+  'Reachable high-risk service RDP 3389, SMB 445 (seen by scan); also VNC 5900, Telnet 23, not counted (at most +2)')
+const twoRisky = computeCriticalityV2({ deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: { ports: [3389, 445] } })
+check('exactly two: no "also" text', twoRisky.details.find(d => d.label.startsWith('Reachable high-risk'))?.label,
+  'Reachable high-risk service RDP 3389, SMB 445 (seen by scan)')
+const dupRisky = computeCriticalityV2({ deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: { ports: ['445/tcp', 445, { port: 445 }] } })
+check('the same service listed twice counts once', dupRisky.breakdown.portRisk, 1)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

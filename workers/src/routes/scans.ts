@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, assetAddresses, events } from '../db/schema'
-import { agentRoleOf, scoreAsset, tenantCriticalityModel } from '../lib/rescore'
+import { ACTIVE_MODEL, agentRoleOf, scoreAsset } from '../lib/rescore'
 import { applyHint, deviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
@@ -14,9 +14,11 @@ import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } 
 import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
+import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 
-// ── Ingest helpers ───────────────────────────────────────────────
-type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
+// The scan classifier lives in lib/deviceClassify.ts (shared with "Automatic" type
+// reset); re-exported for scripts that import it from here.
+export { inferDeviceType }
 
 // ── Real-time MAC vendor lookup (api.macvendors.com) ────────────────────────
 // Resolves the hardware vendor name from a MAC address at scan time.
@@ -37,53 +39,6 @@ async function fetchMacVendor(mac: string | null | undefined): Promise<string | 
   } catch {
     return null  // network error, timeout — always non-fatal
   }
-}
-
-// SNMP sysDescr substrings that identify a host as a router/switch/network device.
-const NETWORK_DEVICE_SIGNATURES = [
-  'cisco ios', 'cisco nx-os', 'cisco adaptive security appliance', 'cisco asa',
-  'junos', 'arista networks eos', 'mikrotik routeros', 'fortigate', 'pan-os',
-  'arubaos', 'aruba networks',
-]
-
-// A host is a NETWORK device when its SNMP sysDescr matches a known router/switch
-// signature, or when SNMP returned a non-empty interface table (ifDescr).
-function isNetworkBySnmp(snmpSysDescr?: string | null, snmpInterfaces?: string[] | null): boolean {
-  if (snmpSysDescr) {
-    const text = snmpSysDescr.toLowerCase()
-    if (NETWORK_DEVICE_SIGNATURES.some(sig => text.includes(sig))) return true
-  }
-  if (snmpInterfaces && snmpInterfaces.length > 0) return true
-  return false
-}
-
-export function inferDeviceType(
-  ports: NmapPort[],
-  ip?: string,
-  os?: Record<string, unknown> | null,
-  defaultGateway?: string,
-): 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown' {
-  // Only a real signal makes a device 'network': the agent-reported default gateway
-  // is evidence; a bare .1/.254 position is NOT (it made ordinary hosts look like
-  // gateways — removed). Port/product/SNMP/OS rules below carry the real evidence.
-  if (ip && defaultGateway && ip === defaultGateway) return 'network'
-  const text = ports.map(p => `${p.product ?? ''} ${p.service ?? ''}`).join(' ').toLowerCase()
-  if (/busybox|router|cisco|juniper|aruba|mikrotik|ubiquiti|fortigate|panos|snmp/.test(text)) return 'network'
-  if (/rdp|remote.desktop/.test(text) || ports.some(p => p.port === 3389)) return 'workstation'
-  // SMB-only profile (139/445 without server ports) is characteristic of a Windows workstation
-  if (ports.some(p => [139, 445].includes(p.port)) && !ports.some(p => [22, 80, 443, 3306, 5432, 8080, 8443, 6379, 27017, 1433].includes(p.port))) return 'workstation'
-  if (ports.some(p => [22, 80, 443, 3306, 5432, 8080, 8443, 6379, 27017, 1433].includes(p.port))) return 'server'
-
-  // OS-based fallback when no port signal is available
-  if (os) {
-    const hint = String(os.dhcp_device_hint ?? os.name ?? os.fingerbank_device ?? '').toLowerCase()
-    if (/windows|macos|darwin|desktop|workstation|laptop/.test(hint)) return 'workstation'
-    if (/android|iphone|ipad|mobile/.test(hint)) return 'mobile'
-    if (/server/.test(hint) || (/linux|ubuntu|debian|centos|rhel/.test(hint) && !/desktop/.test(hint))) return 'server'
-    if (/cisco|router|switch|ap |access.point|aruba|ubiquiti/.test(hint)) return 'network'
-  }
-
-  return 'unknown'
 }
 
 // Port facts from this scan. Active scans always write `ports` (even when empty)
@@ -743,10 +698,8 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const batchMacs = [...new Set(hosts.map(h => classifyMac(h.mac).mac).filter((m): m is string => !!m))]
     const batchIps = [...new Set(hosts.map(h => h.ip))]
     const batchHostKeys = [...new Set(hosts.map(h => sanitizeHostKey((h.os as Record<string, unknown> | null)?.['smb_computer_name'])).filter((k): k is string => !!k))]
-    const [prefetch, criticalityModel] = await Promise.all([
-      prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys),
-      tenantCriticalityModel(db, tenantId),
-    ])
+    const criticalityModel = ACTIVE_MODEL
+    const prefetch = await prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys)
 
     // LLM context (existing device_type/hostname/owner per IP) — built from the
     // prefetch, no extra queries. Authoritative identity match happens via planIngest.

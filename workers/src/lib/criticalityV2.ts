@@ -117,10 +117,15 @@ export function computeCriticalityV2(input: ScoringInputV2): ScoringResultV2 {
     add(`Internet-facing (${confirmed ? 'confirmed by analyst' : 'inferred: it is the gateway'})`, 2, confirmed ? 'analyst' : 'inferred')
   }
   let portRisk = 0
-  const risky = ports.filter(p => HIGH_RISK_PORTS[p]).slice(0, 2)
+  // At most two high-risk services count (+2); the rest are named, not hidden.
+  const riskyAll = [...new Set(ports.filter(p => HIGH_RISK_PORTS[p]))]
+  const risky = riskyAll.slice(0, 2)
   if (risky.length) {
     portRisk += risky.length
-    add(`Reachable high-risk service ${risky.map(p => `${HIGH_RISK_PORTS[p]} ${p}`).join(', ')} (seen by scan)`, risky.length, 'scan')
+    const name = (p: number) => `${HIGH_RISK_PORTS[p]} ${p}`
+    const extra = riskyAll.slice(2)
+    add(`Reachable high-risk service ${risky.map(name).join(', ')} (seen by scan)`
+      + (extra.length ? `; also ${extra.map(name).join(', ')}, not counted (at most +2)` : ''), risky.length, 'scan')
   }
   if (ports.some(p => DB_PORTS.has(p))) {
     portRisk += 1; add('Reachable database service (seen by scan)', 1, 'scan')

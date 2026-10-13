@@ -18,7 +18,7 @@ const SCHEMA_TABLES = new Set([
   'tenants', 'users', 'assets', 'asset_addresses', 'sboms', 'dependencies', 'events',
   'cti_indicators', 'advisories', 'posture_metrics', 'asset_relationships', 'audit_logs',
   'bridges', 'agents', 'asset_software', 'asset_identifiers', 'topology_nodes',
-  'event_cti_indicators', 'scan_results',
+  'event_cti_indicators', 'scan_results', 'duplicate_dismissals',
 ])
 
 // Age bucket of a timestamp column, as a SQL expression.

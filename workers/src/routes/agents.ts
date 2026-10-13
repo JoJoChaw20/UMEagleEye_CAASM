@@ -9,7 +9,7 @@ import { getDb } from '../db/client'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, events } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
-import { scoreAsset, tenantCriticalityModel } from '../lib/rescore'
+import { ACTIVE_MODEL, scoreAsset } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
 import { deriveNetworkKey } from '../lib/identity'
 import {
@@ -333,7 +333,8 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
           inArray(assetIdentifiers.value, kind === 'hardware_uuid' ? hardwareUuidForms(value) : [value]))))
       : undefined)
 
-    const [bound, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches, criticalityModel] = await Promise.all([
+    const criticalityModel = ACTIVE_MODEL
+    const [bound, hardwareUuidMatches, osInstallIdMatches, macMatches, hostKeyMatches, ipMatches] = await Promise.all([
       agent.hostAssetId ? candidates(eq(assets.assetId, agent.hostAssetId)) : Promise.resolve([]),
       byIdentifier('hardware_uuid', hardwareUuid),
       byIdentifier('os_install_id', osInstallId),
@@ -346,7 +347,6 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       ) : undefined),
       candidates(hostKey ? or(eq(assets.hostKey, hostKey), sql`lower(${assets.hostname}) = ${hostKey}`) : undefined),
       candidates(ips.length ? inArray(assets.ipAddress, ips) : undefined),
-      tenantCriticalityModel(db, tenantId),
     ])
 
     const binding = bindMachine({

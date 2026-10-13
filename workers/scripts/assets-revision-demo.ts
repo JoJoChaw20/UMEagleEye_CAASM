@@ -33,7 +33,7 @@ console.log('=== (a)(b) per-asset scorer == bulk ===')
   // criticality no longer reads topology. A stray layer must not change the score.
   check('(a) a stray topology layer does not change the score', scoreAsset({ ...input, topologyLayer: 1 } as never), single)
 
-  const row2 = { ...row, criticalityScore: single }            // store the computed score
+  const row2 = { ...row, criticalityScore: single, criticalityModel: 2 }   // store the computed score (active formula)
   check('(b) second run → no change', planRescore([row2]).changes.length, 0)
 }
 
@@ -124,20 +124,21 @@ console.log('\n=== (i) formatSeen edge cases ===')
   check('(i) over 7 days → stale + "1w ago"', [over.stale, over.text], [true, '1w ago'])
 }
 
-// ── §4 owner in the criticality score ───────────────────────────────────────
-console.log('\n=== §4 owner in criticality score ===')
+// ── §4 owner in the criticality score (formula v1 only; v2 ignores the owner) ──
+console.log('\n=== §4 owner in criticality score (v1) ===')
 {
   const base = { deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: {} }
-  const owned = scoreAsset({ ...base, owner: 'IT' })
-  const unowned = scoreAsset({ ...base, owner: null })
+  const owned = scoreAsset({ ...base, owner: 'IT' }, 1)
+  const unowned = scoreAsset({ ...base, owner: null }, 1)
   check('§4 owned scores exactly 1 lower than unowned', unowned - owned, 1)
 
   // per-asset (scoreAsset) == bulk (planRescore) for the same owned asset.
   const row = { assetId: 'A', deviceType: 'server', isInternetFacing: false, hostname: 'app', osInfo: {}, criticalityScore: 0, owner: 'IT' }
-  const bulk = planRescore([row])
+  const bulk = planRescore([row], 1)
   check('§4 per-asset == bulk (incl. owner)', bulk.changes[0]?.score, owned)
-  check('§4 create/PATCH use the same scoreAsset (deterministic)', scoreAsset({ ...base, owner: 'IT' }), owned)
-  check('§4 second rescore → no change', planRescore([{ ...row, criticalityScore: owned }]).changes.length, 0)
+  check('§4 create/PATCH use the same scoreAsset (deterministic)', scoreAsset({ ...base, owner: 'IT' }, 1), owned)
+  check('§4 second rescore → no change', planRescore([{ ...row, criticalityScore: owned }], 1).changes.length, 0)
+  check('§4 the active formula (v2) ignores the owner', scoreAsset({ ...base, owner: null }) - scoreAsset({ ...base, owner: 'IT' }), 0)
 }
 
 // ── §2 baseline seeded at manual creation ────────────────────────────────────

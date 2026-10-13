@@ -1,13 +1,18 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, RefreshCw, Layers, AlertTriangle, ShieldCheck } from 'lucide-react'
+import { X, RefreshCw, Layers, AlertTriangle, ShieldCheck, Undo2, ChevronDown, ChevronRight } from 'lucide-react'
 import client from '../../api/client'
 
-// Modal panel listing duplicate asset groups with per-group preview/merge and a
-// "merge all safe" loop. Styling follows the existing dark-theme component patterns.
+// Modal panel listing duplicate asset groups with per-group preview/merge, a
+// "merge all safe" loop, and "Not a duplicate" with a Dismissed list (Undo). A
+// dismissed pair comes back on its own when new strong evidence links it.
+// Styling follows the existing dark-theme component patterns.
 // centered: vertically centre the panel (auto margins fall back to top-aligned
 // scrolling when the panel is taller than the viewport).
-export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged, centered = false }) {
+// canMerge: tenant superadmin (merging deletes rows); canDismiss: anyone who can edit.
+export default function DuplicatesPanel({ tenantId, canMerge, canDismiss = canMerge, onClose, onMerged, centered = false }) {
   const [groups, setGroups] = useState([])
+  const [dismissed, setDismissed] = useState([])
+  const [showDismissed, setShowDismissed] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [survivors, setSurvivors] = useState({})   // groupId -> chosen survivorId
@@ -22,6 +27,7 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged,
       const res = await client.get('/assets/duplicates', { params })
       const gs = res.data.groups || []
       setGroups(gs)
+      setDismissed(res.data.dismissed || [])
       setSurvivors(Object.fromEntries(gs.map((g) => [g.groupId, g.suggestedSurvivorId])))
       setPreviews({})
       setError(null)
@@ -60,6 +66,32 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged,
       onMerged?.()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Merge failed')
+    } finally { setBusy(null) }
+  }
+
+  const name = (a) => a.hostname || a.ipAddress
+
+  const dismissGroup = async (g) => {
+    const names = g.assets.map(name).join(', ')
+    if (!window.confirm(`Mark these as NOT duplicates?\n\n${names}\n\nThey leave this list and are not merged. They come back only if new strong evidence links them (e.g. the same hardware ID). You can undo this under "Dismissed".`)) return
+    setBusy(g.groupId)
+    try {
+      await client.post('/assets/duplicates/dismiss', { asset_ids: g.assets.map((a) => a.assetId) })
+      await load()
+      onMerged?.()
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not mark as not duplicates')
+    } finally { setBusy(null) }
+  }
+
+  const undoDismissal = async (d) => {
+    setBusy(d.dismissal_id)
+    try {
+      await client.delete(`/assets/duplicates/dismissals/${d.dismissal_id}`)
+      await load()
+      onMerged?.()
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Undo failed')
     } finally { setBusy(null) }
   }
 
@@ -118,7 +150,7 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged,
           {loading ? (
             <p className="text-dark-400 text-sm">Loading…</p>
           ) : groups.length === 0 ? (
-            <p className="text-dark-400 text-sm">No duplicate groups found. 🎉</p>
+            <p className="text-dark-400 text-sm">No duplicate groups found.</p>
           ) : (
             groups.map((g) => (
               <div key={g.groupId} className="border border-dark-700 rounded-lg overflow-hidden">
@@ -127,6 +159,11 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged,
                     {g.confidence === 'safe'
                       ? <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-500 border border-green-500/40 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Safe</span>
                       : <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Review</span>}
+                    {g.reraised && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/40" title="Marked as not duplicates before; new strong evidence links them now">
+                        Back: new evidence
+                      </span>
+                    )}
                     <span className="text-xs text-dark-300">{g.reasons.join('; ')}</span>
                   </div>
                   <span className="text-xs text-dark-500">{g.assets.length} assets</span>
@@ -173,16 +210,67 @@ export default function DuplicatesPanel({ tenantId, canMerge, onClose, onMerged,
                   </div>
                 )}
 
-                {canMerge && (
+                {g.reraised && g.newEvidence?.length > 0 && (
+                  <div className="px-4 py-2 text-xs text-orange-300 bg-orange-500/5 border-t border-dark-800">
+                    New since it was marked as not duplicates: {g.newEvidence.join('; ')}
+                  </div>
+                )}
+
+                {(canMerge || canDismiss) && (
                   <div className="flex items-center justify-end gap-2 px-4 py-2 border-t border-dark-800">
-                    <button onClick={() => preview(g)} disabled={!!busy} className="btn-secondary text-xs">
-                      {busy === g.groupId ? '…' : 'Preview'}
-                    </button>
-                    <button onClick={() => mergeGroup(g)} disabled={!!busy} className="btn-primary text-xs">Merge</button>
+                    {canDismiss && (
+                      <button onClick={() => dismissGroup(g)} disabled={!!busy} className="btn-secondary text-xs mr-auto"
+                        title="These are different machines: remove them from this list without merging">
+                        Not a duplicate
+                      </button>
+                    )}
+                    {canMerge && (
+                      <>
+                        <button onClick={() => preview(g)} disabled={!!busy} className="btn-secondary text-xs">
+                          {busy === g.groupId ? '…' : 'Preview'}
+                        </button>
+                        <button onClick={() => mergeGroup(g)} disabled={!!busy} className="btn-primary text-xs">Merge</button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
             ))
+          )}
+
+          {!loading && dismissed.length > 0 && (
+            <div className="border border-dark-700 rounded-lg">
+              <button onClick={() => setShowDismissed((v) => !v)} className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-dark-200 hover:bg-dark-850">
+                {showDismissed ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                Dismissed ({dismissed.length})
+                <span className="text-xs text-dark-400">marked as not duplicates</span>
+              </button>
+              {showDismissed && (
+                <ul className="divide-y divide-dark-800 border-t border-dark-800">
+                  {dismissed.map((d) => (
+                    <li key={d.dismissal_id} className="flex items-start gap-3 px-4 py-2 text-xs">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-dark-100">
+                          {name(d.assets[0])} <span className="font-mono text-dark-400">{d.assets[0].ipAddress}</span>
+                          <span className="text-dark-500"> ≠ </span>
+                          {name(d.assets[1])} <span className="font-mono text-dark-400">{d.assets[1].ipAddress}</span>
+                        </p>
+                        <p className="text-dark-400 mt-0.5">
+                          {d.reasons.join('; ')}
+                          {' · '}{d.dismissed_by ? `by ${d.dismissed_by}, ` : ''}{d.dismissed_at ? new Date(d.dismissed_at).toLocaleString() : ''}
+                        </p>
+                      </div>
+                      {canDismiss && (
+                        <button onClick={() => undoDismissal(d)} disabled={!!busy} className="btn-secondary text-xs flex items-center gap-1 flex-shrink-0"
+                          title="Check this pair for duplicates again">
+                          <Undo2 className="w-3.5 h-3.5" /> Undo
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </div>

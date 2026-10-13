@@ -37,7 +37,7 @@ check('scores in 1..10', plan.changes.every(c => c.score >= 1 && c.score <= 10),
 
 // Idempotency: write the computed scores back, rescore again → nothing to write.
 const scoreById = new Map(plan.changes.map(c => [c.assetId, c.score]))
-const rows2 = rows.map(r => ({ ...r, criticalityScore: scoreById.get(r.assetId) ?? r.criticalityScore }))
+const rows2 = rows.map(r => ({ ...r, criticalityScore: scoreById.get(r.assetId) ?? r.criticalityScore, criticalityModel: 2 as const }))
 const plan2 = planRescore(rows2)
 check('idempotent: 0 changes on re-run', plan2.changes.length, 0)
 check('idempotent: still scanned 150', plan2.scanned, 150)

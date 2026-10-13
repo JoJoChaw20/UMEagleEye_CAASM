@@ -19,7 +19,7 @@ import {
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
-import { scoreAsset, type CriticalityModel } from './rescore'
+import { ACTIVE_MODEL, scoreAsset, type CriticalityModel } from './rescore'
 import { applyHint, deviceTypeHint } from './deviceHints'
 import { buildBaseline, type AssetBaseline } from '../services/drift'
 
@@ -171,7 +171,7 @@ export function planIngest(
 ): IngestPlan {
   const newId = opts?.newId ?? (() => crypto.randomUUID())
   const now = opts?.now ?? new Date()
-  const model: CriticalityModel = opts?.criticalityModel ?? 1
+  const model: CriticalityModel = opts?.criticalityModel ?? ACTIVE_MODEL
 
   // Working store, seeded from the prefetch. Addresses pre-sorted by the
   // tiebreaker so matchAsset's first-element pick is deterministic; new rows are

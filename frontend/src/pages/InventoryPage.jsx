@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Server, Search, Plus, Upload, Zap, Filter, X, Pencil, RefreshCw,
-  Bookmark, MinusCircle, CheckCircle, Trash2, Link2,
+  Bookmark, MinusCircle, CheckCircle, Trash2, Link2, Layers,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -13,6 +13,8 @@ import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetA
 import { AddAssetModal, EditAssetModal, ImportModal } from '../components/assets/AssetModals'
 import { DEVICE_TYPE_META, SOURCE_META, SCOPES, assetName, buildMatchIndex } from '../components/assets/assetMeta'
 import AdoptMatchModal from '../components/assets/AdoptMatchModal'
+import DeviceTypePicker from '../components/assets/DeviceTypePicker'
+import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import { RISKY_PORTS } from '../components/common/alertMeta'
 import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
@@ -31,11 +33,16 @@ const GAP_LABELS = {
   posture_issues: 'Machines failing an endpoint security check',
 }
 
+// A search link (the header's "View all") asks for scope=any with q: it searches both
+// scopes, like the header dropdown did. The term itself stays in the search box.
+const isSearchLink = (sp) => sp.get('scope') === 'any' && !!sp.get('q')
+
 function readLinkFilter(sp) {
   const params = {}
   for (const k of LINK_FILTER_KEYS) { const v = sp.get(k); if (v) params[k] = v }
-  if (!Object.keys(params).length) return null
+  if (!Object.keys(params).length && !isSearchLink(sp)) return null
   const parts = []
+  if (isSearchLink(sp)) parts.push('Search results')
   if (params.asset_id) parts.push(sp.get('label') ? `Asset ${sp.get('label')}` : 'One asset')
   if (params.gap) parts.push(GAP_LABELS[params.gap] ?? params.gap)
   if (params.port) parts.push(`${RISKY_PORTS[params.port] ? `${RISKY_PORTS[params.port]} ` : ''}port ${params.port} open`)
@@ -47,6 +54,7 @@ function readLinkFilter(sp) {
 function readScope(sp) {
   const s = sp.get('scope')
   if (s === 'mine' || s === 'discovered') return s
+  // Both scopes only through a link (there is no "All" tab).
   return readLinkFilter(sp) ? 'any' : 'mine'
 }
 
@@ -84,8 +92,8 @@ export default function InventoryPage() {
   const [adoptTarget, setAdoptTarget] = useState(null)   // { asset, matches, reasons }
   const [rescoring, setRescoring] = useState(false)
   const [rescoringId, setRescoringId] = useState(null)
-  const [scoringModel, setScoringModel] = useState(null)   // tenant's criticality formula (1 | 2)
   const [graphBlastId, setGraphBlastId] = useState(null)
+  const [showDuplicates, setShowDuplicates] = useState(false)
 
   // Follow in-app links that change the query while this page is open.
   useEffect(() => {
@@ -169,15 +177,7 @@ export default function InventoryPage() {
     } catch { setDupGroups([]) }
   }, [tenantFilter, isBusinessOwner])
 
-  const loadScoring = useCallback(async () => {
-    try {
-      const res = await client.get('/assets/scoring', { params: tenantFilter ? { tenant_id: tenantFilter } : {} })
-      setScoringModel(res.data.model ?? 1)
-    } catch { setScoringModel(null) }
-  }, [tenantFilter])
-
   useEffect(() => { loadAssets() }, [loadAssets])
-  useEffect(() => { loadScoring() }, [loadScoring])
   useEffect(() => { loadScopeCounts() }, [loadScopeCounts])
   useEffect(() => { loadDuplicates() }, [loadDuplicates])
 
@@ -279,30 +279,6 @@ export default function InventoryPage() {
     }
   }
 
-  // Switch the tenant's criticality formula; every asset is rescored with it.
-  const handleSwitchModel = async (next) => {
-    const msg = next === 2
-      ? 'Switch criticality to formula v2 for every asset?\n\n'
-        + '• v2 scores importance only: an asset without an owner no longer gets +1, and a domain controller gets +2.\n'
-        + '• Each factor shows its source (agent, scan, analyst, hostname) and a confidence.\n'
-        + '• All assets are rescored now. You can switch back to v1 at any time.'
-      : 'Switch criticality back to formula v1 for every asset? All assets are rescored now.'
-    if (!confirm(msg)) return
-    setRescoring(true)
-    try {
-      const qs = new URLSearchParams({ model: String(next) })
-      if (tenantFilter) qs.set('tenant_id', tenantFilter)
-      const res = await client.post(`/assets/rescore?${qs.toString()}`)
-      setNotice({ text: res.data.message })
-      setScoringModel(res.data.model)
-      await loadAssets()
-    } catch (err) {
-      alert(err?.response?.data?.detail || 'Could not switch the formula')
-    } finally {
-      setRescoring(false)
-    }
-  }
-
   const clearFilters = () => {
     setSearch(''); setDeviceTypeFilter(''); setSourceFilter(''); setPage(1)
     if (linkFilter) clearLinkFilter()
@@ -342,6 +318,16 @@ export default function InventoryPage() {
           <p className="text-dark-400 text-sm mt-1">{subtitle}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {!isBusinessOwner && activeTab === 'inventory' && (
+            <button
+              onClick={() => setShowDuplicates(true)}
+              title="Assets that look like the same device: merge them, or mark them as not duplicates"
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              <Layers className="w-4 h-4 text-accent-cyan" />
+              Duplicates{dupGroups.length > 0 && <span className="text-dark-300">({dupGroups.length})</span>}
+            </button>
+          )}
           {scope !== 'any' && activeTab === 'inventory' && !isReadOnly && (
             <button
               onClick={handleRescoreAll}
@@ -353,19 +339,6 @@ export default function InventoryPage() {
                 ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 : <Zap className="w-4 h-4 text-yellow-400" />}
               Rescore All
-            </button>
-          )}
-          {scope !== 'any' && activeTab === 'inventory' && !isReadOnly && scoringModel != null && (
-            <button
-              onClick={() => handleSwitchModel(scoringModel === 2 ? 1 : 2)}
-              disabled={rescoring}
-              title={scoringModel === 2
-                ? 'Criticality uses formula v2 (importance only, with sources). Click to go back to v1.'
-                : 'Criticality uses formula v1. Formula v2 is shown as a preview on each asset page; click to switch.'}
-              className="btn-secondary flex items-center gap-2 text-sm"
-            >
-              Formula v{scoringModel}
-              <span className="text-dark-400">· switch to v{scoringModel === 2 ? 1 : 2}</span>
             </button>
           )}
           {scope === 'mine' && activeTab === 'inventory' && !isReadOnly && (
@@ -522,10 +495,14 @@ export default function InventoryPage() {
                       <Fragment key={a.assetId}>
                         <tr onClick={() => navigate(`/inventory/${a.assetId}`)} className="cursor-pointer">
                           <td>
-                            <span className="flex items-center gap-1.5 whitespace-nowrap">
-                              <span className="text-base leading-none">{deviceMeta.icon}</span>
-                              <span className="text-xs text-dark-300">{deviceMeta.label}</span>
-                            </span>
+                            {isReadOnly ? (
+                              <span className="flex items-center gap-1.5 whitespace-nowrap">
+                                <span className="text-base leading-none">{deviceMeta.icon}</span>
+                                <span className="text-xs text-dark-300">{deviceMeta.label}</span>
+                              </span>
+                            ) : (
+                              <DeviceTypePicker asset={a} compact onChanged={loadAssets} />
+                            )}
                           </td>
                           <td>
                             <Link to={`/inventory/${a.assetId}`} onClick={(e) => e.stopPropagation()} className="font-medium text-white hover:text-eagle-400">
@@ -652,6 +629,15 @@ export default function InventoryPage() {
       {showAdd && <AddAssetModal onClose={() => setShowAdd(false)} onSave={handleAddAsset} />}
       {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={refreshAll} tenantId={tenantFilter || undefined} />}
       {editingAsset && <EditAssetModal asset={editingAsset} onClose={() => setEditingAsset(null)} onSave={handleEditSave} />}
+      {showDuplicates && (
+        <DuplicatesPanel
+          tenantId={tenantFilter || undefined}
+          canMerge={user?.role === 'tenant_superadmin'}
+          canDismiss={!isReadOnly}
+          onClose={() => setShowDuplicates(false)}
+          onMerged={refreshAll}
+        />
+      )}
       {adoptTarget && (
         <AdoptMatchModal
           asset={adoptTarget.asset}

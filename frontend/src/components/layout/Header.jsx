@@ -274,7 +274,7 @@ export default function Header({ onToggleSidebar }) {
                     </button>
                   ))}
                   <button
-                    onClick={() => { navigate(`/inventory?${new URLSearchParams({ q: query.trim() })}`); clearSearch() }}
+                    onClick={() => { navigate(`/inventory?${new URLSearchParams({ scope: 'any', q: query.trim() })}`); clearSearch() }}
                     className="w-full px-4 py-2.5 text-xs text-eagle-400 hover:text-eagle-300 hover:bg-dark-700/50 border-t border-dark-700/50 text-center transition-colors"
                   >
                     View all in Asset Inventory →

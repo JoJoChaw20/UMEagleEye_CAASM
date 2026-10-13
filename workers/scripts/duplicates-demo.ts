@@ -252,5 +252,54 @@ console.log('\n=== planMerge: keep exactly ONE current address ===')
   }
 }
 
+// ── "Not a duplicate" (dismissed pairs) ──
+console.log('\n=== dismissed pairs ===')
+{
+  const M1 = '98:bb:cc:00:00:11', M2 = '98:bb:cc:00:00:22'
+  const h = [A({ assetId: 'h1', hostname: 'printer-lab', macAddress: M1, ipAddress: '10.0.0.21' }),
+    A({ assetId: 'h2', hostname: 'printer-lab', macAddress: M2, ipAddress: '10.0.0.22' })]
+  const hAddrs = [AD('h1', M1, '10.0.0.0/24', '10.0.0.21'), AD('h2', M2, '10.0.0.0/24', '10.0.0.22')]
+  const before = findDuplicateGroups(h, hAddrs)
+  check('flagged for review: same hostname, different MACs', [before.length, before[0]?.confidence, before[0]?.reraised], [1, 'review', false])
+  check('the group carries its evidence links', before[0]?.edges.map(e => [e.a, e.b, e.confidence]), [['h1', 'h2', 'review']])
+
+  const dismissed = [{ assetA: 'h1', assetB: 'h2', reasons: ['same hostname "printer-lab", different MACs'] }]
+  check('dismissed: the pair leaves the list', findDuplicateGroups(h, hAddrs, undefined, [], dismissed).length, 0)
+  check('pair order does not matter', findDuplicateGroups(h, hAddrs, undefined, [], [{ ...dismissed[0]!, assetA: 'h2', assetB: 'h1' }]).length, 0)
+  check('undo (no dismissal row): flagged again', findDuplicateGroups(h, hAddrs).length, 1)
+
+  // New WEAK evidence (same host_key on different networks, review) does not bring it back.
+  const hk = [{ ...h[0]!, hostKey: 'printer-lab' }, { ...h[1]!, hostKey: 'printer-lab' }]
+  const hkAddrs = [AD('h1', M1, '10.0.0.0/24', '10.0.0.21'), AD('h2', M2, '10.9.0.0/24', '10.9.0.22')]
+  check('(the host_key link exists without the dismissal)', findDuplicateGroups(hk, hkAddrs)[0]?.reasons.some(r => r.startsWith('same host_key')), true)
+  check('new weak evidence: stays dismissed',findDuplicateGroups(hk, hkAddrs, undefined, [], dismissed).length, 0)
+
+  // New STRONG evidence: h2 was once seen with h1's global MAC (safe link) -> back, with all its links.
+  const strongAddrs = [...hAddrs, { ...AD('h2', M1, '10.0.0.0/24', '10.0.0.21'), addressId: 'old', endedAt: '2026-01-02' }]
+  const back = findDuplicateGroups(h, strongAddrs, undefined, [], dismissed)
+  check('new strong evidence: back in the list', [back.length, back[0]?.reraised], [1, true])
+  check('…naming the new evidence', back[0]?.newEvidence, [`same global MAC ${M1}`])
+  check('…with the dismissed evidence shown too', back[0]?.reasons.includes('same hostname "printer-lab", different MACs'), true)
+  // Dismissing again records the current evidence, so the same link no longer re-raises it.
+  const again = [{ assetA: 'h1', assetB: 'h2', reasons: [`same global MAC ${M1}`, 'same hostname "printer-lab", different MACs'] }]
+  check('dismissed again with that evidence: stays dismissed', findDuplicateGroups(h, strongAddrs, undefined, [], again).length, 0)
+
+  // A safe group can be dismissed too (e.g. a shared USB adapter's MAC).
+  const s = [A({ assetId: 's1', ipAddress: '10.0.0.31' }), A({ assetId: 's2', ipAddress: '10.0.0.32' })]
+  const sAddrs = [AD('s1', GLOBAL, '10.0.0.0/24', '10.0.0.31'), AD('s2', GLOBAL, '10.0.0.0/24', '10.0.0.32')]
+  check('safe group before dismissal', findDuplicateGroups(s, sAddrs)[0]?.confidence, 'safe')
+  check('safe group dismissed', findDuplicateGroups(s, sAddrs, undefined, [], [{ assetA: 's1', assetB: 's2', reasons: [`same global MAC ${GLOBAL}`] }]).length, 0)
+
+  // A~C~B: dismissing A-B does not hide that both match C.
+  const X = '98:bb:cc:00:00:33', Y = '98:bb:cc:00:00:44'
+  const t = [A({ assetId: 'ta', hostname: 'nas-01', ipAddress: '10.0.0.41' }), A({ assetId: 'tb', hostname: 'nas-01', ipAddress: '10.0.0.42' }),
+    A({ assetId: 'tc', ipAddress: '10.0.0.43' })]
+  const tAddrs = [AD('ta', X, '10.0.0.0/24', '10.0.0.41'), AD('tc', X, '10.0.0.0/24', '10.0.0.43'),
+    AD('tb', Y, '10.0.0.0/24', '10.0.0.42'), AD('tc', Y, '10.0.0.0/24', '10.0.0.44')]
+  const chain = findDuplicateGroups(t, tAddrs, undefined, [], [{ assetA: 'ta', assetB: 'tb', reasons: ['same hostname "nas-01", different MACs'] }])
+  check('A~C~B still one group of 3 through C', chain.map(g => g.assets.length), [3])
+  check('…without the dismissed A-B link', chain[0]?.edges.some(e => [e.a, e.b].sort().join() === 'ta,tb'), false)
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

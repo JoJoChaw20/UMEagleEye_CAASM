@@ -80,6 +80,11 @@ check('iPad: type filled, hint stored, auto baseline moved with it (no drift)',
 const priv = planRescore([row({ macAddress: '4a:15:f7:3b:8c:29' })], 1).changes[0]
 check('private-MAC phone: only a suggestion is stored, type stays unknown', [priv?.deviceType, priv?.hint?.rule], [undefined, 'private_mac_no_ports'])
 check('second rescore: nothing left to change', planRescore([row({ macAddress: '4a:15:f7:3b:8c:29', deviceTypeHint: priv?.hint })], 1).changes, [])
+// Postgres jsonb returns keys in its own order (by length, then name), not ours.
+const jsonbOrder = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.length - b.length || (a < b ? -1 : 1)))
+check('(the stored order really differs)', JSON.stringify(jsonbOrder(priv!.hint as never)) !== JSON.stringify(priv!.hint), true)
+check('second rescore with the hint as jsonb returns it: nothing to change',
+  planRescore([row({ macAddress: '4a:15:f7:3b:8c:29', deviceTypeHint: jsonbOrder(priv!.hint as never), criticalityModel: 2, criticalityScore: 3 })]).changes, [])
 check('user-confirmed baseline is not moved', planRescore([row({ hostname: 'Jojos-iPad', baselineState: { auto_set: false, device_type: 'unknown' } })], 1).changes[0]?.baselineState, undefined)
 check('mobile scores like a workstation in v1 (3, no +1 over unknown)',
   planRescore([row({ hostname: 'Jojos-iPad', owner: 'IT' })], 1).changes[0]?.score, 3)

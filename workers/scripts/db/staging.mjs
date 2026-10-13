@@ -53,8 +53,7 @@ const [counts] = await sql(`select
   (select count(*) from agents)::int as agents,
   (select count(*) from bridges)::int as bridges,
   (select count(distinct owner) from assets where owner is not null)::int as owners,
-  (select count(*) from audit_logs)::int as audit_logs,
-  (select count(*) from chat_sessions)::int as chat_sessions`, [keep])
+  (select count(*) from audit_logs)::int as audit_logs`, [keep])
 console.log('Would change:')
 console.table([counts])
 if (!flags.includes('--apply')) {
@@ -81,6 +80,5 @@ await sql.transaction([
              from (select distinct owner from assets where owner is not null) d) r
        where a.owner = r.owner`),
   sql(`delete from audit_logs`),
-  sql(`delete from chat_sessions`),
 ])
 console.log('Sanitised. Kept accounts: ' + keep.join(', '))
