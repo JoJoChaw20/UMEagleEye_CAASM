@@ -71,7 +71,12 @@ const SECTIONS = [
     from users u group by 1, 2 order by 1, 2`],
 
   ['Agents', `
-    select ${tenantName('g')} as tenant, g.name, coalesce(g.version, '?') as version, g.status::text as status,
+    select ${tenantName('g')} as tenant, g.name, coalesce(g.version, '?') as version,
+           -- Same rule as the app (routes/agents.ts computeStatus): the stored status column
+           -- is only ever set to 'online', so status comes from the last heartbeat.
+           case when g.last_heartbeat > now() - interval '2 minutes' then 'online'
+                when g.last_heartbeat > now() - interval '10 minutes' then 'degraded'
+                else 'offline' end as status,
            ${day('g.last_heartbeat')} as last_heartbeat, ${day('g.created_at')} as created,
            g.bridge_id is not null as via_bridge, g.host_asset_id is not null as bound_to_host,
            (select count(*) from scan_results s where s.agent_id = g.agent_id)::int as scans,
