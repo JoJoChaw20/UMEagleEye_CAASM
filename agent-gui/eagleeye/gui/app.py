@@ -254,15 +254,25 @@ class MainWindow(QMainWindow):
             log.info("Not running as Administrator: passive listening works only if Npcap allows "
                      "non-admin capture (otherwise use Dependencies > Restart as Administrator)")
 
-    def settings_changed(self) -> None:
-        """Called after a page saved settings: restart the agent so they take effect."""
+    def settings_changed(self, connection_changed: bool = False) -> bool:
+        """Called after a page saved settings: restart the agent so they take effect.
+
+        When the server details were just entered or changed and the agent is not running
+        (first setup), start it, so Save is the last step. An agent someone stopped on
+        purpose stays stopped when other settings change. Returns True if it started it.
+        """
         self.status_page.reload_subnets()
         self.privacy_page.reload()
+        started = False
         if self.controller.running:
             log.info("Settings changed; restarting the agent")
             self.controller.stop()
             self.start_agent()
+        elif connection_changed and not self.store.settings.problems():
+            self.start_agent()
+            started = self.controller.running
         self.refresh()
+        return started
 
     def refresh(self) -> None:
         running = self.controller.running

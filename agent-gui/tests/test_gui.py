@@ -75,6 +75,48 @@ def test_settings_page_saves_secrets_to_the_keychain_only(window):
     assert window.store.settings.api_key == "super-secret-key"
 
 
+def test_saving_new_server_details_starts_the_agent_once(window):
+    page = window.settings_page
+    started = []
+
+    class FakeController:                     # the real one's `running` is a read-only property
+        running = False
+        service = None
+
+        def start(self, settings):
+            started.append(settings.agent_id)
+            self.running = True
+            return None
+
+        def stop(self):
+            self.running = False
+    real = window.controller
+    window.controller = FakeController()
+    s = window.store.settings                 # the notice is always accepted before this page
+    s.consent_version, s.consent_at = CONSENT_VERSION, "2026-10-13T00:00:00Z"
+    page.api_url.setText("https://example.invalid/api/v1")
+    page.agent_id.setText("00000000-0000-0000-0000-000000000002")
+    page.api_key.setText("k")
+    page._save()
+    assert started == ["00000000-0000-0000-0000-000000000002"]
+    assert "now running" in page.save_result.text()
+    # Someone stops the agent on purpose, then changes another setting: it stays stopped.
+    window.controller.running = False
+    page.poll.setValue(page.poll.value() + 5)
+    page._save()
+    assert started == ["00000000-0000-0000-0000-000000000002"] and page.save_result.text() == "Saved."
+    window.controller = real
+
+
+def test_saving_incomplete_server_details_does_not_start(window):
+    page = window.settings_page
+    window.controller.start = lambda settings: pytest.fail("must not start without an API key")
+    page.api_url.setText("https://example.invalid/api/v1")
+    page.agent_id.setText("00000000-0000-0000-0000-000000000003")
+    page._save()
+    assert page.save_result.text().startswith("Saved, but:")
+
+
 def test_schedules_page_is_hidden_while_schedules_are_off(window):
     names = [window.nav.item(i).text() for i in range(window.nav.count())]
     assert "Schedules" not in names and window.schedules_page is None

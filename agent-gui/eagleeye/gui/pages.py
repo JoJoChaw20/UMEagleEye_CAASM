@@ -511,6 +511,7 @@ class SettingsPage(QWidget):
 
     def _save(self) -> None:
         s = self.win.store.settings
+        before = (s.api_url, s.agent_id, s.api_key)
         s.api_url = self.api_url.text().strip()
         s.agent_id = self.agent_id.text().strip()
         s.api_key = self._secret(self.api_key, s.api_key)
@@ -528,8 +529,11 @@ class SettingsPage(QWidget):
         self.win.store.save()
         self._secret_placeholders()
         problems = s.problems()
-        self.save_result.setText("Saved." if not problems else "Saved, but: " + "; ".join(problems))
-        self.win.settings_changed()
+        started = self.win.settings_changed(connection_changed=(s.api_url, s.agent_id, s.api_key) != before)
+        self.save_result.setText(
+            "Saved, but: " + "; ".join(problems) if problems
+            else "Saved. The agent is now running and connecting to the server." if started
+            else "Saved.")
 
     def reload(self) -> None:
         s = self.win.store.settings
