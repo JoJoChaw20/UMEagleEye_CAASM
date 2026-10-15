@@ -218,11 +218,12 @@ export default function InventoryPage() {
   const handleDelete = async (asset) => {
     if (!confirm(
       `Delete ${assetName(asset)} permanently?\n\n` +
-      'This permanently deletes the asset and its events, SBOMs, dependencies and relationships. This cannot be undone.'
+      'This permanently deletes the asset and its events, SBOMs, dependencies and relationships, and removes it from the Discovery log. This cannot be undone.'
     )) return
     try {
-      await client.delete(`/assets/${asset.assetId}`)
-      setNotice({ text: `${assetName(asset)} deleted.` })
+      const res = await client.delete(`/assets/${asset.assetId}`)
+      const removed = res.data?.discovery_entries_removed ?? 0
+      setNotice({ text: `${assetName(asset)} deleted${removed ? `, with ${removed} Discovery log entr${removed === 1 ? 'y' : 'ies'}` : ''}.` })
       await refreshAll()
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to delete asset')

@@ -9,6 +9,7 @@ import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, a
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
 import { automaticDeviceType } from '../lib/deviceClassify'
+import { planScanLogPurge } from '../lib/scanLog'
 import type { DeviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
@@ -1017,10 +1018,28 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
+    // The asset's entries leave the Discovery log too (lib/scanLog.ts): the records
+    // that mention one of its IPs are read, and its host entries are removed from them
+    // (records left with no hosts are deleted). Matching needs the asset's IP AND MAC.
+    const addrRows = await db.select({ ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress })
+      .from(assetAddresses).where(eq(assetAddresses.assetId, assetId))
+    const ips = [...new Set([existing.ipAddress, ...addrRows.map(a => a.ipAddress)].filter(Boolean))]
+    const macs = [existing.macAddress, ...addrRows.map(a => a.macAddress)]
+    const logRows = ips.length
+      ? await db.select({ scanId: scanResults.scanId, status: scanResults.status, rawResults: scanResults.rawResults })
+          .from(scanResults)
+          .where(and(
+            existing.tenantId ? eq(scanResults.tenantId, existing.tenantId) : isNull(scanResults.tenantId),
+            sql`${scanResults.scanType} <> 'sbom'`,
+            or(...ips.map(ip => sql`${scanResults.rawResults} @> ${JSON.stringify([{ ip }])}::jsonb`)),
+          ))
+      : []
+    const purge = planScanLogPurge(logRows, { ips, macs })
+
     // Reparent any topology node whose parent is THIS asset's node to NULL (root)
     // BEFORE the cascade removes that node — parent_node_id has no FK, so otherwise
-    // the children dangle (parity with the merge reparent). One batch = one subrequest,
-    // so the delete still costs the same: 1 (lookup) + 1 (batch).
+    // the children dangle (parity with the merge reparent). One batch, so the asset
+    // and its log entries go together: 1 (lookup) + 2 (addresses, log) + 1 (batch).
     await db.batch([
       db.update(topologyNodes).set({ parentNodeId: null }).where(
         inArray(
@@ -1029,9 +1048,17 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
         ),
       ),
       db.delete(assets).where(eq(assets.assetId, assetId)),
-    ])
+      ...purge.updates.map(u => db.update(scanResults)
+        .set({ rawResults: u.rawResults, hostsDiscovered: u.hostsDiscovered })
+        .where(eq(scanResults.scanId, u.scanId))),
+      ...(purge.deletes.length ? [db.delete(scanResults).where(inArray(scanResults.scanId, purge.deletes))] : []),
+    ] as unknown as Parameters<typeof db.batch>[0])
 
-    return c.json({ message: 'Asset deleted' })
+    return c.json({
+      message: 'Asset deleted',
+      discovery_entries_removed: purge.entriesRemoved,
+      discovery_records_deleted: purge.deletes.length,
+    })
   } catch (err) {
     console.error('assets DELETE error:', err)
     return c.json({ detail: 'Failed to delete asset' }, 500)

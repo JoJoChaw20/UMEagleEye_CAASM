@@ -194,7 +194,7 @@ export default function AssetDetailPage() {
   const handleDelete = async () => {
     if (!confirm(
       `Delete ${assetName(asset)} permanently?\n\n` +
-      'This permanently deletes the asset and its events, SBOMs, dependencies and relationships. This cannot be undone.'
+      'This permanently deletes the asset and its events, SBOMs, dependencies and relationships, and removes it from the Discovery log. This cannot be undone.'
     )) return
     try {
       await client.delete(`/assets/${assetId}`)

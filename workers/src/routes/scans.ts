@@ -15,6 +15,7 @@ import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type Pla
 import { buildBaseline, runDriftAudit } from '../services/drift'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
+import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
 
 // The scan classifier lives in lib/deviceClassify.ts (shared with "Automatic" type
 // reset); re-exported for scripts that import it from here.
@@ -854,28 +855,50 @@ Example:
 
     // Resolve scan record: use provided scan_id, or auto-create one for passive
     let effectiveScanId: string
+    // What the Discovery record holds: this upload, or for a folded passive record the
+    // hosts heard over the last hour (asset upserts below still use only this upload).
+    let recordHosts: unknown[] = enhancedHosts
     if (scan_id) {
       const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
       if (!scan) return c.json({ detail: 'Scan not found' }, 404)
       effectiveScanId = scan_id
     } else if (isPassive) {
-      // Auto-create a passive scan record so results appear in the dashboard
-      const [newScan] = await db
-        .insert(scanResults)
-        .values({
-          agentId: agent_id,
-          tenantId: tenantId ?? null,
-          scanType: 'passive',
-          subnet: 'arp-discovery',
-          status: 'completed',
-          hostsDiscovered: enhancedHosts.length,
-          rawResults: enhancedHosts,
-          networkInfo: network ?? null,
-          completedAt: new Date(),
-        })
-        .returning()
-      if (!newScan) return c.json({ detail: 'Failed to create passive scan record' }, 500)
-      effectiveScanId = newScan.scanId
+      // Fold into this agent's passive record of the last hour, so the Discovery log
+      // gets one record per agent per hour instead of one per upload (about a minute).
+      const [open] = await db
+        .select({ scanId: scanResults.scanId, rawResults: scanResults.rawResults })
+        .from(scanResults)
+        .where(and(
+          eq(scanResults.agentId, agent_id),
+          eq(scanResults.scanType, 'passive'),
+          eq(scanResults.subnet, 'arp-discovery'),
+          eq(scanResults.status, 'completed'),
+          sql`${scanResults.startedAt} > now() - make_interval(mins => ${PASSIVE_FOLD_MINUTES})`,
+        ))
+        .orderBy(desc(scanResults.startedAt))
+        .limit(1)
+      if (open) {
+        effectiveScanId = open.scanId
+        recordHosts = mergePassiveHosts(open.rawResults, enhancedHosts as Record<string, unknown>[])
+      } else {
+        // Auto-create a passive scan record so results appear in the dashboard
+        const [newScan] = await db
+          .insert(scanResults)
+          .values({
+            agentId: agent_id,
+            tenantId: tenantId ?? null,
+            scanType: 'passive',
+            subnet: 'arp-discovery',
+            status: 'completed',
+            hostsDiscovered: enhancedHosts.length,
+            rawResults: enhancedHosts,
+            networkInfo: network ?? null,
+            completedAt: new Date(),
+          })
+          .returning()
+        if (!newScan) return c.json({ detail: 'Failed to create passive scan record' }, 500)
+        effectiveScanId = newScan.scanId
+      }
     } else {
       return c.json({ detail: 'scan_id is required for active scans' }, 400)
     }
@@ -1055,8 +1078,8 @@ Example:
       .update(scanResults)
       .set({
         status: 'completed',
-        hostsDiscovered: enhancedHosts.length,
-        rawResults: enhancedHosts,
+        hostsDiscovered: recordHosts.length,
+        rawResults: recordHosts,
         ...(network ? { networkInfo: network } : {}),   // store agent network block for reference
         completedAt: new Date(),
       })
