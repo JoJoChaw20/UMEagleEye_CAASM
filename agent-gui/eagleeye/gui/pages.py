@@ -104,9 +104,11 @@ class StatusPage(QWidget):
         self.heartbeat = QLabel()
         for w in (self.server, self.agent):
             w.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.passive_on = QLabel()
         form.addRow("Server", self.server)
         form.addRow("Agent ID", self.agent)
         form.addRow("Last heartbeat", self.heartbeat)
+        form.addRow("Passive listening", self.passive_on)
 
         activity = QGroupBox("Now")
         a = QVBoxLayout(activity)
@@ -212,6 +214,13 @@ class StatusPage(QWidget):
         else:
             state = "OK" if svc.last_heartbeat_ok else "failed (see Log)"
             self.heartbeat.setText(f"{state} at {_fmt(svc.last_heartbeat_at)}")
+        suite = getattr(svc, "suite", None) if svc is not None else None
+        if not s.passive:
+            self.passive_on.setText("off (Settings > Passive listening)")
+        elif suite is None or suite.arp is None:
+            self.passive_on.setText("-" if svc is None else "not running (see Dependencies)")
+        else:
+            self.passive_on.setText(suite.listening_on)
 
         busy_bits = []
         if svc is not None:

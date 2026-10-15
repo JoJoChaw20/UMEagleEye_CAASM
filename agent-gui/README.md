@@ -80,8 +80,8 @@ system tray when the window is closed (right-click the tray icon to quit).
 | Page | What it does |
 |---|---|
 | (first start) | Shows the data-collection notice with the choices below; the agent does not run until it is accepted. The acceptance date and notice version are saved (`consent_version`, `consent_at`); a new notice version is shown again |
-| Status | Connection and last heartbeat, what is running now, **Scan now** for a network, **Collect inventory now**, recent activity |
-| Settings | Server URL, agent ID, API key (with **Test connection**), timing, passive listening, SNMPv3. Saving restarts the agent |
+| Status | Connection, last heartbeat and where passive listening listens, what is running now, **Scan now** for a network, **Collect inventory now**, recent activity |
+| Settings | Server URL, agent ID, API key (with **Test connection**), timing, passive listening, SNMPv3. Saving restarts the agent; saving new server details starts it |
 | Privacy | Inventory on/off, interval, the two personal-data options, **Preview what would be sent** (collects and shows the inventory without sending it), the notice |
 | Dependencies | Nmap, Npcap, Python modules and Administrator rights; download buttons for Nmap and Npcap; **Restart as Administrator** |
 | Log | Live log; also written to `%APPDATA%\EagleEye\logs\agent.log` (rotated, 5 x 1 MB) |
@@ -120,7 +120,12 @@ installed for all users of the machine.
 **Never collected:** files or documents, browsing history, passwords or credentials, keystrokes, screenshots, email
 or messages, location, and the contents of network traffic. For ports that only listen on the machine itself
 (`127.0.0.1` / `::1`), which program owns them is not sent. Passive mode reads only broadcast discovery packets
-(ARP, mDNS, NetBIOS, DHCP) to learn device names and addresses.
+(ARP, mDNS, NetBIOS, DHCP) to learn device names and addresses, and ignores the computer's own packets.
+
+**Which network passive mode listens on:** with the interface left empty ("automatic"), the adapter the operating
+system uses to reach the internet, re-checked every 30 seconds (so it follows Wi-Fi connecting after sign-in, a
+switch to a cable, or a VPN, and never sits on a virtual adapter such as a GNS3/VMware loopback). The Status page
+shows the choice, e.g. "Wi-Fi (192.168.1.20)". A name typed in Settings is used as it is.
 
 **Notice and choice:** the desktop app shows this notice before the agent first runs, with the personal-data options
 off, and the choices can be changed at any time on the Privacy page.

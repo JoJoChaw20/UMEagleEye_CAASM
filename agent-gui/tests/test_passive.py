@@ -14,7 +14,7 @@ import os
 import pytest
 
 scapy_all = pytest.importorskip("scapy.all")
-from scapy.all import BOOTP, DHCP, DNS, DNSQR, DNSRR, IP, UDP, Ether, IPv6, load_layer  # noqa: E402
+from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, IP, UDP, Ether, IPv6, load_layer  # noqa: E402
 
 load_layer("netbios")
 from scapy.layers.netbios import (  # noqa: E402
@@ -22,7 +22,7 @@ from scapy.layers.netbios import (  # noqa: E402
     NBNSQueryRequest, NBNSQueryResponse, NBNSRegistrationRequest,
 )
 
-from eagleeye.passive.sniffers import DhcpSniffer, MdnsNetbiosSniffer  # noqa: E402
+from eagleeye.passive.sniffers import ArpSniffer, DhcpSniffer, InterfaceChooser, MdnsNetbiosSniffer  # noqa: E402
 from eagleeye.pipeline.record import HostRecord  # noqa: E402
 from eagleeye.stages import enrich_passive_hosts  # noqa: E402
 
@@ -221,3 +221,119 @@ def test_replay_local_capture(mdns, dhcp):
     print("names:", mdns._hostnames, "\nby mac:", {m: mdns.get_mac_info(m) for m in mdns._by_mac},
           "\ndhcp:", dhcp._by_mac)
     assert mdns._hostnames or mdns._by_mac or dhcp._by_mac
+
+
+# ── Where passive listening listens, and this computer's own packets (2.0.1) ──
+# Shaped like the PC where scapy's default was a GNS3 KM-TEST loopback adapter with a
+# default gateway, listed before Wi-Fi, while Windows routed through Wi-Fi.
+LOOP_MAC, WIFI_MAC, VMNET_MAC = "02:00:4c:4f:4f:50", "14:13:33:c3:f6:03", "00:50:56:c0:00:08"
+ADAPTERS = [
+    {"name": "Ethernet 2", "description": "Microsoft KM-TEST Loopback Adapter #2", "ips": ["142.19.0.1"], "mac": LOOP_MAC},
+    {"name": "VMware Network Adapter VMnet8", "description": "VMware Virtual Ethernet Adapter", "ips": ["192.168.217.1"], "mac": VMNET_MAC},
+    {"name": "Wi-Fi", "description": "MediaTek MT7921 Wi-Fi 6", "ips": ["192.168.100.71"], "mac": WIFI_MAC},
+]
+
+
+class FakeProbe:
+    def __init__(self, route_ip, adapters=ADAPTERS):
+        self.route_ip, self.adapters, self.calls = route_ip, list(adapters), 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.route_ip is None:
+            raise OSError("adapter list unavailable")
+        return self.route_ip, self.adapters
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_automatic_listens_where_the_os_routes_not_on_a_virtual_adapter():
+    chooser = InterfaceChooser(probe=FakeProbe("192.168.100.71"))
+    assert chooser.refresh() == "Wi-Fi"
+    assert chooser.label == "Wi-Fi (192.168.100.71)"
+
+
+def test_no_network_yet_waits_then_follows_wifi_when_it_connects():
+    # Npcap lists a loopback adapter that really holds 127.0.0.1: never listen there.
+    probe, clock = FakeProbe("127.0.0.1", ADAPTERS + [
+        {"name": "Npcap Loopback Adapter", "description": "Adapter for loopback traffic capture", "ips": ["127.0.0.1"], "mac": None}]), Clock()
+    chooser = InterfaceChooser(probe=probe, clock=clock)
+    assert chooser.refresh() is None and chooser.label == "waiting for a network connection"
+    probe.route_ip = "192.168.100.71"
+    clock.t = 31
+    assert chooser.refresh() == "Wi-Fi"
+
+
+def test_rechecks_every_30_seconds_and_follows_a_switch_to_a_cable():
+    probe, clock = FakeProbe("192.168.100.71"), Clock()
+    chooser = InterfaceChooser(probe=probe, clock=clock)
+    assert chooser.refresh() == "Wi-Fi"
+    probe.adapters = ADAPTERS + [{"name": "Ethernet", "description": "Realtek PCIe GbE", "ips": ["10.0.0.5"], "mac": "aa:bb:cc:00:11:22"}]
+    probe.route_ip = "10.0.0.5"
+    clock.t = 10
+    assert chooser.refresh() == "Wi-Fi" and probe.calls == 1        # not asked again yet
+    clock.t = 31
+    assert chooser.refresh() == "Ethernet" and chooser.label == "Ethernet (10.0.0.5)"
+    assert chooser.refresh(force=True) == "Ethernet" and probe.calls == 3
+
+
+def test_an_interface_set_in_settings_is_kept():
+    chooser = InterfaceChooser("Ethernet 2", probe=FakeProbe("192.168.100.71"))
+    assert chooser.refresh() == "Ethernet 2"
+    assert chooser.label == "Ethernet 2 (set in Settings)"
+    assert chooser.is_own(LOOP_MAC)                     # own packets are still recognised
+
+
+def test_a_failed_adapter_listing_keeps_the_last_choice():
+    probe, clock = FakeProbe("192.168.100.71"), Clock()
+    chooser = InterfaceChooser(probe=probe, clock=clock)
+    chooser.refresh()
+    probe.route_ip = None                               # the probe now raises
+    clock.t = 31
+    assert chooser.refresh() == "Wi-Fi"
+
+
+def test_own_adapters_are_recognised_in_any_spelling():
+    chooser = InterfaceChooser(probe=FakeProbe("192.168.100.71"))
+    assert not chooser.is_own(LOOP_MAC)                 # nothing known before the first look
+    chooser.refresh()
+    assert chooser.is_own("02-00-4C-4F-4F-50") and chooser.is_own(WIFI_MAC.upper()) and chooser.is_own(VMNET_MAC)
+    assert not chooser.is_own(IPAD_MAC) and not chooser.is_own(None) and not chooser.is_own("not a mac")
+
+
+def arp(ip, mac):
+    return wire(Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / ARP(op=1, psrc=ip, hwsrc=mac, pdst="192.168.100.1"))
+
+
+def test_sniffers_ignore_this_computers_own_packets():
+    chooser = InterfaceChooser(probe=FakeProbe("192.168.100.71"))
+    chooser.refresh()
+    arp_sniffer = ArpSniffer(chooser=chooser)
+    feed = arp_sniffer._make_handler()
+    feed(arp("142.19.0.1", LOOP_MAC))                   # the PC's own loopback adapter
+    feed(arp("192.168.100.71", WIFI_MAC))               # the PC itself on Wi-Fi
+    feed(arp("192.168.100.186", IPAD_MAC))              # a real device
+    assert arp_sniffer.pending() == 1
+
+    names = MdnsNetbiosSniffer(chooser=chooser)
+    names_feed = names._make_handler()
+    names_feed(nbns("142.19.0.1", LOOP_MAC, NBNSHeader(OPCODE=5, RESPONSE=0),
+                    NBNSRegistrationRequest(QUESTION_NAME="JOJOCHAW", SUFFIX=0x4141, G=0, NB_ADDRESS="142.19.0.1"), dst="142.19.1.255"))
+    assert names.get_hostname("142.19.0.1") is None
+
+    dhcp_sniffer = DhcpSniffer(chooser=chooser)
+    dhcp_feed = dhcp_sniffer._make_handler()
+    dhcp_feed(dhcp_pkt("0.0.0.0", WIFI_MAC, [("message-type", "request"), ("requested_addr", "192.168.100.71"), ("hostname", b"JoJochaw")]))
+    assert dhcp_sniffer.get_info_by_mac(WIFI_MAC) == {}
+
+
+def test_without_a_chooser_nothing_is_filtered():
+    arp_sniffer = ArpSniffer()
+    arp_sniffer._make_handler()(arp("142.19.0.1", LOOP_MAC))
+    assert arp_sniffer.pending() == 1

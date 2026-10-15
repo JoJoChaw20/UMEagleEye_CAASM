@@ -7,6 +7,12 @@ ignored IPv6 and the additional section, NetBIOS decoded from the wrong byte, an
 looked options up by number (scapy names them) and dropped every 0.0.0.0 sender.
 
 All three need scapy and, for capture, Administrator/root plus Npcap/libpcap.
+
+Where they listen is decided by InterfaceChooser (2.0.1): the adapter the operating
+system really uses for the network, re-checked while running, never scapy's default,
+which scapy picks once at start-up and can be a virtual adapter (a GNS3 KM-TEST loopback
+with a default gateway was chosen over Wi-Fi). Packets from this computer's own adapters
+are ignored: the computer itself is reported by its inventory.
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ import logging
 import socket
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 from .. import httpclient
@@ -23,7 +29,92 @@ from ..pipeline.record import HostRecord
 
 log = logging.getLogger("eagleeye.passive")
 
-_SNIFF_SLICE_SECONDS = 5   # sniff() is restarted this often so stop() takes effect
+_SNIFF_SLICE_SECONDS = 5     # sniff() is restarted this often so stop() takes effect
+_IFACE_REFRESH_SECONDS = 30  # how often "automatic" re-checks which adapter to use
+
+
+def _norm_mac(mac: Optional[str]) -> Optional[str]:
+    if not mac:
+        return None
+    hexdigits = "".join(ch for ch in str(mac).lower() if ch in "0123456789abcdef")
+    return ":".join(hexdigits[i:i + 2] for i in range(0, 12, 2)) if len(hexdigits) == 12 else None
+
+
+def _probe_interfaces() -> tuple[str, list[dict[str, Any]]]:
+    """(the source address the OS uses to reach the internet, every capture adapter as
+    {name, description, ips, mac}). scapy's adapter list is reloaded, since it otherwise
+    keeps what it read when it was first imported."""
+    from scapy.all import conf  # type: ignore
+
+    from ..netinfo import local_ip
+
+    try:
+        conf.ifaces.reload()
+    except Exception as exc:  # noqa: BLE001 - an old scapy without reload keeps its list
+        log.debug("could not reload the adapter list: %s", exc)
+    adapters = []
+    for iface in conf.ifaces.values():
+        ips = list((getattr(iface, "ips", None) or {}).get(4, []) or [])
+        if not ips and getattr(iface, "ip", None):
+            ips = [iface.ip]
+        adapters.append({"name": iface.name, "description": getattr(iface, "description", "") or iface.name,
+                         "ips": ips, "mac": getattr(iface, "mac", None)})
+    return local_ip(), adapters
+
+
+class InterfaceChooser:
+    """Which adapter passive listening uses, shared by the three sniffers.
+
+    A fixed interface from the settings is used as it is. "Automatic" is the adapter that
+    holds the address the operating system uses to reach the internet (its own route
+    choice, the same one that carries the agent's traffic). It is re-checked every 30 s,
+    so it follows Wi-Fi connecting after sign-in, a switch to a cable or a VPN, and it
+    waits instead of listening on a wrong adapter while there is no network yet.
+
+    It also knows the MACs of all of this computer's adapters, virtual ones included, so
+    the sniffers can ignore the computer's own packets."""
+
+    def __init__(self, fixed: Optional[str] = None,
+                 probe: Callable[[], tuple[str, list[dict[str, Any]]]] = _probe_interfaces,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.fixed = fixed or None
+        self._probe = probe
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._checked_at: Optional[float] = None
+        self.name: Optional[str] = self.fixed
+        self.label = f"{self.fixed} (set in Settings)" if self.fixed else "checking..."
+        self._own_macs: frozenset[str] = frozenset()
+
+    def refresh(self, force: bool = False) -> Optional[str]:
+        """The interface to listen on now (None = no network yet: wait and ask again)."""
+        with self._lock:
+            now = self._clock()
+            if not force and self._checked_at is not None and now - self._checked_at < _IFACE_REFRESH_SECONDS:
+                return self.name
+            self._checked_at = now
+            try:
+                route_ip, adapters = self._probe()
+            except Exception as exc:  # noqa: BLE001 - keep the last good choice
+                log.warning("Could not list network adapters: %s", exc)
+                return self.name
+            self._own_macs = frozenset(m for m in (_norm_mac(a.get("mac")) for a in adapters) if m)
+            if self.fixed:
+                return self.name
+            match = None
+            if route_ip and not route_ip.startswith("127."):
+                match = next((a for a in adapters if route_ip in (a.get("ips") or [])), None)
+            name = match["name"] if match else None
+            label = f"{match['name']} ({route_ip})" if match else "waiting for a network connection"
+            if name != self.name or label != self.label:
+                log.info("Passive listening on %s", label)
+            self.name, self.label = name, label
+            return name
+
+    def is_own(self, mac: Optional[str]) -> bool:
+        """True for a packet sent by one of this computer's adapters."""
+        m = _norm_mac(mac)
+        return m is not None and m in self._own_macs
 
 
 class _Sniffer:
@@ -31,8 +122,9 @@ class _Sniffer:
     thread_name = "sniffer"
     label = "sniffer"
 
-    def __init__(self, interface: Optional[str] = None) -> None:
+    def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
         self.interface = interface
+        self.chooser = chooser
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -51,7 +143,8 @@ class _Sniffer:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name=self.thread_name)
         self._thread.start()
-        log.info("%s started on interface=%s", self.label, self.interface or "default")
+        where = "automatic" if self.chooser is not None and self.chooser.fixed is None else (self.interface or "default")
+        log.info("%s started (interface: %s)", self.label, where)
         return True
 
     def stop(self) -> None:
@@ -60,6 +153,10 @@ class _Sniffer:
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def _own(self, mac: Optional[str]) -> bool:
+        """A packet from this computer itself (ignored)."""
+        return self.chooser is not None and self.chooser.is_own(mac)
 
     def _loop(self) -> None:
         try:
@@ -72,10 +169,30 @@ class _Sniffer:
                 "stop_filter": lambda _pkt: self._stop.is_set(),
                 "timeout": _SNIFF_SLICE_SECONDS,
             }
-            if self.interface:
-                kwargs["iface"] = self.interface
+            failed_on: Optional[str] = None
             while not self._stop.is_set():
-                sniff(**kwargs)
+                iface = self.chooser.refresh() if self.chooser is not None else self.interface
+                if self.chooser is not None and iface is None:
+                    self._stop.wait(_SNIFF_SLICE_SECONDS)          # no network yet
+                    continue
+                if iface:
+                    kwargs["iface"] = iface
+                else:
+                    kwargs.pop("iface", None)
+                try:
+                    sniff(**kwargs)
+                    failed_on = None
+                except PermissionError:
+                    raise
+                except OSError as exc:
+                    # The adapter went away (unplugged, Wi-Fi off, VPN down): wait, then
+                    # let the chooser look again instead of stopping for good.
+                    if failed_on != iface:
+                        log.warning("%s: cannot listen on %s (%s); trying again", self.label, iface or "default", exc)
+                        failed_on = iface
+                    self._stop.wait(_SNIFF_SLICE_SECONDS)
+                    if self.chooser is not None:
+                        self.chooser.refresh(force=True)
         except PermissionError:
             self.error = "requires Administrator/root"
             log.error("%s requires Administrator/root - stopped", self.label)
@@ -97,8 +214,8 @@ class ArpSniffer(_Sniffer):
     thread_name = "arp-sniffer"
     label = "ARP sniffer"
 
-    def __init__(self, interface: Optional[str] = None) -> None:
-        super().__init__(interface)
+    def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
+        super().__init__(interface, chooser)
         self._seen: dict[str, dict[str, Any]] = {}
 
     def _make_handler(self) -> Any:
@@ -108,7 +225,7 @@ class ArpSniffer(_Sniffer):
             if not pkt.haslayer(ARP):
                 return
             ip, mac = pkt[ARP].psrc, pkt[ARP].hwsrc
-            if not _valid_ip(ip):
+            if not _valid_ip(ip) or self._own(mac):
                 return
             with self._lock:
                 self._seen[ip] = {"mac": mac, "last_seen": time.time()}
@@ -204,8 +321,8 @@ class MdnsNetbiosSniffer(_Sniffer):
     thread_name = "mdns-sniffer"
     label = "mDNS/NetBIOS sniffer"
 
-    def __init__(self, interface: Optional[str] = None) -> None:
-        super().__init__(interface)
+    def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
+        super().__init__(interface, chooser)
         self._hostnames: dict[str, str] = {}             # ip -> name
         self._mdns_ips: set[str] = set()                  # ips whose name came from mDNS
         self._by_mac: dict[str, dict[str, Any]] = {}      # mac -> {mdns_name, netbios_name, services}
@@ -322,6 +439,8 @@ class MdnsNetbiosSniffer(_Sniffer):
                 if src_ip is not None and not _valid_ip(src_ip):
                     src_ip = None
                 mac = _mac_of(pkt)
+                if self._own(mac):
+                    return
                 ports = {pkt[UDP].sport, pkt[UDP].dport}
                 if 5353 in ports and pkt.haslayer(DNS):
                     self._handle_mdns(pkt[DNS], src_ip, src_ip6, mac)
@@ -390,8 +509,9 @@ class DhcpSniffer(_Sniffer):
         "iPad":     "Apple iPad",
     }
 
-    def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None) -> None:
-        super().__init__(interface)
+    def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None,
+                 chooser: Optional[InterfaceChooser] = None) -> None:
+        super().__init__(interface, chooser)
         self.fingerbank_key = fingerbank_key
         self._info: dict[str, dict[str, Any]] = {}       # ip -> fingerprint (same dicts as _by_mac)
         self._by_mac: dict[str, dict[str, Any]] = {}     # mac -> fingerprint
@@ -426,7 +546,7 @@ class DhcpSniffer(_Sniffer):
                 options = self._options(pkt)
                 bootp = pkt[BOOTP]
                 mac = ":".join(f"{b:02x}" for b in bytes(bootp.chaddr)[:6])
-                if mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+                if mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") or self._own(mac):
                     return
                 mtype = options.get(53)
 
@@ -524,28 +644,30 @@ class PassiveSuite:
     """Starts and stops the three sniffers as a unit. Each one is optional: a sniffer
     that cannot start is left as None and the rest keep working."""
 
-    def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None) -> None:
+    def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None,
+                 chooser: Optional[InterfaceChooser] = None) -> None:
         self.interface = interface
         self.fingerbank_key = fingerbank_key
+        self.chooser = chooser or InterfaceChooser(interface)
         self.arp: Optional[ArpSniffer] = None
         self.mdns: Optional[MdnsNetbiosSniffer] = None
         self.dhcp: Optional[DhcpSniffer] = None
 
     def start(self) -> bool:
         """True when ARP discovery (the primary source) is running."""
-        arp = ArpSniffer(self.interface)
+        arp = ArpSniffer(self.interface, self.chooser)
         if arp.start():
             self.arp = arp
         else:
             log.warning("ARP sniffer could not start - passive host discovery disabled")
 
-        mdns = MdnsNetbiosSniffer(self.interface)
+        mdns = MdnsNetbiosSniffer(self.interface, self.chooser)
         if mdns.start():
             self.mdns = mdns
         else:
             log.warning("mDNS/NetBIOS sniffer could not start - hostname enrichment disabled")
 
-        dhcp = DhcpSniffer(self.interface, self.fingerbank_key or None)
+        dhcp = DhcpSniffer(self.interface, self.fingerbank_key or None, self.chooser)
         if dhcp.start():
             self.dhcp = dhcp
         else:
@@ -556,6 +678,11 @@ class PassiveSuite:
         for sniffer in (self.arp, self.mdns, self.dhcp):
             if sniffer:
                 sniffer.stop()
+
+    @property
+    def listening_on(self) -> str:
+        """Where passive listening listens, for display (e.g. "Wi-Fi (192.168.1.20)")."""
+        return self.chooser.label
 
     def problems(self) -> list[str]:
         """Why a sniffer is not working (for display)."""
