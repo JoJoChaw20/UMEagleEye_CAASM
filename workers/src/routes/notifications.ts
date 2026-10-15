@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, and, lt, desc } from 'drizzle-orm'
+import { eq, and, lt, desc, isNull } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
@@ -94,11 +94,12 @@ app.get('/', authMiddleware, async (c) => {
       })
     }
 
-    // 3. Agent status alerts (tenant-scoped)
+    // 3. Agent status alerts (tenant-scoped). Retired agents can never connect again,
+    //    so they never raise an offline alert.
     const agentRows = user.role === 'superadmin'
-      ? await db.select().from(agents)
+      ? await db.select().from(agents).where(isNull(agents.retiredAt))
       : user.tenantId
-        ? await db.select().from(agents).where(eq(agents.tenantId, user.tenantId))
+        ? await db.select().from(agents).where(and(eq(agents.tenantId, user.tenantId), isNull(agents.retiredAt)))
         : []
 
     for (const a of agentRows) {

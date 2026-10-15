@@ -81,7 +81,7 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""EagleEye Agent""";
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM EagleEyeAgent.exe /F"; Flags: runhidden; RunOnceId: "StopAgent"
 
 [Messages]
-WelcomeLabel2=This installs [name/ver] on your computer.%n%nIt connects this computer to your organisation's EagleEye dashboard. Have the API URL, agent ID and API key from your IT administrator ready.
+WelcomeLabel2=This installs [name/ver] on your computer.%n%nIt connects this computer to your organisation's EagleEye dashboard. Have the connection code from your IT administrator ready.
 FinishedHeadingLabel=EagleEye Agent is installed
-FinishedLabel=Next: the agent shows what it collects, then asks for the API URL, agent ID and API key from your IT administrator. Paste them, press Test connection, then Save.%n%nAfterwards it runs in the system tray (the blue eye icon next to the clock).
-FinishedLabelNoIcons=Next: the agent shows what it collects, then asks for the API URL, agent ID and API key from your IT administrator. Paste them, press Test connection, then Save.%n%nAfterwards it runs in the system tray (the blue eye icon next to the clock).
+FinishedLabel=Next: the agent shows what it collects, then opens its Settings. Paste the connection code from your IT administrator, choose Use code, then Test connection and Save.%n%nAfterwards it runs in the system tray (the blue eye icon next to the clock).
+FinishedLabelNoIcons=Next: the agent shows what it collects, then opens its Settings. Paste the connection code from your IT administrator, choose Use code, then Test connection and Save.%n%nAfterwards it runs in the system tray (the blue eye icon next to the clock).

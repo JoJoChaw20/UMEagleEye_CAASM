@@ -35,7 +35,11 @@ const formatElapsed = (seconds) => {
 
 export default function SBOMPage() {
   const { user } = useAuth()
-  const canScan = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  // SBOM scanning is paused (Phase D3): only the retired 1.x agent ran Syft/Grype, and its
+  // replacement is still being decided (D1). Existing SBOMs, dependencies and CVE alerts stay
+  // viewable; the scan, progress and cancel UI below returns when canScan does.
+  const SBOM_SCANNING_AVAILABLE = false
+  const canScan = SBOM_SCANNING_AVAILABLE && ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const canDeleteSbom = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
 
   // ── State ────────────────────────────────────────────────────
@@ -319,6 +323,13 @@ export default function SBOMPage() {
           </button>
         </div>
       </div>
+
+      {!SBOM_SCANNING_AVAILABLE && (
+        <div className="glass-card px-4 py-3 text-sm text-dark-300">
+          New SBOM scans are paused while the SBOM scanner moves to the current EagleEye agent.
+          The SBOMs, dependencies and CVE alerts already collected stay available here and on the Alerts page.
+        </div>
+      )}
 
       {/* ── Live SBOM scan progress ── */}
       {Object.keys(scanning).length > 0 && (

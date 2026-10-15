@@ -2,12 +2,10 @@ EagleEye Agent connects this computer to your organisation's EagleEye dashboard.
 It finds the devices on your network and reports this computer's security settings
 (firewall, antivirus, updates, encryption) so your IT team can keep them safe.
 
-HAVE THESE READY
-  Your IT administrator gives you three things from the dashboard's Agents page:
-    1. API URL     (looks like https://.../api/v1)
-    2. Agent ID    (a long code like 1a2b3c4d-....)
-    3. API key     (shown only once; keep it private)
-  You will paste them into the agent after the installation.
+HAVE THIS READY
+  Your IT administrator gives you a CONNECTION CODE from the dashboard's
+  Agents page. It is one long line starting with EE1. Keep it private.
+  You will paste it into the agent after the installation.
 
 WHAT HAPPENS
   - The agent installs into Program Files and starts in the system tray

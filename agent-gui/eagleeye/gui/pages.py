@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from .. import deps, installers
 from ..api import AgentClient
+from ..enrol import ConnectionCodeError, parse_connection_code
 from ..netinfo import local_ip
 from ..pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent
 from ..privacy import NOTICE_HTML
@@ -198,8 +199,8 @@ class StatusPage(QWidget):
         svc = ctrl.service if ctrl.running else None
         problems = [p for p in s.problems()]
         if problems:
-            self.banner.setText("Not set up yet: open <b>Settings</b> and enter the server URL, agent ID and API key "
-                                "from the dashboard's Agents page.")
+            self.banner.setText("Not set up yet: open <b>Settings</b> and paste the connection code from the "
+                                "dashboard's Agents page.")
             self.banner.show()
         elif not ctrl.running:
             self.banner.setText("The agent is stopped. Press <b>Start</b> to connect.")
@@ -405,6 +406,19 @@ class SettingsPage(QWidget):
 
         conn = QGroupBox("Server")
         f = QFormLayout(conn)
+        # One paste instead of three: the code from the dashboard's Agents page fills the
+        # three fields below (nothing is saved until Save).
+        code_row = QHBoxLayout()
+        self.code = QLineEdit()
+        self.code.setEchoMode(QLineEdit.EchoMode.Password)          # it contains the API key
+        self.code.setPlaceholderText("paste the code from the dashboard (starts with EE1.)")
+        self.code.returnPressed.connect(self._use_code)
+        use_code = QPushButton("Use code")
+        use_code.clicked.connect(self._use_code)
+        code_row.addWidget(self.code, 1)
+        code_row.addWidget(use_code)
+        f.addRow("Connection code", code_row)
+        f.addRow("", _hint("Or enter the three values yourself:"))
         self.api_url = QLineEdit(s.api_url)
         self.api_url.setPlaceholderText("https://.../api/v1")
         self.agent_id = QLineEdit(s.agent_id)
@@ -501,6 +515,18 @@ class SettingsPage(QWidget):
 
     def _secret(self, field: QLineEdit, current: str) -> str:
         return field.text().strip() or current
+
+    def _use_code(self) -> None:
+        try:
+            url, agent_id, key = parse_connection_code(self.code.text())
+        except ConnectionCodeError as exc:
+            self.test_result.setText(f"✖ {exc}")
+            return
+        self.api_url.setText(url)
+        self.agent_id.setText(agent_id)
+        self.api_key.setText(key)
+        self.code.clear()
+        self.test_result.setText("Filled in from the code. Choose Test connection, then Save.")
 
     def _test(self) -> None:
         s = self.win.store.settings

@@ -51,7 +51,6 @@ const [counts] = await sql(`select
   (select count(*) from users where lower(email) <> all($1))::int as users_scrambled,
   (select count(*) from users where lower(email) = any($1))::int as users_kept,
   (select count(*) from agents)::int as agents,
-  (select count(*) from bridges)::int as bridges,
   (select count(distinct owner) from assets where owner is not null)::int as owners,
   (select count(*) from audit_logs)::int as audit_logs`, [keep])
 console.log('Would change:')
@@ -71,9 +70,8 @@ await sql.transaction([
        where lower(email) <> all($1)`, [keep]),
   // Kept accounts still log in, but staging must never message real chats.
   sql(`update users set telegram_chat_id = null where lower(email) = any($1)`, [keep]),
-  // Production agent/bridge keys must not authenticate against staging.
+  // Production agent keys must not authenticate against staging.
   sql(`update agents set api_key_hash = 'revoked_on_staging', status = 'offline', last_heartbeat = null`),
-  sql(`update bridges set api_key_hash = 'revoked_on_staging', status = 'offline', last_heartbeat = null`),
   // Stable pseudonyms for asset owners ("Owner 1", "Owner 2", ...).
   sql(`update assets a set owner = 'Owner ' || r.n
        from (select owner, dense_rank() over (order by owner)::int as n

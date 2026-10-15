@@ -356,59 +356,8 @@ app.get('/pending', async (c) => {
   }
 })
 
-// ── GET /agent-status/:scanId ── agent checks for user cancellation ─────────
-app.get('/agent-status/:scanId', async (c) => {
-  try {
-    const authHeader = c.req.header('Authorization')
-    if (!authHeader?.startsWith('Bearer ')) return c.json({ detail: 'Unauthorized' }, 401)
-    const agentId = c.req.header('X-Agent-ID')
-    if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
-
-    const db = getDb(c.env.DATABASE_URL)
-    const incomingKeyHash = await sha256Hex(authHeader.slice(7))
-    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
-    if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
-
-    const { scanId } = c.req.param()
-    const [scan] = await db
-      .select({ status: scanResults.status })
-      .from(scanResults)
-      .where(and(eq(scanResults.scanId, scanId), eq(scanResults.agentId, agentId)))
-      .limit(1)
-    if (!scan) return c.json({ detail: 'Scan not found' }, 404)
-    return c.json({ status: scan.status })
-  } catch (err) {
-    console.error('agent scan status error:', err)
-    return c.json({ detail: 'Failed to fetch scan status' }, 500)
-  }
-})
-
-// ── POST /scans/:scanId/start ── agent signals it has begun processing ────────
-// Transitions status from 'pending' → 'running' so the dashboard reflects real state.
-app.post('/:scanId/start', async (c) => {
-  try {
-    const authHeader = c.req.header('Authorization')
-    if (!authHeader?.startsWith('Bearer ')) return c.json({ detail: 'Unauthorized' }, 401)
-    const incomingKey = authHeader.slice(7)
-    const enc = new TextEncoder()
-    const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(incomingKey))
-    const incomingKeyHash = Array.from(new Uint8Array(hashBuf))
-      .map(b => b.toString(16).padStart(2, '0')).join('')
-    const agentId = c.req.header('X-Agent-ID')
-    if (!agentId) return c.json({ detail: 'X-Agent-ID required' }, 400)
-    const db = getDb(c.env.DATABASE_URL)
-    const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
-    if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
-    const { scanId } = c.req.param()
-    await db.update(scanResults)
-      .set({ status: 'running' })
-      .where(and(eq(scanResults.scanId, scanId), eq(scanResults.agentId, agentId), eq(scanResults.status, 'pending')))
-    return c.json({ ok: true })
-  } catch (err) {
-    console.error('scan start error:', err)
-    return c.json({ detail: 'Failed to update scan status' }, 500)
-  }
-})
+// (Retired with the 1.x agent: GET /agent-status/:scanId and POST /:scanId/start. The
+// current agent starts scans with POST /agent-start and never polls for cancellation.)
 
 // ── POST /:scanId/cancel ── tenant admin cancels pending/running SBOM scan ──
 app.post('/:scanId/cancel', authMiddleware,

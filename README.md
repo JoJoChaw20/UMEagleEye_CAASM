@@ -39,8 +39,10 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **SLA Monitoring** — Open advisories older than 72 hours are counted whenever the Notification Centre loads (no scheduled job needed); breaches are surfaced as a distinct alert type
 
 ### SBOM & CVE Detection
-- **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOM generation via [Syft](https://github.com/anchore/syft); the EagleEye agent runs Syft locally and POSTs the result to the platform
-- **Automatic CVE Correlation** — Immediately after every SBOM scan, the agent runs [Grype](https://github.com/anchore/grype) against the generated SBOM to match packages against known vulnerabilities (NVD, GitHub Advisory, OSS Index, and more)
+> **Status:** new SBOM scans are paused. The 1.x agent that ran Syft and Grype was retired with agent 2.0.2; the SBOMs, dependencies and CVE alerts it collected stay available, and the ingest endpoints (`POST /sboms/ingest`, `POST /sboms/ingest-cve`) are kept for its replacement in the current agent.
+
+- **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOMs made with [Syft](https://github.com/anchore/syft) on the agent's machine and POSTed to the platform
+- **Automatic CVE Correlation** — After each SBOM, [Grype](https://github.com/anchore/grype) matches its packages against known vulnerabilities (NVD, GitHub Advisory, OSS Index, and more)
 - **Composite Risk Scoring** — Each CVE finding is scored using a weighted formula: `(CVSS × 10 × 0.40) + (EPSS × 100 × 0.35) + (Criticality × 10 × 0.15) + (CTI match ? 10 : 0)`, capped at 100
 - **EPSS Enrichment** — Exploit Prediction Scoring System scores fetched in batch from FIRST.org API and incorporated into the risk formula at ingest time
 - **CTI Enrichment** — CVE IDs cross-referenced against the platform's CTI indicator table; confirmed threat-intel matches add 10 points to the risk score
@@ -49,7 +51,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Dependency Inventory** — Expandable per-SBOM dependency table with package manager filter and search; counts by manager visualised as a bar chart
 - **Superadmin Delete** — Superadmins can delete all SBOM records for an asset directly from the SBOM page
 
-> **Note on SBOM scope:** Syft and Grype always run on the machine where the agent is deployed. The scan target (directory or Docker image) is specified at trigger time via a prompt in the dashboard. To generate SBOMs for multiple assets, deploy an agent on each target machine.
+> **Note on SBOM scope:** Syft and Grype run on the machine where the agent is deployed, so each asset needs its own agent for an SBOM.
 
 ### Reporting & Notifications
 - **Automated Reporting** — Report generation is queued via `report-queue` (Cloudflare Queues) so large reports never block the HTTP response; the consumer builds the PDF and writes it to Cloudflare R2; download is served via a backend-signed blob endpoint — the R2 object key is never exposed in the URL, preventing enumeration; accessible to all roles
@@ -58,7 +60,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 ### Platform
 - **Multi-Tenant Support** — SuperAdmin role manages multiple tenant organisations; all data scoped by tenant; tenant filter shared between inventory and graph tabs
 - **Tenant Self-Management** — `tenant_superadmin` can edit their tenant name and status; invite new users by email (auto-creates a Google-linked account if none exists) or assign by username; manage roles for `tenant_admin` and `business_owner` users within their own tenant; accessible at `/users`
-- **Agent Management** — Register and monitor EagleEye scanning agents; SHA-256 hashed API keys; read-only config view for non-admin roles
+- **Agent Management** — Register one EagleEye agent per computer and hand it a one-paste **connection code** (API URL, agent ID and key); status from heartbeats, the computer each agent runs on with its last inventory, **rotate key**, retired 1.x agents listed apart with their history; SHA-256 hashed API keys
 - **MFA / TOTP** — Per-user two-factor authentication via any TOTP authenticator app (Google Authenticator, Authy, Microsoft Authenticator); three-step backend flow: `POST /mfa/setup` generates a secret and a SVG QR code (built from the raw module matrix as filled `<rect>` elements — no canvas, fully compatible with Cloudflare Workers and phone scanners); `POST /mfa/enable` verifies the first TOTP code and activates MFA; at login, if MFA is enabled the API returns `mfa_required: true` and the frontend prompts for a 6-digit code before issuing the JWT; Settings page provides a manual secret copy fallback for users who cannot scan the QR code
 - **Google OAuth** — Sign in with Google via `@react-oauth/google`; the frontend receives a short-lived Google access token and sends it to the backend; the Workers API validates it by calling Google's `userinfo` endpoint (not by decoding client-side) — this prevents token forgery; if the Google email matches an existing account it is linked automatically; if not, a new account is created with the Google profile data; JWT is issued on success using the same HS256 flow as password login
 - **Global Search** — Live asset search in the top header bar (hostname + IP); debounced 300 ms; results dropdown with device type; navigates to Asset Inventory
@@ -105,17 +107,16 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Icons | Lucide React |
 | Google Login | @react-oauth/google |
 
-### EagleEye Agent — Python
+### EagleEye Agent — Python (`agent-gui/`)
 | Component | Technology |
 |-----------|------------|
-| Runtime | Python 3.10+ |
-| Active Scanner | python-nmap + nmap CLI (NSE: smb-os-discovery, banner) |
+| Runtime | Python 3.12+; Windows desktop app (PySide6, system tray) and `eagleeye` command line; packaged with PyInstaller + Inno Setup |
+| Active Scanner | Nmap CLI (`-oX -`, own XML parser); built-in ping/port sweep when Nmap is missing |
 | SNMPv3 Polling | pysnmp (authPriv — SHA/MD5/SHA-2 auth, AES/DES priv); network-device detection during active scans |
-| Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68) |
-| SBOM Generation | Syft (CycloneDX JSON output) |
-| CVE Scanning | Grype (matches SBOM packages against NVD, GitHub Advisory, OSS Index) |
-| Transport | requests (HTTPS to Workers API) |
-| Auth | Bearer API key + X-Agent-ID header (SHA-256 verified) |
+| Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68) on the adapter the OS routes through |
+| Endpoint Inventory | Windows (PowerShell/CIM) and Linux collectors: hardware, OS and patches, security settings, interfaces, listening services, installed software |
+| Transport | standard-library HTTPS client (no redirects, per-address timeouts) |
+| Auth | Bearer API key + agent ID (SHA-256 verified); key kept in the OS credential store |
 | Optional | Fingerbank API (DHCP-based device fingerprinting) |
 
 ## Architecture
@@ -130,20 +131,16 @@ Browser ──HTTPS──► Cloudflare Pages  (React SPA)
                     ├── Cloudflare R2    (PDF reports)
                     └── Cloudflare Queues (async jobs)
 
-Local Network ──► EagleEye Agent (Python)
-                    ├── Active mode
-                    │     ├── GET  /scans/pending  (poll every 30s)
-                    │     └── POST /scans/ingest   (nmap results)
-                    ├── Passive mode
-                    │     ├── ARP sniffer thread       (host discovery)
-                    │     ├── mDNS/NetBIOS thread      (hostname enrichment)
-                    │     ├── DHCP fingerprint thread  (device classification)
-                    │     └── POST /scans/ingest       (flush every --passive-interval)
-                    └── SBOM mode
-                          ├── syft <target> -o cyclonedx-json
-                          ├── POST /sboms/ingest        (dependency inventory)
-                          ├── grype sbom:<file> -o json
-                          └── POST /sboms/ingest-cve    (CVE alerts + risk scores)
+Local Network ──► EagleEye Agent (Python, one per computer)
+                    ├── POST /agents/:id/heartbeat     (every 30 s)
+                    ├── Active scans
+                    │     ├── GET  /scans/pending       (poll every 30 s) or POST /scans/agent-start
+                    │     └── POST /scans/ingest        (Nmap / built-in sweep + SNMPv3 results)
+                    ├── Passive listening
+                    │     ├── ARP, mDNS/NetBIOS, DHCP sniffers on the adapter the OS uses
+                    │     └── POST /scans/ingest        (one Discovery record per agent per hour)
+                    └── Endpoint inventory of its own computer
+                          └── POST /agents/:id/inventory (every 6 h and on demand)
 ```
 
 ## Project Structure
@@ -222,7 +219,7 @@ UMEagleEye2.0/
 │   │   │   ├── ThreatIntelPage.jsx      # CTI indicators + MITRE heatmap
 │   │   │   ├── ReportsPage.jsx          # Report generation + secure blob download
 │   │   │   ├── SettingsPage.jsx         # Profile, password change, integrations
-│   │   │   ├── AgentsPage.jsx           # Agent registry + RBAC config modal
+│   │   │   ├── AgentsPage.jsx           # Agents: register (connection code), status, host computer, rotate key, retired list
 │   │   │   ├── TenantsPage.jsx          # SuperAdmin only — platform-wide tenant + user management
 │   │   │   ├── TenantSettingsPage.jsx   # Tenant self-management (tenant_superadmin edits own tenant/users)
 │   │   │   └── ChatbotPage.jsx          # AI chatbot — SSE streaming, multi-session localStorage persistence, advisory debug, context-aware AI
@@ -231,11 +228,11 @@ UMEagleEye2.0/
 │   ├── .env.staging.example     # Template for the staging build
 │   ├── public/_headers          # noindex + security headers served by Cloudflare Pages
 │   └── package.json
-├── agent/                       # EagleEye network scanning agent
-│   ├── eagleeye_agent.py        # Main agent: active + passive scanning loop
-│   ├── requirements.txt         # requests, python-nmap, scapy, pysnmp
-│   └── README.md
-├── AGENT_SETUP_GUIDE.md         # Step-by-step agent deployment guide
+├── agent-gui/                   # EagleEye Agent 2: desktop app + CLI (see agent-gui/README.md)
+│   ├── eagleeye/                # pipeline, stages, collectors, passive sniffers, GUI
+│   ├── packaging/               # PyInstaller spec, Inno Setup installer, build.ps1
+│   └── tests/
+├── AGENT_SETUP_GUIDE.md         # Rolling the agent out to computers (for IT administrators)
 └── STAGING.md                   # Staging environment runbook
 ```
 
@@ -324,157 +321,23 @@ Criticality scores (1–10) are derived **only from the asset's own facts** — 
 
 ## EagleEye Agent
 
-The agent is a Python script deployed on a host inside the target network. It supports two complementary scan modes.
+The agent (`agent-gui/`) runs on each computer: it scans that computer's network (active Nmap scans, optional
+passive listening and SNMPv3 polling) and reports the computer's own endpoint inventory and security settings.
+Rolling it out is described in [AGENT_SETUP_GUIDE.md](AGENT_SETUP_GUIDE.md); its design, settings, privacy rules and
+command line in [agent-gui/README.md](agent-gui/README.md).
 
-### Prerequisites
+In short: register an agent on the **Agents** page, install `EagleEyeAgent-Setup-<version>.exe` on the computer,
+and paste the **connection code** into the agent's Settings (or, on a server or Linux, run
+`eagleeye config init --connection-code <code>` then `eagleeye run`).
 
-```bash
-# Install Python dependencies
-cd agent
-pip install -r requirements.txt
-
-# Active scanning requires nmap
-# Windows:  winget install nmap
-# Linux:    sudo apt install nmap
-
-# Passive scanning requires scapy (Windows: run as Administrator; Linux: run as root)
-# Already included in requirements.txt
-
-# SBOM generation requires Syft
-# Windows:  winget install Anchore.Syft
-# Linux:    curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
-
-# CVE scanning requires Grype (runs automatically after every SBOM scan)
-# Windows:  winget install Anchore.Grype
-# Linux:    curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh
-```
-
-### Command-line flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--api-url` | — | Backend API base URL (required) |
-| `--api-key` | — | Agent API key from dashboard (required) |
-| `--agent-id` | — | Agent UUID from dashboard (required) |
-| `--interval` | `30` | Active scan poll interval in seconds |
-| `--heartbeat-interval` | `30` | Heartbeat interval in seconds; each attempt uses a 15 s timeout with one silent retry before logging a warning |
-| `--passive` | off | Enable passive sniffing suite (ARP + mDNS/NetBIOS + DHCP) |
-| `--passive-interface` | auto | Network interface for passive sniffers |
-| `--passive-interval` | `60` | Seconds between autonomous ARP buffer flushes |
-| `--fingerbank-key` | — | Fingerbank API key for DHCP device fingerprinting (optional) |
-| `--snmp-user` | — | SNMPv3 username; providing it (with both keys) enables SNMP polling of active-scan hosts (optional) |
-| `--snmp-auth-key` | — | SNMPv3 authentication passphrase (authPriv) |
-| `--snmp-priv-key` | — | SNMPv3 privacy passphrase (authPriv) |
-| `--snmp-auth-protocol` | `SHA` | Auth protocol: `SHA`, `MD5`, `SHA256`, `SHA512`, … |
-| `--snmp-priv-protocol` | `AES` | Privacy protocol: `AES`, `AES256`, `DES`, `3DES`, … |
-
-All flags can alternatively be set via environment variables: `EAGLEEYE_API_URL`, `EAGLEEYE_API_KEY`, `EAGLEEYE_AGENT_ID`, `EAGLEEYE_POLL_INTERVAL`, `EAGLEEYE_HEARTBEAT_INTERVAL`, `EAGLEEYE_SBOM_TIMEOUT`, `EAGLEEYE_PASSIVE`, `EAGLEEYE_PASSIVE_INTERFACE`, `EAGLEEYE_PASSIVE_INTERVAL`, `EAGLEEYE_FINGERBANK_KEY`, `EAGLEEYE_SNMP_USER`, `EAGLEEYE_SNMP_AUTH_KEY`, `EAGLEEYE_SNMP_PRIV_KEY`, `EAGLEEYE_SNMP_AUTH_PROTOCOL`, `EAGLEEYE_SNMP_PRIV_PROTOCOL`.
-
-### Active-only mode (default)
-
-```bash
-python eagleeye_agent.py \
-  --api-url  https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
-  --api-key  <key-from-dashboard> \
-  --agent-id <uuid-from-dashboard>
-```
-
-Polls `GET /scans/pending` every 30 s. For each pending active scan: runs Nmap on the target subnet (no `--open`, so hosts with no open ports are still reported) and POSTs results — plus a `network` block (`subnet`, `gateway_ip`, `gateway_mac`) used for identity scoping — to `POST /scans/ingest`.
-
-### SNMPv3 polling (active scans)
-
-When SNMPv3 credentials are supplied, the agent polls each host discovered during an active scan over UDP 161 (authPriv). Nmap's fixed TCP port list cannot see SNMP, so this is the only path that reveals SNMP-managed network gear. For each host the agent issues a single GET for `sysDescr` + `sysObjectID`, walks the `ifDescr` interface table, and merges `snmp_sysdescr`, `snmp_sysobjectid`, and `snmp_interfaces` into the host record before ingest.
-
-```bash
-python eagleeye_agent.py \
-  --api-url  https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
-  --api-key  <key-from-dashboard> \
-  --agent-id <uuid-from-dashboard> \
-  --snmp-user          <v3-user> \
-  --snmp-auth-key      <auth-pass> \
-  --snmp-priv-key      <priv-pass> \
-  --snmp-auth-protocol SHA \
-  --snmp-priv-protocol AES
-```
-
-On ingest the backend classifies a host as `network` when `snmp_sysdescr` matches a known router/switch signature (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) or when SNMP returned a non-empty interface table. SNMP polling is **best-effort** — any failure (timeout, auth/priv mismatch, missing `pysnmp`) is logged and skipped without aborting the scan. If credentials are omitted, SNMP polling is skipped entirely.
-
-### Full passive mode (recommended)
-
-```bash
-# Windows — run as Administrator
-python eagleeye_agent.py \
-  --api-url  https://umeagleeye-api.syntaxch404.workers.dev/api/v1 \
-  --api-key  <key-from-dashboard> \
-  --agent-id <uuid-from-dashboard> \
-  --passive \
-  --passive-interval 60
-
-# Linux — run as root
-sudo python eagleeye_agent.py \
-  --api-url  ... \
-  --api-key  ... \
-  --agent-id ... \
-  --passive \
-  --passive-interface eth0 \
-  --passive-interval 60
-```
-
-Passive mode starts three background sniffer threads:
-
-| Thread | BPF filter | Purpose |
-|--------|-----------|---------|
-| `arp-sniffer` | `arp` | Discovers hosts from ARP broadcasts; drainable buffer |
-| `mdns-sniffer` | `udp port 5353 or udp port 137` | Resolves hostnames from mDNS A-records and NetBIOS-NS packets |
-| `dhcp-sniffer` | `udp port 67 or udp port 68` | Captures DHCP option 12 (hostname), 60 (vendor class), 55 (param list) |
-
-Every `--passive-interval` seconds the ARP buffer is drained, hosts enriched with mDNS/DHCP data, and results POSTed to the backend which auto-creates a `passive` scan record (visible in Discovery). When the dashboard triggers a manual passive scan, the buffer is flushed immediately and the pre-created scan record is closed — even if the buffer is empty (shows as Completed / 0 hosts instead of Failed).
-
-### Passive scan hostname priority
-
-```
-mDNS/NetBIOS announcement  (most accurate — device self-announces)
-        ↓ if absent
-DHCP option-12             (client-supplied at DHCP request time)
-        ↓ if absent
-Reverse DNS                (fallback — often unreliable)
-```
-
-### SBOM scan
-
-Triggered from **SBOM page → Re-scan button** (`tenant_superadmin` or `tenant_admin`) or **My Assets → SBOM icon**. The agent runs the full pipeline automatically:
-
-```
-1. syft <target> -o cyclonedx-json   → CycloneDX SBOM (package inventory)
-        ↓
-2. POST /sboms/ingest                 → stores SBOM + dependency records
-        ↓
-3. grype sbom:<file> -o json          → CVE matches from NVD / GitHub Advisory / OSS Index
-        ↓  filter: drop Unknown, Negligible, CVSS < 4.0 (unless vendor-rated High/Critical)
-4. POST /sboms/ingest-cve             → creates/updates cve_detected events with risk scores
-```
-
-Where `<target>` is the directory or Docker image entered in the dashboard prompt. If no target is given, the agent defaults to `dir:C:\FYP\UMEagleEye2.0` on Windows or `dir:/usr` on Linux.
-
-Both Syft and Grype must be installed on the agent host (see Prerequisites above). If Grype is not found, the SBOM ingest still succeeds — CVE scanning is skipped with a warning logged.
-
-### Main loop flow
-
-```
-every --interval seconds:
-  1. GET /scans/pending
-     ├── passive scan  → drain ARP buffer → enrich → POST /scans/ingest (even if empty)
-     ├── active scan   → run nmap → POST /scans/ingest
-     └── sbom scan     → run syft → POST /sboms/ingest
-                          └── (on success) run grype → filter findings → POST /sboms/ingest-cve
-
-  2. Autonomous passive flush (if --passive and interval elapsed):
-     → drain ARP buffer → enrich → POST /scans/ingest (skip if empty)
-```
+The original 1.x agent (`agent/eagleeye_agent.py`) and its bridge relay were retired in agent 2.0.2: migration
+`0009_retire_old_agents` revoked their keys (the records and their Discovery history are kept and shown as
+retired), and `0008_drop_bridges` removed the bridge table. The code remains in git history under the
+`legacy-archive` tag.
 
 ## CVE Detection & Risk Scoring
 
-Every SBOM scan automatically triggers a CVE scan (Grype) on the agent. Findings are sent to `POST /sboms/ingest-cve` on the Workers API where they are enriched, scored, and stored as `cve_detected` events.
+Each SBOM scan ran a CVE scan (Grype) on the agent; findings are sent to `POST /sboms/ingest-cve` on the Workers API, where they are enriched, scored and stored as `cve_detected` events. (New SBOM scans are paused while SBOM moves to the current agent; see *SBOM & CVE Detection*.)
 
 ### Ingest pipeline (Workers API)
 

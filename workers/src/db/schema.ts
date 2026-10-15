@@ -276,20 +276,6 @@ export const auditLogs = pgTable('audit_logs', {
   timestamp: timestamp('timestamp', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_audit_timestamp').on(t.timestamp)])
 
-// ─── Table 14: Bridges (relay for isolated networks) ─────────────
-export const bridges = pgTable('bridges', {
-  bridgeId: uuid('bridge_id').primaryKey().default(newUuid()),
-  tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'set null' }),
-  name: varchar('name', { length: 100 }).notNull(),
-  apiKeyHash: varchar('api_key_hash', { length: 512 }).notNull(),
-  mode: varchar('mode', { length: 20 }).notNull().default('relay'),
-  status: agentStatusEnum('status').notNull().default('offline'),
-  lastHeartbeat: timestamp('last_heartbeat', { withTimezone: true }),
-  bridgeIp: varchar('bridge_ip', { length: 45 }),
-  version: varchar('version', { length: 20 }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
-}, (t) => [index('idx_bridges_tenant').on(t.tenantId)])
-
 // ─── Table 12: Agents (EagleEye scanning agents) ─────────────────
 export const agents = pgTable('agents', {
   agentId: uuid('agent_id').primaryKey().default(newUuid()),
@@ -301,7 +287,9 @@ export const agents = pgTable('agents', {
   gatewayIp: varchar('gateway_ip', { length: 45 }),
   version: varchar('version', { length: 20 }),
   config: jsonb('config').notNull().default({}),
-  bridgeId: uuid('bridge_id').references(() => bridges.bridgeId, { onDelete: 'set null' }),
+  // Set when the agent was retired (the 1.x agent, Phase D3): its key is revoked, so it
+  // can no longer connect; the record and its Discovery history are kept.
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
   // The asset this agent runs on (bound by its endpoint inventory). Re-resolved when
   // the asset is deleted or merged away.
   hostAssetId: uuid('host_asset_id').references(() => assets.assetId, { onDelete: 'set null' }),

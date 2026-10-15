@@ -57,6 +57,20 @@
       "when": 1791879223790,
       "tag": "0007_v2_only_dismissals_legacy_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792047654226,
+      "tag": "0008_drop_bridges",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792047672732,
+      "tag": "0009_retire_old_agents",
+      "breakpoints": true
     }
   ]
 }

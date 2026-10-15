@@ -631,7 +631,8 @@ export default function DiscoveryPage() {
         client.get('/tenants').catch(() => ({ data: { tenants: [] } })),
       ])
       setScans(scansRes.data.scans || scansRes.data.items || [])
-      setAgents(agentsRes.data.agents || [])
+      // Retired (1.x) agents can no longer run scans, so they are not offered.
+      setAgents((agentsRes.data.agents || []).filter(a => a.status !== 'retired'))
       setTenants(tenantsRes.data.tenants || [])
       const allItems = allAssetsRes.data.items || []
       const myItems = myAssetsRes.data.items || []

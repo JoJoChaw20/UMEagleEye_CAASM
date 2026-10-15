@@ -17,7 +17,7 @@ if (!TARGETS.includes(target)) die('usage: report.mjs <staging|production>')
 const SCHEMA_TABLES = new Set([
   'tenants', 'users', 'assets', 'asset_addresses', 'sboms', 'dependencies', 'events',
   'cti_indicators', 'advisories', 'posture_metrics', 'asset_relationships', 'audit_logs',
-  'bridges', 'agents', 'asset_software', 'asset_identifiers', 'topology_nodes',
+  'agents', 'asset_software', 'asset_identifiers', 'topology_nodes',
   'event_cti_indicators', 'scan_results', 'duplicate_dismissals',
 ])
 
@@ -78,16 +78,10 @@ const SECTIONS = [
                 when g.last_heartbeat > now() - interval '10 minutes' then 'degraded'
                 else 'offline' end as status,
            ${day('g.last_heartbeat')} as last_heartbeat, ${day('g.created_at')} as created,
-           g.bridge_id is not null as via_bridge, g.host_asset_id is not null as bound_to_host,
+           g.retired_at is not null as retired, g.host_asset_id is not null as bound_to_host,
            (select count(*) from scan_results s where s.agent_id = g.agent_id)::int as scans,
            (select count(*) from scan_results s where s.agent_id = g.agent_id and s.scan_type = 'sbom')::int as sbom_scans
     from agents g order by 1, g.created_at`],
-
-  ['Bridges', `
-    select ${tenantName('b')} as tenant, b.name, coalesce(b.version, '?') as version, b.status::text as status,
-           ${day('b.last_heartbeat')} as last_heartbeat, ${day('b.created_at')} as created,
-           (select count(*) from agents g where g.bridge_id = b.bridge_id)::int as agents
-    from bridges b order by 1, b.created_at`],
 
   ['Scans by tenant, type, status and age', `
     select ${tenantName('s')} as tenant, s.scan_type as type, s.status, ${age('s.started_at')} as age,
@@ -138,7 +132,6 @@ const SECTIONS = [
     select 'assets without tenant' as what, count(*)::int as n from assets where tenant_id is null
     union all select 'users without tenant (excl. superadmin)', count(*)::int from users where tenant_id is null and role <> 'superadmin'
     union all select 'agents without tenant', count(*)::int from agents where tenant_id is null
-    union all select 'bridges without tenant', count(*)::int from bridges where tenant_id is null
     union all select 'scans without tenant', count(*)::int from scan_results where tenant_id is null
     union all select 'scans without agent', count(*)::int from scan_results where agent_id is null
     union all select 'sbom scans whose asset is gone', count(*)::int from scan_results s where s.scan_type = 'sbom'

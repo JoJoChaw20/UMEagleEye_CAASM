@@ -7,7 +7,7 @@
  */
 
 import { Hono } from 'hono'
-import { eq, and, desc, sql, inArray } from 'drizzle-orm'
+import { eq, and, desc, sql, inArray, isNull } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -44,7 +44,7 @@ app.get('/summary', authMiddleware, async (c) => {
     const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows,
            concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows] = await Promise.all([
       db.select({ agentId: agents.agentId, name: agents.name, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
-        .from(agents).where(tenantId ? eq(agents.tenantId, tenantId) : undefined),
+        .from(agents).where(tenantId ? and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt)) : isNull(agents.retiredAt)),
       db.select({
           scanId: scanResults.scanId, scanType: scanResults.scanType, subnet: scanResults.subnet,
           status: scanResults.status, hostsDiscovered: scanResults.hostsDiscovered,

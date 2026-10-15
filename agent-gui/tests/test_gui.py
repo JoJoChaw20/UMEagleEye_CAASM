@@ -117,6 +117,18 @@ def test_saving_incomplete_server_details_does_not_start(window):
     assert page.save_result.text().startswith("Saved, but:")
 
 
+def test_connection_code_fills_the_server_fields(window):
+    from tests.test_enrol import EXPECTED, FROM_DASHBOARD
+    page = window.settings_page
+    page.code.setText(FROM_DASHBOARD)
+    page._use_code()
+    assert (page.api_url.text(), page.agent_id.text(), page.api_key.text()) == EXPECTED
+    assert page.code.text() == "" and "Test connection" in page.test_result.text()
+    page.code.setText("not a code")
+    page._use_code()
+    assert page.test_result.text().startswith("✖") and page.api_url.text() == EXPECTED[0]   # fields kept
+
+
 def test_schedules_page_is_hidden_while_schedules_are_off(window):
     names = [window.nav.item(i).text() for i in range(window.nav.count())]
     assert "Schedules" not in names and window.schedules_page is None

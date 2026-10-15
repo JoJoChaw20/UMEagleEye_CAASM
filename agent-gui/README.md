@@ -1,12 +1,18 @@
 # EagleEye Agent 2 (pipeline agent)
 
-The new EagleEye agent, as a Windows desktop app (`EagleEyeAgent.exe`) and a command line (`eagleeye`). It does what the original agent in `../agent/` does
-(network discovery and fingerprinting, passive sniffing, SNMPv3 polling, upload to the API), restructured as a
-pipeline of stages that report progress, and adds an **endpoint inventory** of the machine it runs on
-(hardware, OS, patches, security posture, interfaces, listening services, installed software).
+The EagleEye agent, as a Windows desktop app (`EagleEyeAgent.exe`) and a command line (`eagleeye`): network
+discovery and fingerprinting, passive sniffing, SNMPv3 polling and upload to the API, as a pipeline of stages
+that report progress, plus an **endpoint inventory** of the machine it runs on (hardware, OS, patches, security
+posture, interfaces, listening services, installed software).
 
-The original agent is untouched and keeps working against the same API. SBOM scanning is not part of this
-version: SBOM scans queued for this agent are declined with a visible reason.
+It replaces the original 1.x agent (`eagleeye_agent.py` and its `bridge.py` relay), which was retired in
+version 2.0.2: the server revoked the 1.x keys and the code was removed (it remains in git history under the
+`legacy-archive` tag). SBOM scanning is not part of this version yet: SBOM scans are declined with a visible
+reason, and the dashboard's SBOM page shows the SBOMs collected earlier.
+
+**Connecting:** the dashboard's Agents page gives a **connection code** (one string holding the API URL, agent ID
+and API key). Paste it into Settings > Connection code > **Use code**, or pass `--connection-code <code>` to
+`eagleeye config init` / `eagleeye run`.
 
 ## Requirements
 - Python 3.12 or newer
@@ -179,7 +185,7 @@ eagleeye/
   collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser; linux.py
   passive/    ARP, mDNS/NetBIOS and DHCP sniffers
 packaging/    PyInstaller spec, Inno Setup script, build.ps1, third-party notices
-tests/        pytest suite, including side-by-side parity checks against ../agent/eagleeye_agent.py
+tests/        pytest suite (recorded Nmap XML, packets built with scapy, fake systems for the collectors)
 ```
 
 ## Tests
@@ -187,8 +193,8 @@ tests/        pytest suite, including side-by-side parity checks against ../agen
 python -m pytest -q
 ```
 `tests/test_gui.py` runs the desktop app without a display (Qt offscreen) and is skipped when PySide6 is not installed.
-`tests/test_parity.py` loads the original agent and compares its output with this one on recorded Nmap data. It is
-skipped automatically once the original agent is removed.
+Until the original agent was retired (2.0.2), a parity test compared both agents' host data on recorded Nmap output;
+they matched, so the Nmap parser tests in `tests/test_scan.py` now carry that guarantee.
 
 ## Behaviour changes from the original agent
 - Scan targets must be an IPv4 address or CIDR range (what the dashboard already requires) and no larger than a /16.

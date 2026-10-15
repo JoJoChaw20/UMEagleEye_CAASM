@@ -1,7 +1,8 @@
 """Active scan: discover hosts and fingerprint them (ports, services, OS, hostname).
 
 The Nmap invocation and result parsing are a faithful port of the original agent's
-run_nmap(), so both produce the same host data (tests/test_parity.py checks this).
+run_nmap(), so both produced the same host data (checked by a parity test until the original
+agent was retired in 2.0.2; tests/test_scan.py covers the parser).
 When Nmap is not installed the stage says so and falls back to a built-in sweep.
 """
 
@@ -82,7 +83,7 @@ def parse_smb_os_discovery(script_output: str) -> dict[str, str]:
 # The agent runs Nmap as a separate program and reads its XML report itself
 # (python-nmap is not used: its GPL-3.0 licence cannot be combined with scapy's
 # GPL-2.0-only in one distributed program). The reading rules below copy
-# python-nmap 0.7.1's, so the host data is unchanged (tests/test_parity.py).
+# python-nmap 0.7.1's, so the host data is unchanged.
 
 @dataclass
 class _XmlHost:

@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
-import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, events } from '../db/schema'
+import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, events } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
 import { ACTIVE_MODEL, scoreAsset } from '../lib/rescore'
@@ -36,31 +36,46 @@ function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'off
   return 'offline'
 }
 
+// What the Agents page shows for one agent. The computer it runs on comes from the
+// asset its endpoint inventory is bound to (agents.host_asset_id).
+type AgentRow = typeof agents.$inferSelect
+type HostRow = { assetId: string; hostname: string | null; ipAddress: string; inventoryCollectedAt: Date | null } | null
+function agentOut(a: AgentRow, host: HostRow) {
+  return {
+    agent_id: a.agentId,
+    tenant_id: a.tenantId,
+    name: a.name,
+    status: a.retiredAt ? 'retired' : computeStatus(a.lastHeartbeat),
+    retired_at: a.retiredAt,
+    last_heartbeat: a.lastHeartbeat,
+    local_ip: a.gatewayIp,          // the column has always held the agent's own LAN IP
+    version: a.version,
+    // 1.x = the retired eagleeye_agent.py; it cannot connect any more.
+    legacy: a.version ? a.version.startsWith('1.') : false,
+    host: host ? {
+      asset_id: host.assetId, hostname: host.hostname, ip_address: host.ipAddress,
+      inventory_collected_at: host.inventoryCollectedAt,
+    } : null,
+    created_at: a.createdAt,
+  }
+}
+
+const hostColumns = {
+  assetId: assets.assetId, hostname: assets.hostname, ipAddress: assets.ipAddress, inventoryCollectedAt: assets.inventoryCollectedAt,
+}
+
 // ── GET / — List agents ───────────────────────────────────────────
 router.get('/', authMiddleware, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
 
-  const rows = user.role === 'superadmin'
-    ? await db.select().from(agents)
-    : user.tenantId
-      ? await db.select().from(agents).where(eq(agents.tenantId, user.tenantId))
-      : []
+  if (user.role !== 'superadmin' && !user.tenantId) return c.json({ agents: [] })
+  const rows = await db.select({ agent: agents, host: hostColumns })
+    .from(agents)
+    .leftJoin(assets, eq(assets.assetId, agents.hostAssetId))
+    .where(user.role === 'superadmin' ? undefined : eq(agents.tenantId, user.tenantId!))
 
-  const result = rows.map((a) => ({
-    agent_id: a.agentId,
-    tenant_id: a.tenantId,
-    name: a.name,
-    status: computeStatus(a.lastHeartbeat),
-    last_heartbeat: a.lastHeartbeat,
-    gateway_ip: a.gatewayIp,
-    version: a.version,
-    config: a.config,
-    bridge_id: a.bridgeId,
-    created_at: a.createdAt,
-  }))
-
-  return c.json({ agents: result })
+  return c.json({ agents: rows.map(r => agentOut(r.agent, r.host?.assetId ? r.host : null)) })
 })
 
 // ── POST / — Register new agent ───────────────────────────────────
@@ -69,14 +84,12 @@ router.post(
   authMiddleware,
   requireRoles(...AGENT_MANAGE_ROLES),
   zValidator('json', z.object({
-    name: z.string().min(1).max(100),
-    config: z.record(z.unknown()).optional(),
-    bridge_id: z.string().uuid().optional(),
+    name: z.string().trim().min(1).max(100),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
-    const { name, config, bridge_id } = c.req.valid('json')
+    const { name } = c.req.valid('json')
 
     if (!user.tenantId && user.role !== 'superadmin') {
       return c.json({ detail: 'User has no tenant assigned' }, 400)
@@ -89,8 +102,6 @@ router.post(
       tenantId: user.tenantId ?? null,
       name,
       apiKeyHash,
-      config: config ?? {},
-      bridgeId: bridge_id ?? null,
     }).returning()
 
     const agent = inserted[0]
@@ -111,35 +122,28 @@ router.get('/:agentId', authMiddleware, async (c) => {
   const user = c.get('user')
   const { agentId } = c.req.param()
 
-  const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
-  if (!agent) return c.json({ detail: 'Agent not found' }, 404)
+  const [row] = await db.select({ agent: agents, host: hostColumns })
+    .from(agents)
+    .leftJoin(assets, eq(assets.assetId, agents.hostAssetId))
+    .where(eq(agents.agentId, agentId)).limit(1)
+  if (!row) return c.json({ detail: 'Agent not found' }, 404)
 
-  if (user.role !== 'superadmin' && agent.tenantId !== user.tenantId) {
+  if (user.role !== 'superadmin' && row.agent.tenantId !== user.tenantId) {
     return c.json({ detail: 'Forbidden' }, 403)
   }
 
-  return c.json({
-    agent_id: agent.agentId,
-    tenant_id: agent.tenantId,
-    name: agent.name,
-    status: computeStatus(agent.lastHeartbeat),
-    last_heartbeat: agent.lastHeartbeat,
-    gateway_ip: agent.gatewayIp,
-    version: agent.version,
-    config: agent.config,
-    bridge_id: agent.bridgeId,
-    created_at: agent.createdAt,
-  })
+  return c.json(agentOut(row.agent, row.host?.assetId ? row.host : null))
 })
 
-// ── PATCH /:agentId — Update agent configuration ─────────────────
+// ── PATCH /:agentId — Rename ──────────────────────────────────────
+// The config JSON the 1.x agent read is no longer editable (the current agent is set up
+// on its own computer); config now only holds what the agent reports (default gateway).
 router.patch(
   '/:agentId',
   authMiddleware,
   requireRoles(...AGENT_MANAGE_ROLES),
   zValidator('json', z.object({
-    name: z.string().min(1).max(100).optional(),
-    config: z.record(z.unknown()).optional(),
+    name: z.string().trim().min(1).max(100).optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -153,20 +157,44 @@ router.patch(
       return c.json({ detail: 'Forbidden' }, 403)
     }
 
-    const updateData: Record<string, unknown> = {}
-    if (updates.name !== undefined) updateData.name = updates.name
-    if (updates.config !== undefined) updateData.config = updates.config
-
-    const patched = await db.update(agents).set(updateData).where(eq(agents.agentId, agentId)).returning()
+    if (updates.name === undefined) return c.json({ agent_id: existing.agentId, name: existing.name })
+    const patched = await db.update(agents).set({ name: updates.name }).where(eq(agents.agentId, agentId)).returning()
     const updated = patched[0]
     if (!updated) return c.json({ detail: 'Failed to update agent' }, 500)
 
-    return c.json({
-      agent_id: updated.agentId,
-      tenant_id: updated.tenantId,
-      name: updated.name,
-      config: updated.config,
-    })
+    return c.json({ agent_id: updated.agentId, tenant_id: updated.tenantId, name: updated.name })
+  }
+)
+
+// ── POST /:agentId/rotate-key — issue a new API key ───────────────
+// The old key stops working at once; the new one is returned only here. Used when a
+// key was lost or shared by mistake, or to move the agent to another computer.
+router.post(
+  '/:agentId/rotate-key',
+  authMiddleware,
+  requireRoles(...AGENT_MANAGE_ROLES),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { agentId } = c.req.param()
+    if (!z.string().uuid().safeParse(agentId).success) return c.json({ detail: 'Invalid agent id' }, 400)
+
+    const [existing] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+    if (!existing) return c.json({ detail: 'Agent not found' }, 404)
+    if (user.role !== 'superadmin' && existing.tenantId !== user.tenantId) {
+      return c.json({ detail: 'Forbidden' }, 403)
+    }
+    if (existing.retiredAt) return c.json({ detail: 'This agent is retired. Register a new agent instead.' }, 400)
+
+    const apiKey = generateApiKey()
+    await db.batch([
+      db.update(agents).set({ apiKeyHash: await hashApiKey(apiKey) }).where(eq(agents.agentId, agentId)),
+      db.insert(auditLogs).values({
+        userId: user.userId, tenantId: existing.tenantId, actionType: 'agent.rotate_key', targetEntity: agentId,
+        previousState: null, newState: { name: existing.name },
+      }),
+    ])
+    return c.json({ agent_id: agentId, name: existing.name, api_key: apiKey })
   }
 )
 

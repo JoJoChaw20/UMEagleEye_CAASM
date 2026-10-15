@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from . import VERSION, deps
 from .config import ConfigError, Settings, default_config_path, load_settings, save_settings
+from .enrol import ConnectionCodeError, parse_connection_code
 from .keychain import Keychain
 from .passive import PassiveSuite
 from .pipeline import Pipeline, PipelineContext
@@ -36,6 +37,8 @@ log = logging.getLogger("eagleeye")
 def _add_settings_flags(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("settings (override the config file and EAGLEEYE_* variables)")
     g.add_argument("--config", type=Path, help="config file (default: per-user EagleEye config dir)")
+    g.add_argument("--connection-code", dest="connection_code",
+                   help="the code from the dashboard's Agents page; sets the API URL, agent ID and API key")
     g.add_argument("--api-url", dest="api_url")
     g.add_argument("--api-key", dest="api_key")
     g.add_argument("--agent-id", dest="agent_id")
@@ -102,6 +105,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _settings_from(args: argparse.Namespace) -> Settings:
     overrides = {k: v for k, v in vars(args).items() if k in Settings.__dataclass_fields__ and v is not None}
+    code = getattr(args, "connection_code", None)
+    if code:
+        try:
+            url, agent_id, key = parse_connection_code(code)
+        except ConnectionCodeError as exc:
+            raise ConfigError(str(exc)) from None
+        # A value given with its own flag still wins over the code.
+        for name, value in (("api_url", url), ("agent_id", agent_id), ("api_key", key)):
+            overrides.setdefault(name, value)
     return load_settings(getattr(args, "config", None), overrides=overrides)
 
 
