@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from .app import MainWindow
 
 TRIGGERS = {"dashboard": "Dashboard", "schedule": "Schedule", "manual": "Scan now / button", "auto": "Automatic"}
-TASKS = {"active": "Active scan", "passive": "Passive upload", "inventory": "Inventory"}
+TASKS = {"active": "Active scan", "passive": "Passive upload", "inventory": "Inventory", "sbom": "SBOM + CVE check"}
 
 
 def _fmt(dt: Optional[datetime]) -> str:
@@ -142,6 +142,9 @@ class StatusPage(QWidget):
         self.inv_btn = QPushButton("Collect inventory now")
         self.inv_btn.clicked.connect(self._inventory_now)
         row2.addWidget(self.inv_btn)
+        self.sbom_btn = QPushButton("Build SBOM now")
+        self.sbom_btn.clicked.connect(self._sbom_now)
+        row2.addWidget(self.sbom_btn)
         row2.addStretch(1)
         g.addLayout(row2)
         g.addWidget(_hint("Scans started here are recorded in the dashboard like the ones started there. "
@@ -184,6 +187,12 @@ class StatusPage(QWidget):
         if svc is not None:
             svc.request_inventory()
             self.stage.setText("Collecting this computer's inventory...")
+
+    def _sbom_now(self) -> None:
+        svc = self.win.controller.service
+        if svc is not None:
+            svc.request_sbom()
+            self.stage.setText("Building this computer's SBOM (this can take several minutes)...")
 
     def on_event(self, event: PipelineEvent) -> None:
         if event.kind in (EventKind.STAGE_STARTED, EventKind.STAGE_PROGRESS):
@@ -229,11 +238,15 @@ class StatusPage(QWidget):
                 busy_bits.append(svc.current or "Scanning")
             if svc.inventory_running:
                 busy_bits.append("Collecting inventory")
+            if svc.sbom_running:
+                busy_bits.append("Building SBOM")
         self.current.setText(" | ".join(busy_bits) if busy_bits else ("Idle" if svc else "Stopped"))
         self.busy.setVisible(bool(busy_bits))
         self.scan_btn.setEnabled(svc is not None and not svc.active_running)
         self.inv_btn.setEnabled(svc is not None and s.inventory and not svc.inventory_running)
         self.inv_btn.setToolTip("" if s.inventory else "Inventory is switched off on the Privacy page")
+        self.sbom_btn.setEnabled(svc is not None and s.sbom and not svc.sbom_running)
+        self.sbom_btn.setToolTip("" if s.sbom else "SBOM is switched off on the Privacy page")
 
         if svc is not None and len(svc.history) != self._history_len:
             self._history_len = len(svc.history)
@@ -245,7 +258,7 @@ class StatusPage(QWidget):
             result = {"ok": "OK", "failed": "Failed", "cancelled": "Cancelled"}.get(rec.status, rec.status)
             values = [
                 _fmt(rec.finished_at), TASKS.get(rec.pipeline, rec.pipeline), TRIGGERS.get(rec.trigger, rec.trigger),
-                rec.target, result, str(rec.hosts) if rec.pipeline != "inventory" else "-", f"{rec.seconds:.0f}s",
+                rec.target, result, str(rec.hosts) if rec.pipeline not in ("inventory", "sbom") else "-", f"{rec.seconds:.0f}s",
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -617,9 +630,31 @@ class PrivacyPage(QWidget):
         f.addRow(row)
         f.addRow(_hint("The preview collects the inventory on this computer and shows it. Nothing is sent."))
 
+        sb = QGroupBox("Software packages (SBOM)")
+        sf = QFormLayout(sb)
+        self.sbom = QCheckBox("List this computer's software packages and check them for known vulnerabilities")
+        self.sbom_extra = QPlainTextEdit()
+        self.sbom_extra.setPlaceholderText("One folder per line, e.g. D:\\Apps")
+        self.sbom_extra.setMaximumHeight(80)
+        self.sbom_defaults = _hint("")
+        self.sbom_binaries = QCheckBox("Include compiled programs (Go binaries, .exe/.dll, Linux kernel images): "
+                                       "many more findings, mostly ones only the program's vendor can fix")
+        self.sbom.toggled.connect(self.sbom_extra.setEnabled)
+        self.sbom.toggled.connect(self.sbom_binaries.setEnabled)
+        sf.addRow(self.sbom)
+        sf.addRow(self.sbom_binaries)
+        sf.addRow("Also scan", self.sbom_extra)
+        sf.addRow(self.sbom_defaults)
+        save_sbom = QPushButton("Save")
+        save_sbom.setProperty("role", "primary")
+        save_sbom.clicked.connect(self._save)
+        sf.addRow(save_sbom)
+        sf.addRow(_hint("Runs once a day and when an administrator asks from the dashboard. Uses Syft and Grype "
+                        "(see Dependencies). Only package names, versions and licences are sent; no files."))
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(_page(inv, notice))
+        layout.addWidget(_page(inv, sb, notice))
         self.reload()
 
     def _enable(self, on: bool) -> None:
@@ -633,6 +668,13 @@ class PrivacyPage(QWidget):
         self.admin_names.setChecked(s.inventory_admin_names)
         self.interval.setValue(max(1, min(168, round(s.inventory_interval / 3600))))
         self._enable(s.inventory)
+        self.sbom.setChecked(s.sbom)
+        self.sbom_extra.setPlainText(s.sbom_extra_paths)
+        self.sbom_extra.setEnabled(s.sbom)
+        self.sbom_binaries.setChecked(s.sbom_include_binaries)
+        self.sbom_binaries.setEnabled(s.sbom)
+        from ..sbom import default_roots
+        self.sbom_defaults.setText("Always scanned: " + ", ".join(default_roots()))
         try:
             accepted = datetime.fromisoformat(s.consent_at).strftime("%d %b %Y at %H:%M") if s.consent_at else ""
         except ValueError:
@@ -645,6 +687,9 @@ class PrivacyPage(QWidget):
         s.inventory_user_software = s.inventory and self.user_software.isChecked()
         s.inventory_admin_names = s.inventory and self.admin_names.isChecked()
         s.inventory_interval = self.interval.value() * 3600
+        s.sbom = self.sbom.isChecked()
+        s.sbom_include_binaries = self.sbom_binaries.isChecked()
+        s.sbom_extra_paths = "\n".join(p for p in (line.strip() for line in self.sbom_extra.toPlainText().splitlines()) if p)
         self.win.store.save()
         self.result.setText("Saved.")
         self.win.settings_changed()

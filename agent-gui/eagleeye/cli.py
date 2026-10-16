@@ -4,6 +4,7 @@
     python -m eagleeye scan 192.168.1.0/24     scan once, locally, and print the results
     python -m eagleeye listen --seconds 60     passively listen on the network, then print
     python -m eagleeye inventory               collect this machine's inventory, then print
+    python -m eagleeye sbom                    list this machine's packages and their CVEs, then print
     python -m eagleeye check-deps              report missing tools
     python -m eagleeye config init|show        write / print the config file
 """
@@ -27,7 +28,7 @@ from .pipeline import Pipeline, PipelineContext
 from .schedule import Schedule
 from .service import SCHEDULES_ENABLED, AgentService, log_event
 from .stages import (
-    InventoryDryRunStage, LocalInventoryStage,
+    CveCheckStage, InventoryDryRunStage, LocalInventoryStage, SbomBuildStage, SbomDryRunStage,
     DryRunUploadStage, NmapScanStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage,
 )
 
@@ -62,6 +63,14 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
                    help="also report software installed per user (personal data; off by default)")
     g.add_argument("--include-admin-names", dest="inventory_admin_names", action="store_true", default=None,
                    help="report local administrator account names instead of only their count (off by default)")
+    g.add_argument("--no-sbom", dest="sbom", action="store_false", default=None,
+                   help="do not build this machine's SBOM (package list checked for CVEs)")
+    g.add_argument("--sbom-interval", dest="sbom_interval", type=int,
+                   help="seconds between SBOMs (default 86400 = 24 h)")
+    g.add_argument("--sbom-extra-paths", dest="sbom_extra_paths",
+                   help="extra folders for the SBOM, separated by ';'")
+    g.add_argument("--sbom-include-binaries", dest="sbom_include_binaries", action="store_true", default=None,
+                   help="also read compiled programs (Go binaries, .exe/.dll, Linux kernel); many more, noisier findings")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     inv = sub.add_parser("inventory", help="collect this machine's endpoint inventory and print a summary; nothing is uploaded")
     inv.add_argument("--json", type=Path, dest="json_out", help="write the full inventory document to this file")
     _add_settings_flags(inv)
+
+    sb = sub.add_parser("sbom", help="build this machine's SBOM and check it with Grype; nothing is uploaded")
+    sb.add_argument("--json", type=Path, dest="json_out", help="write the SBOM, folders and findings to this file")
+    _add_settings_flags(sb)
 
     chk = sub.add_parser("check-deps", help="check Nmap, Npcap/libpcap, Python modules and privileges")
     chk.add_argument("--json", action="store_true", dest="as_json")
@@ -156,6 +169,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     log.info("Passive mode : %s", "enabled" if settings.passive else "disabled")
     log.info("SNMPv3 poll  : %s", "enabled" if settings.snmp_enabled else "disabled")
     log.info("Inventory    : %s", f"every {settings.inventory_interval}s" if settings.inventory else "disabled")
+    log.info("SBOM         : %s", f"every {settings.sbom_interval}s" if settings.sbom else "disabled")
     missing = [d for d in deps.check_all() if not d.ok and d.name in ("Nmap",)]
     for d in missing:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
@@ -254,6 +268,27 @@ def cmd_inventory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sbom(args: argparse.Namespace) -> int:
+    settings = _settings_from(args)
+    holder: dict[str, Any] = {}
+    ctx = PipelineContext("sbom", scan_type="sbom")
+    stages = [SbomBuildStage(settings.sbom_extra_paths, include_binaries=settings.sbom_include_binaries),
+              CveCheckStage(), SbomDryRunStage(holder.update)]
+    result = Pipeline("sbom", stages, log_event).run(ctx)
+    if not result.ok:
+        print(f"SBOM {result.status}: {result.error}", file=sys.stderr)
+        return 1
+    findings = holder["findings"]
+    print(f"Folders    : {', '.join(holder['scope'])}")
+    print(f"Packages   : {len(holder['sbom']['components'])}")
+    print(f"Findings   : {len(findings)} ({len({f['cve_id'] for f in findings})} distinct CVE/advisory IDs)")
+    for f in sorted(findings, key=lambda f: -f["cvss_base_score"])[:15]:
+        print(f"  {f['cve_id']:<20} {f['cvss_base_score']:>4}  {f['package_name']} {f['package_version']}")
+    print(f"Took {result.seconds:.0f}s")
+    _write_json(args.json_out, holder)
+    return 0
+
+
 def cmd_check_deps(args: argparse.Namespace) -> int:
     results = deps.check_all()
     if args.as_json:
@@ -303,7 +338,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     commands = {
         "run": cmd_run, "scan": cmd_scan, "listen": cmd_listen,
-        "check-deps": cmd_check_deps, "config": cmd_config, "inventory": cmd_inventory,
+        "check-deps": cmd_check_deps, "config": cmd_config, "inventory": cmd_inventory, "sbom": cmd_sbom,
     }
     if args.command == "version":
         print(VERSION)

@@ -321,19 +321,20 @@ app.get('/pending', async (c) => {
         sql`${scanResults.startedAt} < now() - interval '10 minutes'`,
       ))
 
-    // Auto-expire SBOM scans stuck in pending/running > 20 min — Syft has a 10 min hard timeout;
-    // if the agent died or timed out without calling /fail, clean up here.
+    // Auto-expire SBOM scans stuck in pending/running > 90 min. The agent gives Syft 45 min
+    // and Grype 20 (Grype's first run also downloads its vulnerability database); if
+    // it died without calling /fail, clean up here. A late SBOM still completes the record.
     await db.update(scanResults)
       .set({
         status: 'failed',
         completedAt: new Date(),
-        failureReason: 'SBOM scan exceeded the server-side 20-minute execution window',
+        failureReason: 'SBOM scan did not finish within 90 minutes (the agent was offline, closed or stuck)',
       })
       .where(and(
         eq(scanResults.agentId, agentId),
         sql`${scanResults.status} IN ('pending', 'running')`,
         eq(scanResults.scanType, 'sbom'),
-        sql`${scanResults.startedAt} < now() - interval '20 minutes'`,
+        sql`${scanResults.startedAt} < now() - interval '90 minutes'`,
       ))
 
     const pending = await db
@@ -1097,6 +1098,7 @@ app.post('/fail', async (c) => {
         })
         .where(and(
           eq(scanResults.scanId, scan_id),
+          eq(scanResults.agentId, agent_id),     // an agent can only fail its own scans
           inArray(scanResults.status, ['pending', 'running']),
         ))
     }

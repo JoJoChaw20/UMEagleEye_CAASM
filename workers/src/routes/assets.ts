@@ -12,6 +12,7 @@ import { automaticDeviceType } from '../lib/deviceClassify'
 import { planScanLogPurge } from '../lib/scanLog'
 import type { DeviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
+import { sbomObjectKey } from '../lib/sbomStore'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
 import { findDuplicateGroups, pairKey, type DupAsset, type DupAddress, type DupDismissal, type DupIdentifier } from '../lib/duplicates'
@@ -1053,6 +1054,8 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
         .where(eq(scanResults.scanId, u.scanId))),
       ...(purge.deletes.length ? [db.delete(scanResults).where(inArray(scanResults.scanId, purge.deletes))] : []),
     ] as unknown as Parameters<typeof db.batch>[0])
+    // The cascade removed its SBOM rows; the SBOM file in R2 goes too (best effort).
+    await c.env.REPORTS_BUCKET.delete(sbomObjectKey(assetId)).catch(() => {})
 
     return c.json({
       message: 'Asset deleted',
@@ -1496,19 +1499,15 @@ app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES
 })
 
 // ── POST /:assetId/scan-sbom ────────────────────────────────────
-// Queues a real SBOM scan job — picked up by the EagleEye agent via
-// GET /scans/pending, which runs Syft locally and POSTs back to POST /sboms/ingest.
-const scanSbomSchema = z.object({
-  target: z.string().min(1).optional(),  // hint for the agent (e.g. "dir:C:\", "dir:/")
-})
-
-app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
-  zValidator('json', scanSbomSchema), async (c) => {
+// Queues an SBOM job for the EagleEye agent installed ON this asset (agents.host_asset_id,
+// set when the agent's inventory is bound to it). The agent picks it up via GET /scans/pending,
+// runs Syft and Grype on its own machine and posts to /sboms/ingest and /sboms/ingest-cve.
+// Which folders it scans is the agent's own setting; the dashboard cannot choose a path.
+app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     try {
       const user = c.get('user')
       const db   = getDb(c.env.DATABASE_URL)
       const { assetId } = c.req.param()
-      const { target }  = c.req.valid('json')
 
       // Verify asset exists and belongs to user's tenant
       const [asset] = await db
@@ -1519,20 +1518,26 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
         return c.json({ detail: 'Asset not found' }, 404)
       }
 
-      // Find the most-recently active agent for this tenant.
-      // Require a heartbeat within the last 2 minutes — same threshold used by the
-      // notifications system — so stale 'online' rows from dead agents are ignored.
+      // The agent installed on this machine (not retired). Same 2-minute heartbeat
+      // threshold as the notifications system decides whether it is online.
       const [agent] = await db
-        .select({ agentId: agents.agentId })
+        .select({
+          agentId: agents.agentId,
+          online: sql<boolean>`(${agents.lastHeartbeat} > now() - interval '2 minutes')`,
+        })
         .from(agents)
-        .where(and(
-          eq(agents.tenantId, asset.tenantId!),
-          eq(agents.status, 'online'),
-          sql`${agents.lastHeartbeat} > now() - interval '2 minutes'`,
-        ))
+        .where(and(eq(agents.hostAssetId, assetId), isNull(agents.retiredAt)))
         .orderBy(desc(agents.lastHeartbeat))
         .limit(1)
-      if (!agent) return c.json({ detail: 'No online agent available — start the EagleEye agent on the target machine' }, 503)
+      if (!agent) {
+        return c.json({ detail: 'No EagleEye agent is installed on this device, so it cannot build an SBOM. '
+          + 'Install the agent on it (its first inventory links the agent to this asset).' }, 409)
+      }
+
+      const [running] = await db.select({ scanId: scanResults.scanId }).from(scanResults)
+        .where(and(eq(scanResults.subnet, assetId), eq(scanResults.scanType, 'sbom'), eq(scanResults.status, 'running')))
+        .limit(1)
+      if (running) return c.json({ detail: 'An SBOM scan of this device is already running' }, 409)
 
       // Cancel any existing pending SBOM scans for this asset to avoid duplicates.
       await db.update(scanResults)
@@ -1543,16 +1548,15 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
           eq(scanResults.status, 'pending'),
         ))
 
-      // Create a pending SBOM scan record.
-      // subnet field carries assetId so the agent knows which asset to attach results to.
-      // rawResults carries the optional Syft target hint.
+      // Pending SBOM job. subnet carries the assetId (the SBOM pages and the pending
+      // poll read it); ingest checks it is the uploading agent's own host.
       const [scan] = await db.insert(scanResults).values({
         agentId:   agent.agentId,
         tenantId:  asset.tenantId,
         scanType:  'sbom',
         subnet:    assetId,
         status:    'pending',
-        rawResults: target ? [{ target }] : [],
+        rawResults: [],
       }).returning({ scanId: scanResults.scanId })
 
       if (!scan) return c.json({ detail: 'Failed to create scan record' }, 500)
@@ -1560,7 +1564,9 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES),
       return c.json({
         scan_id:  scan.scanId,
         status:   'pending',
-        message:  'SBOM scan queued — agent will pick it up within 30 seconds',
+        message:  agent.online
+          ? 'SBOM scan queued. The agent on this device picks it up within 30 seconds.'
+          : 'The agent on this device is offline. The scan runs if it reconnects within 90 minutes.',
       }, 202)
     } catch (err) {
       console.error('scan-sbom error:', err)

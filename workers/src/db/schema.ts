@@ -27,8 +27,9 @@ export const eventTypeEnum = pgEnum('event_type', [
 export const eventStatusEnum = pgEnum('event_status', [
   'open', 'in_progress', 'resolved', 'false_positive', 'accepted_risk'
 ])
+// 'cve' = a vulnerability named by a threat feed (e.g. CISA KEV), matched against cve_detected events
 export const indicatorTypeEnum = pgEnum('indicator_type', [
-  'ip', 'domain', 'hash', 'url', 'email'
+  'ip', 'domain', 'hash', 'url', 'email', 'cve'
 ])
 export const advisoryStatusEnum = pgEnum('advisory_status', [
   'open', 'acknowledged', 'in_progress', 'resolved'

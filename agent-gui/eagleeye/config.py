@@ -47,6 +47,11 @@ class Settings:
     # and the names of local administrator accounts (only their count is sent).
     inventory_user_software: bool = False
     inventory_admin_names: bool = False
+    # SBOM of this computer (Syft + Grype, see sbom.py): daily, plus when the dashboard asks.
+    sbom: bool = True
+    sbom_interval: int = 86400          # seconds between SBOMs (24 h)
+    sbom_extra_paths: str = ""          # extra folders to scan, one per line
+    sbom_include_binaries: bool = False # also read compiled programs (Go binaries, .exe/.dll, Linux kernel)
     # Local scan schedules (see schedule.py); the dashboard can still trigger scans too.
     schedules: list[dict[str, Any]] = field(default_factory=list)
     # The data-collection notice the person accepted in the GUI (0 = never shown).
@@ -75,6 +80,8 @@ class Settings:
                 out.append(f"{name} must be at least 5 seconds")
         if self.inventory and self.inventory_interval < 300:
             out.append("inventory_interval must be at least 300 seconds")
+        if self.sbom and self.sbom_interval < 3600:
+            out.append("sbom_interval must be at least 3600 seconds")
         from .schedule import Schedule
         for raw in self.schedules:
             out += [f"schedule {raw.get('subnet') or '?'}: {p}" for p in Schedule.from_dict(raw).problems()]
@@ -108,6 +115,10 @@ _ENV_VARS = {
     "inventory_interval": "EAGLEEYE_INVENTORY_INTERVAL",
     "inventory_user_software": "EAGLEEYE_INVENTORY_USER_SOFTWARE",
     "inventory_admin_names": "EAGLEEYE_INVENTORY_ADMIN_NAMES",
+    "sbom": "EAGLEEYE_SBOM",
+    "sbom_interval": "EAGLEEYE_SBOM_INTERVAL",
+    "sbom_extra_paths": "EAGLEEYE_SBOM_EXTRA_PATHS",
+    "sbom_include_binaries": "EAGLEEYE_SBOM_INCLUDE_BINARIES",
 }
 
 

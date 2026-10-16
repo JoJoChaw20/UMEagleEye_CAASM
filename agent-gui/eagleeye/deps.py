@@ -1,8 +1,8 @@
 """Finds the external tools the agent uses and reports what is missing.
 
 Nmap and Npcap are not shipped with the agent (their licences restrict
-redistribution). This module only detects them and says where to get them; the
-installer/GUI will fetch them from the official sources.
+redistribution), nor are Syft and Grype (the SBOM tools). This module only detects
+them and says where to get them; the GUI fetches Nmap/Npcap from the official sources.
 """
 
 from __future__ import annotations
@@ -127,6 +127,15 @@ def check_all() -> list[DepStatus]:
         "Packet capture (Npcap/libpcap)", pcap_ok, False,
         pcap_detail if pcap_ok else f"{pcap_detail} - passive sniffing unavailable", "" if pcap_ok else _hint("pcap"),
     ))
+
+    from . import sbom
+    for tool in ("syft", "grype"):
+        path = sbom.find_tool(tool)
+        results.append(DepStatus(
+            tool.capitalize(), bool(path), False,
+            path if path else "not found - this computer's SBOM and CVE check are unavailable",
+            "" if path else sbom.install_hint(tool), version=sbom.tool_version(path) if path else None,
+        ))
 
     results.append(_module("scapy", "scapy", False, "needed for passive sniffing"))
     results.append(_module("pysnmp", "pysnmp", False, "needed for SNMPv3 polling"))

@@ -90,7 +90,7 @@ export const CONCERNS = [
   },
   {
     id: 'exploitable', title: 'Likely-exploited CVEs', short: 'Exploitable CVEs', icon: Bug, tone: 'serious',
-    why: '≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
+    why: 'Exploited in the wild (CISA KEV), ≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
     action: 'Patch within 72h',
   },
   {
@@ -125,7 +125,10 @@ export function riskReasons(e) {
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
   const crit = e.asset_criticality ?? e.asset?.criticality
   const out = []
-  if (e.event_type === 'cti_match' || d.has_cti_match) out.push({ label: 'Threat intel hit', tone: 'critical' })
+  if (isCtiHit(e)) out.push({ label: 'Threat intel hit', tone: 'critical' })
+  if (e.event_type === 'cve_detected' && d.has_cti_match) {
+    out.push({ label: d.kev ? 'Actively exploited (CISA KEV)' : 'Named in threat intel', tone: 'critical' })
+  }
   if (exposed) out.push({ label: 'Internet-facing', tone: 'critical' })
   if (d.port != null && RISKY_PORTS[d.port]) out.push({ label: `${RISKY_PORTS[d.port]} is a common attack target`, tone: 'serious' })
   if (d.epss_score >= 0.1) out.push({ label: `${Math.round(d.epss_score * 100)}% exploit chance`, tone: 'serious' })
@@ -133,6 +136,13 @@ export function riskReasons(e) {
   if (crit >= 8) out.push({ label: `Critical asset ${crit}/10`, tone: 'serious' })
   if (Array.isArray(d.fix_versions) && d.fix_versions.length) out.push({ label: 'Fix available', tone: 'good' })
   return out
+}
+
+// A threat feed matched something on the asset itself: possible compromise. A feed
+// naming a CVE (KEV) is different: the flaw is exploited somewhere, so patch first.
+// Must match workers/src/lib/concerns.ts and priority.ts.
+export function isCtiHit(e) {
+  return e.event_type === 'cti_match' || (e.event_type !== 'cve_detected' && !!e.details?.has_cti_match)
 }
 
 // Deadline from the playbook urgency, measured from first_seen.
@@ -166,13 +176,17 @@ export function playbook(e) {
 function basePlaybook(e) {
   const d = e.details ?? {}
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
-  if (e.event_type === 'cti_match' || d.has_cti_match) {
+  if (isCtiHit(e)) {
     return { urgency: 'Now', text: 'Treat as possible compromise. Isolate the host from the network and escalate to a senior analyst before touching it.' }
   }
   switch (e.event_type) {
     case 'cve_detected': {
       const epss = d.epss_score ?? 0
       const fix = Array.isArray(d.fix_versions) && d.fix_versions.length ? ` to ${d.fix_versions[0]}` : ''
+      if (d.has_cti_match) {
+        const why = d.kev ? "It is on CISA's Known Exploited Vulnerabilities list: attackers are using it now." : 'A threat feed names this CVE.'
+        return { urgency: '≤72h', text: `${why} Patch ${d.package_name ?? 'the package'}${fix} first. If you cannot patch yet, restrict access to the host or remove the software.` }
+      }
       if (exposed || epss >= 0.1 || e.severity === 'critical') {
         return { urgency: '≤72h', text: `Patch ${d.package_name ?? 'the package'}${fix}. Internet exposure or high exploit likelihood — do not wait for the patch cycle.` }
       }

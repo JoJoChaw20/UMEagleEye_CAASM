@@ -3,12 +3,12 @@
 The EagleEye agent, as a Windows desktop app (`EagleEyeAgent.exe`) and a command line (`eagleeye`): network
 discovery and fingerprinting, passive sniffing, SNMPv3 polling and upload to the API, as a pipeline of stages
 that report progress, plus an **endpoint inventory** of the machine it runs on (hardware, OS, patches, security
-posture, interfaces, listening services, installed software).
+posture, interfaces, listening services, installed software) and, from 2.1.0, its **SBOM**: the software
+packages found by Syft, checked for known CVEs by Grype, daily and when the dashboard asks.
 
 It replaces the original 1.x agent (`eagleeye_agent.py` and its `bridge.py` relay), which was retired in
 version 2.0.2: the server revoked the 1.x keys and the code was removed (it remains in git history under the
-`legacy-archive` tag). SBOM scanning is not part of this version yet: SBOM scans are declined with a visible
-reason, and the dashboard's SBOM page shows the SBOMs collected earlier.
+`legacy-archive` tag).
 
 **Connecting:** the dashboard's Agents page gives a **connection code** (one string holding the API URL, agent ID
 and API key). Paste it into Settings > Connection code > **Use code**, or pass `--connection-code <code>` to
@@ -19,6 +19,10 @@ and API key). Paste it into Settings > Connection code > **Use code**, or pass `
 - Nmap and, for passive sniffing, Npcap (Windows) / libpcap (Linux, macOS). They are **not** bundled
   (their licences restrict redistribution). `check-deps` tells you what is missing and where to get it.
   Without Nmap, scans fall back to a built-in sweep that finds hosts and open ports but not services or OS.
+- For the SBOM: [Syft](https://github.com/anchore/syft) and [Grype](https://github.com/anchore/grype), also not
+  bundled (`winget install Anchore.Syft` and `winget install Anchore.Grype` on Windows). Without both, the daily
+  SBOM is skipped and a dashboard request fails with that reason. Grype downloads its vulnerability database on
+  its first run (a few minutes) and keeps it locally (about 3 GB).
 
 ```powershell
 cd agent-gui
@@ -33,6 +37,7 @@ python -m eagleeye check-deps
 | `python -m eagleeye scan 192.168.1.0/24` | Scans once, locally, prints the hosts. Nothing is uploaded. `--json out.json` saves the exact ingest payload |
 | `python -m eagleeye listen --seconds 60` | Listens passively (needs Administrator/root) and prints what it saw |
 | `python -m eagleeye inventory` | Collects this machine's endpoint inventory and prints a summary. Nothing is uploaded. `--json out.json` saves the full document |
+| `python -m eagleeye sbom` | Builds this machine's SBOM (Syft), checks it (Grype) and prints the worst findings. Nothing is uploaded. `--json out.json` saves the SBOM and findings; `--sbom-extra-paths "D:\Apps;E:\Tools"` adds folders |
 | `python -m eagleeye config init ...` | Writes the config file |
 | `python -m eagleeye config show` | Prints the effective settings, secrets masked |
 | `python -m eagleeye run` | The agent: heartbeat, poll the dashboard, run scans, upload results |
@@ -200,7 +205,17 @@ they matched, so the Nmap parser tests in `tests/test_scan.py` now carry that gu
 - Scan targets must be an IPv4 address or CIDR range (what the dashboard already requires) and no larger than a /16.
   The value reaches the Nmap command line, so anything else is rejected before Nmap runs.
 - A missing Nmap is reported and handled by the built-in sweep, instead of failing the scan.
-- SBOM scans are declined with a reason; unsupported scan types are declined too.
+- SBOMs describe only the agent's own computer: the folders come from its settings, never from the dashboard
+  (the old agent accepted any Syft target, and defaulted to a fixed project folder on Windows). Grype's GHSA
+  matches are reported with their CVE ID. Unsupported scan types are declined.
+- Syft's readers for compiled programs (Go binaries, Windows .exe/.dll, Linux kernel images) are off by default
+  (`sbom_include_binaries`, Privacy page > "Include compiled programs", `--sbom-include-binaries`). On a test PC
+  they produced about 90% of the findings, almost all Go standard-library CVEs in Docker Desktop and WSL kernel
+  matches that only those vendors can fix. Syft gets 45 minutes for all folders, Grype 20.
+- Program Files, Program Files (x86) and ProgramData are scanned one program folder at a time (two at once),
+  each with a 10-minute limit, so one huge or unreadable folder is skipped (and listed in the log) instead of
+  using up the whole SBOM. Windows' own folders (WindowsApps, Windows Defender, ProgramData\Microsoft, Package
+  Cache...) and links/junctions are not scanned. Ctrl+C or Cancel on the dashboard stops Syft/Grype within seconds.
 - Failed scans always carry a reason, including passive scans on an agent that is not in passive mode.
 - Uploads are retried (network errors and 5xx) before a scan is marked failed.
 - SNMP polling runs up to 8 hosts in parallel; sniffers can be stopped cleanly.

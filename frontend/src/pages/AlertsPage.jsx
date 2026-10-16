@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
-  StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons,
+  StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
 } from '../components/common/alertMeta'
 import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
@@ -467,7 +467,8 @@ export default function AlertsPage() {
                   </td>
                   <td className="text-dark-200 text-xs min-w-[300px]">
                     <div className="flex items-center gap-1.5 text-sm text-dark-100 font-medium">
-                      {(e.event_type === 'cti_match' || e.details?.has_cti_match) && <Crosshair className="w-3.5 h-3.5 text-accent-red" title="Threat-intel match" />}
+                      {isCtiHit(e) && <Crosshair className="w-3.5 h-3.5 text-accent-red" title="Threat-intel match" />}
+                      {e.details?.kev && <span className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="On CISA's Known Exploited Vulnerabilities list">KEV</span>}
                       {alertLabel(e)}
                     </div>
                     <div className="mt-1"><ReasonChips reasons={riskReasons(e)} max={4} /></div>
@@ -727,6 +728,8 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 Array.isArray(d.fix_versions) && d.fix_versions.length > 0 && ['Fixed in', d.fix_versions.join(', ')],
                 d.cvss_base_score != null && ['CVSS', d.cvss_base_score],
                 d.epss_score != null && ['EPSS', `${(d.epss_score * 100).toFixed(1)}% chance of exploitation in 30 days`],
+                d.kev && ['Exploited in the wild', <a href={`https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=${d.cve_id}`} target="_blank" rel="noreferrer" className="text-red-300 hover:underline">Yes, on CISA's Known Exploited Vulnerabilities list</a>],
+                d.advisory_id && d.advisory_id !== d.cve_id && ['Advisory', d.advisory_id],
                 e.composite_risk_score != null && ['Risk score', e.composite_risk_score],
                 d.port != null && ['Port', `${d.port}/${d.protocol ?? 'tcp'}${RISKY_PORTS[d.port] ? ` — ${RISKY_PORTS[d.port]}` : ''}`],
                 d.port != null && serviceOn(e.asset, d.port) && ['Service', serviceOn(e.asset, d.port)],

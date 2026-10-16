@@ -39,19 +39,19 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **SLA Monitoring** — Open advisories older than 72 hours are counted whenever the Notification Centre loads (no scheduled job needed); breaches are surfaced as a distinct alert type
 
 ### SBOM & CVE Detection
-> **Status:** new SBOM scans are paused. The 1.x agent that ran Syft and Grype was retired with agent 2.0.2; the SBOMs, dependencies and CVE alerts it collected stay available, and the ingest endpoints (`POST /sboms/ingest`, `POST /sboms/ingest-cve`) are kept for its replacement in the current agent.
-
-- **Software Bill of Materials** — Per-asset CycloneDX v1.5 SBOMs made with [Syft](https://github.com/anchore/syft) on the agent's machine and POSTed to the platform
-- **Automatic CVE Correlation** — After each SBOM, [Grype](https://github.com/anchore/grype) matches its packages against known vulnerabilities (NVD, GitHub Advisory, OSS Index, and more)
+- **Software Bill of Materials** — The EagleEye agent (2.1+) builds a CycloneDX SBOM of the computer it runs on with [Syft](https://github.com/anchore/syft): once a day, and when an admin presses *Run SBOM scan* on that computer's asset page. Folders: on Linux the whole system except volatile and home folders (so OS packages such as openssl are found); on Windows `Program Files`, `Program Files (x86)`, `ProgramData` and the agent account's npm/Python folders; plus any extra folders set in the agent. Syft's readers for compiled programs (Go binaries, .exe/.dll, Linux kernel images) are off by default: on a test PC they made about 90% of the findings, nearly all fixable only by the program's vendor (Docker Desktop, WSL). Program folders are scanned one at a time (two at once, 10 minutes each), so one huge folder is skipped instead of failing the SBOM, and Windows' own folders (WindowsApps, Defender, ProgramData\Microsoft…) are left out. The dashboard cannot choose a path. At most 1,500 findings per computer become alerts (KEV first, then EPSS, then CVSS). The job always goes to the agent bound to that asset (`agents.host_asset_id`); the server rejects an SBOM for any other asset
+- **Automatic CVE Correlation** — After each SBOM, [Grype](https://github.com/anchore/grype) matches its packages against known vulnerabilities (NVD, GitHub Advisory, and more) on the agent. When Grype matches a GitHub advisory (GHSA), the agent reports its CVE ID so EPSS and KEV can match it
+- **CISA KEV** — The nightly CTI cron loads CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) list as `cve` indicators. CVE alerts on that list get a **KEV** badge, count as *Likely-exploited CVEs*, and rank as P1 (+100 priority; an indicator match on the asset itself stays +200, possible compromise). Alerts raised before a CVE joined KEV are flagged the next night
+- **Storage** — The full SBOM document is stored in R2 (`sboms/<assetId>.json`, downloadable from the SBOM page); Neon keeps a summary and one row per package
 - **Composite Risk Scoring** — Each CVE finding is scored using a weighted formula: `(CVSS × 10 × 0.40) + (EPSS × 100 × 0.35) + (Criticality × 10 × 0.15) + (CTI match ? 10 : 0)`, capped at 100
-- **EPSS Enrichment** — Exploit Prediction Scoring System scores fetched in batch from FIRST.org API and incorporated into the risk formula at ingest time
-- **CTI Enrichment** — CVE IDs cross-referenced against the platform's CTI indicator table; confirmed threat-intel matches add 10 points to the risk score
+- **EPSS Enrichment** — Exploit Prediction Scoring System scores come from Grype's report (or, if missing, from the FIRST.org API in batch) and are incorporated into the risk formula at ingest time
+- **CTI Enrichment** — CVE IDs cross-referenced against the platform's `cve` indicators (CISA KEV today); confirmed threat-intel matches add 10 points to the risk score
 - **NVD CWE Enrichment** — Daily cron queries CVE alerts missing CWE (Common Weakness Enumeration) data and back-fills them from the NIST NVD REST API; enriched `cwe_ids` are merged into the existing event's `details` without modifying other fields; rate-limited to 30 CVEs per run (100 ms/request with API key, 700 ms without)
 - **Deduplication** — Re-scanning the same asset updates existing alerts (refreshing CVSS, EPSS, fix versions, description) rather than creating duplicates; dedup key is `cve_id + package_name`
 - **Dependency Inventory** — Expandable per-SBOM dependency table with package manager filter and search; counts by manager visualised as a bar chart
 - **Superadmin Delete** — Superadmins can delete all SBOM records for an asset directly from the SBOM page
 
-> **Note on SBOM scope:** Syft and Grype run on the machine where the agent is deployed, so each asset needs its own agent for an SBOM.
+> **Note on SBOM scope:** Syft and Grype run on the machine where the agent is installed, so only computers with the agent get an SBOM and CVE check. Devices that cannot run it (printers, routers, IoT, phones) are discovered and monitored for changes, but not checked for CVEs. Syft and Grype are not bundled: install them on each agent computer (`winget install Anchore.Syft` / `Anchore.Grype`); Grype keeps a local vulnerability database of about 3 GB (downloaded on its first run).
 
 ### Reporting & Notifications
 - **Automated Reporting** — Report generation is queued via `report-queue` (Cloudflare Queues) so large reports never block the HTTP response; the consumer builds the PDF and writes it to Cloudflare R2; download is served via a backend-signed blob endpoint — the R2 object key is never exposed in the URL, preventing enumeration; accessible to all roles
@@ -337,13 +337,13 @@ retired), and `0008_drop_bridges` removed the bridge table. The code remains in 
 
 ## CVE Detection & Risk Scoring
 
-Each SBOM scan ran a CVE scan (Grype) on the agent; findings are sent to `POST /sboms/ingest-cve` on the Workers API, where they are enriched, scored and stored as `cve_detected` events. (New SBOM scans are paused while SBOM moves to the current agent; see *SBOM & CVE Detection*.)
+Each SBOM run ends with a CVE check (Grype) on the agent; findings are sent to `POST /sboms/ingest-cve` on the Workers API, where they are enriched, scored and stored as `cve_detected` events. The agent sends the findings even when there are none, so alerts for CVEs that are gone are resolved.
 
 ### Ingest pipeline (Workers API)
 
-1. **Resolve asset** — scan record's `subnet` field carries the `assetId` for SBOM scans
-2. **EPSS batch fetch** — exploit probability scores fetched from FIRST.org in chunks of 30 CVE IDs
-3. **CTI cross-reference** — CVE IDs looked up against the `cti_indicators` table; matches add 10 pts to risk score
+1. **Resolve asset** — the uploading agent's host asset; the scan record (`subnet` carries the `assetId`) must belong to that agent and that asset
+2. **EPSS** — Grype's value when present, otherwise fetched from FIRST.org in chunks of 30 CVE IDs
+3. **CTI cross-reference** — CVE IDs looked up against `cve` indicators (`CISA KEV`); matches add 10 pts to the risk score, set `has_cti_match` (and `kev`), and link the alert to the indicator (`event_cti_indicators`, shown on the alert)
 4. **Deduplication** — all existing `cve_detected` events for the asset fetched in one query; dedup key is `cve_id::package_name`
 5. **Upsert** — existing events are updated (refreshed CVSS, EPSS, fix versions, description); new findings batch-inserted in groups of 50
 6. **NVD CWE enrichment (deferred)** — the daily `nvd-update` cron queries events with empty `cwe_ids` from the last 48 h and calls the NIST NVD REST API (`/rest/json/cves/2.0?cveId=`) to back-fill CWE weakness classifications; rate-limited to 30 CVEs per cron run

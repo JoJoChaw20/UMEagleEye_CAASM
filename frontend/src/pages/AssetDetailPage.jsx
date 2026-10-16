@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Pencil, RefreshCw, Bookmark, MinusCircle, CheckCircle, Trash2, Zap,
-  Server, Cpu, Network, Bell, GitBranch, History, Link2, ShieldAlert, Eraser,
+  Server, Cpu, Network, Bell, GitBranch, History, Link2, ShieldAlert, Eraser, Package,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -61,6 +61,7 @@ export default function AssetDetailPage() {
   const [showBlast, setShowBlast] = useState(false)
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [adoptTarget, setAdoptTarget] = useState(null)
+  const [sbomScan, setSbomScan] = useState(null)    // { status, message } of an SBOM scan started here
 
   const loadAsset = useCallback(async () => {
     try {
@@ -100,7 +101,7 @@ export default function AssetDetailPage() {
     // dialogs from the previous asset as well.
     setEditing(false); setShowBlast(false); setShowDuplicates(false); setAdoptTarget(null); setNotice(null)
     setStatus('loading'); setAsset(null); setScore(null); setAddresses(null); setAlerts(null)
-    setSbom(undefined); setSoftware(undefined); setGraph(null); setDupGroups([])
+    setSbom(undefined); setSoftware(undefined); setGraph(null); setDupGroups([]); setSbomScan(null)
     loadAsset()
     loadPanels()
   }, [loadAsset, loadPanels])
@@ -110,6 +111,26 @@ export default function AssetDetailPage() {
     const t = setTimeout(() => setNotice(null), 6000)
     return () => clearTimeout(t)
   }, [notice])
+
+  // While an SBOM scan started here is queued or running, follow it, then reload the panels.
+  const sbomActive = sbomScan?.status === 'pending' || sbomScan?.status === 'running'
+  useEffect(() => {
+    if (!sbomActive) return
+    const t = setInterval(async () => {
+      try {
+        const { data } = await client.get(`/assets/${assetId}/sbom-scan-status`)
+        if (data.status === 'pending' || data.status === 'running') {
+          setSbomScan((cur) => ({ ...cur, status: data.status }))
+          return
+        }
+        setSbomScan({ status: data.status, message: data.status === 'completed'
+          ? 'SBOM scan finished. The SBOM and any CVE alerts are updated.'
+          : (data.failure_reason || `SBOM scan ${data.status}.`) })
+        if (data.status === 'completed') loadPanels()
+      } catch { /* keep polling */ }
+    }, 10000)
+    return () => clearInterval(t)
+  }, [sbomActive, assetId, loadPanels])
 
   const match = useMemo(() => buildMatchIndex(dupGroups).get(assetId) ?? null, [dupGroups, assetId])
 
@@ -188,6 +209,15 @@ export default function AssetDetailPage() {
       await refresh()
     } catch (err) {
       alert(err?.response?.data?.detail || 'Failed to clear inventory')
+    }
+  }
+
+  const handleRunSbom = async () => {
+    try {
+      const { data } = await client.post(`/assets/${assetId}/scan-sbom`)
+      setSbomScan({ status: 'pending', message: data.message })
+    } catch (err) {
+      setSbomScan({ status: 'failed', message: err?.response?.data?.detail || 'Failed to queue the SBOM scan' })
     }
   }
 
@@ -300,6 +330,12 @@ export default function AssetDetailPage() {
             {!isReadOnly && !asset.inMyAssets && (
               <button onClick={handleAdopt} className="btn-primary text-sm flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Adopt into My Assets</button>
             )}
+            {!isReadOnly && inv && (
+              <button onClick={handleRunSbom} disabled={sbomActive} className="btn-secondary text-sm flex items-center gap-2"
+                title="The EagleEye agent on this computer lists its packages and checks them for CVEs">
+                <Package className={`w-4 h-4 ${sbomActive ? 'animate-pulse' : ''}`} /> {sbomActive ? 'SBOM scan running…' : 'Run SBOM scan'}
+              </button>
+            )}
             {!isReadOnly && (asset.endpointInventory || software?.items?.length > 0) && (
               <button onClick={handleClearInventory} className="btn-secondary text-sm flex items-center gap-2" title="Remove the inventory the agent reported for this machine">
                 <Eraser className="w-4 h-4" /> Clear inventory
@@ -313,6 +349,16 @@ export default function AssetDetailPage() {
           </div>
         </div>
       </div>
+
+      {sbomScan && (
+        <div className={`glass-card px-4 py-2.5 flex items-center gap-2 text-sm ${sbomScan.status === 'failed' ? 'border-red-500/30' : 'border-eagle-500/30'}`} role="status">
+          <Package className={`w-4 h-4 ${sbomScan.status === 'failed' ? 'text-red-400' : 'text-eagle-400'}`} />
+          <span className="text-dark-100">
+            {sbomScan.status === 'running' ? 'Running: the agent is listing packages and checking them for CVEs.' : sbomScan.message}
+          </span>
+          {!sbomActive && <button onClick={() => setSbomScan(null)} className="ml-auto text-xs text-dark-400 hover:text-dark-100">Dismiss</button>}
+        </div>
+      )}
 
       {notice && (
         <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-green-500/30" role="status">

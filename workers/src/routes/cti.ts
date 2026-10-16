@@ -43,7 +43,7 @@ app.get('/indicators', authMiddleware, async (c) => {
     const search   = c.req.query('search')
 
     const conditions = []
-    if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email'))
+    if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve'))
     if (source) conditions.push(ilike(ctiIndicators.source, `%${source}%`))
     if (search) conditions.push(ilike(ctiIndicators.value, `%${search}%`))
 

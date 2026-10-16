@@ -13,7 +13,7 @@ import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
 // the computer's own inventory and security settings. The 1.x agents (eagleeye_agent.py)
 // are retired: their keys are revoked and they are listed apart, with their history.
 
-const INSTALLER_NAME = 'EagleEyeAgent-Setup-2.0.2.exe'
+const INSTALLER_NAME = 'EagleEyeAgent-Setup-2.1.0.exe'
 
 // ── Small parts ───────────────────────────────────────────────────
 const STATUS_META = {

@@ -2,11 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Package, Shield, Search, ChevronDown, ChevronUp,
   RefreshCw, FileCode2, Database, Cpu, CheckCircle2, Trash2,
-  Clock3, AlertCircle, XCircle,
+  Clock3, AlertCircle, XCircle, Download,
 } from 'lucide-react'
 import {
   BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
+import { Link } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
@@ -35,11 +36,9 @@ const formatElapsed = (seconds) => {
 
 export default function SBOMPage() {
   const { user } = useAuth()
-  // SBOM scanning is paused (Phase D3): only the retired 1.x agent ran Syft/Grype, and its
-  // replacement is still being decided (D1). Existing SBOMs, dependencies and CVE alerts stay
-  // viewable; the scan, progress and cancel UI below returns when canScan does.
-  const SBOM_SCANNING_AVAILABLE = false
-  const canScan = SBOM_SCANNING_AVAILABLE && ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  // SBOMs come from the EagleEye agent installed on each computer (daily, or on request
+  // here). A scan always runs on the asset's own agent; the folders are the agent's setting.
+  const canScan = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const canDeleteSbom = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
 
   // ── State ────────────────────────────────────────────────────
@@ -55,6 +54,8 @@ export default function SBOMPage() {
   const [deps,        setDeps]        = useState([])
   const [depsLoading, setDepsLoading] = useState(false)
   const [depSearch,   setDepSearch]   = useState('')
+  const [depsTotal,   setDepsTotal]   = useState({ all: 0, matching: 0 })  // server counts (the list is capped)
+  const [depPms,      setDepPms]      = useState([])   // [{ package_manager, count }] of the whole SBOM
   const [pmFilter,    setPmFilter]    = useState('')
 
   // Per-asset SBOM scan trigger
@@ -87,6 +88,7 @@ export default function SBOMPage() {
   }
 
   const PAGE_SIZE = 15
+  const DEP_LIMIT = 1000   // the API's maximum per request
 
   // ── Data fetching ────────────────────────────────────────────
   const loadData = useCallback(async () => {
@@ -134,7 +136,7 @@ export default function SBOMPage() {
       }
 
       if (data.status === 'pending' || data.status === 'running') {
-        setScanning(current => ({ ...current, [assetId]: scanInfo }))
+        setScanning(current => ({ ...current, [assetId]: { ...current[assetId], ...scanInfo } }))
         return false
       }
 
@@ -187,7 +189,6 @@ export default function SBOMPage() {
             status: item.status,
             scanId: item.scan_id,
             startedAt: item.started_at,
-            target: item.target,
           }
         }
         setScanning(recovered)
@@ -215,10 +216,10 @@ export default function SBOMPage() {
     setDepSearch('')
     setPmFilter('')
     try {
-      const res = await client.get(`/sboms/${sbomId}/dependencies`, {
-        params: { limit: 500 },
-      })
+      const res = await client.get(`/sboms/${sbomId}/dependencies`, { params: { limit: DEP_LIMIT } })
       setDeps(res.data.items || [])
+      setDepsTotal({ all: res.data.total ?? 0, matching: res.data.total ?? 0 })
+      setDepPms(res.data.package_managers || [])
     } catch (err) {
       console.error('Deps load error:', err)
     } finally {
@@ -226,29 +227,43 @@ export default function SBOMPage() {
     }
   }
 
+  // A computer can have thousands of packages but the list loads at most DEP_LIMIT, so
+  // the search box and the package-manager filter run on the server (all packages).
+  // A response that arrives after a newer request was made is ignored.
+  const depRequest = useRef(0)
+  useEffect(() => {
+    if (!expandedId) return undefined
+    const id = ++depRequest.current
+    const t = setTimeout(async () => {
+      try {
+        const res = await client.get(`/sboms/${expandedId}/dependencies`, {
+          params: { limit: DEP_LIMIT, ...(depSearch ? { search: depSearch } : {}), ...(pmFilter ? { package_manager: pmFilter } : {}) },
+        })
+        if (id !== depRequest.current) return
+        setDeps(res.data.items || [])
+        setDepsTotal(cur => ({ ...cur, matching: res.data.total ?? 0 }))
+      } catch (err) {
+        console.error('Deps search error:', err)
+      }
+    }, depSearch ? 300 : 0)
+    return () => clearTimeout(t)
+  }, [depSearch, pmFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Per-asset SBOM scan ──────────────────────────────────────
   const triggerScan = async (assetId) => {
-    const target = prompt(
-      'Enter Syft scan target (leave blank to scan the agent machine\'s filesystem)\n' +
-      '  • Blank                  — agent\'s default scan directory\n' +
-      '  • dir:/home             — agent machine (Linux default)\n' +
-      '  • image:nginx:alpine    — Docker image on agent machine',
-      '',
-    )
-    if (target === null) return  // user pressed Cancel
     setScanning(s => ({
       ...s,
-      [assetId]: { status: 'pending', startedAt: new Date().toISOString(), target: target || null },
+      [assetId]: { status: 'pending', startedAt: new Date().toISOString() },
     }))
     try {
-      const response = await client.post(`/assets/${assetId}/scan-sbom`, { target: target || undefined })
+      const response = await client.post(`/assets/${assetId}/scan-sbom`)
       setScanning(s => ({
         ...s,
         [assetId]: {
           status: 'pending',
           scanId: response.data.scan_id,
           startedAt: new Date().toISOString(),
-          target: target || null,
+          message: response.data.message,
         },
       }))
       startScanPolling(assetId)
@@ -262,8 +277,22 @@ export default function SBOMPage() {
     }
   }
 
+  const downloadSbom = async (sbom) => {
+    try {
+      const res = await client.get(`/sboms/${sbom.sbom_id}/download`, { responseType: 'blob' })
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `sbom-${sbom.asset_id}.cdx.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      alert('Failed to download the SBOM file.')
+    }
+  }
+
   const cancelScan = async (assetId, scanId) => {
-    if (!scanId || !confirm('Cancel this SBOM scan? The partial Syft output will be discarded.')) return
+    if (!scanId || !confirm('Cancel this SBOM scan? Its results will be discarded when they arrive.')) return
     setCancelling(current => ({ ...current, [scanId]: true }))
     try {
       await client.post(`/scans/${scanId}/cancel`)
@@ -287,13 +316,8 @@ export default function SBOMPage() {
         .map(([pm, count]) => ({ name: pm, count, fill: pmColor(pm) }))
     : []
 
-  const filteredDeps = deps.filter(d => {
-    const matchSearch = !depSearch || d.name.toLowerCase().includes(depSearch.toLowerCase())
-    const matchPm    = !pmFilter  || d.package_manager === pmFilter
-    return matchSearch && matchPm
-  })
-
-  const depPmOptions = [...new Set(deps.map(d => d.package_manager || 'system'))]
+  // The server already applied the search and the package-manager filter.
+  const filteredDeps = deps
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -309,7 +333,7 @@ export default function SBOMPage() {
             Software Bill of Materials
           </h1>
           <p className="text-dark-400 text-sm mt-1">
-            CycloneDX SBOM inventory — powered by Syft
+            Package lists (CycloneDX) built by the EagleEye agent on each computer with Syft, checked for CVEs with Grype
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -323,13 +347,6 @@ export default function SBOMPage() {
           </button>
         </div>
       </div>
-
-      {!SBOM_SCANNING_AVAILABLE && (
-        <div className="glass-card px-4 py-3 text-sm text-dark-300">
-          New SBOM scans are paused while the SBOM scanner moves to the current EagleEye agent.
-          The SBOMs, dependencies and CVE alerts already collected stay available here and on the Alerts page.
-        </div>
-      )}
 
       {/* ── Live SBOM scan progress ── */}
       {Object.keys(scanning).length > 0 && (
@@ -361,9 +378,9 @@ export default function SBOMPage() {
                 ? Math.max(0, Math.floor((elapsedUntil - started) / 1000))
                 : 0
               const stage = isPending
-                ? 'Queued — waiting for the EagleEye agent'
+                ? (scan.message || 'Queued — waiting for the EagleEye agent on this device')
                 : isRunning
-                  ? 'Syft is cataloging packages and dependencies'
+                  ? 'The agent is listing packages (Syft) and checking them for CVEs (Grype)'
                   : isCompleted
                     ? 'SBOM generated and stored successfully'
                     : isFailed
@@ -421,7 +438,6 @@ export default function SBOMPage() {
                       {isCompleted || isFailed ? 'Total' : 'Elapsed'}: {formatElapsed(elapsed)}
                     </span>
                     {scan.scanId && <span className="font-mono">Scan {scan.scanId.slice(0, 8)}…</span>}
-                    {scan.target && <span className="font-mono truncate max-w-sm">Target: {scan.target}</span>}
                     {isFailed && <AlertCircle className="w-3.5 h-3.5 text-red-400" />}
                   </div>
                 </div>
@@ -548,9 +564,9 @@ export default function SBOMPage() {
           <div className="text-center py-20 text-dark-400">
             <Package className="w-16 h-16 mx-auto mb-4 opacity-20" />
             <p className="text-lg font-medium mb-2">No SBOMs generated yet</p>
-            <p className="text-sm">
-              Go to <strong className="text-eagle-400">Assets</strong> and click the{' '}
-              <Shield className="w-3.5 h-3.5 inline text-eagle-400" /> icon to trigger a scan.
+            <p className="text-sm max-w-lg mx-auto">
+              The EagleEye agent builds one for its computer once a day. To run one now, open the
+              computer in <strong className="text-eagle-400">Assets</strong> and press <strong>Run SBOM scan</strong>.
             </p>
           </div>
         ) : (
@@ -561,7 +577,7 @@ export default function SBOMPage() {
                 <th>Format</th>
                 <th>Components</th>
                 <th>Tool</th>
-                <th>GCS Storage</th>
+                <th>File</th>
                 <th>Generated</th>
                 {canScan && <th>Re-scan</th>}
                 {canDeleteSbom && <th>Delete</th>}
@@ -577,10 +593,11 @@ export default function SBOMPage() {
                     className="cursor-pointer hover:bg-dark-700/30 transition-colors"
                     onClick={() => toggleDeps(sbom.sbom_id)}
                   >
-                    <td>
-                      <span className="font-mono text-xs text-accent-cyan break-all">
-                        {sbom.asset_id || '—'}
-                      </span>
+                    <td onClick={e => e.stopPropagation()}>
+                      <Link to={`/inventory/${sbom.asset_id}`} className="hover:underline" title={sbom.asset_id}>
+                        <span className="text-sm text-accent-cyan font-medium">{sbom.asset_hostname || sbom.asset_ip || sbom.asset_id}</span>
+                        {sbom.asset_hostname && sbom.asset_ip && <span className="block font-mono text-xs text-dark-500">{sbom.asset_ip}</span>}
+                      </Link>
                     </td>
                     <td>
                       <span className="text-xs px-2 py-0.5 rounded bg-eagle-600/20 text-eagle-300 border border-eagle-500/30 uppercase tracking-wide">
@@ -593,15 +610,15 @@ export default function SBOMPage() {
                         {sbom.component_count ?? '—'}
                       </span>
                     </td>
-                    <td className="text-dark-300 text-xs">{sbom.tool_used}</td>
-                    <td>
-                      {sbom.gcs_path ? (
-                        <span className="flex items-center gap-1 text-xs text-accent-green">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Stored
-                        </span>
-                      ) : (
-                        <span className="text-dark-500 text-xs">Local only</span>
-                      )}
+                    <td className="text-dark-300 text-xs">{sbom.generated_by || sbom.tool_used}</td>
+                    <td onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={() => downloadSbom(sbom)}
+                        className="flex items-center gap-1 text-xs text-eagle-400 hover:underline"
+                        title={sbom.scope?.length ? `Scanned: ${sbom.scope.join(', ')}` : 'Download the CycloneDX file'}
+                      >
+                        <Download className="w-3.5 h-3.5" /> Download
+                      </button>
                     </td>
                     <td className="text-dark-400 text-xs">
                       {new Date(sbom.generated_at).toLocaleString()}
@@ -647,7 +664,7 @@ export default function SBOMPage() {
                         colSpan={(canScan ? 8 : 7) + (canDeleteSbom ? 1 : 0)}
                         className="p-0 bg-dark-900/60"
                       >
-                        <div className="border-t border-dark-700/50 p-4">
+                        <div className="border-t border-dark-700/50 p-4 w-0 min-w-full">
                           {depsLoading ? (
                             <div className="flex justify-center py-6">
                               <div className="w-6 h-6 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
@@ -657,7 +674,7 @@ export default function SBOMPage() {
                               {/* Dependency filter bar */}
                               <div className="flex items-center gap-3 mb-3 flex-wrap">
                                 <h4 className="text-sm font-semibold text-dark-200">
-                                  {deps.length} dependencies
+                                  {depsTotal.all} dependencies
                                 </h4>
 
                                 {/* Search */}
@@ -673,33 +690,37 @@ export default function SBOMPage() {
                                   />
                                 </div>
 
-                                {/* PM filter */}
-                                {depPmOptions.length > 1 && (
+                                {/* Package-manager filter: every manager in this SBOM, always shown */}
+                                {depPms.length > 0 && (
                                   <select
                                     value={pmFilter}
                                     onChange={e => setPmFilter(e.target.value)}
                                     onClick={e => e.stopPropagation()}
-                                    className="input-field text-xs py-1 w-36"
+                                    className="input-field text-xs py-1 w-48"
                                   >
-                                    <option value="">All managers</option>
-                                    {depPmOptions.map(pm => (
+                                    <option value="">All package managers ({depsTotal.all})</option>
+                                    {depPms.map(({ package_manager: pm, count }) => (
                                       <option key={pm} value={pm}>
-                                        {pmIcon(pm)} {pm}
+                                        {pmIcon(pm)} {pmLabel(pm)} ({count})
                                       </option>
                                     ))}
                                   </select>
                                 )}
 
-                                <span className="text-xs text-dark-500 ml-auto">
-                                  showing {filteredDeps.length}
-                                  {filteredDeps.length !== deps.length && ` / ${deps.length}`}
+                                <span className="text-xs text-dark-500 ml-auto whitespace-nowrap">
+                                  showing {filteredDeps.length} of {depsTotal.matching}
+                                  {depsTotal.matching > deps.length && ` (first ${DEP_LIMIT}; type to search all)`}
                                 </span>
                               </div>
 
                               {/* Dependency table */}
                               <div className="max-h-72 overflow-y-auto rounded border border-dark-700/50">
-                                <table className="w-full text-xs">
-                                  <thead className="sticky top-0 bg-dark-800">
+                                <table className="w-full text-xs table-fixed">
+                                  <colgroup>
+                                    <col className="w-[32%]" /><col className="w-[16%]" /><col className="w-[11%]" />
+                                    <col className="w-[13%]" /><col className="w-[28%]" />
+                                  </colgroup>
+                                  <thead className="sticky top-0 z-10 bg-dark-800 shadow-[0_1px_0_rgb(var(--dark-700))]">
                                     <tr className="text-dark-400 border-b border-dark-700">
                                       <th className="text-left py-2 px-3 font-medium">Package</th>
                                       <th className="text-left py-2 px-3 font-medium">Version</th>
@@ -720,10 +741,10 @@ export default function SBOMPage() {
                                         key={dep.dependency_id}
                                         className="border-b border-dark-700/30 hover:bg-dark-700/20"
                                       >
-                                        <td className="py-1.5 px-3 font-medium text-dark-100">
+                                        <td className="py-1.5 px-3 font-medium text-dark-100 truncate" title={dep.name}>
                                           {dep.name}
                                         </td>
-                                        <td className="py-1.5 px-3 font-mono text-dark-400">
+                                        <td className="py-1.5 px-3 font-mono text-dark-400 truncate" title={dep.version || ''}>
                                           {dep.version || '—'}
                                         </td>
                                         <td className="py-1.5 px-3">
@@ -735,12 +756,12 @@ export default function SBOMPage() {
                                             <span>{dep.package_manager || 'system'}</span>
                                           </span>
                                         </td>
-                                        <td className="py-1.5 px-3 text-dark-500">
+                                        <td className="py-1.5 px-3 text-dark-500 truncate" title={Array.isArray(dep.licenses) ? dep.licenses.join(', ') : ''}>
                                           {Array.isArray(dep.licenses) && dep.licenses.length > 0
                                             ? dep.licenses.join(', ')
                                             : '—'}
                                         </td>
-                                        <td className="py-1.5 px-3 font-mono text-dark-600 max-w-xs truncate">
+                                        <td className="py-1.5 px-3 font-mono text-dark-600 truncate" title={dep.purl || ''}>
                                           {dep.purl || '—'}
                                         </td>
                                       </tr>

@@ -311,23 +311,108 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
   return rows.length
 }
 
+// ── CISA Known Exploited Vulnerabilities ─────────────────────────────
+// CVEs with confirmed exploitation in the wild (free JSON, no key, about 1.5k
+// entries). Stored as 'cve' indicators, so /sboms/ingest-cve flags matching CVE
+// alerts, and markKevEvents() flags the open alerts that already exist.
+export const KEV_SOURCE = 'CISA KEV'
+const KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
+const KEV_BATCH = 500   // 7 params per row; well under Postgres' 65k parameter limit
+
+interface KevEntry { cveID?: string; dateAdded?: string }
+
+export async function ingestKev(db: DB): Promise<number> {
+  const res = await fetch(KEV_URL, { headers: { 'User-Agent': 'UMEagleEye-CTI/1.0' } })
+  if (!res.ok) {
+    console.error('[KEV] HTTP error:', res.status)
+    return 0
+  }
+  const data = await res.json() as { catalogVersion?: string; vulnerabilities?: KevEntry[] }
+  const now = new Date()
+  const seen = new Set<string>()
+  const rows: CtiRow[] = []
+  for (const v of data.vulnerabilities ?? []) {
+    const id = v.cveID?.trim().toUpperCase()
+    if (!id || !/^CVE-\d{4}-\d{4,}$/.test(id) || seen.has(id)) continue
+    seen.add(id)
+    const added = v.dateAdded ? new Date(v.dateAdded) : now
+    rows.push({
+      source: KEV_SOURCE,
+      indicatorType: 'cve',
+      value: id,
+      confidenceScore: '1.00',
+      firstSeen: Number.isNaN(added.getTime()) ? now : added,
+      lastSeen: now,
+    })
+  }
+  console.log(`[KEV] catalog ${data.catalogVersion ?? '?'}: ${rows.length} CVEs`)
+  for (let i = 0; i < rows.length; i += KEV_BATCH) {
+    await db.insert(ctiIndicators).values(rows.slice(i, i + KEV_BATCH)).onConflictDoUpdate({
+      target: ctiIndicators.value,
+      set: { lastSeen: sql`excluded.last_seen` },
+    })
+  }
+  return rows.length
+}
+
+/** Link cve_detected alerts to the 'cve' indicators naming their CVE (all assets, or one). */
+export async function linkCveIndicators(db: DB, assetId?: string): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO event_cti_indicators (event_id, indicator_id)
+    SELECT e.event_id, c.indicator_id
+    FROM events e
+    JOIN cti_indicators c ON c.indicator_type = 'cve' AND c.value = e.details->>'cve_id'
+    WHERE e.event_type = 'cve_detected' ${assetId ? sql`AND e.asset_id = ${assetId}` : sql``}
+    ON CONFLICT DO NOTHING
+  `)
+}
+
+/** Flag open CVE alerts whose CVE is in KEV (CVEs added to KEV after the alert was raised).
+ *  The +10 matches computeRiskScore's threat-intel bonus in routes/sbom.ts. */
+export async function markKevEvents(db: DB): Promise<number> {
+  const res = await db.execute(sql`
+    UPDATE events e SET
+      details = e.details || jsonb_build_object('kev', true, 'has_cti_match', true),
+      composite_risk_score = LEAST(COALESCE(e.composite_risk_score, 0)
+        + CASE WHEN (e.details->>'has_cti_match')::boolean IS TRUE THEN 0 ELSE 10 END, 100),
+      updated_at = now()
+    WHERE e.event_type = 'cve_detected'
+      AND e.status IN ('open', 'in_progress')
+      AND (e.details->>'kev') IS DISTINCT FROM 'true'
+      AND e.details->>'cve_id' IN (SELECT value FROM cti_indicators WHERE indicator_type = 'cve' AND source = ${KEV_SOURCE})
+    RETURNING 1
+  `)
+  await linkCveIndicators(db)
+  return res.rows.length
+}
+
 // ── Combined ─────────────────────────────────────────────────────────
 export async function ingestAllFeeds(
   db: DB,
   otxKey: string,
   threatFoxKey: string,
-): Promise<{ otx: number; threatfox: number }> {
-  const [otxResult, tfResult] = await Promise.allSettled([
+): Promise<{ otx: number; threatfox: number; kev: number; kev_alerts: number }> {
+  const [otxResult, tfResult, kevResult] = await Promise.allSettled([
     ingestOtx(db, otxKey),
     ingestThreatFox(db, threatFoxKey),
+    ingestKev(db),
   ])
 
   const otx       = otxResult.status === 'fulfilled' ? otxResult.value : 0
   const threatfox = tfResult.status  === 'fulfilled' ? tfResult.value  : 0
+  const kev       = kevResult.status === 'fulfilled' ? kevResult.value : 0
 
   if (otxResult.status === 'rejected') console.error('[OTX] Fatal:', otxResult.reason)
   if (tfResult.status  === 'rejected') console.error('[ThreatFox] Fatal:', tfResult.reason)
+  if (kevResult.status === 'rejected') console.error('[KEV] Fatal:', kevResult.reason)
 
-  console.log(`[CTI] Done — OTX: ${otx}, ThreatFox: ${threatfox}`)
-  return { otx, threatfox }
+  let kevAlerts = 0
+  try {
+    kevAlerts = await markKevEvents(db)
+  } catch (err) {
+    console.error('[KEV] Marking alerts failed:', err)
+  }
+
+  console.log(`[CTI] Done — OTX: ${otx}, ThreatFox: ${threatfox}, KEV: ${kev} (${kevAlerts} alert(s) newly flagged)`)
+  return { otx, threatfox, kev, kev_alerts: kevAlerts }
 }

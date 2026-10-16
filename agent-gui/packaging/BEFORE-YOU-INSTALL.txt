@@ -20,3 +20,9 @@ WHAT IT NEVER COLLECTS
 
 Nmap and Npcap (free network tools) are not included. The agent offers to
 download them from their official websites after installation.
+
+Syft and Grype (free tools that list this computer's software packages and
+check them for known vulnerabilities) are not included either. Your IT team
+installs them, for example with:  winget install Anchore.Syft
+                                  winget install Anchore.Grype
+Grype keeps a vulnerability database of about 3 GB on this computer.

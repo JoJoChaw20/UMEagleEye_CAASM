@@ -135,3 +135,39 @@ def test_mark_failed_truncates_the_reason():
     c.mark_scan_failed("scan-1", "x" * 5000)
     body = json.loads(session.calls[0][2]["data"])
     assert body["scan_id"] == "scan-1" and body["agent_id"] == AGENT and len(body["reason"]) == 1000
+
+
+def test_start_sbom_marks_the_dashboard_job_or_creates_one():
+    c, session, _ = client(FakeResponse(200, {"scan_id": "sb1"}), FakeResponse(201, {"scan_id": "own"}))
+    assert c.start_sbom("dashboard", "sb1") == ("sb1", None)
+    assert c.start_sbom("schedule") == ("own", None)
+    (m1, u1, k1), (_, _, k2) = session.calls
+    assert (m1, u1) == ("POST", "https://api.example/api/v1/sboms/agent-start")
+    assert json.loads(k1["data"]) == {"trigger": "dashboard", "scan_id": "sb1"}
+    assert json.loads(k2["data"]) == {"trigger": "schedule"}
+
+
+def test_start_sbom_refused_returns_the_servers_reason():
+    c, _, _ = client(FakeResponse(409, {"detail": "inventory first"}))
+    assert c.start_sbom("schedule") == (None, "inventory first")
+
+
+def test_sbom_and_findings_go_to_their_endpoints():
+    c, session, _ = client(FakeResponse(201, {"dependencies_inserted": 3}),
+                           FakeResponse(201, {"events_created": 2, "events_updated": 1, "events_resolved": 0, "kev_matches": 1}))
+    assert c.send_sbom("sb1", {"components": []}, ["/apps"]) == (True, "3 package(s) stored")
+    ok, detail = c.send_cve_findings("sb1", [])
+    assert ok and "2 new" in detail and "1 on CISA KEV" in detail
+    (_, u1, k1), (_, u2, k2) = session.calls
+    assert u1.endswith("/sboms/ingest") and json.loads(k1["data"])["scope"] == ["/apps"]
+    assert u2.endswith("/sboms/ingest-cve") and json.loads(k2["data"]) == {"agent_id": AGENT, "scan_id": "sb1", "findings": [], "total_findings": 0}
+
+
+def test_a_large_report_sends_the_top_findings_and_every_key():
+    c, session, _ = client(FakeResponse(201, {"events_created": 2, "findings_dropped": 1}))
+    findings = [{"cve_id": f"CVE-{i}", "package_name": "p", "epss": i / 10, "cvss_base_score": 5.0} for i in range(3)]
+    ok, detail = c.send_cve_findings("sb1", findings, max_upload=2)
+    body = json.loads(session.calls[0][2]["data"])
+    assert [f["cve_id"] for f in body["findings"]] == ["CVE-2", "CVE-1"]
+    assert body["total_findings"] == 3 and body["present_keys"] == ["CVE-0::p", "CVE-1::p", "CVE-2::p"]
+    assert ok and "1 lower-priority" in detail

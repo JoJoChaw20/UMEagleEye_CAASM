@@ -1,0 +1,256 @@
+{
+ "matches": [
+  {
+   "vulnerability": {
+    "id": "GHSA-x84v-xcm2-53pg",
+    "severity": "High",
+    "description": "Insufficiently Protected Credentials in Requests",
+    "cvss": [
+     {
+      "type": "Secondary",
+      "version": "3.1",
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "metrics": {
+       "baseScore": 7.5,
+       "exploitabilityScore": 3.9,
+       "impactScore": 3.6
+      },
+      "vendorMetadata": {}
+     }
+    ],
+    "epss": [
+     {
+      "cve": "CVE-2018-18074",
+      "epss": 0.07443,
+      "percentile": 0.9437,
+      "date": "2026-10-14"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2018-18074",
+      "cwe": "CWE-522",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     }
+    ],
+    "fix": {
+     "versions": [
+      "2.20.0"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "2.20.0",
+       "date": "2021-03-30",
+       "kind": "first-observed"
+      }
+     ]
+    }
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2018-18074",
+     "severity": "High",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+       "metrics": {
+        "baseScore": 7.5,
+        "exploitabilityScore": 3.9,
+        "impactScore": 3.6
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "2.0",
+       "vector": "AV:N/AC:L/Au:N/C:P/I:N/A:N",
+       "metrics": {
+        "baseScore": 5,
+        "exploitabilityScore": 10,
+        "impactScore": 2.9
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "description": "The Requests package before 2.20.0 for Python sends an HTTP Authorization header to an http URI upon receiving a same-ho"
+    }
+   ],
+   "artifact": {
+    "name": "requests",
+    "version": "2.19.0",
+    "type": "python",
+    "purl": "pkg:pypi/requests@2.19.0"
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "GHSA-j8r2-6x86-q33q",
+    "severity": "Medium",
+    "description": "Unintended leak of Proxy-Authorization header in requests",
+    "cvss": [
+     {
+      "type": "Secondary",
+      "version": "3.1",
+      "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N",
+      "metrics": {
+       "baseScore": 6.1,
+       "exploitabilityScore": 1.7,
+       "impactScore": 4
+      },
+      "vendorMetadata": {}
+     }
+    ],
+    "epss": [
+     {
+      "cve": "CVE-2023-32681",
+      "epss": 0.02974,
+      "percentile": 0.86995,
+      "date": "2026-10-14"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2023-32681",
+      "cwe": "CWE-200",
+      "source": "security-advisories@github.com",
+      "type": "Secondary"
+     }
+    ],
+    "fix": {
+     "versions": [
+      "2.31.0"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "2.31.0",
+       "date": "2023-05-23",
+       "kind": "first-observed"
+      }
+     ]
+    }
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2023-32681",
+     "severity": "Medium",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N",
+       "metrics": {
+        "baseScore": 6.1,
+        "exploitabilityScore": 1.7,
+        "impactScore": 4
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "security-advisories@github.com",
+       "type": "Secondary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N",
+       "metrics": {
+        "baseScore": 6.1,
+        "exploitabilityScore": 1.7,
+        "impactScore": 4
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "description": "Requests is a HTTP library. Since Requests 2.3.0, Requests has been leaking Proxy-Authorization headers to destination s"
+    }
+   ],
+   "artifact": {
+    "name": "requests",
+    "version": "2.19.0",
+    "type": "python",
+    "purl": "pkg:pypi/requests@2.19.0"
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "GHSA-9hjg-9r4m-mvj7",
+    "severity": "Medium",
+    "description": "Requests vulnerable to .netrc credentials leak via malicious URLs",
+    "cvss": [
+     {
+      "type": "Secondary",
+      "version": "3.1",
+      "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N",
+      "metrics": {
+       "baseScore": 5.3,
+       "exploitabilityScore": 1.7,
+       "impactScore": 3.6
+      },
+      "vendorMetadata": {}
+     }
+    ],
+    "epss": [
+     {
+      "cve": "CVE-2024-47081",
+      "epss": 0.0098,
+      "percentile": 0.61425,
+      "date": "2026-10-14"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2024-47081",
+      "cwe": "CWE-522",
+      "source": "security-advisories@github.com",
+      "type": "Secondary"
+     }
+    ],
+    "fix": {
+     "versions": [
+      "2.32.4"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "2.32.4",
+       "date": "2025-06-10",
+       "kind": "first-observed"
+      }
+     ]
+    }
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2024-47081",
+     "severity": "Medium",
+     "cvss": [
+      {
+       "source": "security-advisories@github.com",
+       "type": "Secondary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N",
+       "metrics": {
+        "baseScore": 5.3,
+        "exploitabilityScore": 1.7,
+        "impactScore": 3.6
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "description": "Requests is a HTTP library. Due to a URL parsing issue, Requests releases prior to 2.32.4 may leak .netrc credentials to"
+    }
+   ],
+   "artifact": {
+    "name": "requests",
+    "version": "2.19.0",
+    "type": "python",
+    "purl": "pkg:pypi/requests@2.19.0"
+   }
+  }
+ ]
+}

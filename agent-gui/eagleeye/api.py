@@ -198,6 +198,66 @@ class AgentClient:
         data = resp.json()
         return IngestResult(True, data.get("hosts_discovered", 0), data.get("assets_upserted", 0))
 
+    def start_sbom(self, trigger: str, scan_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+        """POST /sboms/agent-start - mark the dashboard's SBOM job `scan_id` running, or
+        (without one) create a record for an SBOM this agent starts itself.
+        Returns (scan_id, None) or (None, reason)."""
+        body: dict[str, Any] = {"trigger": trigger}
+        if scan_id:
+            body["scan_id"] = scan_id
+        try:
+            resp = self._request("POST", "/sboms/agent-start", 15, data=json.dumps(body))
+        except httpclient.RequestException as exc:
+            return None, f"could not reach the server: {exc}"
+        if not resp.ok:
+            return None, self._detail(resp)
+        new_id = resp.json().get("scan_id")
+        return (new_id, None) if new_id else (None, "the server returned no scan id")
+
+    def sbom_status(self, scan_id: str) -> Optional[str]:
+        """Status of one of this agent's SBOM jobs (so a dashboard Cancel stops the run)."""
+        try:
+            resp = self.session.get(f"{self.api_url}/sboms/agent-status/{scan_id}", timeout=10)
+            if not resp.ok:
+                return None
+            return resp.json().get("status")
+        except (httpclient.RequestException, ValueError) as exc:
+            log.debug("Could not check SBOM %s status: %s", scan_id[:8], exc)
+            return None
+
+    def send_sbom(self, scan_id: str, document: dict[str, Any], scope: list[str]) -> tuple[bool, str]:
+        """POST /sboms/ingest - the CycloneDX SBOM of this computer."""
+        body = {"agent_id": self.agent_id, "scan_id": scan_id, "sbom": document, "scope": scope[:50]}
+        try:
+            resp = self._request("POST", "/sboms/ingest", 120, data=json.dumps(body))
+        except httpclient.RequestException as exc:
+            return False, f"could not reach the server: {exc}"
+        if not resp.ok:
+            return False, f"server rejected the SBOM ({self._detail(resp)})"
+        return True, f"{resp.json().get('dependencies_inserted', 0)} package(s) stored"
+
+    def send_cve_findings(self, scan_id: str, findings: list[dict[str, Any]], max_upload: int = 3000) -> tuple[bool, str]:
+        """POST /sboms/ingest-cve - Grype's findings. Sent even when empty, so alerts for
+        CVEs that are gone (patched, uninstalled) are resolved. A large report is cut to the
+        `max_upload` most likely exploited (EPSS, then CVSS); the keys of all findings go
+        along, so the server does not mistake one that was left out for one that was fixed."""
+        ranked = sorted(findings, key=lambda f: (f.get("epss") or 0, f.get("cvss_base_score") or 0), reverse=True)
+        body: dict[str, Any] = {"agent_id": self.agent_id, "scan_id": scan_id, "findings": ranked[:max_upload],
+                                "total_findings": len(findings)}
+        if len(findings) > max_upload:
+            body["present_keys"] = sorted({f"{f['cve_id']}::{f['package_name']}" for f in findings})
+        try:
+            resp = self._request("POST", "/sboms/ingest-cve", 120, data=json.dumps(body))
+        except httpclient.RequestException as exc:
+            return False, f"could not reach the server: {exc}"
+        if not resp.ok:
+            return False, f"server rejected the vulnerabilities ({self._detail(resp)})"
+        data = resp.json()
+        dropped = data.get("findings_dropped") or 0
+        return True, (f"alerts: {data.get('events_created', 0)} new, {data.get('events_updated', 0)} updated, "
+                      f"{data.get('events_resolved', 0)} resolved; {data.get('kev_matches', 0)} on CISA KEV"
+                      + (f"; {dropped} lower-priority finding(s) not raised as alerts" if dropped else ""))
+
     def send_inventory(self, inventory: dict[str, Any]) -> InventoryResult:
         """POST /agents/:id/inventory - the endpoint inventory of the agent's own machine.
         The server binds it to the matching asset (or creates one in Discovered)."""

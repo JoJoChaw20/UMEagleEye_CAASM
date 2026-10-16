@@ -33,7 +33,7 @@ const TACTIC_COLORS = [
   '#ff5252','#ff6e40',
 ]
 
-const TYPE_ICONS = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧' }
+const TYPE_ICONS = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧', cve: '🐞' }
 
 const PAGE_SIZE = 15
 

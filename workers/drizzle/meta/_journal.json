@@ -71,6 +71,13 @@
       "when": 1792047672732,
       "tag": "0009_retire_old_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792135330015,
+      "tag": "0010_kev_cve_indicator_type",
+      "breakpoints": true
     }
   ]
 }

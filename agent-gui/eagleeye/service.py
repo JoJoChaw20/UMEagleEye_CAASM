@@ -6,8 +6,8 @@ Same behaviour as the original agent's main loop:
   * active scans run one at a time in a background worker;
   * passive scans and the periodic passive flush run on the polling thread.
 
-Differences: SBOM scans are declined with a visible reason instead of being run
-(SBOM is out of scope for this version), and every run reports pipeline events.
+Every run reports pipeline events. The SBOM of this computer (Syft + Grype) runs
+once a day and when the dashboard asks, in its own worker so it never holds up scans.
 
 Added for the GUI: local schedules and "Scan now" / "Collect inventory now"
 requests. Requests may come from any thread; they are queued and handled on the
@@ -34,8 +34,8 @@ from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, Pipel
 from .schedule import Schedule, ScheduleState
 from .stages.scan_nmap import validate_target
 from .stages import (
-    InventoryUploadStage, LocalInventoryStage, NmapScanStage, PassiveCollectStage, PassiveEnrichStage,
-    SnmpPollStage, UploadStage,
+    CveCheckStage, InventoryUploadStage, LocalInventoryStage, NmapScanStage, PassiveCollectStage,
+    PassiveEnrichStage, SbomBuildStage, SbomUploadStage, SnmpPollStage, UploadStage,
 )
 
 log = logging.getLogger("eagleeye.service")
@@ -71,6 +71,10 @@ def throttled(fn: Callable[[], bool], interval: float) -> Callable[[], bool]:
 
 
 SCHEDULE_RETRY_SECONDS = 300
+# The first daily SBOM waits this long after the agent starts (the inventory, which links
+# this computer to its asset, goes first; and start-up stays light).
+SBOM_FIRST_DELAY = 15 * 60
+SBOM_RETRY_SECONDS = 3600
 # Local schedules are switched off for now (decision pending: editing them crashed the
 # desktop app under PySide6 6.12). The code and tests stay so they can be re-enabled.
 SCHEDULES_ENABLED = False
@@ -118,6 +122,9 @@ class AgentService:
         self._last_inventory = 0.0           # 0 = collect on the first poll
         self._inventory_supported = True
         self._last_flush = time.time()
+        self._sbom_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sbom")
+        self._sbom_future: Optional[Future[Optional[PipelineResult]]] = None
+        self._next_sbom = time.time() + SBOM_FIRST_DELAY
 
     # ── pipelines ──
     def _active_pipeline(self, subnet: str) -> Pipeline:
@@ -171,6 +178,72 @@ class AgentService:
             self._inventory_supported = False
         self._record("inventory", trigger, "this computer", result)
         return result
+
+    def run_sbom(self, scan_id: Optional[str] = None, trigger: str = "schedule") -> Optional[PipelineResult]:
+        """Build this computer's SBOM and upload it with its CVE findings. scan_id is the
+        dashboard's job; without one the server creates a record for this run."""
+        started_id, reason = self.client.start_sbom(trigger, scan_id)
+        if not started_id:
+            log.warning("SBOM not started: %s", reason)
+            if scan_id:      # leave a reason on the dashboard's job instead of letting it expire
+                self.client.mark_scan_failed(scan_id, reason or "The agent could not start the SBOM scan")
+            return None
+        # Stops Syft/Grype within seconds when the agent stops, and within ~15 s of a
+        # Cancel on the dashboard's SBOM page.
+        dashboard_cancelled = throttled(lambda: self.client.sbom_status(started_id) == "cancelled", 15.0)
+        ctx = PipelineContext("sbom", scan_id=started_id, scan_type="sbom",
+                              cancelled=lambda: self._stop.is_set() or dashboard_cancelled())
+        result = Pipeline("sbom", [
+            SbomBuildStage(self.settings.sbom_extra_paths, include_binaries=self.settings.sbom_include_binaries),
+            CveCheckStage(), SbomUploadStage(self.client),
+        ], self.on_event).run(ctx)
+        self._finish(started_id, result)
+        if result.status == "cancelled":    # no-op when the dashboard already cancelled it
+            self.client.mark_scan_failed(started_id, "The agent was stopped before the SBOM scan finished")
+        self._record("sbom", trigger, "this computer", result)
+        return result
+
+    @property
+    def sbom_running(self) -> bool:
+        return self._sbom_future is not None and not self._sbom_future.done()
+
+    def _reap_sbom(self) -> None:
+        if self._sbom_future is not None and self._sbom_future.done():
+            try:
+                self._sbom_future.result()
+            except Exception as exc:  # noqa: BLE001
+                log.error("SBOM worker failed: %s", exc, exc_info=True)
+            self._sbom_future = None
+
+    def _submit_sbom(self, scan_id: Optional[str], trigger: str) -> bool:
+        if self._stop.is_set():
+            return False
+        try:
+            self._sbom_future = self._sbom_pool.submit(self.run_sbom, scan_id, trigger)
+        except RuntimeError:            # stopped (settings saved) while this poll was running
+            return False
+        return True
+
+    def _maybe_sbom(self, force: bool = False) -> None:
+        """The daily SBOM (or one requested on this computer)."""
+        self._reap_sbom()
+        if not self.settings.sbom:
+            if force:
+                log.warning("SBOM is switched off on this computer (Privacy page); nothing built")
+            return
+        if self.sbom_running:
+            if force:
+                log.info("An SBOM is already being built")
+            return
+        if not force and time.time() < self._next_sbom:
+            return
+        from . import sbom as sbom_tools
+        if not force and not (sbom_tools.find_tool("syft") and sbom_tools.find_tool("grype")):
+            log.info("Daily SBOM skipped: Syft and Grype are not both installed (see Dependencies)")
+            self._next_sbom = time.time() + self.settings.sbom_interval
+            return
+        if self._submit_sbom(None, "manual" if force else "schedule"):
+            self._next_sbom = time.time() + self.settings.sbom_interval
 
     def _maybe_inventory(self, force: bool = False) -> None:
         if not self.settings.inventory or not self._inventory_supported:
@@ -269,6 +342,10 @@ class AgentService:
         self._requests.put(("inventory", ""))
         self._wake.set()
 
+    def request_sbom(self) -> None:
+        self._requests.put(("sbom", ""))
+        self._wake.set()
+
     def _handle_requests(self) -> None:
         while True:
             try:
@@ -277,6 +354,8 @@ class AgentService:
                 return
             if kind == "inventory":
                 self._maybe_inventory(force=True)
+            elif kind == "sbom":
+                self._maybe_sbom(force=True)
             elif kind == "scan":
                 reason = self._start_local_scan(arg, "manual")
                 if reason:
@@ -327,7 +406,16 @@ class AgentService:
                 self.client.mark_scan_running(scan_id)
             self._active_future = self._active_pool.submit(self.run_active, scan_id, subnet)
         elif scan_type == "sbom":
-            self._decline(scan_id, "SBOM scanning is not supported by this agent version (EagleEye Agent 2.x).")
+            if not self.settings.sbom:
+                self._decline(scan_id, "SBOM is switched off on this computer (agent Privacy page).")
+                return
+            self._reap_sbom()
+            if self.sbom_running:
+                log.info("Leaving SBOM job %s queued while an SBOM is being built", (scan_id or "?")[:8])
+                return
+            log.info("Processing SBOM job %s", (scan_id or "?")[:8])
+            if self._submit_sbom(scan_id, "dashboard"):
+                self._next_sbom = time.time() + self.settings.sbom_interval
         else:
             self._decline(scan_id, f"Unsupported scan type '{scan_type}'.")
 
@@ -337,6 +425,7 @@ class AgentService:
         self._reap_active()
         self._handle_requests()
         self._maybe_inventory()
+        self._maybe_sbom()
         pending = self.client.get_pending_scans()
         if pending:
             log.info("Found %d pending scan(s)", len(pending))
@@ -397,3 +486,4 @@ class AgentService:
             self.suite.stop()
         self._active_pool.shutdown(wait=False, cancel_futures=True)
         self._inventory_pool.shutdown(wait=False, cancel_futures=True)
+        self._sbom_pool.shutdown(wait=False, cancel_futures=True)

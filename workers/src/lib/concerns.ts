@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm'
 import { events, assets } from '../db/schema'
 
 // "Concerns" are the handful of alert categories a security engineer should look
@@ -15,13 +15,16 @@ export type ConcernId = typeof CONCERN_IDS[number]
 export const EPSS_LIKELY = 0.1
 
 const hasCtiMatch = sql`${events.details}->'has_cti_match' = 'true'::jsonb`
+// A feed naming a CVE (CISA KEV, later MyCERT advisories) says the flaw is exploited in
+// the wild, not that this asset was attacked, so those CVE alerts are 'exploitable'.
+const isCve = eq(events.eventType, 'cve_detected')
 const epssAtLeast = (v: number) => sql`(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number'
   THEN (${events.details}->>'epss_score')::float ELSE 0 END) >= ${v}`
 
 export function concernCondition(id: ConcernId): SQL {
   switch (id) {
     case 'threat_intel':
-      return or(eq(events.eventType, 'cti_match'), hasCtiMatch)!
+      return or(eq(events.eventType, 'cti_match'), and(hasCtiMatch, ne(events.eventType, 'cve_detected')))!
     case 'exposed_services':
       // Risky/low ports newly opened (severity already folds in risky port and
       // internet exposure), or a host that just became internet-facing.
@@ -35,7 +38,8 @@ export function concernCondition(id: ConcernId): SQL {
       return and(eq(events.eventType, 'config_change'),
         sql`${events.details}->>'changed_attribute' IN ('mac_address', 'hostname')`)!
     case 'exploitable':
-      return and(eq(events.eventType, 'cve_detected'), or(
+      return and(isCve, or(
+        hasCtiMatch,
         epssAtLeast(EPSS_LIKELY),
         and(eq(events.severity, 'critical'), eq(assets.isInternetFacing, true)),
       ))!

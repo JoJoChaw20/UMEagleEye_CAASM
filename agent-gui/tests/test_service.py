@@ -114,12 +114,111 @@ def test_invalid_subnet_fails_the_scan_without_running_nmap(monkeypatch):
     assert len(client.failed) == 1 and "invalid scan target" in client.failed[0][1]
 
 
-def test_sbom_scan_is_declined_with_a_visible_reason():
-    client = FakeClient(pending=[{"scanId": "sb1", "scanType": "sbom", "subnet": "asset-id"}])
-    service(client).poll_once()
-    assert len(client.failed) == 1
-    assert client.failed[0][0] == "sb1" and "SBOM" in client.failed[0][1]
-    assert client.running == []
+class SbomClient(FakeClient):
+    def __init__(self, start_error=None, **kw):
+        super().__init__(**kw)
+        self.start_error = start_error
+        self.sbom_starts, self.sboms, self.cve_uploads = [], [], []
+
+    def sbom_status(self, scan_id):
+        return getattr(self, "sbom_statuses", {}).get(scan_id, "running")
+
+    def start_sbom(self, trigger, scan_id=None):
+        self.sbom_starts.append((trigger, scan_id))
+        if self.start_error:
+            return None, self.start_error
+        return scan_id or "own-1", None
+
+    def send_sbom(self, scan_id, document, scope):
+        self.sboms.append((scan_id, document, scope))
+        return True, "1 package(s) stored"
+
+    def send_cve_findings(self, scan_id, findings):
+        self.cve_uploads.append((scan_id, findings))
+        return True, "alerts: 1 new"
+
+
+@pytest.fixture
+def fake_sbom(monkeypatch):
+    """The SBOM stages produce one package and one finding instead of running Syft/Grype."""
+    from eagleeye.stages import sbom as sbom_stages
+
+    def build(self, ctx):
+        ctx.summary.update(grype="grype", sbom={"specVersion": "1.6", "components": [{"type": "library", "name": "a", "version": "1"}]},
+                           sbom_scope=["/apps"])
+
+    def check(self, ctx):
+        ctx.summary["findings"] = [{"cve_id": "CVE-1", "package_name": "a"}]
+    monkeypatch.setattr(sbom_stages.SbomBuildStage, "run", build)
+    monkeypatch.setattr(sbom_stages.CveCheckStage, "run", check)
+
+
+def wait_sbom(svc, timeout=5):
+    deadline = time.time() + timeout
+    while svc.sbom_running and time.time() < deadline:
+        time.sleep(0.01)
+    svc._reap_sbom()
+
+
+def test_dashboard_sbom_job_runs_on_its_own_worker_and_uploads_to_that_record(fake_sbom):
+    client = SbomClient(pending=[{"scanId": "sb1", "scanType": "sbom", "subnet": "asset-id"}])
+    svc = service(client)
+    svc.poll_once()
+    wait_sbom(svc)
+    assert client.sbom_starts == [("dashboard", "sb1")]
+    assert client.sboms[0][0] == "sb1" and client.sboms[0][2] == ["/apps"]
+    assert client.cve_uploads == [("sb1", [{"cve_id": "CVE-1", "package_name": "a"}])]
+    assert client.failed == [] and svc.history[0].pipeline == "sbom"
+
+
+def test_sbom_job_is_declined_when_sbom_is_switched_off():
+    client = SbomClient(pending=[{"scanId": "sb1", "scanType": "sbom"}])
+    service(client, sbom=False).poll_once()
+    assert client.failed[0][0] == "sb1" and "switched off" in client.failed[0][1]
+    assert client.sbom_starts == []
+
+
+def test_sbom_job_the_server_refuses_to_start_gets_the_reason(fake_sbom):
+    client = SbomClient(start_error="This computer's inventory has not reached the server yet",
+                        pending=[{"scanId": "sb1", "scanType": "sbom"}])
+    svc = service(client)
+    svc.poll_once()
+    wait_sbom(svc)
+    assert client.failed == [("sb1", "This computer's inventory has not reached the server yet")]
+    assert client.sboms == []
+
+
+def test_failed_sbom_run_marks_its_record_failed(monkeypatch):
+    from eagleeye.stages import sbom as sbom_stages
+    from eagleeye.pipeline.runner import StageError
+
+    def build(self, ctx):
+        raise StageError("Syft not installed on this computer.")
+    monkeypatch.setattr(sbom_stages.SbomBuildStage, "run", build)
+    client = SbomClient()
+    svc = service(client)
+    svc.request_sbom()
+    svc.poll_once()
+    wait_sbom(svc)
+    assert client.sbom_starts == [("manual", None)]
+    assert client.failed[0][0] == "own-1" and "Syft not installed" in client.failed[0][1]
+
+
+def test_daily_sbom_waits_for_its_first_delay_and_needs_both_tools(fake_sbom, monkeypatch):
+    from eagleeye import sbom as sbom_tools
+    client = SbomClient()
+    svc = service(client)
+    svc.poll_once()
+    assert client.sbom_starts == []                          # not before the first delay
+    svc._next_sbom = 0
+    monkeypatch.setattr(sbom_tools, "find_tool", lambda name: None)
+    svc.poll_once()
+    assert client.sbom_starts == [] and svc._next_sbom > time.time()   # tools missing: skipped until tomorrow
+    svc._next_sbom = 0
+    monkeypatch.setattr(sbom_tools, "find_tool", lambda name: name)
+    svc.poll_once()
+    wait_sbom(svc)
+    assert client.sbom_starts == [("schedule", None)] and client.sboms[0][0] == "own-1"
 
 
 def test_unknown_scan_type_is_declined():
@@ -352,3 +451,20 @@ def test_start_tells_the_server_to_mark_interrupted_scans():
     svc.start()
     svc.stop()
     assert client.resets == 1
+
+
+def test_dashboard_cancel_stops_the_sbom_run_without_uploading(monkeypatch):
+    from eagleeye.stages import sbom as sbom_stages
+    from eagleeye.pipeline.runner import Cancelled
+
+    def build(self, ctx):
+        client.sbom_statuses = {"sb1": "cancelled"}
+        if ctx.cancelled():
+            raise Cancelled("the scan was cancelled")
+    monkeypatch.setattr(sbom_stages.SbomBuildStage, "run", build)
+    monkeypatch.setattr("eagleeye.service.throttled", lambda fn, interval: fn)
+    client = SbomClient(pending=[{"scanId": "sb1", "scanType": "sbom"}])
+    svc = service(client)
+    svc.poll_once()
+    wait_sbom(svc)
+    assert client.sboms == [] and svc.history[0].status == "cancelled"
