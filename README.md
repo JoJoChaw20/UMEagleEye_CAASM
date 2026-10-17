@@ -377,7 +377,7 @@ score = min(score, 100)
 
 ## Threat Intelligence (CTI)
 
-Two live IoC feeds are ingested daily at 6:00 AM MYT via a Cloudflare Cron Trigger. All rows are upserted — re-ingesting the same indicator value refreshes `last_seen`, `attack_tactic`, `confidence_score`, and `attack_technique` without creating duplicates. Indicators that no feed has re-seen for 90 days (and that no event references) are purged nightly, which keeps the table bounded on a free-tier database.
+Two live IoC feeds are ingested daily at 6:00 AM MYT via a Cloudflare Cron Trigger. All rows are upserted — re-ingesting the same indicator value refreshes `last_seen`, `confidence_score` and the malware family without creating duplicates (a feed that names no family keeps the one another feed gave). Indicators that no feed has re-seen for 90 days (and that no event references) are purged nightly, which keeps the table bounded on a free-tier database.
 
 ### Data sources
 
@@ -386,31 +386,15 @@ Two live IoC feeds are ingested daily at 6:00 AM MYT via a Cloudflare Cron Trigg
 | AlienVault OTX | `/pulses/activity?limit=50&page=1` | 50 latest community pulses | Hardcoded `0.70` (OTX provides no per-indicator score) |
 | ThreatFox (abuse.ch) | `get_iocs` | Last 7 days of IoCs | From `confidence_level` field, normalised: `confidence_level / 100` |
 
-### MITRE ATT&CK tactic derivation
+### MITRE ATT&CK techniques
 
-Every indicator is assigned an `attack_tactic` at ingest time. Neither source provides a ready-to-use tactic name, so the code derives one through source-specific logic.
+Techniques come from MITRE ATT&CK's own data, not from guesses about an indicator's type or tags.
 
-**AlienVault OTX — three-level fallback cascade (per pulse → applied to all indicators in that pulse)**
-
-| Level | Input | Mechanism | Notes |
-|-------|-------|-----------|-------|
-| 1 — Authoritative | `pulse.attack_ids[0].name` | Technique code (e.g. `T1566`) → `TECHNIQUE_TO_TACTIC` lookup (~150 entries, all 14 MITRE tactics) | Fires only when the pulse submitter explicitly tagged a technique; rare on community pulses |
-| 2 — Tag-based | `pulse.tags[]` | Free-text tag (e.g. `"ransomware"`, `"botnet"`) → `OTX_TAG_TO_TACTIC` lookup (~30 entries) | Fires when Level 1 is absent; uses first matching tag |
-| 3 — Type default | `indicator.type` | Indicator type → statistically most probable tactic for that type | Last resort; guarantees every indicator receives a tactic |
-
-Type defaults (Level 3):
-
-| Indicator type | Default tactic | Rationale |
-|---|---|---|
-| `ip` | Command and Control | Majority of malicious IPs in OTX are C2 hosts |
-| `domain` | Command and Control | Most malicious domains are C2/phishing infrastructure |
-| `url` | Initial Access | URLs are typically delivery/phishing vectors |
-| `hash` | Execution | File hashes identify malware samples |
-| `email` | Initial Access | Email addresses appear in phishing campaigns |
-
-**ThreatFox — single lookup**
-
-`ioc.threat_type` → `THREATFOX_TYPE_TO_TACTIC` lookup (12 entries). If `threat_type` is absent or outside the mapped vocabulary, `attack_tactic` is stored as `null`. `attack_technique` is never set for ThreatFox (no technique-level data provided).
+- `workers/scripts/attack/build-attack.mjs` downloads MITRE's official STIX 2.1 file (`mitre-attack/attack-stix-data`, Enterprise) and writes `workers/src/data/attack.json` (about 190 KB): the tactics in matrix order, every technique and sub-technique with its tactics, and every ATT&CK software entry (malware and tools) with the techniques MITRE documents for it ("uses" relationships), plus its names and aliases. Rerun it when MITRE publishes a new release, then deploy.
+- At ingest each indicator records its **malware family** (`malware_family`): ThreatFox's `malware_printable`, or an OTX pulse's `malware_families`. If ATT&CK documents the family (matched on name or alias, ignoring case and punctuation; for ThreatFox also its aliases and Malpedia key), its ATT&CK software id is stored in `attack_software`, for example `S0154` for Cobalt Strike.
+- Techniques an OTX pulse author tagged (`attack_ids`, all of them) are stored in `attack_techniques`.
+- An indicator's techniques are its family's techniques plus the ones the feed named. They are looked up at read time, so a new ATT&CK release applies without re-ingesting.
+- Indicators whose family ATT&CK does not document (Mirai, for example), or whose feed names no family, have no techniques. The ATT&CK tab says how many.
 
 ### Indicator type normalisation
 
@@ -440,7 +424,12 @@ The Lookup tab accepts any IP, domain, hash, URL, or email and queries `GET /cti
 
 ### MITRE ATT&CK Matrix
 
-The Matrix tab aggregates all indicators with a non-null `attack_tactic` and renders a heatmap grouped by tactic. Each tactic card shows the technique IDs (or `Unknown` for ThreatFox indicators, which carry no technique codes) and their indicator counts.
+`GET /cti/matrix` groups the feed indicators (CISA KEV CVEs left out) by family, ATT&CK software and named techniques, and the Worker expands each group into techniques. The tab shows:
+
+- **Coverage:** the share of feed indicators with ATT&CK techniques, families matched, and the largest families ATT&CK does not document. The ATT&CK version and date come from the data file.
+- **Matrix:** one column per tactic of the current ATT&CK release (v20 has 15, with Stealth and Defense Impairment in place of Defense Evasion), listing the techniques seen. Sub-techniques roll up to their parent. Shading is by indicator count or by number of families: a family with many techniques counts towards all of them, so the families view stops a few big families from dominating.
+- **Technique detail:** families that use it, sub-techniques, links to attack.mitre.org, and "View indicators" (the IoC Feed filtered with `?technique=` or `?family=`).
+- **Navigator layer:** a layer file (format 4.5) to open in MITRE's ATT&CK Navigator.
 
 ## Asset Source Hierarchy
 

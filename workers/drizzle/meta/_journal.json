@@ -92,6 +92,20 @@
       "when": 1792215085783,
       "tag": "0012_software_indicator",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792232689714,
+      "tag": "0013_attack_family",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792232690808,
+      "tag": "0014_drop_inferred_tactic",
+      "breakpoints": true
     }
   ]
 }

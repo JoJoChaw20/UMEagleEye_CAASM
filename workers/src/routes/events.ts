@@ -21,6 +21,7 @@ import {
 import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
+import { softwareName, techniquesFor } from '../lib/attack'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -429,7 +430,8 @@ app.get('/:eventId', authMiddleware, async (c) => {
         .where(eq(assetRelationships.targetAssetId, asset.assetId)).limit(15),
       db.select({
           value: ctiIndicators.value, type: ctiIndicators.indicatorType, source: ctiIndicators.source,
-          tactic: ctiIndicators.attackTactic, technique: ctiIndicators.attackTechnique,
+          family: ctiIndicators.malwareFamily, attack_software: ctiIndicators.attackSoftware,
+          named_techniques: ctiIndicators.attackTechniques,
           confidence: ctiIndicators.confidenceScore,
           event_id: tiEvents.tiEventId, event_title: tiEvents.title, event_level: tiEvents.threatLevel,
         })
@@ -499,7 +501,12 @@ app.get('/:eventId', authMiddleware, async (c) => {
         direction: r.direction, relationship: r.type, asset_id: r.assetId,
         hostname: r.hostname, ip: r.ip, device_type: r.deviceType,
       })),
-      cti_indicators: cti.map(i => ({ ...i, confidence: i.confidence != null ? Number(i.confidence) : null })),
+      cti_indicators: cti.map(({ named_techniques, ...i }) => ({
+        ...i,
+        confidence: i.confidence != null ? Number(i.confidence) : null,
+        attack_software_name: softwareName(i.attack_software),
+        technique_count: techniquesFor(i.attack_software, named_techniques).length,
+      })),
       history: history.map(h => ({ action: h.action, previous: h.prev, next: h.next, at: h.at, by: h.username })),
     })
   } catch (err) {

@@ -13,27 +13,12 @@ function useToast() {
   }
   return { toast, show }
 }
-import {
-  BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
-} from 'recharts'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TiEventsPanel, { TiMatchesPanel } from '../components/threatintel/TiEventsPanel'
+import AttackMatrixPanel from '../components/threatintel/AttackMatrixPanel'
 
 // ── Constants ─────────────────────────────────────────────────
-const MITRE_TACTICS = [
-  'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution',
-  'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access',
-  'Discovery', 'Lateral Movement', 'Collection', 'Command and Control',
-  'Exfiltration', 'Impact',
-]
-
-const TACTIC_COLORS = [
-  '#ff5252','#ff6e40','#ff9800','#ffc400','#ffea00','#c6ff00',
-  '#69f0ae','#00e5ff','#448aff','#7c4dff','#e040fb','#ff4081',
-  '#ff5252','#ff6e40',
-]
-
 const TYPE_ICONS = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧', cve: '🐞' }
 
 const PAGE_SIZE = 15
@@ -56,7 +41,6 @@ export default function ThreatIntelPage() {
   const { user } = useAuth()
   const canIngest = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const [indicators, setIndicators] = useState([])
-  const [matrix,     setMatrix]     = useState({})
   const [stats,      setStats]      = useState(null)
   const [loading,    setLoading]    = useState(true)
   const [ingesting,  setIngesting]  = useState(false)
@@ -66,6 +50,8 @@ export default function ThreatIntelPage() {
   // IoC Feed filters + server-side pagination
   const [sourceFilter, setSourceFilter] = useState('')
   const [typeFilter,   setTypeFilter]   = useState('')
+  // from the ATT&CK tab: { family } or { technique }, with a label
+  const [attackFilter, setAttackFilter] = useState(null)
   const [page,         setPage]         = useState(1)
   const [total,        setTotal]        = useState(0)
 
@@ -75,14 +61,10 @@ export default function ThreatIntelPage() {
   const [lookupLoading, setLookupLoading] = useState(false)
   const [lookupError,   setLookupError]   = useState('')
 
-  // Load matrix + stats once (not filter-dependent)
+  // Load stats once (not filter-dependent); the ATT&CK tab loads its own data
   const loadStaticData = useCallback(async () => {
     try {
-      const [matrixRes, statsRes] = await Promise.all([
-        client.get('/cti/matrix'),
-        client.get('/cti/stats'),
-      ])
-      setMatrix(matrixRes.data.matrix || {})
+      const statsRes = await client.get('/cti/stats')
       setStats(statsRes.data)
     } catch (err) { console.error(err) }
   }, [])
@@ -94,12 +76,14 @@ export default function ThreatIntelPage() {
       const params = { page, limit: PAGE_SIZE }
       if (sourceFilter) params.source = sourceFilter
       if (typeFilter)   params.indicator_type = typeFilter
+      if (attackFilter?.family)    params.family = attackFilter.family
+      if (attackFilter?.technique) params.technique = attackFilter.technique
       const res = await client.get('/cti/indicators', { params })
       setIndicators(res.data.items || [])
       setTotal(res.data.total || 0)
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
-  }, [page, sourceFilter, typeFilter])
+  }, [page, sourceFilter, typeFilter, attackFilter])
 
   useEffect(() => { loadStaticData() }, [loadStaticData])
   useEffect(() => { loadIndicators() }, [loadIndicators])
@@ -146,14 +130,9 @@ export default function ThreatIntelPage() {
   // Pagination driven by server-returned total
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
-  const clearFilters = () => { setSourceFilter(''); setTypeFilter(''); setPage(1) }
+  const clearFilters = () => { setSourceFilter(''); setTypeFilter(''); setAttackFilter(null); setPage(1) }
 
-  // Chart data
-  const matrixChartData = MITRE_TACTICS.map((tactic, i) => ({
-    tactic: tactic.split(' ').slice(0, 2).join(' '),
-    count: (matrix[tactic] || []).reduce((s, t) => s + t.count, 0),
-    fill: TACTIC_COLORS[i],
-  })).filter(d => d.count > 0)
+  const showAttackIndicators = (f) => { setAttackFilter(f); setSourceFilter(''); setPage(1); setTab('indicators') }
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -243,6 +222,8 @@ export default function ThreatIntelPage() {
         <TiEventsPanel user={user} showToast={showToast} />
       ) : tab === 'matches' ? (
         <TiMatchesPanel showToast={showToast} />
+      ) : tab === 'matrix' ? (
+        <AttackMatrixPanel onShowIndicators={showAttackIndicators} />
       ) : loading ? (
         <div className="flex justify-center py-20">
           <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
@@ -273,6 +254,13 @@ export default function ThreatIntelPage() {
               ))}
             </select>
 
+            {attackFilter && (
+              <span className="flex items-center gap-1 text-xs bg-eagle-600/20 text-eagle-400 border border-eagle-600/40 rounded px-2 py-1">
+                ATT&CK {attackFilter.family ? 'family' : 'technique'}: {attackFilter.label}
+                <button onClick={() => { setAttackFilter(null); setPage(1) }} title="Remove filter"><X className="w-3 h-3" /></button>
+              </span>
+            )}
+
             <button
               onClick={clearFilters}
               className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
@@ -294,8 +282,8 @@ export default function ThreatIntelPage() {
                     <th>Value</th>
                     <th>Source</th>
                     <th>Confidence</th>
-                    <th>ATT&CK Tactic</th>
-                    <th>Technique</th>
+                    <th>Malware family</th>
+                    <th>ATT&CK</th>
                     <th>Last Seen</th>
                   </tr>
                 </thead>
@@ -311,8 +299,14 @@ export default function ThreatIntelPage() {
                       </td>
                       <td className="text-dark-300 text-xs">{ind.source}</td>
                       <td><ConfBar score={ind.confidence_score} /></td>
-                      <td className="text-dark-300 text-xs">{ind.attack_tactic || '—'}</td>
-                      <td className="font-mono text-xs text-accent-purple">{ind.attack_technique || '—'}</td>
+                      <td className="text-dark-300 text-xs max-w-[10rem] truncate" title={ind.malware_family || ''}>{ind.malware_family || '—'}</td>
+                      <td className="text-xs">
+                        {ind.technique_count > 0 ? (
+                          <span className="text-accent-purple" title={ind.attack_software ? `${ind.attack_software_name} (${ind.attack_software}) in MITRE ATT&CK` : 'Techniques named by the feed'}>
+                            {ind.attack_software ? <span className="font-mono">{ind.attack_software}</span> : 'Named'} · {ind.technique_count} techniques
+                          </span>
+                        ) : <span className="text-dark-500">—</span>}
+                      </td>
                       <td className="text-dark-400 text-xs">
                         {new Date(ind.last_seen).toLocaleDateString()}
                       </td>
@@ -349,105 +343,6 @@ export default function ThreatIntelPage() {
             </div>
           )}
         </>
-
-      ) : tab === 'matrix' ? (
-
-        // ── MITRE ATT&CK tab ─────────────────────────────────────
-        (() => {
-          const maxCount = Math.max(
-            ...MITRE_TACTICS.flatMap(t => (matrix[t] || []).map(x => x.count)), 1
-          )
-          const toRgba = (hex, alpha) => {
-            const r = parseInt(hex.slice(1, 3), 16)
-            const g = parseInt(hex.slice(3, 5), 16)
-            const b = parseInt(hex.slice(5, 7), 16)
-            return `rgba(${r},${g},${b},${alpha.toFixed(2)})`
-          }
-          return (
-            <div className="space-y-4">
-              {/* Bar chart summary */}
-              {matrixChartData.length > 0 && (
-                <div className="glass-card p-5">
-                  <h3 className="text-sm font-semibold text-dark-200 mb-4">
-                    Technique Coverage by Tactic
-                  </h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={matrixChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e2028" />
-                      <XAxis dataKey="tactic" tick={{ fill: '#7b7f87', fontSize: 10 }} angle={-30} textAnchor="end" height={80} />
-                      <YAxis tick={{ fill: '#7b7f87', fontSize: 11 }} />
-                      <Tooltip contentStyle={{ background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px', color: 'rgb(var(--dark-100))' }} />
-                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                        {matrixChartData.map((e, i) => <Cell key={i} fill={e.fill} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {/* 2-D Heatmap */}
-              <div className="glass-card p-5">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="text-sm font-semibold text-dark-200">MITRE ATT&CK Heatmap</h3>
-                  <div className="flex items-center gap-2 text-[10px] text-dark-500">
-                    <span>Low</span>
-                    <div className="flex gap-0.5">
-                      {[0.15, 0.35, 0.55, 0.75, 0.95].map(a => (
-                        <span key={a} className="w-4 h-3 rounded-sm inline-block" style={{ background: toRgba('#3393ff', a) }} />
-                      ))}
-                    </div>
-                    <span>High</span>
-                  </div>
-                </div>
-                <p className="text-[10px] text-dark-600 mb-4">Cell colour = indicator count intensity · hover for details</p>
-
-                <div className="overflow-x-auto">
-                  <div className="flex gap-1 min-w-max pb-2">
-                    {MITRE_TACTICS.map((tactic, ti) => {
-                      const techniques = matrix[tactic] || []
-                      const color = TACTIC_COLORS[ti]
-                      return (
-                        <div key={tactic} className="flex flex-col gap-0.5 w-[88px]">
-                          {/* Tactic column header */}
-                          <div
-                            className="text-center py-1.5 px-1 rounded text-[9px] font-bold leading-tight h-10 flex items-center justify-center"
-                            style={{ background: toRgba(color, 0.18), color, border: `1px solid ${toRgba(color, 0.4)}` }}
-                          >
-                            {tactic}
-                          </div>
-
-                          {/* Technique cells */}
-                          {techniques.length > 0
-                            ? techniques.map(t => {
-                                const intensity = t.count / maxCount
-                                const bg = toRgba(color, intensity * 0.72 + 0.14)
-                                const textColor = intensity > 0.55 ? '#fff' : color
-                                return (
-                                  <div
-                                    key={t.technique_id}
-                                    title={`${t.technique_id} — ${t.count} indicator${t.count !== 1 ? 's' : ''}`}
-                                    className="text-center py-1 px-0.5 rounded text-[10px] font-mono leading-tight cursor-default transition-transform hover:scale-105 hover:z-10"
-                                    style={{ background: bg, color: textColor, border: `1px solid ${toRgba(color, 0.3)}` }}
-                                  >
-                                    {t.technique_id}
-                                    <span className="ml-0.5 text-[8px] opacity-80">({t.count})</span>
-                                  </div>
-                                )
-                              })
-                            : (
-                              <div className="text-center py-1.5 rounded text-[10px] text-dark-700 border border-dark-800/40">
-                                —
-                              </div>
-                            )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        })()
 
       ) : (
 
@@ -536,8 +431,8 @@ export default function ThreatIntelPage() {
                     ...(lookupResult.indicator.event_title ? [{ label: 'Threat-intel event', value: lookupResult.indicator.event_title }] : []),
                     { label: 'Type',             value: `${TYPE_ICONS[lookupResult.indicator.indicator_type] || '❓'} ${lookupResult.indicator.indicator_type}` },
                     { label: 'Confidence',       value: `${((lookupResult.indicator.confidence_score ?? 0) * 100).toFixed(0)}%` },
-                    { label: 'ATT&CK Tactic',    value: lookupResult.indicator.attack_tactic || '—' },
-                    { label: 'ATT&CK Technique', value: lookupResult.indicator.attack_technique || '—' },
+                    { label: 'Malware family',   value: lookupResult.indicator.malware_family || '—' },
+                    { label: 'ATT&CK software',  value: lookupResult.indicator.attack_software ? `${lookupResult.indicator.attack_software_name} (${lookupResult.indicator.attack_software})` : '—' },
                     { label: 'First Seen',       value: new Date(lookupResult.indicator.first_seen).toLocaleString() },
                     { label: 'Last Seen',        value: new Date(lookupResult.indicator.last_seen).toLocaleString() },
                   ].map(({ label, value }) => (
@@ -546,6 +441,22 @@ export default function ThreatIntelPage() {
                       <p className="text-sm font-medium text-dark-100">{value}</p>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {lookupResult.found && lookupResult.indicator?.techniques?.length > 0 && (
+                <div className="bg-dark-800/60 rounded-lg p-3">
+                  <p className="text-xs text-dark-400 mb-1.5">
+                    ATT&CK techniques ({lookupResult.indicator.techniques.length}){lookupResult.indicator.attack_software ? `, as MITRE documents for ${lookupResult.indicator.attack_software_name}` : ', named by the feed'}
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {lookupResult.indicator.techniques.map(t => (
+                      <a key={t.id} href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`} target="_blank" rel="noreferrer"
+                        className="text-[11px] px-1.5 py-0.5 rounded bg-dark-700/60 text-dark-200 hover:text-eagle-400" title={t.name}>
+                        <span className="font-mono">{t.id}</span> {t.name}
+                      </a>
+                    ))}
+                  </div>
                 </div>
               )}
 

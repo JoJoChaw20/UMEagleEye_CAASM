@@ -230,8 +230,12 @@ export const ctiIndicators = pgTable('cti_indicators', {
   indicatorType: indicatorTypeEnum('indicator_type').notNull(),
   value: varchar('value', { length: 512 }).notNull(),
   confidenceScore: numeric('confidence_score', { precision: 3, scale: 2 }),
-  attackTactic: varchar('attack_tactic', { length: 100 }),
-  attackTechnique: varchar('attack_technique', { length: 100 }),
+  // The feed's malware family name, and its MITRE ATT&CK software id when ATT&CK documents
+  // it; the family's techniques come from src/data/attack.json (lib/attack.ts).
+  malwareFamily: varchar('malware_family', { length: 120 }),
+  attackSoftware: varchar('attack_software', { length: 12 }),
+  // Techniques the feed itself names (OTX pulse attack_ids), e.g. {T1071,T1059.001}
+  attackTechniques: text('attack_techniques').array(),
   firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
   lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
   tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),

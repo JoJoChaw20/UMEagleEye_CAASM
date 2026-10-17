@@ -4,11 +4,14 @@
  */
 
 import { Hono } from 'hono'
-import { eq, and, or, isNull, desc, gte, ilike, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { ctiIndicators, assets, assetAddresses, tiEvents } from '../db/schema'
+import {
+  buildMatrix, expandTechniques, softwareName, softwareUsing, techniqueName, techniquesFor,
+} from '../lib/attack'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -19,6 +22,26 @@ const INGEST_ROLES = ['tenant_superadmin', 'tenant_admin']
 // threat-intel events are served by routes/tiEvents.ts, scoped to who may see them.
 const FEED = isNull(ctiIndicators.tiEventId)
 
+// IoC Feed filters from the ATT&CK tab.
+// family: an ATT&CK software id (S0154) or the feed's family name.
+// technique: indicators whose family uses it (or one of its sub-techniques), or whose feed named it.
+export function attackConditions(family?: string, technique?: string): SQL[] {
+  const out: SQL[] = []
+  if (family) {
+    out.push(/^S\d{4}$/i.test(family)
+      ? eq(ctiIndicators.attackSoftware, family.toUpperCase())
+      : ilike(ctiIndicators.malwareFamily, family))
+  }
+  if (technique) {
+    // ids come from attack.json, never from the request, so they are safe to inline
+    const techs = expandTechniques([technique])
+    const soft = softwareUsing(techs)
+    const named = sql`${ctiIndicators.attackTechniques} && ${sql.raw(`ARRAY[${techs.map((t) => `'${t}'`).join(',') || "''"}]::text[]`)}`
+    out.push(soft.length ? or(inArray(ctiIndicators.attackSoftware, soft), named)! : named)
+  }
+  return out
+}
+
 // ── Helper: transform a Drizzle CTI row → snake_case ─────────────
 function toSnake(row: typeof ctiIndicators.$inferSelect) {
   return {
@@ -27,8 +50,10 @@ function toSnake(row: typeof ctiIndicators.$inferSelect) {
     indicator_type:     row.indicatorType,
     value:              row.value,
     confidence_score:   row.confidenceScore != null ? Number(row.confidenceScore) : null,
-    attack_tactic:      row.attackTactic,
-    attack_technique:   row.attackTechnique,
+    malware_family:     row.malwareFamily,
+    attack_software:    row.attackSoftware,
+    attack_software_name: softwareName(row.attackSoftware),
+    technique_count:    techniquesFor(row.attackSoftware, row.attackTechniques).length,
     first_seen:         row.firstSeen,
     last_seen:          row.lastSeen,
   }
@@ -45,8 +70,10 @@ app.get('/indicators', authMiddleware, async (c) => {
     const type     = c.req.query('indicator_type') ?? c.req.query('type')
     const source   = c.req.query('source')
     const search   = c.req.query('search')
+    const family   = c.req.query('family')?.trim()
+    const technique = c.req.query('technique')?.trim().toUpperCase()
 
-    const conditions = [FEED]
+    const conditions = [FEED, ...attackConditions(family, technique)]
     if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve' | 'software'))
     if (source) conditions.push(ilike(ctiIndicators.source, `%${source}%`))
     if (search) conditions.push(ilike(ctiIndicators.value, `%${search}%`))
@@ -115,34 +142,23 @@ app.get('/stats', authMiddleware, async (c) => {
 })
 
 // ── GET /matrix ──────────────────────────────────────────────────
-// Returns { matrix: { "Tactic Name": [{technique_id, count}] } }
+// MITRE ATT&CK view of the feeds: techniques come from MITRE's own data for each
+// indicator's malware family (lib/attack.ts), never inferred from type or tags.
+// CISA KEV rows are CVEs, not malware, and are left out.
 app.get('/matrix', authMiddleware, async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
-
-    const rows = await db
+    const groups = await db
       .select({
-        attack_tactic:    ctiIndicators.attackTactic,
-        attack_technique: ctiIndicators.attackTechnique,
-        count:            sql<number>`count(*)::int`,
+        family:   ctiIndicators.malwareFamily,
+        software: ctiIndicators.attackSoftware,
+        named:    ctiIndicators.attackTechniques,
+        count:    sql<number>`count(*)::int`,
       })
       .from(ctiIndicators)
-      .where(and(FEED, sql`${ctiIndicators.attackTactic} IS NOT NULL`))
-      .groupBy(ctiIndicators.attackTactic, ctiIndicators.attackTechnique)
-      .orderBy(ctiIndicators.attackTactic, desc(sql`count(*)`))
-
-    // Build { tactic → [{technique_id, count}] } structure
-    const matrix: Record<string, Array<{ technique_id: string; count: number }>> = {}
-    for (const row of rows) {
-      const tactic = row.attack_tactic!
-      if (!matrix[tactic]) matrix[tactic] = []
-      matrix[tactic].push({
-        technique_id: row.attack_technique || 'Unknown',
-        count: row.count,
-      })
-    }
-
-    return c.json({ matrix, total_indicators: rows.reduce((s, r) => s + r.count, 0) })
+      .where(and(FEED, ne(ctiIndicators.indicatorType, 'cve')))
+      .groupBy(ctiIndicators.malwareFamily, ctiIndicators.attackSoftware, ctiIndicators.attackTechniques)
+    return c.json(buildMatrix(groups))
   } catch (err) {
     console.error('cti GET /matrix error:', err)
     return c.json({ detail: 'Failed to fetch MITRE ATT&CK matrix' }, 500)
@@ -216,7 +232,12 @@ app.get('/lookup', authMiddleware, async (c) => {
     if (indicator) {
       return c.json({
         found: true,
-        indicator: { ...toSnake(indicator), event_title: hit?.eventTitle ?? null },
+        indicator: {
+          ...toSnake(indicator),
+          event_title: hit?.eventTitle ?? null,
+          techniques: techniquesFor(indicator.attackSoftware, indicator.attackTechniques)
+            .map((id) => ({ id, name: techniqueName(id) })),
+        },
         matched_internal_asset,
       })
     }

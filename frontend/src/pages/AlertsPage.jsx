@@ -799,7 +799,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                   <li key={n} className="text-xs text-dark-300">
                     <span className="font-mono text-accent-red">{i.value}</span>{' '}
                     <span className="text-dark-500">({i.type}, {i.event_title ? `event "${i.event_title}"` : i.source})</span>
-                    {(i.tactic || i.technique) && <div className="text-dark-400">ATT&CK: {[i.tactic, i.technique].filter(Boolean).join(' / ')}</div>}
+                    {i.family && <div className="text-dark-400">Malware family: {i.family}{i.attack_software ? ` (ATT&CK ${i.attack_software}, ${i.technique_count} techniques)` : ''}</div>}
                   </li>
                 ))}</ul>
               </Section>
