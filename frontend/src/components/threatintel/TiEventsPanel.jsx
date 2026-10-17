@@ -3,9 +3,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Plus, ArrowLeft, Pencil, Trash2, Send, Undo2, Shield, AlertTriangle, X, Tag, Crosshair,
+  Plus, ArrowLeft, Pencil, Trash2, Send, Undo2, Shield, AlertTriangle, X, Tag, Crosshair, Bug, ExternalLink,
 } from 'lucide-react'
 import client from '../../api/client'
+import { softwareFor, softwareUrl, techniqueUrl, useAttackCatalog } from './attackCatalog'
 import { alertLabel, renderDetail, SevBadge, timeAgo } from '../common/alertMeta'
 
 const LEVELS = {
@@ -46,6 +47,52 @@ function errorText(err, fallback) {
   return err?.response?.data?.detail || fallback
 }
 
+// ── ATT&CK techniques picker (from MITRE's catalogue) ─────────
+const PICK_RESULTS = 10
+
+function TechniquePicker({ cat, value, onChange }) {
+  const [q, setQ] = useState('')
+  const query = q.trim().toLowerCase()
+  const chosen = new Set(value)
+  const results = !cat || !query ? [] : cat.techniques
+    .filter(t => !chosen.has(t.id) && (t.id.toLowerCase().startsWith(query) || t.name.toLowerCase().includes(query)))
+    .slice(0, PICK_RESULTS)
+  const nameOf = (id) => cat?.techniques.find(t => t.id === id)?.name ?? ''
+  const add = (id) => { onChange([...value, id]); setQ('') }
+
+  return (
+    <div className="space-y-1.5">
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {value.map(id => (
+            <span key={id} className="text-xs px-1.5 py-0.5 rounded bg-dark-700/70 text-dark-200 flex items-center gap-1">
+              <span className="font-mono">{id}</span> {nameOf(id)}
+              <button type="button" onClick={() => onChange(value.filter(v => v !== id))} className="text-dark-400 hover:text-red-400"><X className="w-3 h-3" /></button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <input value={q} onChange={e => setQ(e.target.value)} disabled={!cat}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (results[0]) add(results[0].id) } }}
+          className="input-field w-full text-sm" placeholder={cat ? 'Search by ID or name, e.g. T1566 or phishing' : 'Loading ATT&CK…'} />
+        {results.length > 0 && (
+          <div className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-lg border border-dark-600 bg-dark-800 shadow-lg">
+            {results.map(t => (
+              <button key={t.id} type="button" onClick={() => add(t.id)}
+                className="w-full text-left px-2.5 py-1.5 text-xs hover:bg-dark-700 flex gap-2">
+                <span className="font-mono text-dark-400 w-16 shrink-0">{t.id}</span>
+                <span className="flex-1 text-dark-100 truncate">{t.name}</span>
+                <span className="text-dark-500 truncate max-w-[40%]">{t.tactics.map(sh => cat.tactics.find(x => x.short === sh)?.name).join(', ')}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Create / edit dialog ──────────────────────────────────────
 function EventDialog({ user, initial, onClose, onSaved }) {
   const isSuperadmin = user?.role === 'superadmin'
@@ -55,7 +102,11 @@ function EventDialog({ user, initial, onClose, onSaved }) {
     threat_level: initial?.threat_level ?? 'medium',
     distribution: initial?.distribution ?? (isSuperadmin ? 'platform' : 'organisation'),
     tags: (initial?.tags ?? []).join(', '),
+    malware_family: initial?.malware_family ?? '',
   })
+  const [techniques, setTechniques] = useState((initial?.attack_techniques ?? []).map(t => t.id))
+  const cat = useAttackCatalog()
+  const famSoftware = form.malware_family.trim() ? softwareFor(cat, form.malware_family) : null
   const [indicators, setIndicators] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -76,6 +127,8 @@ function EventDialog({ user, initial, onClose, onSaved }) {
       threat_level: form.threat_level,
       distribution: form.distribution,
       tags: tagList,
+      malware_family: form.malware_family.trim() || null,
+      attack_techniques: techniques,
     }
     let saved
     try {
@@ -103,7 +156,7 @@ function EventDialog({ user, initial, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="glass-card w-full max-w-lg p-6 space-y-4" onClick={e => e.stopPropagation()}>
+      <div className="glass-card w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">{initial ? 'Edit event' : 'New threat-intel event'}</h2>
           <button onClick={onClose} className="text-dark-400 hover:text-dark-100"><X className="w-5 h-5" /></button>
@@ -145,6 +198,21 @@ function EventDialog({ user, initial, onClose, onSaved }) {
             </div>
           </div>
         )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block text-sm text-dark-300">Malware family <span className="text-dark-500">(optional)</span>
+            <input value={form.malware_family} onChange={set('malware_family')} maxLength={120} className="input-field w-full mt-1" placeholder="e.g. Cobalt Strike" />
+            {form.malware_family.trim() && cat && (
+              <span className={`block text-xs mt-1 ${famSoftware ? 'text-green-400' : 'text-dark-500'}`}>
+                {famSoftware
+                  ? `In ATT&CK: ${famSoftware.name} (${famSoftware.id}), ${famSoftware.count} techniques`
+                  : 'Not in ATT&CK: no techniques from the family'}
+              </span>
+            )}
+          </label>
+          <div className="text-sm text-dark-300">ATT&CK techniques <span className="text-dark-500">(optional)</span>
+            <div className="mt-1"><TechniquePicker cat={cat} value={techniques} onChange={setTechniques} /></div>
+          </div>
+        </div>
         <label className="block text-sm text-dark-300">Indicators <span className="text-dark-500">(optional: one per line, added when you save)</span>
           <textarea value={indicators} onChange={e => setIndicators(e.target.value)} rows={3} className="input-field w-full mt-1 font-mono text-xs"
             placeholder={'IPs, domains, URLs, hashes, emails or CVE IDs, e.g.\n203.0.113.5\nhxxp://evil[.]example[.]my'} />
@@ -321,6 +389,30 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
           )}
         </div>
         {ev.description && <p className="text-sm text-dark-300 whitespace-pre-wrap">{ev.description}</p>}
+        {(ev.malware_family || ev.attack_techniques?.length > 0) && (
+          <div className="text-xs space-y-1.5">
+            {ev.malware_family && (
+              <p className="text-dark-300 flex items-center gap-1.5 flex-wrap">
+                <Bug className="w-3.5 h-3.5 text-dark-400" /> Malware family: <span className="text-dark-100">{ev.malware_family}</span>
+                {ev.attack_software
+                  ? <a href={softwareUrl(ev.attack_software)} target="_blank" rel="noreferrer" className="text-eagle-400 hover:underline inline-flex items-center gap-0.5">
+                      ATT&CK {ev.attack_software_name} ({ev.attack_software}) <ExternalLink className="w-3 h-3" />
+                    </a>
+                  : <span className="text-dark-500">(not in ATT&CK)</span>}
+              </p>
+            )}
+            {ev.attack_techniques?.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {ev.attack_techniques.map(t => (
+                  <a key={t.id} href={techniqueUrl(t.id)} target="_blank" rel="noreferrer" title={t.name}
+                    className="px-1.5 py-0.5 rounded bg-dark-700/60 text-dark-200 hover:text-eagle-400">
+                    <span className="font-mono">{t.id}</span> {t.name}
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <p className="text-xs text-dark-500">
           Created {fmt(ev.created_at)} · updated {fmt(ev.updated_at)}{ev.published_at && ` · published ${fmt(ev.published_at)}`}
         </p>

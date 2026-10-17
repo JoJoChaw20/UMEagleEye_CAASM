@@ -430,6 +430,12 @@ The Lookup tab accepts any IP, domain, hash, URL, or email and queries `GET /cti
 - **Matrix:** one column per tactic of the current ATT&CK release (v20 has 15, with Stealth and Defense Impairment in place of Defense Evasion), listing the techniques seen. Sub-techniques roll up to their parent. Shading is by indicator count or by number of families: a family with many techniques counts towards all of them, so the families view stops a few big families from dominating.
 - **Technique detail:** families that use it, sub-techniques, links to attack.mitre.org, and "View indicators" (the IoC Feed filtered with `?technique=` or `?family=`).
 - **Navigator layer:** a layer file (format 4.5) to open in MITRE's ATT&CK Navigator.
+- **Scope** (`?scope=`):
+  - `feeds` (default): the global feeds.
+  - `matched`: indicators behind open threat-intel alerts on your own assets, from feeds and events.
+  - `events`: your events and the published ones shared with you, each event counted as one "family".
+
+Threat-intel events take ATT&CK too: an optional malware family (resolved to ATT&CK software like the feeds) and techniques picked from MITRE's catalogue (`GET /cti/attack`). Unknown technique ids are dropped. The event's ATT&CK fields are copied to its attributes, so lookups and alert details show them.
 
 ## Asset Source Hierarchy
 

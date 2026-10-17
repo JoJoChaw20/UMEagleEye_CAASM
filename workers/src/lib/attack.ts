@@ -74,7 +74,13 @@ export function softwareUsing(techIds: string[]): string[] {
 
 // ── Matrix ──────────────────────────────────────────────────────────────────────
 // Input: feed indicators grouped by (family, ATT&CK software, techniques the feed named).
-export interface MatrixGroup { family: string | null; software: string | null; named: string[] | null; count: number }
+export interface MatrixGroup {
+  family: string | null
+  software: string | null
+  named: string[] | null
+  count: number
+  label?: string    // shown instead of the family, and counted on its own (an event's title)
+}
 
 interface FamilyCount { name: string; software: string | null; iocs: number }
 export interface MatrixTechnique {
@@ -101,7 +107,7 @@ export function buildMatrix(groups: MatrixGroup[]) {
     total += g.count
     if (g.family) {
       withFamily += g.count
-      familiesSeen.add(g.software ?? `f:${normName(g.family)}`)
+      familiesSeen.add(g.label ? `l:${g.label}` : g.software ?? `f:${normName(g.family)}`)
       if (g.software) familiesMatched.add(g.software)
       else unmatched.set(g.family, (unmatched.get(g.family) ?? 0) + g.count)
     }
@@ -109,8 +115,8 @@ export function buildMatrix(groups: MatrixGroup[]) {
     if (!techs.length) continue
     withAttack += g.count
 
-    const label = softwareName(g.software) ?? g.family ?? 'Techniques named by the feed'
-    const famKey = g.software ?? `f:${label}`
+    const label = g.label ?? softwareName(g.software) ?? g.family ?? 'Techniques named by the feed'
+    const famKey = g.label ? `l:${g.label}` : g.software ?? `f:${label}`
     const touched = new Set<string>()
     for (const t of techs) {
       const p = parentOf(t)

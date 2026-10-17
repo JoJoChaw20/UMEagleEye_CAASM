@@ -7,10 +7,10 @@ import { Hono } from 'hono'
 import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
-import { getDb } from '../db/client'
-import { ctiIndicators, assets, assetAddresses, tiEvents } from '../db/schema'
+import { getDb, type DB } from '../db/client'
+import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
-  buildMatrix, expandTechniques, softwareName, softwareUsing, techniqueName, techniquesFor,
+  ATTACK, buildMatrix, expandTechniques, type MatrixGroup, softwareName, softwareUsing, techniqueName, techniquesFor,
 } from '../lib/attack'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -141,14 +141,76 @@ app.get('/stats', authMiddleware, async (c) => {
   }
 })
 
+// ── GET /attack ─── the ATT&CK catalogue, for picking techniques on an event ──
+app.get('/attack', authMiddleware, (c) => {
+  c.header('Cache-Control', 'private, max-age=86400')
+  return c.json({
+    version: ATTACK.version,
+    modified: ATTACK.modified,
+    tactics: ATTACK.tactics.map(([id, short, name]) => ({ id, short, name })),
+    // [id, name, tactic shortnames]
+    techniques: Object.entries(ATTACK.techniques).map(([id, [name, tix]]) => [id, name, tix.map((i) => ATTACK.tactics[i]?.[1])]),
+    software: Object.entries(ATTACK.software).map(([id, [name, t]]) => [id, name, t.length]),
+    names: ATTACK.names,
+  })
+})
+
 // ── GET /matrix ──────────────────────────────────────────────────
-// MITRE ATT&CK view of the feeds: techniques come from MITRE's own data for each
-// indicator's malware family (lib/attack.ts), never inferred from type or tags.
-// CISA KEV rows are CVEs, not malware, and are left out.
-app.get('/matrix', authMiddleware, async (c) => {
-  try {
-    const db = getDb(c.env.DATABASE_URL)
-    const groups = await db
+// MITRE ATT&CK view: techniques come from MITRE's own data for each indicator's malware
+// family (lib/attack.ts), or were named by the feed or the event; never inferred from
+// type or tags. CVEs (CISA KEV) are not malware and are left out. ?scope=
+//   feeds    (default) the global feeds
+//   matched  indicators behind open alerts on our assets (feeds and events)
+//   events   our events and the published ones shared with us, one family per event
+export type MatrixScope = 'feeds' | 'matched' | 'events'
+
+/** The groups GET /matrix builds the matrix from (exported for tests). */
+export async function matrixGroups(
+  db: DB, scope: MatrixScope, user: { role: string; tenantId?: string | null },
+): Promise<MatrixGroup[]> {
+  const isSuper = user.role === 'superadmin'
+  const ownTenant = user.tenantId ?? '00000000-0000-0000-0000-000000000000'
+  const notCve = ne(ctiIndicators.indicatorType, 'cve')
+  let groups: MatrixGroup[]
+
+  if (scope === 'matched') {
+    groups = await db
+      .select({
+        family:   ctiIndicators.malwareFamily,
+        software: ctiIndicators.attackSoftware,
+        named:    ctiIndicators.attackTechniques,
+        count:    sql<number>`count(DISTINCT ${ctiIndicators.indicatorId})::int`,
+      })
+      .from(eventCtiIndicators)
+      .innerJoin(ctiIndicators, eq(ctiIndicators.indicatorId, eventCtiIndicators.indicatorId))
+      .innerJoin(events, eq(events.eventId, eventCtiIndicators.eventId))
+      .innerJoin(assets, eq(assets.assetId, events.assetId))
+      .where(and(
+        notCve,
+        inArray(events.status, ['open', 'in_progress']),
+        isSuper ? undefined : eq(assets.tenantId, ownTenant),
+      ))
+      .groupBy(ctiIndicators.malwareFamily, ctiIndicators.attackSoftware, ctiIndicators.attackTechniques)
+  } else if (scope === 'events') {
+    const rows = await db
+      .select({
+        title:    tiEvents.title,
+        family:   tiEvents.malwareFamily,
+        software: tiEvents.attackSoftware,
+        named:    tiEvents.attackTechniques,
+        // qualified by hand: with no join drizzle writes a bare "ti_event_id", which the subquery would read as c's
+        count:    sql<number>`(SELECT count(*)::int FROM cti_indicators c WHERE c.ti_event_id = ti_events.ti_event_id AND c.indicator_type <> 'cve')`,
+      })
+      .from(tiEvents)
+      .where(isSuper ? undefined : or(
+        eq(tiEvents.tenantId, ownTenant),
+        and(eq(tiEvents.status, 'published'), inArray(tiEvents.distribution, ['all_tenants', 'platform'])),
+      ))
+      .orderBy(desc(tiEvents.updatedAt))
+      .limit(500)
+    groups = rows.map((r) => ({ ...r, label: r.title }))
+  } else {
+    groups = await db
       .select({
         family:   ctiIndicators.malwareFamily,
         software: ctiIndicators.attackSoftware,
@@ -156,9 +218,23 @@ app.get('/matrix', authMiddleware, async (c) => {
         count:    sql<number>`count(*)::int`,
       })
       .from(ctiIndicators)
-      .where(and(FEED, ne(ctiIndicators.indicatorType, 'cve')))
+      .where(and(FEED, notCve))
       .groupBy(ctiIndicators.malwareFamily, ctiIndicators.attackSoftware, ctiIndicators.attackTechniques)
-    return c.json(buildMatrix(groups))
+  }
+  return groups
+}
+
+app.get('/matrix', authMiddleware, async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const wanted = c.req.query('scope')
+    const scope: MatrixScope = wanted === 'matched' || wanted === 'events' ? wanted : 'feeds'
+    const groups = await matrixGroups(db, scope, c.get('user'))
+    const matrix = buildMatrix(groups)
+    const extra = scope === 'events'
+      ? { events_total: groups.length, events_with_attack: groups.filter((g) => techniquesFor(g.software, g.named).length > 0).length }
+      : {}
+    return c.json({ scope, ...matrix, ...extra })
   } catch (err) {
     console.error('cti GET /matrix error:', err)
     return c.json({ detail: 'Failed to fetch MITRE ATT&CK matrix' }, 500)

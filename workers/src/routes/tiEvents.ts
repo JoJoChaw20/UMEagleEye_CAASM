@@ -29,6 +29,7 @@ import { IOC_TYPES, parseIocs, type IocType } from '../lib/iocParse'
 import { WARNINGLIST_LABELS, warninglistOf } from '../lib/warninglist'
 import { refreshCveIntel, scopeForEvent } from '../services/threatIntel'
 import { matchIocs } from '../services/iocMatch'
+import { resolveSoftware, softwareName, techniqueIds, techniqueName } from '../lib/attack'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -81,6 +82,10 @@ function eventOut(ev: EventRow, user: User, extra: Record<string, unknown> = {})
     status: ev.status,
     distribution: ev.distribution,
     tags: ev.tags,
+    malware_family: ev.malwareFamily,
+    attack_software: ev.attackSoftware,
+    attack_software_name: softwareName(ev.attackSoftware),
+    attack_techniques: (ev.attackTechniques ?? []).map((id) => ({ id, name: techniqueName(id) })),
     created_by: ev.createdBy,
     created_at: ev.createdAt,
     updated_at: ev.updatedAt,
@@ -135,6 +140,28 @@ const eventBody = z.object({
   threat_level: z.enum(['low', 'medium', 'high']).optional(),
   distribution: z.enum(['organisation', 'all_tenants', 'platform']).optional(),
   tags: z.array(z.string().trim().min(1).max(50)).max(20).optional(),
+  malware_family: z.string().trim().max(120).nullish(),
+  attack_techniques: z.array(z.string().trim().max(20)).max(100).optional(),
+})
+
+/** The event's ATT&CK columns from a request body (undefined = not in the body). */
+export function attackFields(body: { malware_family?: string | null; attack_techniques?: string[] }) {
+  const out: Partial<Pick<EventRow, 'malwareFamily' | 'attackSoftware' | 'attackTechniques'>> = {}
+  if (body.malware_family !== undefined) {
+    const family = body.malware_family?.trim() || null
+    out.malwareFamily = family
+    out.attackSoftware = family ? resolveSoftware([family]) : null
+  }
+  if (body.attack_techniques !== undefined) {
+    const ids = techniqueIds(body.attack_techniques)      // ids ATT&CK does not have are dropped
+    out.attackTechniques = ids.length ? ids : null
+  }
+  return out
+}
+
+/** Attribute rows carry their event's ATT&CK fields (the feeds' columns), for lookups and alerts. */
+const attackOfEvent = (ev: EventRow) => ({
+  malwareFamily: ev.malwareFamily, attackSoftware: ev.attackSoftware, attackTechniques: ev.attackTechniques,
 })
 
 function badRequest(result: { success: boolean; error?: z.ZodError }, c: { json: (b: unknown, s: 400) => Response }) {
@@ -205,6 +232,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', e
       threatLevel: body.threat_level ?? 'medium',
       distribution: dist.value!,
       tags: body.tags ?? [],
+      ...attackFields(body),
       createdBy: user.userId,
     }).returning()
     if (!ev) return c.json({ detail: 'Failed to create event' }, 500)
@@ -274,13 +302,16 @@ app.patch('/:id', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json
       ...(body.description !== undefined ? { description: body.description ?? null } : {}),
       ...(body.threat_level !== undefined ? { threatLevel: body.threat_level } : {}),
       ...(body.tags !== undefined ? { tags: body.tags } : {}),
+      ...attackFields(body),
       distribution,
       updatedAt: new Date(),
     }).where(eq(tiEvents.tiEventId, ev.tiEventId)).returning()
     if (!updated) return c.json({ detail: 'Event not found' }, 404)
     // Attribute rows carry the event's name as their source.
-    if (body.title !== undefined && body.title !== ev.title) {
-      await db.update(ctiIndicators).set({ source: eventSource(updated.title) }).where(eq(ctiIndicators.tiEventId, ev.tiEventId))
+    const attackChanged = body.malware_family !== undefined || body.attack_techniques !== undefined
+    if ((body.title !== undefined && body.title !== ev.title) || attackChanged) {
+      await db.update(ctiIndicators).set({ source: eventSource(updated.title), ...attackOfEvent(updated) })
+        .where(eq(ctiIndicators.tiEventId, ev.tiEventId))
     }
     await audit(db, user, updated, 'ti_event.update', body, { title: ev.title, distribution: ev.distribution })
     // Sharing or the title (shown on alerts) changed on a published event: refresh alerts.
@@ -385,6 +416,7 @@ app.post('/:id/attributes', authMiddleware, requireRoles(...WRITE_ROLES), zValid
         toIds: body.to_ids ?? true,
         comment: body.comment ?? null,
         warning,
+        ...attackOfEvent(ev),
         firstSeen: now,
         lastSeen: now,
       }

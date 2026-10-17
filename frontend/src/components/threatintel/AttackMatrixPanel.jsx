@@ -7,6 +7,11 @@ import client from '../../api/client'
 
 const SHADE = '#3393ff'
 const COLUMN_ROWS = 14
+const SCOPES = {
+  feeds:   { label: 'All feeds',          layer: 'threat-intel feeds' },
+  matched: { label: 'Matched our assets', layer: 'indicators matching our assets' },
+  events:  { label: 'Our events',         layer: 'threat-intel events' },
+}
 
 const rgba = (hex, a) => {
   const n = parseInt(hex.slice(1), 16)
@@ -24,16 +29,16 @@ function navigatorLayer(data) {
     entries.push({
       techniqueID: t.id,
       score: t.iocs,
-      comment: `${t.iocs} feed indicator(s); families: ${t.families.map((f) => f.name).join(', ')}`,
+      comment: `${t.iocs} indicator(s); ${data.scope === 'events' ? 'events' : 'families'}: ${t.families.map((f) => f.name).join(', ')}`,
       showSubtechniques: t.subs.length > 0,
     })
-    for (const s of t.subs) entries.push({ techniqueID: s.id, score: s.iocs, comment: `${s.iocs} feed indicator(s)` })
+    for (const s of t.subs) entries.push({ techniqueID: s.id, score: s.iocs, comment: `${s.iocs} indicator(s)` })
   }
   return {
-    name: 'UMEagleEye threat-intel feeds',
+    name: `UMEagleEye ${SCOPES[data.scope]?.layer ?? 'threat intel'}`,
     versions: { attack: data.attack.version.split('.')[0], navigator: '5.1.0', layer: '4.5' },
     domain: 'enterprise-attack',
-    description: `Feed indicators per technique, from the techniques MITRE ATT&CK v${data.attack.version} documents for each indicator's malware family. Exported ${new Date().toISOString().slice(0, 10)}.`,
+    description: `Indicators per technique (${SCOPES[data.scope]?.label ?? data.scope}): the techniques MITRE ATT&CK v${data.attack.version} documents for each malware family, plus techniques named by the feed or event. Exported ${new Date().toISOString().slice(0, 10)}.`,
     sorting: 3,
     layout: { layout: 'side', showID: true, showName: true },
     hideDisabled: false,
@@ -48,28 +53,44 @@ function downloadLayer(data) {
   const blob = new Blob([JSON.stringify(navigatorLayer(data), null, 2)], { type: 'application/json' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `umeagleeye-attack-layer-${new Date().toISOString().slice(0, 10)}.json`
+  a.download = `umeagleeye-attack-${data.scope}-${new Date().toISOString().slice(0, 10)}.json`
   a.click()
   URL.revokeObjectURL(a.href)
 }
 
 export default function AttackMatrixPanel({ onShowIndicators }) {
+  const [scope, setScope] = useState('feeds')       // feeds | matched | events
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [shadeBy, setShadeBy] = useState('iocs')    // iocs | families
   const [selected, setSelected] = useState(null)    // technique id
   const [expanded, setExpanded] = useState({})      // tactic short -> true
 
-  const load = async () => {
+  const load = async (sc = scope) => {
     setError('')
+    setData(null)
+    setSelected(null)
     try {
-      const res = await client.get('/cti/matrix')
+      const res = await client.get('/cti/matrix', { params: { scope: sc } })
       setData(res.data)
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to load the ATT&CK matrix.')
     }
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load(scope) }, [scope]) // eslint-disable-line react-hooks/exhaustive-deps
+  // events: most events hold few indicators, so compare them by number of events
+  const pickScope = (sc) => { setScope(sc); setShadeBy(sc === 'events' ? 'families' : 'iocs') }
+
+  const scopeBar = (
+    <div className="flex gap-1 bg-dark-800 rounded-lg p-1 w-fit">
+      {Object.entries(SCOPES).map(([id, { label }]) => (
+        <button key={id} onClick={() => pickScope(id)}
+          className={`px-3 py-1.5 rounded-md text-sm ${scope === id ? 'bg-eagle-600 text-white' : 'text-dark-400 hover:text-dark-100'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
 
   const columns = useMemo(() => {
     if (!data) return []
@@ -82,16 +103,22 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
 
   if (error) {
     return (
-      <div className="glass-card p-6 text-sm text-red-500 flex items-center gap-2">
-        {error}
-        <button onClick={load} className="btn-secondary text-xs py-1 px-2 ml-auto">Retry</button>
+      <div className="space-y-4">
+        {scopeBar}
+        <div className="glass-card p-6 text-sm text-red-500 flex items-center gap-2">
+          {error}
+          <button onClick={() => load()} className="btn-secondary text-xs py-1 px-2 ml-auto">Retry</button>
+        </div>
       </div>
     )
   }
   if (!data) {
     return (
-      <div className="flex justify-center py-20">
-        <RefreshCw className="w-6 h-6 animate-spin text-dark-400" />
+      <div className="space-y-4">
+        {scopeBar}
+        <div className="flex justify-center py-20">
+          <RefreshCw className="w-6 h-6 animate-spin text-dark-400" />
+        </div>
       </div>
     )
   }
@@ -99,19 +126,32 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
   const { coverage: cov, attack } = data
   const max = Math.max(1, ...data.techniques.map((t) => (shadeBy === 'iocs' ? t.iocs : t.family_count)))
   const sel = selected && data.techniques.find((t) => t.id === selected)
+  const isEvents = data.scope === 'events'
+  const famWord = isEvents ? 'events' : 'families'
+  const canList = data.scope === 'feeds' && onShowIndicators    // the IoC Feed lists feed rows only
 
   return (
     <div className="space-y-4">
+      {scopeBar}
+
       {/* Where the techniques come from, and how much of the feed they cover */}
       <div className="glass-card p-5 space-y-3">
         <div className="flex items-start gap-3 flex-wrap">
           <div className="flex-1 min-w-[260px]">
             <h3 className="text-sm font-semibold text-dark-100">
-              {pct(cov.with_attack, cov.total)}% of feed indicators have ATT&CK techniques
+              {isEvents
+                ? `${data.events_with_attack} of ${data.events_total} events have ATT&CK techniques`
+                : data.scope === 'matched'
+                  ? `${cov.with_attack.toLocaleString()} of ${cov.total.toLocaleString()} indicators matching your assets have ATT&CK techniques`
+                  : `${pct(cov.with_attack, cov.total)}% of feed indicators have ATT&CK techniques`}
             </h3>
             <p className="text-xs text-dark-400 mt-1">
-              {cov.with_attack.toLocaleString()} of {cov.total.toLocaleString()} indicators (OTX, ThreatFox; CISA KEV CVEs are not malware and are not counted).
-              An indicator gets the techniques MITRE documents for its malware family, or the ones the feed names itself. Nothing is guessed from the indicator type.
+              {isEvents
+                ? 'Your events and the published ones shared with you. An event gets the techniques MITRE documents for its malware family plus the ones picked on the event (edit an event to add them).'
+                : data.scope === 'matched'
+                  ? 'Indicators behind open threat-intel alerts on your assets (feeds and events; CVEs not counted): what the threats already touching you are known to do.'
+                  : `${cov.with_attack.toLocaleString()} of ${cov.total.toLocaleString()} indicators (OTX, ThreatFox; CISA KEV CVEs are not malware and are not counted). An indicator gets the techniques MITRE documents for its malware family, or the ones the feed names itself.`}
+              {' '}Nothing is guessed from the indicator type.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -126,7 +166,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+        {!isEvents && (<div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
           <div className="bg-dark-800/60 rounded-lg p-2.5">
             <p className="text-dark-400">Family matched in ATT&CK</p>
             <p className="text-dark-100 font-medium">{cov.families_matched} of {cov.families} families</p>
@@ -139,9 +179,9 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
             <p className="text-dark-400">No family named by the feed</p>
             <p className="text-dark-100 font-medium">{(cov.total - cov.with_family).toLocaleString()} indicators</p>
           </div>
-        </div>
+        </div>)}
 
-        {cov.top_unmatched.length > 0 && (
+        {!isEvents && cov.top_unmatched.length > 0 && (
           <p className="text-[11px] text-dark-500">
             <Info className="w-3 h-3 inline mr-1 -mt-0.5" />
             Largest families ATT&CK does not document yet: {cov.top_unmatched.map((f) => `${f.name} (${f.iocs.toLocaleString()})`).join(', ')}.
@@ -152,9 +192,9 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
       {/* Matrix */}
       <div className="glass-card p-5">
         <div className="flex items-center justify-between gap-3 mb-1 flex-wrap">
-          <h3 className="text-sm font-semibold text-dark-200">Techniques seen in the feeds</h3>
+          <h3 className="text-sm font-semibold text-dark-200">Techniques: {SCOPES[data.scope]?.label}</h3>
           <div className="flex items-center gap-1 bg-dark-800 rounded-md p-0.5 text-[11px]">
-            {[['iocs', 'Indicators'], ['families', 'Families']].map(([id, label]) => (
+            {[['iocs', 'Indicators'], ['families', isEvents ? 'Events' : 'Families']].map(([id, label]) => (
               <button key={id} onClick={() => setShadeBy(id)}
                 className={`px-2 py-1 rounded ${shadeBy === id ? 'bg-eagle-600 text-white' : 'text-dark-400 hover:text-dark-100'}`}>
                 {label}
@@ -163,13 +203,17 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
           </div>
         </div>
         <p className="text-[11px] text-dark-500 mb-4">
-          Shade = {shadeBy === 'iocs' ? 'indicators whose family uses the technique' : 'malware families that use the technique'}.
-          {' '}A family with many techniques counts towards all of them, so also compare by families. Click a technique for details.
+          Shade = {shadeBy === 'iocs' ? 'indicators with the technique' : isEvents ? 'events with the technique' : 'malware families that use the technique'}.
+          {' '}A family with many techniques counts towards all of them, so also compare by {famWord}. Click a technique for details.
         </p>
 
         {data.techniques.length === 0 ? (
           <p className="text-center py-12 text-sm text-dark-400">
-            No feed indicator has ATT&CK techniques yet. Families are recorded as the feeds are ingested.
+            {isEvents
+              ? 'No event has ATT&CK techniques yet. Edit an event to name its malware family or pick techniques.'
+              : data.scope === 'matched'
+                ? 'No open threat-intel alert on your assets has ATT&CK techniques.'
+                : 'No feed indicator has ATT&CK techniques yet. Families are recorded as the feeds are ingested.'}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -189,7 +233,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
                       const isSel = t.id === selected
                       return (
                         <button key={t.id} onClick={() => setSelected(isSel ? null : t.id)}
-                          title={`${t.id} ${t.name}: ${t.iocs.toLocaleString()} indicators, ${t.family_count} families`}
+                          title={`${t.id} ${t.name}: ${t.iocs.toLocaleString()} indicators, ${t.family_count} ${famWord}`}
                           className={`text-left px-1.5 py-1 rounded text-[10px] leading-tight transition-transform hover:scale-[1.03] ${isSel ? 'ring-2 ring-accent-orange' : ''}`}
                           style={{ background: rgba(SHADE, a), color: a > 0.55 ? '#fff' : undefined, border: `1px solid ${rgba(SHADE, 0.35)}` }}>
                           <span className="block truncate font-medium">{t.name}</span>
@@ -226,7 +270,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
               </h3>
               <p className="text-xs text-dark-400 mt-0.5">
                 {sel.tactics.map((s) => data.tactics.find((t) => t.short === s)?.name ?? s).join(', ')}
-                {' · '}{sel.iocs.toLocaleString()} indicators · {sel.family_count} families
+                {' · '}{sel.iocs.toLocaleString()} indicators · {sel.family_count} {famWord}
               </p>
             </div>
             <a href={techUrl(sel.id)} target="_blank" rel="noreferrer"
@@ -240,7 +284,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
 
           <div className="grid md:grid-cols-2 gap-4">
             <div>
-              <p className="text-xs font-medium text-dark-300 mb-2">Families that use it</p>
+              <p className="text-xs font-medium text-dark-300 mb-2">{isEvents ? 'Events with it' : 'Families that use it'}</p>
               <div className="space-y-1">
                 {sel.families.map((f) => (
                   <div key={f.software ?? f.name} className="flex items-center gap-2 text-xs bg-dark-800/60 rounded px-2 py-1.5">
@@ -251,7 +295,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
                       )}
                     </span>
                     <span className="text-dark-400">{f.iocs.toLocaleString()}</span>
-                    {f.software && onShowIndicators && (
+                    {f.software && canList && (
                       <button onClick={() => onShowIndicators({ family: f.software, label: f.name })}
                         className="text-eagle-400 hover:underline">Indicators</button>
                     )}
@@ -279,7 +323,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
             </div>
           </div>
 
-          {onShowIndicators && (
+          {canList && (
             <button onClick={() => onShowIndicators({ technique: sel.id, label: `${sel.id} ${sel.name}` })}
               className="btn-secondary text-xs py-1.5 px-3">
               View the {sel.iocs.toLocaleString()} indicators

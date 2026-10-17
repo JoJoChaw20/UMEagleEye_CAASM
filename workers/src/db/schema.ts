@@ -261,6 +261,11 @@ export const tiEvents = pgTable('ti_events', {
   status: tiEventStatusEnum('status').notNull().default('draft'),
   distribution: tiDistributionEnum('distribution').notNull().default('organisation'),
   tags: jsonb('tags').notNull().default([]),
+  // MITRE ATT&CK, copied to the event's attributes: the family the analyst names (with its
+  // ATT&CK software id when ATT&CK documents it) and techniques picked from ATT&CK.
+  malwareFamily: varchar('malware_family', { length: 120 }),
+  attackSoftware: varchar('attack_software', { length: 12 }),
+  attackTechniques: text('attack_techniques').array(),
   createdBy: uuid('created_by').references(() => users.userId, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
