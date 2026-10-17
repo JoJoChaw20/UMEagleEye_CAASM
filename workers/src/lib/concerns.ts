@@ -18,13 +18,18 @@ const hasCtiMatch = sql`${events.details}->'has_cti_match' = 'true'::jsonb`
 // A feed naming a CVE (CISA KEV, later MyCERT advisories) says the flaw is exploited in
 // the wild, not that this asset was attacked, so those CVE alerts are 'exploitable'.
 const isCve = eq(events.eventType, 'cve_detected')
+// cti_match on watched software (rule R6) is exposure, not compromise
+const isWatchlist = and(eq(events.eventType, 'cti_match'), sql`${events.details}->>'match_kind' = 'watchlist'`)!
 const epssAtLeast = (v: number) => sql`(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number'
   THEN (${events.details}->>'epss_score')::float ELSE 0 END) >= ${v}`
 
 export function concernCondition(id: ConcernId): SQL {
   switch (id) {
     case 'threat_intel':
-      return or(eq(events.eventType, 'cti_match'), and(hasCtiMatch, ne(events.eventType, 'cve_detected')))!
+      return or(
+        and(eq(events.eventType, 'cti_match'), sql`COALESCE(${events.details}->>'match_kind', '') <> 'watchlist'`),
+        and(hasCtiMatch, ne(events.eventType, 'cve_detected'), ne(events.eventType, 'cti_match')),
+      )!
     case 'exposed_services':
       // Risky/low ports newly opened (severity already folds in risky port and
       // internet exposure), or a host that just became internet-facing.
@@ -38,11 +43,11 @@ export function concernCondition(id: ConcernId): SQL {
       return and(eq(events.eventType, 'config_change'),
         sql`${events.details}->>'changed_attribute' IN ('mac_address', 'hostname')`)!
     case 'exploitable':
-      return and(isCve, or(
+      return or(isWatchlist, and(isCve, or(
         hasCtiMatch,
         epssAtLeast(EPSS_LIKELY),
         and(eq(events.severity, 'critical'), eq(assets.isInternetFacing, true)),
-      ))!
+      )))!
     case 'new_devices':
       return eq(events.eventType, 'new_device')
   }

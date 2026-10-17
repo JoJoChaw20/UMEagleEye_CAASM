@@ -1,0 +1,1 @@
+ALTER TYPE "public"."indicator_type" ADD VALUE 'software';

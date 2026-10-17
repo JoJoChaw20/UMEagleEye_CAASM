@@ -11,6 +11,7 @@ import {
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import WhyAlert from '../components/common/WhyAlert'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
@@ -687,6 +688,8 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
               </p>
             </div>
 
+            <WhyAlert event={e} />
+
             {/* Next step */}
             {guide && (
               <div className="rounded-lg border border-eagle-500/30 bg-eagle-500/5 p-3">
@@ -731,6 +734,9 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 d.kev && ['Exploited in the wild', <a href={`https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=${d.cve_id}`} target="_blank" rel="noreferrer" className="text-red-300 hover:underline">Yes, on CISA's Known Exploited Vulnerabilities list</a>],
                 d.advisory_id && d.advisory_id !== d.cve_id && ['Advisory', d.advisory_id],
                 Array.isArray(d.ti_event_titles) && d.ti_event_titles.length > 0 && ['Threat-intel events', d.ti_event_titles.join(' · ')],
+                e.event_type === 'cti_match' && d.observed && ['Matched', `${d.matched_on === 'ip' ? 'Public IP' : d.matched_on === 'hostname' ? 'Hostname' : d.matched_on === 'package' ? 'SBOM package' : 'Installed software'}: ${d.observed}`],
+                e.event_type === 'cti_match' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
+                e.event_type === 'cti_match' && Array.isArray(d.sources) && d.sources.length > 0 && ['Listed by', d.sources.join(', ')],
                 e.composite_risk_score != null && ['Risk score', e.composite_risk_score],
                 d.port != null && ['Port', `${d.port}/${d.protocol ?? 'tcp'}${RISKY_PORTS[d.port] ? ` — ${RISKY_PORTS[d.port]}` : ''}`],
                 d.port != null && serviceOn(e.asset, d.port) && ['Service', serviceOn(e.asset, d.port)],
@@ -791,7 +797,8 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
               <Section icon={Crosshair} title="Threat intelligence">
                 <ul className="space-y-1.5">{e.cti_indicators.map((i, n) => (
                   <li key={n} className="text-xs text-dark-300">
-                    <span className="font-mono text-accent-red">{i.value}</span> <span className="text-dark-500">({i.type}, {i.source})</span>
+                    <span className="font-mono text-accent-red">{i.value}</span>{' '}
+                    <span className="text-dark-500">({i.type}, {i.event_title ? `event "${i.event_title}"` : i.source})</span>
                     {(i.tactic || i.technique) && <div className="text-dark-400">ATT&CK: {[i.tactic, i.technique].filter(Boolean).join(' / ')}</div>}
                   </li>
                 ))}</ul>

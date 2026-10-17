@@ -13,6 +13,7 @@ import { getDb } from '../db/client'
 import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators } from '../db/schema'
 import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } from '../services/drift'
 import { cveIntelFor, linkCveIndicators, type CveIntel } from '../services/threatIntel'
+import { matchIocs } from '../services/iocMatch'
 import { isStoredInR2, licenseNames, sbomObjectKey, sbomSummary } from '../lib/sbomStore'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -567,6 +568,12 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
     }
     await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
     const sbomRow = { sbomId }
+    // Its packages may now be on a watchlist (R6).
+    try {
+      await matchIocs(db, { assetId })
+    } catch (err) {
+      console.error('sbom ingest: threat-intel matching failed:', err)
+    }
 
     return c.json({
       sbom_id: sbomRow.sbomId, dependencies_inserted: depRows.length, stored_in_r2: storedInR2,

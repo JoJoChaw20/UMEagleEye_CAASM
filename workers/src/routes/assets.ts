@@ -13,6 +13,7 @@ import { planScanLogPurge } from '../lib/scanLog'
 import type { DeviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { sbomObjectKey } from '../lib/sbomStore'
+import { matchIocs } from '../services/iocMatch'
 import { computeMatches, matchRank, looksMacFragment, type AddrRow, type MatchAsset } from '../lib/addressSearch'
 import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type CandidateAddress } from '../lib/identity'
 import { findDuplicateGroups, pairKey, type DupAsset, type DupAddress, type DupDismissal, type DupIdentifier } from '../lib/duplicates'
@@ -22,6 +23,15 @@ import { buildBaseline, buildManualBaseline, extractPorts, extractOsVersion, mer
 const app = new Hono<{ Bindings: Env }>()
 
 const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
+
+/** An asset's IP or hostname changed: match it against threat intel (best effort). */
+async function rematch(db: ReturnType<typeof getDb>, assetId: string): Promise<void> {
+  try {
+    await matchIocs(db, { assetId })
+  } catch (err) {
+    console.error('assets: threat-intel matching failed:', err)
+  }
+}
 const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin']
 const DELETE_ROLES = ['tenant_superadmin']
 const MERGE_ROLES  = ['tenant_superadmin']   // same guard as delete (destructive, irreversible)
@@ -790,6 +800,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       }
       const [updated] = await db.update(assets).set(updateData).where(eq(assets.assetId, existing.assetId)).returning()
       await recordManualAddress(db, { assetId: existing.assetId, tenantId: targetTenantId, ip: body.ip_address, mac: normalizedMac ?? null })
+      await rematch(db, existing.assetId)
       return c.json(updated, 200)
     }
 
@@ -820,6 +831,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
 
     if (asset) {
       await recordManualAddress(db, { assetId: asset.assetId, tenantId: targetTenantId, ip: body.ip_address, mac: normalizedMac ?? null })
+      await rematch(db, asset.assetId)
     }
     return c.json(asset, 201)
   } catch (err) {
@@ -997,6 +1009,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
       })
     }
 
+    if (body.hostname !== undefined || body.ip_address !== undefined) await rematch(db, existing.assetId)
     return c.json(updated)
   } catch (err) {
     console.error('assets PATCH error:', err)

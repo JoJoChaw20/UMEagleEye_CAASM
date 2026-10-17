@@ -2,6 +2,8 @@ import type { DB } from '../db/client'
 import { ctiIndicators } from '../db/schema'
 import { sql } from 'drizzle-orm'
 import { KEV_SOURCE, refreshCveIntel } from './threatIntel'
+import { matchIocs } from './iocMatch'
+import { warninglistOf } from '../lib/warninglist'
 
 const BATCH_SIZE = 100   // rows per INSERT statement
 
@@ -197,6 +199,7 @@ async function batchUpsert(db: DB, rows: CtiRow[]): Promise<void> {
           attackTactic:    sql`excluded.attack_tactic`,
           attackTechnique: sql`excluded.attack_technique`,
           confidenceScore: sql`excluded.confidence_score`,
+          warning:         sql`excluded.warning`,
         },
       })
   }
@@ -249,6 +252,7 @@ export async function ingestOtx(db: DB, apiKey: string): Promise<number> {
         source:          'AlienVault OTX',
         indicatorType:   itype,
         value:           ind.indicator,
+        warning:         warninglistOf(itype, ind.indicator),
         confidenceScore: '0.70',
         attackTactic:    tactic,
         attackTechnique: techniqueCode,
@@ -305,6 +309,7 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
       source:          'ThreatFox',
       indicatorType:   itype,
       value,
+      warning:         warninglistOf(itype, value),
       confidenceScore: ((ioc.confidence_level ?? 50) / 100).toFixed(2),
       attackTactic:    THREATFOX_TYPE_TO_TACTIC[ioc.threat_type ?? ''] ?? null,
       lastSeen:        now,
@@ -386,6 +391,14 @@ export async function ingestAllFeeds(
     kevAlerts = await refreshCveIntel(db, { all: true })
   } catch (err) {
     console.error('[KEV] Refreshing CVE alerts failed:', err)
+  }
+
+  // Assets against the refreshed feeds (R5/R6, services/iocMatch.ts).
+  try {
+    const m = await matchIocs(db, { all: true })
+    console.log(`[CTI] Matches: ${m.created} new, ${m.reopened} reopened, ${m.resolved} resolved`)
+  } catch (err) {
+    console.error('[CTI] Matching assets failed:', err)
   }
 
   console.log(`[CTI] Done — OTX: ${otx}, ThreatFox: ${threatfox}, KEV: ${kev} (${kevAlerts} alert(s) newly flagged)`)

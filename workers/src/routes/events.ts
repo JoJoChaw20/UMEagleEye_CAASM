@@ -16,7 +16,7 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
 import {
   events, assets, advisories, users, auditLogs,
-  assetRelationships, eventCtiIndicators, ctiIndicators,
+  assetRelationships, eventCtiIndicators, ctiIndicators, tiEvents,
 } from '../db/schema'
 import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
@@ -431,9 +431,11 @@ app.get('/:eventId', authMiddleware, async (c) => {
           value: ctiIndicators.value, type: ctiIndicators.indicatorType, source: ctiIndicators.source,
           tactic: ctiIndicators.attackTactic, technique: ctiIndicators.attackTechnique,
           confidence: ctiIndicators.confidenceScore,
+          event_id: tiEvents.tiEventId, event_title: tiEvents.title, event_level: tiEvents.threatLevel,
         })
         .from(eventCtiIndicators)
         .innerJoin(ctiIndicators, eq(eventCtiIndicators.indicatorId, ctiIndicators.indicatorId))
+        .leftJoin(tiEvents, eq(tiEvents.tiEventId, ctiIndicators.tiEventId))
         .where(eq(eventCtiIndicators.eventId, event.eventId)),
       db.select({ action: auditLogs.actionType, prev: auditLogs.previousState, next: auditLogs.newState, at: auditLogs.timestamp, username: users.username })
         .from(auditLogs)

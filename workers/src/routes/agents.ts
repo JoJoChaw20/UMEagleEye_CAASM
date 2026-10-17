@@ -7,6 +7,7 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, events } from '../db/schema'
+import { matchIocs } from '../services/iocMatch'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
 import { ACTIVE_MODEL, scoreAsset } from '../lib/rescore'
@@ -520,6 +521,12 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       }))))
     }
     await db.batch(statements as unknown as Parameters<typeof db.batch>[0])
+    // Its installed software may now be on a watchlist (R6).
+    try {
+      await matchIocs(db, { assetId })
+    } catch (err) {
+      console.error('inventory: threat-intel matching failed:', err)
+    }
 
     return c.json({
       asset_id: assetId,

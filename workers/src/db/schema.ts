@@ -28,8 +28,10 @@ export const eventStatusEnum = pgEnum('event_status', [
   'open', 'in_progress', 'resolved', 'false_positive', 'accepted_risk'
 ])
 // 'cve' = a vulnerability named by a threat feed (e.g. CISA KEV), matched against cve_detected events
+// 'software' = a watchlist entry of an event ("MOVEit Transfer", "log4j-core@2.14.1"),
+//              matched against installed programs and SBOM packages (services/iocMatch.ts R6)
 export const indicatorTypeEnum = pgEnum('indicator_type', [
-  'ip', 'domain', 'hash', 'url', 'email', 'cve'
+  'ip', 'domain', 'hash', 'url', 'email', 'cve', 'software'
 ])
 // Threat-intel events (MISP-style), written by a tenant's analysts or, at platform level, by a superadmin.
 export const tiEventStatusEnum = pgEnum('ti_event_status', ['draft', 'published'])

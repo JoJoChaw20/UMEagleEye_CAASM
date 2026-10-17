@@ -8,7 +8,8 @@
  * hashes, upper-case CVE IDs, no trailing dot). Tested by scripts/ti-events-demo.ts.
  */
 
-export const IOC_TYPES = ['ip', 'domain', 'url', 'hash', 'email', 'cve'] as const
+// 'software' is never detected: the analyst picks it ("name" or "name@version").
+export const IOC_TYPES = ['ip', 'domain', 'url', 'hash', 'email', 'cve', 'software'] as const
 export type IocType = typeof IOC_TYPES[number]
 
 export interface ParsedIoc { type: IocType; value: string }
@@ -23,6 +24,8 @@ const HASH = /^([0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{128})$/i   // MD
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const DOMAIN = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/i
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
+// a software name, optionally @version; npm scopes (@babel/core@7.1.0) allowed
+const SOFTWARE = /^@?[^@\s][^@]{0,149}(@[^@\s]{1,60})?$/
 
 /** Undo common defanging: hxxp, [.], (.), {.}, [dot], [@], [at], [:]. */
 export function refang(raw: string): string {
@@ -61,6 +64,10 @@ export function normalise(type: IocType, raw: string): string | null {
       const d = v.toLowerCase().replace(/\.$/, '')
       return DOMAIN.test(d) ? d : null
     }
+    case 'software': {
+      const sw = v.replace(/\s+/g, ' ').trim()
+      return SOFTWARE.test(sw) ? sw : null
+    }
     case 'url': {
       if (!URL_SCHEME.test(v)) return null
       try {
@@ -91,7 +98,9 @@ export function parseIocs(text: string, forced?: IocType): { parsed: ParsedIoc[]
   const parsed: ParsedIoc[] = []
   const rejected: RejectedIoc[] = []
   const seen = new Set<string>()
-  for (const token of text.split(/[\s,;]+/)) {
+  // Software names contain spaces ("MOVEit Transfer"), so they are one per line.
+  const tokens = forced === 'software' ? text.split(/[\r\n;]+/) : text.split(/[\s,;]+/)
+  for (const token of tokens) {
     const input = token.trim()
     if (!input) continue
     const candidate = refang(input)

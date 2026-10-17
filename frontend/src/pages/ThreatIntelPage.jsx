@@ -18,7 +18,7 @@ import {
 } from 'recharts'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import TiEventsPanel from '../components/threatintel/TiEventsPanel'
+import TiEventsPanel, { TiMatchesPanel } from '../components/threatintel/TiEventsPanel'
 
 // ── Constants ─────────────────────────────────────────────────
 const MITRE_TACTICS = [
@@ -222,6 +222,7 @@ export default function ThreatIntelPage() {
           { id: 'matrix',     label: 'MITRE ATT&CK' },
           { id: 'lookup',     label: '🔍 IOC Lookup' },
           { id: 'events',     label: 'Threat-intel events' },
+          { id: 'matches',    label: 'Matches' },
         ].map(t => (
           <button
             key={t.id}
@@ -240,6 +241,8 @@ export default function ThreatIntelPage() {
       {/* ── Loading spinner ── */}
       {tab === 'events' ? (
         <TiEventsPanel user={user} showToast={showToast} />
+      ) : tab === 'matches' ? (
+        <TiMatchesPanel showToast={showToast} />
       ) : loading ? (
         <div className="flex justify-center py-20">
           <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />

@@ -41,6 +41,7 @@ export const RISKY_PORTS = {
 }
 
 export function alertLabel(e) {
+  if (e.event_type === 'cti_match' && e.details?.match_kind === 'watchlist') return 'Watched Software Found'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
   return EVENT_TYPE_LABELS[e.event_type] || e.event_type
 }
@@ -125,7 +126,10 @@ export function riskReasons(e) {
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
   const crit = e.asset_criticality ?? e.asset?.criticality
   const out = []
-  if (isCtiHit(e)) out.push({ label: 'Threat intel hit', tone: 'critical' })
+  if (isCtiHit(e)) out.push({ label: e.event_type === 'cti_match' ? `On threat intel: ${(d.sources ?? []).join(', ') || 'feed'}` : 'Threat intel hit', tone: 'critical' })
+  if (e.event_type === 'cti_match' && d.match_kind === 'watchlist') {
+    out.push({ label: `Watched by: ${(d.sources ?? []).join(', ') || 'threat intel'}`, tone: 'serious' })
+  }
   if (e.event_type === 'cve_detected' && d.has_cti_match) {
     const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
     if (d.kev) out.push({ label: 'Actively exploited (CISA KEV)', tone: 'critical' })
@@ -144,8 +148,10 @@ export function riskReasons(e) {
 // A threat feed matched something on the asset itself: possible compromise. A feed
 // naming a CVE (KEV) is different: the flaw is exploited somewhere, so patch first.
 // Must match workers/src/lib/concerns.ts and priority.ts.
+// cti_match on watched software (rule R6) is exposure, not compromise.
 export function isCtiHit(e) {
-  return e.event_type === 'cti_match' || (e.event_type !== 'cve_detected' && !!e.details?.has_cti_match)
+  if (e.event_type === 'cti_match') return e.details?.match_kind !== 'watchlist'
+  return e.event_type !== 'cve_detected' && !!e.details?.has_cti_match
 }
 
 // Deadline from the playbook urgency, measured from first_seen.
@@ -179,8 +185,12 @@ export function playbook(e) {
 function basePlaybook(e) {
   const d = e.details ?? {}
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
+  if (e.event_type === 'cti_match' && d.match_kind === 'watchlist') {
+    return { urgency: '≤72h', text: `Your threat intel watches ${d.indicator_value} and ${d.observed} is on this asset. Read the event's description, then update or remove the software, or mark it accepted risk if this version is not affected.` }
+  }
   if (isCtiHit(e)) {
-    return { urgency: 'Now', text: 'Treat as possible compromise. Isolate the host from the network and escalate to a senior analyst before touching it.' }
+    const what = e.event_type === 'cti_match' && d.observed ? ` (${d.observed} is listed by ${(d.sources ?? []).join(', ') || 'threat intel'})` : ''
+    return { urgency: 'Now', text: `Treat as possible compromise${what}. Isolate the host from the network and escalate to a senior analyst before touching it.` }
   }
   switch (e.event_type) {
     case 'cve_detected': {

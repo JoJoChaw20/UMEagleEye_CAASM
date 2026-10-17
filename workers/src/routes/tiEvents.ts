@@ -12,8 +12,9 @@
  *
  * Effect on alerts (services/threatIntel.ts): attributes of a PUBLISHED event count for
  * the tenants that can see it, except ones marked to_ids=false or on the warninglist.
- * In this version only CVE attributes affect alerts (their CVE alerts get "named in
- * threat intel" and +100 priority); IP/domain/URL/hash matching against assets follows.
+ * CVE attributes flag CVE alerts (services/threatIntel.ts); IP, domain, URL and
+ * software attributes are matched against assets (services/iocMatch.ts). Hashes and
+ * emails are kept for reference: no agent data can match them yet.
  */
 
 import { Hono, type Context } from 'hono'
@@ -27,6 +28,7 @@ import { auditLogs, ctiIndicators, tenants, tiEvents, users } from '../db/schema
 import { IOC_TYPES, parseIocs, type IocType } from '../lib/iocParse'
 import { WARNINGLIST_LABELS, warninglistOf } from '../lib/warninglist'
 import { refreshCveIntel, scopeForEvent } from '../services/threatIntel'
+import { matchIocs } from '../services/iocMatch'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -108,14 +110,23 @@ function audit(db: DB, user: User, ev: EventRow, actionType: string, newState: u
   })
 }
 
-/** After a change that can affect alerts: refresh the CVE alerts of whoever can see it. */
+/** After a change that can affect alerts: refresh the CVE alerts and re-match the assets
+ *  of whoever can see the event. Returns how many alerts changed. */
 async function refreshAfter(db: DB, ev: EventRow, previousDistribution?: string): Promise<number> {
+  const scope = scopeForEvent(ev, previousDistribution)
+  let changed = 0
   try {
-    return await refreshCveIntel(db, scopeForEvent(ev, previousDistribution))
+    changed += await refreshCveIntel(db, scope)
   } catch (err) {
     console.error('ti event: refreshing CVE alerts failed:', err)
-    return 0
   }
+  try {
+    const m = await matchIocs(db, scope)
+    changed += m.created + m.reopened + m.resolved
+  } catch (err) {
+    console.error('ti event: matching assets failed:', err)
+  }
+  return changed
 }
 
 const eventBody = z.object({
@@ -212,14 +223,30 @@ app.get('/:id', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const ev = await loadEvent(db, c.req.param('id'))
     if (!ev || !canView(user, ev)) return c.json({ detail: 'Event not found' }, 404)
-    const attrs = await db.select().from(ctiIndicators)
-      .where(eq(ctiIndicators.tiEventId, ev.tiEventId))
-      .orderBy(asc(ctiIndicators.indicatorType), asc(ctiIndicators.value))
-      .limit(MAX_ATTRIBUTES_PER_EVENT)
+    // Open alerts this event drives now (in the viewer's own tenant; superadmins: all).
+    const viewerTenant = user.role === 'superadmin' ? sql`true` : sql`a.tenant_id = ${user.tenantId ?? null}`
+    const [attrs, matches] = await Promise.all([
+      db.select().from(ctiIndicators)
+        .where(eq(ctiIndicators.tiEventId, ev.tiEventId))
+        .orderBy(asc(ctiIndicators.indicatorType), asc(ctiIndicators.value))
+        .limit(MAX_ATTRIBUTES_PER_EVENT),
+      db.execute(sql`
+        SELECT DISTINCT e.event_id, e.event_type, e.severity, e.details->>'indicator_value' AS indicator_value,
+               e.details->>'cve_id' AS cve_id, e.details->>'observed' AS observed, e.details->>'match_kind' AS match_kind,
+               a.asset_id, COALESCE(a.hostname, a.ip_address) AS asset_name
+        FROM event_cti_indicators l
+        JOIN cti_indicators c ON c.indicator_id = l.indicator_id AND c.ti_event_id = ${ev.tiEventId}
+        JOIN events e ON e.event_id = l.event_id AND e.status IN ('open', 'in_progress')
+        JOIN assets a ON a.asset_id = e.asset_id
+        WHERE ${viewerTenant}
+        LIMIT 50
+      `),
+    ])
     return c.json(eventOut(ev, user, {
       own: !!ev.tenantId && ev.tenantId === user.tenantId,
       attribute_count: attrs.length,
       attributes: attrs.map(attributeOut),
+      matching_alerts: matches.rows,
     }))
   } catch (err) {
     console.error('ti event get error:', err)
@@ -378,7 +405,7 @@ app.post('/:id/attributes', authMiddleware, requireRoles(...WRITE_ROLES), zValid
         audit(db, user, ev, 'ti_event.attributes_add', { added, rejected: rejected.length }),
       ])
     }
-    const touchesAlerts = ev.status === 'published' && rows.some(r => r.indicatorType === 'cve')
+    const touchesAlerts = ev.status === 'published' && added > 0
     const alerts = touchesAlerts ? await refreshAfter(db, ev) : 0
     return c.json({
       added,
@@ -410,8 +437,7 @@ app.patch('/:id/attributes/:attrId', authMiddleware, requireRoles(...WRITE_ROLES
       ...(body.comment !== undefined ? { comment: body.comment ?? null } : {}),
     }).where(and(eq(ctiIndicators.indicatorId, c.req.param('attrId')), eq(ctiIndicators.tiEventId, ev.tiEventId))).returning()
     if (!attr) return c.json({ detail: 'Attribute not found' }, 404)
-    const alerts = ev.status === 'published' && attr.indicatorType === 'cve' && body.to_ids !== undefined
-      ? await refreshAfter(db, ev) : 0
+    const alerts = ev.status === 'published' && body.to_ids !== undefined ? await refreshAfter(db, ev) : 0
     return c.json({ ...attributeOut(attr), alerts_updated: alerts })
   } catch (err) {
     console.error('ti event update attribute error:', err)
@@ -432,7 +458,7 @@ app.delete('/:id/attributes/:attrId', authMiddleware, requireRoles(...WRITE_ROLE
       .returning()
     if (!attr) return c.json({ detail: 'Attribute not found' }, 404)
     await audit(db, user, ev, 'ti_event.attribute_delete', null, { type: attr.indicatorType, value: attr.value })
-    const alerts = ev.status === 'published' && attr.indicatorType === 'cve' ? await refreshAfter(db, ev) : 0
+    const alerts = ev.status === 'published' ? await refreshAfter(db, ev) : 0
     return c.json({ deleted: true, alerts_updated: alerts })
   } catch (err) {
     console.error('ti event delete attribute error:', err)

@@ -6,6 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, assetAddresses, events } from '../db/schema'
+import { matchIocs } from '../services/iocMatch'
 import { ACTIVE_MODEL, agentRoleOf, scoreAsset } from '../lib/rescore'
 import { applyHint, deviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
@@ -1042,6 +1043,13 @@ Example:
       await c.env.ADVISORY_QUEUE.sendBatch(
         slice.map(assetId => ({ body: { type: 'drift_check', assetId, scanId: effectiveScanId, agentId: agent_id } })),
       )
+    }
+
+    // The assets' addresses may be new or changed: match them against threat intel.
+    try {
+      await matchIocs(db, { assetIds: upsertedAssetIds })
+    } catch (err) {
+      console.error('scan ingest: threat-intel matching failed:', err)
     }
 
     return c.json({

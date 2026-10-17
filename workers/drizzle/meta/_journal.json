@@ -85,6 +85,13 @@
       "when": 1792212267756,
       "tag": "0011_ti_events",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792215085783,
+      "tag": "0012_software_indicator",
+      "breakpoints": true
     }
   ]
 }

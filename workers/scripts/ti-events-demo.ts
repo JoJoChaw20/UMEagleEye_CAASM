@@ -56,6 +56,12 @@ check('pasted block: values, types, duplicates dropped', parsed, [
 check('pasted block: the junk is reported', rejected.map(r => r.input), ['not-an-ioc!'])
 check('forced type rejects what does not fit', parseIocs('1.2.3.4 evil.example.my', 'ip').rejected.map(r => r.input), ['evil.example.my'])
 
+// ── software watchlist entries (never auto-detected; one per line) ──
+check('software: names with spaces, one per line', parseIocs('MOVEit Transfer\nlog4j-core@2.14.1\n@babel/core@7.1.0', 'software').parsed,
+  [{ type: 'software', value: 'MOVEit Transfer' }, { type: 'software', value: 'log4j-core@2.14.1' }, { type: 'software', value: '@babel/core@7.1.0' }])
+check('software is not guessed from plain text', detectType('MOVEit'), null)
+check('software: two @versions refused', normalise('software', 'a@1@2'), null)
+
 // ── warninglist ──
 check('Google DNS', warninglistOf('ip', '8.8.8.8'), 'public-dns')
 check('private range', warninglistOf('ip', '192.168.1.10'), 'special-ip')
