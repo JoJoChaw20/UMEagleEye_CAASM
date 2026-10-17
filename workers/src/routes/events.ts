@@ -22,6 +22,7 @@ import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline 
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
 import { softwareName, techniquesFor } from '../lib/attack'
+import { cweList } from '../lib/cwe'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -455,6 +456,7 @@ app.get('/:eventId', authMiddleware, async (c) => {
       event_type:           event.eventType,
       severity:             event.severity,
       details:              event.details,
+      cwes:                 cweList((event.details as Record<string, unknown> | null)?.cwe_ids),
       composite_risk_score: event.compositeRiskScore != null ? Number(event.compositeRiskScore) : null,
       timestamp:            event.timestamp,
       status:               event.status,

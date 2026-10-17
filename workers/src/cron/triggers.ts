@@ -4,14 +4,12 @@ import { runDriftAudit } from '../services/drift'
 import { savePostureSnapshot } from '../services/posture'
 import { purgeOldData } from '../services/retention'
 import { ingestAllFeeds } from '../services/cti'
-import { enrichMissingCwe } from '../services/nvd'
 
 // Maps cron expression to handler name for logging
 function getCronName(cron: string): string {
   const names: Record<string, string> = {
     '0 */6 * * *':  'drift-audit',
     '0 22 * * *':   'cti-ingestion',
-    '0 23 * * *':   'nvd-update',
     '0 16 * * *':   'posture-snapshot',
   }
   return names[cron] ?? cron
@@ -44,11 +42,6 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
         break
       }
 
-      case 'nvd-update': {
-        const enriched = await enrichMissingCwe(db, env.NVD_API_KEY)
-        console.log(`[nvd-update] Enriched ${enriched} CVE events with CWE data`)
-        break
-      }
     }
   } catch (err) {
     console.error(`[cron] ${name} failed:`, err)

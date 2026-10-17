@@ -43,12 +43,13 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 ### SBOM & CVE Detection
 - **Software Bill of Materials** — The EagleEye agent (2.1+) builds a CycloneDX SBOM of the computer it runs on with [Syft](https://github.com/anchore/syft): once a day, and when an admin presses *Run SBOM scan* on that computer's asset page. Folders: on Linux the whole system except volatile and home folders (so OS packages such as openssl are found); on Windows `Program Files`, `Program Files (x86)`, `ProgramData` and the agent account's npm/Python folders; plus any extra folders set in the agent. Syft's readers for compiled programs (Go binaries, .exe/.dll, Linux kernel images) are off by default: on a test PC they made about 90% of the findings, nearly all fixable only by the program's vendor (Docker Desktop, WSL). Program folders are scanned one at a time (two at once, 10 minutes each), so one huge folder is skipped instead of failing the SBOM, and Windows' own folders (WindowsApps, Defender, ProgramData\Microsoft…) are left out. The dashboard cannot choose a path. At most 1,500 findings per computer become alerts (KEV first, then EPSS, then CVSS). The job always goes to the agent bound to that asset (`agents.host_asset_id`); the server rejects an SBOM for any other asset
 - **Automatic CVE Correlation** — After each SBOM, [Grype](https://github.com/anchore/grype) matches its packages against known vulnerabilities (NVD, GitHub Advisory, and more) on the agent. When Grype matches a GitHub advisory (GHSA), the agent reports its CVE ID so EPSS and KEV can match it
+- **Coverage limits of CVE checks** — CVEs are checked for the packages Syft finds: language and framework packages in the scanned folders on Windows, and every dpkg/rpm package on Linux. Windows programs from the "Installed apps" list (for example Chrome or 7-Zip) are inventoried but **not CVE-checked**: Windows has no package database, and mapping program names to NVD products (CPEs) automatically proved unreliable in testing. Devices without an agent get no CVE check
 - **CISA KEV** — The nightly CTI cron loads CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) list as `cve` indicators. CVE alerts on that list get a **KEV** badge, count as *Likely-exploited CVEs*, and rank as P1 (+100 priority; an indicator match on the asset itself stays +200, possible compromise). Alerts raised before a CVE joined KEV are flagged the next night
 - **Storage** — The full SBOM document is stored in R2 (`sboms/<assetId>.json`, downloadable from the SBOM page); Neon keeps a summary and one row per package
 - **Composite Risk Scoring** — Each CVE finding is scored using a weighted formula: `(CVSS × 10 × 0.40) + (EPSS × 100 × 0.35) + (Criticality × 10 × 0.15) + (CTI match ? 10 : 0)`, capped at 100
 - **EPSS Enrichment** — Exploit Prediction Scoring System scores come from Grype's report (or, if missing, from the FIRST.org API in batch) and are incorporated into the risk formula at ingest time
 - **CTI Enrichment** — CVE IDs cross-referenced against the platform's `cve` indicators (CISA KEV today); confirmed threat-intel matches add 10 points to the risk score
-- **NVD CWE Enrichment** — Daily cron queries CVE alerts missing CWE (Common Weakness Enumeration) data and back-fills them from the NIST NVD REST API; enriched `cwe_ids` are merged into the existing event's `details` without modifying other fields; rate-limited to 30 CVEs per run (100 ms/request with API key, 700 ms without)
+- **CWE on CVE alerts** — the weakness class of each CVE (for example CWE-787 Out-of-bounds Write) comes from Grype's own output (about 9 in 10 findings carry one) and is shown on the alert with its name from MITRE's CWE list
 - **Deduplication** — Re-scanning the same asset updates existing alerts (refreshing CVSS, EPSS, fix versions, description) rather than creating duplicates; dedup key is `cve_id + package_name`
 - **Dependency Inventory** — Expandable per-SBOM dependency table with package manager filter and search; counts by manager visualised as a bar chart
 - **Superadmin Delete** — Superadmins can delete all SBOM records for an asset directly from the SBOM page
@@ -93,7 +94,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Auth | JWT (jose / HS256), PBKDF2 Web Crypto, TOTP (otplib) |
 | Google OAuth | Access-token verification via Google userinfo endpoint |
 | Async Jobs | Cloudflare Queues (advisory generation, PDF reports) |
-| Scheduled Tasks | Cloudflare Cron Triggers (drift audit, CTI ingestion, NVD update, posture snapshot + data retention) |
+| Scheduled Tasks | Cloudflare Cron Triggers (drift audit, CTI ingestion, posture snapshot + data retention) |
 | Object Storage | Cloudflare R2 (PDF reports) |
 | KV Store | Cloudflare KV (rate-limit locks, report metadata) |
 | AI Advisory | DeepSeek via OpenRouter API |
@@ -181,13 +182,12 @@ UMEagleEye2.0/
 │   │   │   ├── topology.ts      # Network topology tree with subnet-aware inference
 │   │   │   ├── chatbot.ts       # AI chatbot — structured commands + free-text AI; SSE streaming via TransformStream; live context injection (posture, alerts, advisories)
 │   │   │   └── tenants.ts       # Multi-tenant management; superadmin full + tenant_superadmin own-tenant
-│   │   ├── services/            # Business logic (drift, posture, CTI, NVD enrichment)
+│   │   ├── services/            # Business logic (drift, posture, CTI)
 │   │   │   ├── drift.ts         # Drift detection + baseline comparison
 │   │   │   ├── posture.ts       # Daily posture snapshot calculation
 │   │   │   ├── cti.ts           # OTX + ThreatFox ingestion, MITRE tactic derivation
 │   │   │   ├── tiEvents.ts      # Threat-intel events (MISP-style): CRUD, attributes, publish
 │   │   │   │                    #   (matching: services/threatIntel.ts CVEs, services/iocMatch.ts assets)
-│   │   │   ├── nvd.ts           # NVD REST API client; CWE enrichment for CVE events
 │   │   │   └── retention.ts     # Nightly purge of stale CTI indicators and old closed events
 │   │   ├── queues/
 │   │   │   └── consumer.ts      # Queue handler (advisory + PDF report jobs)
@@ -261,7 +261,6 @@ Secrets are not kept in files in the repository: the Worker's secrets live in Cl
 |---|---|---|
 | `0 */6 * * *` | Every 6 h (2, 8, 14, 20) | Drift audit — safety-net pass comparing asset state to baseline snapshots (scans already run drift for the assets they touch) |
 | `0 22 * * *` | 6:00 AM | CTI ingestion — pulls AlienVault OTX + ThreatFox feeds |
-| `0 23 * * *` | 7:00 AM | NVD enrichment — back-fills missing CWE IDs on `cve_detected` events from the last 48 h using the NIST NVD REST API (up to 30 CVEs per run) |
 | `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history, then runs data retention |
 
 **Data retention** (runs with the midnight job, in batches): CTI indicators not re-seen by any feed for 90 days and not linked to an event are deleted, as are resolved / false-positive events older than 365 days. Open alerts are never purged. The windows are constants in `workers/src/services/retention.ts`. Staging has no cron triggers.
@@ -350,7 +349,7 @@ Each SBOM run ends with a CVE check (Grype) on the agent; findings are sent to `
 3. **CTI cross-reference** — CVE IDs looked up against `cve` indicators (`CISA KEV`); matches add 10 pts to the risk score, set `has_cti_match` (and `kev`), and link the alert to the indicator (`event_cti_indicators`, shown on the alert)
 4. **Deduplication** — all existing `cve_detected` events for the asset fetched in one query; dedup key is `cve_id::package_name`
 5. **Upsert** — existing events are updated (refreshed CVSS, EPSS, fix versions, description); new findings batch-inserted in groups of 50
-6. **NVD CWE enrichment (deferred)** — the daily `nvd-update` cron queries events with empty `cwe_ids` from the last 48 h and calls the NIST NVD REST API (`/rest/json/cves/2.0?cveId=`) to back-fill CWE weakness classifications; rate-limited to 30 CVEs per cron run
+6. **CWE** — the agent sends each finding's CWE IDs from Grype's output (`cwe_ids`); the alert shows them with their names (`workers/src/data/cwe.json`, built from MITRE's CWE list by `workers/scripts/cwe/build-cwe.mjs`). A nightly NVD job used to back-fill missing ones; it was removed because Grype already covers about 9 in 10 findings
 
 ### Composite Risk Score formula
 
@@ -630,7 +629,7 @@ npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put OPENROUTER_API_KEY      # and/or DEEPSEEK_API_KEY
 npx wrangler secret put OTX_API_KEY
 npx wrangler secret put THREATFOX_API_KEY
-npx wrangler secret put NVD_API_KEY
+npx wrangler secret put NVD_API_KEY            # optional, not used by any job at present
 
 # 4. Deploy the Worker, then the frontend
 npm run deploy
@@ -701,7 +700,7 @@ Worker secrets (set with `npx wrangler secret put <NAME>`; add `--env staging` f
 | `DEEPSEEK_API_KEY` | Direct DeepSeek API key — optional; takes priority over OpenRouter when set |
 | `OTX_API_KEY` | AlienVault OTX threat intelligence |
 | `THREATFOX_API_KEY` | ThreatFox threat intelligence |
-| `NVD_API_KEY` | NIST NVD API key — optional but recommended; increases rate limit from 5 req/30s to 50 req/30s for CWE enrichment |
+| `NVD_API_KEY` | NIST NVD API key — optional; no job uses it at present (kept for NVD lookups; raises NVD's rate limit from 5 to 50 requests per 30 s) |
 | `CLOUDFLARE_API_TOKEN` | Optional, in your shell (not a Worker secret): lets wrangler deploy without `wrangler login` |
 
 Per-environment database credentials for migrations live in `workers/.env.staging` and `workers/.env.production` (`DB_TARGET`, `DATABASE_URL`, and optionally `KEEP_EMAILS` for staging). The staging Worker has its own secrets, set with `wrangler secret put <NAME> --env staging`; use a different `JWT_SECRET_KEY` there.

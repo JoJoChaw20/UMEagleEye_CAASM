@@ -728,6 +728,14 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
               <KV rows={[
                 d.cve_id && ['CVE', <a href={`https://nvd.nist.gov/vuln/detail/${d.cve_id}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">{d.cve_id}</a>],
                 d.package_name && ['Package', `${d.package_name} ${d.package_version ?? ''}`],
+                e.cwes?.length > 0 && ['Weakness', <span className="space-y-0.5 block">{e.cwes.map(w => (
+                  <span key={w.id} className="block">
+                    {/^CWE-\d+$/.test(w.id)
+                      ? <a href={`https://cwe.mitre.org/data/definitions/${w.id.slice(4)}.html`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">{w.id}</a>
+                      : w.id}
+                    {w.name && <span className="text-dark-300"> {w.name}</span>}
+                  </span>
+                ))}</span>],
                 Array.isArray(d.fix_versions) && d.fix_versions.length > 0 && ['Fixed in', d.fix_versions.join(', ')],
                 d.cvss_base_score != null && ['CVSS', d.cvss_base_score],
                 d.epss_score != null && ['EPSS', `${(d.epss_score * 100).toFixed(1)}% chance of exploitation in 30 days`],

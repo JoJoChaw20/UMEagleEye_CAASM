@@ -301,10 +301,6 @@ export default function SettingsPage() {
             <p className="text-white font-mono">Daily 6:00 AM MYT</p>
           </div>
           <div>
-            <p className="text-dark-400 mb-1">NVD Update</p>
-            <p className="text-white font-mono">Daily 7:00 AM MYT</p>
-          </div>
-          <div>
             <p className="text-dark-400 mb-1">Posture Snapshot</p>
             <p className="text-white font-mono">Daily midnight MYT</p>
           </div>
@@ -323,7 +319,9 @@ export default function SettingsPage() {
             { name: 'AlienVault OTX', status: true, detail: 'Threat intelligence feed' },
             { name: 'ThreatFox', status: true, detail: 'IoC feed' },
             { name: 'Cloudflare R2', status: true, detail: 'PDF report storage' },
-            { name: 'NIST NVD', status: true, detail: 'CVE vulnerability database' },
+            { name: 'Grype vulnerability DB', status: true, detail: 'CVE matching on the agent (NVD, GitHub advisories, Linux distro feeds)' },
+            { name: 'CISA KEV', status: true, detail: 'Known exploited CVEs' },
+            { name: 'FIRST EPSS', status: true, detail: 'Exploit probability for CVEs' },
           ].map(api => (
             <div key={api.name} className="flex items-center justify-between py-2 border-b border-dark-800/50">
               <div>

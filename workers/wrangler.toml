@@ -42,7 +42,6 @@ max_retries = 2
 crons = [
   "0 */6 * * *",   # Drift audit every 6 h (scans already trigger drift; this is a safety net)
   "0 22 * * *",    # CTI ingestion 6:00 AM MYT
-  "0 23 * * *",    # NVD update  7:00 AM MYT
   "0 16 * * *",    # Posture snapshot + data retention, midnight MYT
 ]
 
@@ -53,7 +52,7 @@ crons = [
 # OPENROUTER_API_KEY — DeepSeek via OpenRouter
 # OTX_API_KEY        — AlienVault OTX
 # THREATFOX_API_KEY  — ThreatFox
-# NVD_API_KEY        — NIST NVD
+# NVD_API_KEY        — NIST NVD (optional; not used by any job at present)
 # TELEGRAM_BOT_TOKEN — Telegram bot
 # TELEGRAM_CHAT_ID   — Default notification chat
 

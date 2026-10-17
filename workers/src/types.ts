@@ -9,7 +9,7 @@ export interface Env {
   DEEPSEEK_API_KEY: string
   OTX_API_KEY: string
   THREATFOX_API_KEY: string
-  NVD_API_KEY: string
+  NVD_API_KEY?: string     // optional; no job uses it at present (CWE IDs come from Grype)
   // ── Vars ──
   APP_ENV: string
   OPENROUTER_MODEL: string
