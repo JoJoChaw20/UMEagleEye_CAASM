@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import TiEventsPanel from '../components/threatintel/TiEventsPanel'
 
 // ── Constants ─────────────────────────────────────────────────
 const MITRE_TACTICS = [
@@ -220,6 +221,7 @@ export default function ThreatIntelPage() {
           { id: 'indicators', label: 'IoC Feed' },
           { id: 'matrix',     label: 'MITRE ATT&CK' },
           { id: 'lookup',     label: '🔍 IOC Lookup' },
+          { id: 'events',     label: 'Threat-intel events' },
         ].map(t => (
           <button
             key={t.id}
@@ -236,7 +238,9 @@ export default function ThreatIntelPage() {
       </div>
 
       {/* ── Loading spinner ── */}
-      {loading ? (
+      {tab === 'events' ? (
+        <TiEventsPanel user={user} showToast={showToast} />
+      ) : loading ? (
         <div className="flex justify-center py-20">
           <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
         </div>
@@ -526,6 +530,7 @@ export default function ThreatIntelPage() {
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {[
                     { label: 'Source',           value: lookupResult.indicator.source },
+                    ...(lookupResult.indicator.event_title ? [{ label: 'Threat-intel event', value: lookupResult.indicator.event_title }] : []),
                     { label: 'Type',             value: `${TYPE_ICONS[lookupResult.indicator.indicator_type] || '❓'} ${lookupResult.indicator.indicator_type}` },
                     { label: 'Confidence',       value: `${((lookupResult.indicator.confidence_score ?? 0) * 100).toFixed(0)}%` },
                     { label: 'ATT&CK Tactic',    value: lookupResult.indicator.attack_tactic || '—' },

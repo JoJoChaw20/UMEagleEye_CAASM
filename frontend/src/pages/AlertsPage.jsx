@@ -730,6 +730,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 d.epss_score != null && ['EPSS', `${(d.epss_score * 100).toFixed(1)}% chance of exploitation in 30 days`],
                 d.kev && ['Exploited in the wild', <a href={`https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=${d.cve_id}`} target="_blank" rel="noreferrer" className="text-red-300 hover:underline">Yes, on CISA's Known Exploited Vulnerabilities list</a>],
                 d.advisory_id && d.advisory_id !== d.cve_id && ['Advisory', d.advisory_id],
+                Array.isArray(d.ti_event_titles) && d.ti_event_titles.length > 0 && ['Threat-intel events', d.ti_event_titles.join(' · ')],
                 e.composite_risk_score != null && ['Risk score', e.composite_risk_score],
                 d.port != null && ['Port', `${d.port}/${d.protocol ?? 'tcp'}${RISKY_PORTS[d.port] ? ` — ${RISKY_PORTS[d.port]}` : ''}`],
                 d.port != null && serviceOn(e.asset, d.port) && ['Service', serviceOn(e.asset, d.port)],

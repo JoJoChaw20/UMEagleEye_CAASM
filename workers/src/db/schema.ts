@@ -31,6 +31,12 @@ export const eventStatusEnum = pgEnum('event_status', [
 export const indicatorTypeEnum = pgEnum('indicator_type', [
   'ip', 'domain', 'hash', 'url', 'email', 'cve'
 ])
+// Threat-intel events (MISP-style), written by a tenant's analysts or, at platform level, by a superadmin.
+export const tiEventStatusEnum = pgEnum('ti_event_status', ['draft', 'published'])
+// organisation: the authoring tenant only · all_tenants: shared with every tenant ·
+// platform: a superadmin's event for everyone (no authoring tenant)
+export const tiDistributionEnum = pgEnum('ti_distribution', ['organisation', 'all_tenants', 'platform'])
+export const tiThreatLevelEnum = pgEnum('ti_threat_level', ['low', 'medium', 'high'])
 export const advisoryStatusEnum = pgEnum('advisory_status', [
   'open', 'acknowledged', 'in_progress', 'resolved'
 ])
@@ -213,17 +219,47 @@ export const events = pgTable('events', {
 ])
 
 // ─── Table 7: CTI Indicators ────────────────────────────────────
+// Two kinds of row: global feed entries (OTX, ThreatFox, CISA KEV; ti_event_id NULL,
+// one row per value) and the attributes of a threat-intel event (ti_event_id set; one
+// row per value per event; tenant_id copies the event's tenant, NULL for platform events).
 export const ctiIndicators = pgTable('cti_indicators', {
   indicatorId: uuid('indicator_id').primaryKey().default(newUuid()),
   source: varchar('source', { length: 100 }).notNull().default('MyCERT'),
   indicatorType: indicatorTypeEnum('indicator_type').notNull(),
-  value: varchar('value', { length: 512 }).notNull().unique(),
+  value: varchar('value', { length: 512 }).notNull(),
   confidenceScore: numeric('confidence_score', { precision: 3, scale: 2 }),
   attackTactic: varchar('attack_tactic', { length: 100 }),
   attackTechnique: varchar('attack_technique', { length: 100 }),
   firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
   lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
-})  // value is already UNIQUE (that index serves lookups); a second index on it was redundant
+  tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  tiEventId: uuid('ti_event_id').references(() => tiEvents.tiEventId, { onDelete: 'cascade' }),
+  // MISP's to_ids: false = context only, never raises or ranks an alert
+  toIds: boolean('to_ids').notNull().default(true),
+  comment: text('comment'),
+  // Name of the warninglist the value is on (public DNS, private range...): kept, never alerts
+  warning: varchar('warning', { length: 60 }),
+}, (t) => [
+  // Feed upserts conflict on value; the same value may also appear in any number of events.
+  uniqueIndex('idx_cti_feed_value').on(t.value).where(sql`${t.tiEventId} IS NULL`),
+  uniqueIndex('idx_cti_event_value').on(t.tiEventId, t.value).where(sql`${t.tiEventId} IS NOT NULL`),
+])
+
+// ─── Threat-intel events (MISP-style) ───────────────────────────
+export const tiEvents = pgTable('ti_events', {
+  tiEventId: uuid('ti_event_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'cascade' }),  // NULL = platform
+  title: varchar('title', { length: 200 }).notNull(),
+  description: text('description'),
+  threatLevel: tiThreatLevelEnum('threat_level').notNull().default('medium'),
+  status: tiEventStatusEnum('status').notNull().default('draft'),
+  distribution: tiDistributionEnum('distribution').notNull().default('organisation'),
+  tags: jsonb('tags').notNull().default([]),
+  createdBy: uuid('created_by').references(() => users.userId, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+}, (t) => [index('idx_ti_events_tenant').on(t.tenantId, t.status)])
 
 // ─── Table 8: Advisories ────────────────────────────────────────
 export const advisories = pgTable('advisories', {

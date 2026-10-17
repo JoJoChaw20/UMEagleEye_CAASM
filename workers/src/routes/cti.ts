@@ -8,12 +8,16 @@ import { eq, and, or, isNull, desc, gte, ilike, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { ctiIndicators, assets, assetAddresses } from '../db/schema'
+import { ctiIndicators, assets, assetAddresses, tiEvents } from '../db/schema'
 
 const app = new Hono<{ Bindings: Env }>()
 
 const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
 const INGEST_ROLES = ['tenant_superadmin', 'tenant_admin']
+
+// The routes below are the global feeds (OTX, ThreatFox, CISA KEV). Attributes of
+// threat-intel events are served by routes/tiEvents.ts, scoped to who may see them.
+const FEED = isNull(ctiIndicators.tiEventId)
 
 // ── Helper: transform a Drizzle CTI row → snake_case ─────────────
 function toSnake(row: typeof ctiIndicators.$inferSelect) {
@@ -42,12 +46,12 @@ app.get('/indicators', authMiddleware, async (c) => {
     const source   = c.req.query('source')
     const search   = c.req.query('search')
 
-    const conditions = []
+    const conditions = [FEED]
     if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve'))
     if (source) conditions.push(ilike(ctiIndicators.source, `%${source}%`))
     if (search) conditions.push(ilike(ctiIndicators.value, `%${search}%`))
 
-    const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+    const whereClause = and(...conditions)
 
     const [rows, countRows] = await Promise.all([
       db.select().from(ctiIndicators).where(whereClause).orderBy(desc(ctiIndicators.lastSeen)).limit(limit).offset(offset),
@@ -73,21 +77,23 @@ app.get('/stats', authMiddleware, async (c) => {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
     const [totalResult, bySource, byType, recent7d] = await Promise.all([
-      db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators),
+      db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(FEED),
       db
         .select({ source: ctiIndicators.source, count: sql<number>`count(*)::int` })
         .from(ctiIndicators)
+        .where(FEED)
         .groupBy(ctiIndicators.source)
         .orderBy(desc(sql`count(*)`)),
       db
         .select({ indicator_type: ctiIndicators.indicatorType, count: sql<number>`count(*)::int` })
         .from(ctiIndicators)
+        .where(FEED)
         .groupBy(ctiIndicators.indicatorType)
         .orderBy(desc(sql`count(*)`)),
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(ctiIndicators)
-        .where(gte(ctiIndicators.firstSeen, sevenDaysAgo)),
+        .where(and(FEED, gte(ctiIndicators.firstSeen, sevenDaysAgo))),
     ])
 
     const by_source: Record<string, number> = {}
@@ -121,7 +127,7 @@ app.get('/matrix', authMiddleware, async (c) => {
         count:            sql<number>`count(*)::int`,
       })
       .from(ctiIndicators)
-      .where(sql`${ctiIndicators.attackTactic} IS NOT NULL`)
+      .where(and(FEED, sql`${ctiIndicators.attackTactic} IS NOT NULL`))
       .groupBy(ctiIndicators.attackTactic, ctiIndicators.attackTechnique)
       .orderBy(ctiIndicators.attackTactic, desc(sql`count(*)`))
 
@@ -147,15 +153,23 @@ app.get('/matrix', authMiddleware, async (c) => {
 app.get('/lookup', authMiddleware, async (c) => {
   try {
     const db    = getDb(c.env.DATABASE_URL)
+    const user  = c.get('user')
     const value = c.req.query('value')?.trim()
     if (!value) return c.json({ detail: 'value query param required' }, 422)
 
-    // Find indicator
-    const [indicator] = await db
-      .select()
+    // Find indicator: a feed entry, else an attribute of an event this user may see
+    // (own tenant's, or a published shared/platform one; superadmins see all).
+    const visibleEvent = user.role === 'superadmin'
+      ? sql`true`
+      : sql`(${tiEvents.tenantId} = ${user.tenantId ?? null} OR (${tiEvents.status} = 'published' AND ${tiEvents.distribution} IN ('all_tenants', 'platform')))`
+    const [hit] = await db
+      .select({ indicator: ctiIndicators, eventTitle: tiEvents.title })
       .from(ctiIndicators)
-      .where(eq(ctiIndicators.value, value))
+      .leftJoin(tiEvents, eq(tiEvents.tiEventId, ctiIndicators.tiEventId))
+      .where(and(eq(ctiIndicators.value, value), or(FEED, visibleEvent)))
+      .orderBy(sql`${ctiIndicators.tiEventId} IS NOT NULL`)     // feed entries first
       .limit(1)
+    const indicator = hit?.indicator
 
     // Cross-reference against internal assets (IP match only)
     let matched_internal_asset = null
@@ -177,7 +191,11 @@ app.get('/lookup', authMiddleware, async (c) => {
           isNull(assetAddresses.endedAt),
           eq(assetAddresses.ipAddress, value),
         ))
-        .where(or(eq(assets.ipAddress, value), eq(assetAddresses.ipAddress, value)))
+        .where(and(
+          or(eq(assets.ipAddress, value), eq(assetAddresses.ipAddress, value)),
+          // only the user's own tenant's assets (superadmins: any)
+          user.role === 'superadmin' ? undefined : eq(assets.tenantId, user.tenantId ?? ''),
+        ))
         .groupBy(assets.assetId)
         .orderBy(desc(sql`bool_or(${assetAddresses.addressId} IS NOT NULL)`), desc(assets.lastScanned))
         .limit(1)
@@ -198,7 +216,7 @@ app.get('/lookup', authMiddleware, async (c) => {
     if (indicator) {
       return c.json({
         found: true,
-        indicator: toSnake(indicator),
+        indicator: { ...toSnake(indicator), event_title: hit?.eventTitle ?? null },
         matched_internal_asset,
       })
     }

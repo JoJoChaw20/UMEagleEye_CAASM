@@ -70,7 +70,7 @@ async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
       .where(af ? and(af, eq(assets.inMyAssets, true)) : eq(assets.inMyAssets, true)),
     db.select({ count: sql<number>`count(*)::int` }).from(advisories)
       .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress'))),
-    db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators),
+    db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(sql`${ctiIndicators.tiEventId} IS NULL`),  // global feeds
   ])
 
   // Critical events scoped by asset tenant

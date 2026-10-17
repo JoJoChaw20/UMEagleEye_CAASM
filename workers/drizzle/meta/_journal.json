@@ -78,6 +78,13 @@
       "when": 1792135330015,
       "tag": "0010_kev_cve_indicator_type",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792212267756,
+      "tag": "0011_ti_events",
+      "breakpoints": true
     }
   ]
 }

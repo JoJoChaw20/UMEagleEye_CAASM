@@ -12,7 +12,7 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators } from '../db/schema'
 import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } from '../services/drift'
-import { KEV_SOURCE, linkCveIndicators } from '../services/cti'
+import { cveIntelFor, linkCveIndicators, type CveIntel } from '../services/threatIntel'
 import { isStoredInR2, licenseNames, sbomObjectKey, sbomSummary } from '../lib/sbomStore'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -677,24 +677,17 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
       .limit(1)
     const criticality = asset?.criticalityScore ?? 5
 
-    // Threat-intel match: CVE IDs named by a feed (CISA KEV and, later, others such as MyCERT).
-    const kevMatches = new Set<string>()
-    const ctiMatches = new Set<string>()
+    // Threat-intel match: CVE IDs named by intel this tenant may use (global feeds such as
+    // CISA KEV, its own published events, shared and platform events; services/threatIntel).
     const cvePrefixedIds = [...new Set(allFindings.map(f => f.cve_id).filter(id => id?.startsWith('CVE-')))]
-    if (cvePrefixedIds.length > 0) {
-      try {
-        const ctiRows = await db
-          .select({ value: ctiIndicators.value, source: ctiIndicators.source })
-          .from(ctiIndicators)
-          .where(and(eq(ctiIndicators.indicatorType, 'cve'), inArray(ctiIndicators.value, cvePrefixedIds)))
-        for (const row of ctiRows) {
-          ctiMatches.add(row.value)
-          if (row.source === KEV_SOURCE) kevMatches.add(row.value)
-        }
-      } catch {
-        // Non-fatal — CTI enrichment is best-effort
-      }
+    let intel = new Map<string, CveIntel>()
+    try {
+      intel = await cveIntelFor(db, agent.tenantId ?? null, cvePrefixedIds)
+    } catch (e) {
+      console.error('cve ingest: threat-intel lookup failed (alerts stored without it):', e)
     }
+    const ctiMatches = new Set(intel.keys())
+    const kevMatches = new Set([...intel].filter(([, v]) => v.kev).map(([id]) => id))
 
     // Keep the findings that matter most: on KEV, named by any feed, likely exploited, severe.
     const rank = (f: typeof allFindings[number]): number[] =>
@@ -755,6 +748,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
         epss_score:      epss,
         has_cti_match:   ctiMatch,
         kev:             kevMatches.has(cve_id),
+        ti_event_titles: intel.get(cve_id)?.titles ?? [],
         advisory_id:     finding.advisory_id ?? null,
         package_type:    finding.package_type ?? null,
         fix_versions,
@@ -818,7 +812,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
     const eventsCreated = toInsert.length
 
     // Link each matched alert to the feed entry naming its CVE (shown on the alert).
-    if (ctiMatches.size > 0) await linkCveIndicators(db, assetId)
+    await linkCveIndicators(db, { assetId })
 
     return c.json({
       events_created: eventsCreated, events_updated: eventsUpdated, events_resolved: fixedIds.length,

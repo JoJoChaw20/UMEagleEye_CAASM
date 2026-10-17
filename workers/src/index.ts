@@ -10,6 +10,7 @@ import eventRoutes from './routes/events'
 import advisoryRoutes from './routes/advisories'
 import postureRoutes from './routes/posture'
 import ctiRoutes from './routes/cti'
+import tiEventRoutes from './routes/tiEvents'
 import reportRoutes from './routes/reports'
 import relationshipRoutes from './routes/relationships'
 import agentRoutes from './routes/agents'
@@ -57,6 +58,7 @@ api.route('/scans', scanRoutes)
 api.route('/events', eventRoutes)
 api.route('/advisories', advisoryRoutes)
 api.route('/posture', postureRoutes)
+api.route('/cti/events', tiEventRoutes)   // before /cti so /cti/events/* reaches it
 api.route('/cti', ctiRoutes)
 api.route('/reports', reportRoutes)
 api.route('/relationships', relationshipRoutes)

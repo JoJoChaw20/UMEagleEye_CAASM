@@ -127,7 +127,10 @@ export function riskReasons(e) {
   const out = []
   if (isCtiHit(e)) out.push({ label: 'Threat intel hit', tone: 'critical' })
   if (e.event_type === 'cve_detected' && d.has_cti_match) {
-    out.push({ label: d.kev ? 'Actively exploited (CISA KEV)' : 'Named in threat intel', tone: 'critical' })
+    const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
+    if (d.kev) out.push({ label: 'Actively exploited (CISA KEV)', tone: 'critical' })
+    if (titles.length) out.push({ label: `In threat intel: ${titles[0]}${titles.length > 1 ? ` +${titles.length - 1}` : ''}`, tone: 'critical' })
+    if (!d.kev && !titles.length) out.push({ label: 'Named in threat intel', tone: 'critical' })
   }
   if (exposed) out.push({ label: 'Internet-facing', tone: 'critical' })
   if (d.port != null && RISKY_PORTS[d.port]) out.push({ label: `${RISKY_PORTS[d.port]} is a common attack target`, tone: 'serious' })
@@ -184,7 +187,9 @@ function basePlaybook(e) {
       const epss = d.epss_score ?? 0
       const fix = Array.isArray(d.fix_versions) && d.fix_versions.length ? ` to ${d.fix_versions[0]}` : ''
       if (d.has_cti_match) {
-        const why = d.kev ? "It is on CISA's Known Exploited Vulnerabilities list: attackers are using it now." : 'A threat feed names this CVE.'
+        const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
+        const why = d.kev ? "It is on CISA's Known Exploited Vulnerabilities list: attackers are using it now."
+          : titles.length ? `Your threat intel names it ("${titles[0]}").` : 'A threat feed names this CVE.'
         return { urgency: '≤72h', text: `${why} Patch ${d.package_name ?? 'the package'}${fix} first. If you cannot patch yet, restrict access to the host or remove the software.` }
       }
       if (exposed || epss >= 0.1 || e.severity === 'critical') {

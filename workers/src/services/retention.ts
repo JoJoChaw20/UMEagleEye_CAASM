@@ -11,15 +11,18 @@ const BATCH_SIZE = 5000
 const MAX_BATCHES = 6   // per table, per run
 
 /**
- * Delete CTI indicators not re-seen by any feed within CTI_MAX_AGE_DAYS (feeds refresh
- * last_seen on every re-ingest) and not referenced by an event.
+ * Delete feed indicators not re-seen by any feed within CTI_MAX_AGE_DAYS (feeds refresh
+ * last_seen on every re-ingest) and not referenced by an alert. Attributes of a
+ * threat-intel event (ti_event_id set) are never purged: people wrote them, and they go
+ * only when their event is deleted.
  */
 async function purgeStaleCti(db: DB): Promise<number> {
   const res = await db.execute(sql`
     DELETE FROM cti_indicators
     WHERE indicator_id IN (
       SELECT c.indicator_id FROM cti_indicators c
-      WHERE c.last_seen < now() - make_interval(days => ${CTI_MAX_AGE_DAYS})
+      WHERE c.ti_event_id IS NULL
+        AND c.last_seen < now() - make_interval(days => ${CTI_MAX_AGE_DAYS})
         AND NOT EXISTS (SELECT 1 FROM event_cti_indicators e WHERE e.indicator_id = c.indicator_id)
       LIMIT ${BATCH_SIZE}
     )
