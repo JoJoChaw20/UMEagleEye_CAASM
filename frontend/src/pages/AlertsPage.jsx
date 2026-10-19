@@ -52,9 +52,9 @@ const ACTION_LABELS = {
 
 function useToast() {
   const [toast, setToast] = useState(null)
-  const show = (msg, type = 'success') => {
+  const show = (msg, type = 'success', ms = 3500) => {
     setToast({ msg, type })
-    setTimeout(() => setToast(null), 3500)
+    setTimeout(() => setToast(null), ms)
   }
   return { toast, show }
 }
@@ -198,13 +198,20 @@ export default function AlertsPage() {
     }
   }
 
+  const [auditing, setAuditing] = useState(false)
   const triggerDriftAudit = async () => {
+    setAuditing(true)
     try {
-      await client.post('/scans/drift-audit')
-      showToast('Drift audit triggered.')
-      setTimeout(loadData, 2000)
-    } catch {
-      showToast('Failed to trigger drift audit.', 'error')
+      const { data } = await client.post('/scans/drift-audit')
+      const cves = data?.cve_alerts_closed ?? 0
+      const devices = data?.new_device_alerts_closed ?? 0
+      const closed = [cves && `${cves} CVE alert(s) without an SBOM`, devices && `${devices} reviewed or stale new-device alert(s)`].filter(Boolean)
+      showToast(`Drift audit done: ${data?.drift_events_generated ?? 0} new alert(s)${closed.length ? `; closed ${closed.join(' and ')}` : ''}.`, 'success', 8000)
+      loadData()
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Drift audit failed.', 'error', 8000)
+    } finally {
+      setAuditing(false)
     }
   }
 
@@ -258,9 +265,9 @@ export default function AlertsPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={resetPage(setTenantFilter)} />
           {canManage && (
-            <button onClick={triggerDriftAudit} className="btn-secondary flex items-center gap-2 text-sm">
-              <RefreshCw className="w-4 h-4" />
-              Run Drift Audit
+            <button onClick={triggerDriftAudit} disabled={auditing} className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-60">
+              <RefreshCw className={`w-4 h-4 ${auditing ? 'animate-spin' : ''}`} />
+              {auditing ? 'Running audit…' : 'Run Drift Audit'}
             </button>
           )}
         </div>

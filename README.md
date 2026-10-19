@@ -263,7 +263,7 @@ Secrets are not kept in files in the repository: the Worker's secrets live in Cl
 | `0 22 * * *` | 6:00 AM | CTI ingestion — pulls AlienVault OTX + ThreatFox feeds |
 | `0 16 * * *` | Midnight | Posture snapshot — saves daily posture score to history, then runs data retention |
 
-**Data retention** (runs with the midnight job, in batches): CTI indicators not re-seen by any feed for 90 days and not linked to an event are deleted, as are resolved / false-positive events older than 365 days. Open alerts are never purged. The windows are constants in `workers/src/services/retention.ts`. Staging has no cron triggers.
+**Data retention** (runs with the midnight job, in batches, followed by the alert hygiene described under Drift Detection): CTI indicators not re-seen by any feed for 90 days and not linked to an event are deleted, as are resolved / false-positive events older than 365 days. Open alerts are never purged. The windows are constants in `workers/src/services/retention.ts`. Staging has no cron triggers.
 
 > SLA breaches are not a cron job: they are computed when the Notification Centre is read.
 >
@@ -570,24 +570,31 @@ Setting a baseline via **Assets → Bookmark icon** captures a point-in-time Gol
 
 **`ports_known` / `packages_known`:** A baseline only records what the capture could actually see. A passive scan has no port visibility (`ports_known: false`) and no scan collects installed packages, so a baseline set before an SBOM has `packages_known: false` and omits the `packages` key entirely — never an empty `{}`. The drift audit skips the ports (or packages) comparison while that flag is false, so the first active scan / first SBOM **completes** the baseline for that attribute instead of raising drift for every port/package at once. Package completion rides on the same atomic write as the SBOM ingest.
 
-The drift audit (run for the affected assets after every scan, plus a 6-hourly cron as a safety net) compares each asset's current `os_info` and fields against its `baseline_state` and generates typed security events:
+The drift audit (run for the affected assets after every scan and every agent inventory, plus a 6-hourly cron as a safety net) compares each asset's current `os_info` and fields against its `baseline_state` and generates typed security events:
 
 | Event type | Trigger | Severity |
 |---|---|---|
-| `port_opened` | New port seen in scan | High if port < 1024, else Medium |
-| `port_closed` | Port no longer seen | Low |
-| `version_downgrade` | OS or package version decreased | High (OS) / Medium (package) |
-| `version_upgrade` | OS or package version increased | Low |
-| `new_package` | Package in scan not in baseline | Low |
-| `removed_package` | Baseline package no longer present | Low |
+| `port_opened` | New port seen in an active scan | Risky service (FTP, Telnet, SMB, RDP, VNC, databases…) High, Critical if internet-facing; other ports below 1024 Medium (High if internet-facing); others Low (Medium if internet-facing) |
+| `version_downgrade` | OS version decreased (rollback to an older build) | High |
 | `config_change` (hostname) | Hostname changed | Medium |
-| `config_change` (mac_address) | MAC address changed | High |
+| `config_change` (mac_address) | MAC address changed, and the new MAC is not one of the machine's own adapters reported by its agent | High |
 | `config_change` (internet_facing) | Asset became internet-facing | Critical |
 | `config_change` (internet_facing) | Asset became internal | Medium |
 | `config_change` (device_type) | Device type reclassified | Medium |
-| `new_device` | IP never seen before; set at scan ingest | High if internet-facing, else Medium |
+| `config_change` (firmware) | SNMP sysDescr changed (network devices) | Medium |
+| `new_device` | A network scan finds a host never seen before (an agent registering its own computer does not alert: IT installed it) | High if internet-facing, else Medium |
 
-**One alert per condition:** The audit does not raise a fresh event every cron run. Each distinct condition (e.g. "port 22 open on asset X", "package nginx added") maps to a single alert — re-detecting it bumps `last_seen` and an `occurrences` counter on the existing open alert, a condition that is no longer detected (port closed again, package removed, hostname reverted) is auto-resolved, and a condition an analyst marked a false positive stays suppressed. Package comparisons are skipped entirely until the baseline packages are known (see `packages_known` above), so the first SBOM never opens a wave of `new_package` alerts.
+**What does not alert** (each was mostly noise in production data):
+- **A port closing.** It lowers risk; it only resolves the matching `port_opened` alert. There is no `port_closed` alert.
+- **A scan that saw no open port at all** on a host whose baseline has ports. That is almost always a missed scan (asleep, firewalled, timed out), so port drift is not judged on it and open port alerts stay as they are.
+- **An OS upgrade.** The audit moves the baseline's `os_version` to the new version instead.
+- **Package changes.** Packages are not compared: they change with every update, and the ones that matter raise CVE alerts from the SBOM.
+
+**One alert per condition:** The audit does not raise a fresh event every run. Each distinct condition (e.g. "port 3389 open on asset X") maps to a single alert — re-detecting it bumps `last_seen` and an `occurrences` counter on the existing open alert, a condition that is no longer detected (port closed again, hostname reverted) is auto-resolved, and a condition an analyst marked a false positive stays suppressed. A condition that comes back within 14 days of being auto-resolved **reopens** its alert instead of raising a new one, so a port that flaps between scans stays one alert.
+
+**Alert hygiene** (nightly, and with the manual drift audit for the tenant; `workers/src/services/alertHygiene.ts`):
+- CVE alerts on an asset that has no SBOM are resolved: no scan can confirm or clear them. This also closed the alerts left by the retired pre-2.1.0 SBOM pipeline.
+- Open new-device alerts are resolved once the device is added to My Assets or given an owner (immediately, from the asset edit), or when it has not been seen for 14 days. Alerts someone set to *in progress* are left alone.
 
 **Accept-into-baseline workflow:** Accepting a drift alert as *accepted risk* in the Alerts page treats that change as the new normal — only the single attribute the alert is about is re-baselined (accepting "port 22 opened" never silently accepts an unrelated MAC or package change), and the alert is closed. Accepting a package change while the asset's baseline packages are still unknown leaves them unknown and just closes the alert; the first full SBOM is what establishes the package baseline.
 

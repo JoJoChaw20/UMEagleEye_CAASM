@@ -14,6 +14,7 @@ import { mergeOsInfo } from '../lib/osInfo'
 import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
 import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
+import { runAlertHygiene } from '../services/alertHygiene'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
@@ -134,7 +135,13 @@ app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tena
     const db   = getDb(c.env.DATABASE_URL)
     const tenantId = user.role === 'superadmin' ? undefined : (user.tenantId ?? undefined)
     const count = await runDriftAudit(db, tenantId)
-    return c.json({ message: 'Drift audit complete', drift_events_generated: count })
+    // Also what the nightly job closes (CVE alerts without an SBOM, reviewed/stale new devices),
+    // so staging, which has no cron, can be checked by hand.
+    const closed = await runAlertHygiene(db, { tenantId })
+    return c.json({
+      message: 'Drift audit complete', drift_events_generated: count,
+      cve_alerts_closed: closed.cve, new_device_alerts_closed: closed.newDevices,
+    })
   } catch (err) {
     console.error('drift-audit error:', err)
     return c.json({ detail: 'Drift audit failed' }, 500)

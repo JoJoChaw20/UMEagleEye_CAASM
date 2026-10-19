@@ -61,14 +61,15 @@ console.log('\n=== (b) legacy packages:{} baseline → completed by first SBOM =
   check('(b) audit: zero drift after completion', pkgDrifts(applyPatch(legacy, patch), { packages: pkgMap }).length, 0)
 }
 
-// ── (c) baseline already known: add / remove / version bump all raise drift ──
-console.log('\n=== (c) known baseline raises real package drift ===')
+// ── (c) package changes never raise drift (packages are not compared any more;
+//        CVE alerts from the SBOM cover the packages that matter) ─────────────────
+console.log('\n=== (c) known baseline: package changes raise no drift ===')
 {
   const known: any = { packages: { nginx: '1.24.0', openssl: '3.0.2' }, packages_known: true, hostname: 'h', is_internet_facing: false, device_type: 'server' }
-  check('(c) added package → new_package', pkgDrifts(known, { packages: { nginx: '1.24.0', openssl: '3.0.2', curl: '8.0.0' } }).map(d => [d.type, (d.details as any).package]), [['new_package', 'curl']])
-  check('(c) removed package → removed_package', pkgDrifts(known, { packages: { nginx: '1.24.0' } }).map(d => [d.type, (d.details as any).package]), [['removed_package', 'openssl']])
-  check('(c) version bump → version_upgrade', pkgDrifts(known, { packages: { nginx: '1.25.0', openssl: '3.0.2' } }).map(d => [d.type, (d.details as any).package]), [['version_upgrade', 'nginx']])
-  check('(c) version drop → version_downgrade', pkgDrifts(known, { packages: { nginx: '1.23.0', openssl: '3.0.2' } }).map(d => d.type), ['version_downgrade'])
+  check('(c) added package → no drift', pkgDrifts(known, { packages: { nginx: '1.24.0', openssl: '3.0.2', curl: '8.0.0' } }).length, 0)
+  check('(c) removed package → no drift', pkgDrifts(known, { packages: { nginx: '1.24.0' } }).length, 0)
+  check('(c) version bump → no drift', pkgDrifts(known, { packages: { nginx: '1.25.0', openssl: '3.0.2' } }).length, 0)
+  check('(c) version drop → no drift', pkgDrifts(known, { packages: { nginx: '1.23.0', openssl: '3.0.2' } }).length, 0)
 }
 
 // ── (d) second identical SBOM changes nothing ────────────────────────────────

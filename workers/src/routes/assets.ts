@@ -6,6 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
+import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
 import { automaticDeviceType } from '../lib/deviceClassify'
@@ -1010,6 +1011,15 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     }
 
     if (body.hostname !== undefined || body.ip_address !== undefined) await rematch(db, existing.assetId)
+    // Added to My Assets or given an owner: the device has been reviewed, so its
+    // new-device alert is closed now (not at the nightly run).
+    if (body.in_my_assets === true || (body.owner !== undefined && body.owner)) {
+      try {
+        await closeReviewedNewDevices(db, { assetIds: [existing.assetId] })
+      } catch (err) {
+        console.error('assets PATCH: closing the new-device alert failed:', err)
+      }
+    }
     return c.json(updated)
   } catch (err) {
     console.error('assets PATCH error:', err)

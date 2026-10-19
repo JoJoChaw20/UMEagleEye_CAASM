@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
-import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, events } from '../db/schema'
+import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
@@ -471,10 +471,8 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         db.insert(assetAddresses).values({
           assetId, tenantId, networkKey, ipAddress: ip, macAddress: mac, firstSeen: now, lastSeen: now,
         }),
-        db.insert(events).values({
-          assetId, eventType: 'new_device', severity: 'medium',
-          details: { ip, mac, hostname, source: 'agent' },
-        }),
+        // No new_device alert: an agent is installed by IT, so its computer is a managed
+        // device by definition. New devices are what network scans find.
       )
     }
 
@@ -521,6 +519,13 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       }))))
     }
     await db.batch(statements as unknown as Parameters<typeof db.batch>[0])
+    // The agent's facts (hostname, adapters) may have changed: check drift now rather than
+    // at the next scan or the 6-hourly audit. Same queue job scans send.
+    try {
+      await c.env.ADVISORY_QUEUE.send({ type: 'drift_check', assetId, agentId })
+    } catch (err) {
+      console.error('inventory: queueing the drift check failed:', err)
+    }
     // Its installed software may now be on a watchlist (R6).
     try {
       await matchIocs(db, { assetId })

@@ -1,5 +1,5 @@
 import type { DB } from '../db/client'
-import { assets, events } from '../db/schema'
+import { assets, assetIdentifiers, events } from '../db/schema'
 import { isNotNull, and, eq, inArray, sql } from 'drizzle-orm'
 import { OPEN_STATUSES } from '../lib/eventStatus'
 import { compareVersions, newPortSeverity } from '../lib/exposure'
@@ -197,21 +197,35 @@ export function mergeBaselineFields(
 
 // ── Core drift comparison ─────────────────────────────────────────
 // Exported for the packages-known demo; still pure.
+export interface DriftOptions {
+  // MACs the asset's own agent reported for this machine's adapters (asset_identifiers
+  // kind 'mac'). A scan seeing another adapter of the same machine is not a MAC change.
+  agentMacs?: Set<string>
+}
+
+/** The last active scan saw the host but no open port at all while the baseline has some:
+ *  almost always a missed scan (host asleep, firewall, timeout), not every service stopping.
+ *  Port drift is not judged on such a scan, and its open port alerts are left as they are. */
+export function portsUnreliable(baseline: AssetBaseline, osInfo: Record<string, unknown> | null): boolean {
+  return Array.isArray(osInfo?.ports) && extractPorts(osInfo).length === 0 && (baseline.ports ?? []).length > 0
+}
+
 export function detectDrift(
   baseline: AssetBaseline,
   asset:    typeof assets.$inferSelect,
+  opts:     DriftOptions = {},
 ): DriftEvent[] {
   const drifts: DriftEvent[] = []
   const osInfo = asset.osInfo as Record<string, unknown> | null
 
   // ── Open ports ─────────────────────────────────────────────────
-  // Skipped until an active scan has seen the host (ports_known === false),
-  // and when the asset has no port data at all.
-  if (baseline.ports_known !== false && Array.isArray(osInfo?.ports)) {
+  // Skipped until an active scan has seen the host (ports_known === false), when the
+  // asset has no port data at all, and on a scan that found no open port (see above).
+  // Only a NEW port alerts: a port that closed lowers risk, and simply resolves its
+  // port_opened alert (runDriftAudit), so there is no port_closed alert.
+  if (baseline.ports_known !== false && Array.isArray(osInfo?.ports) && !portsUnreliable(baseline, osInfo)) {
     const basePorts = new Set(baseline.ports ?? [])
-    const curPorts  = new Set(extractPorts(osInfo))
-
-    for (const p of curPorts) {
+    for (const p of new Set(extractPorts(osInfo))) {
       if (!basePorts.has(p)) {
         drifts.push({
           type:     'port_opened',
@@ -220,14 +234,11 @@ export function detectDrift(
         })
       }
     }
-    for (const p of basePorts) {
-      if (!curPorts.has(p)) {
-        drifts.push({ type: 'port_closed', severity: 'low', details: { port: p } })
-      }
-    }
   }
 
   // ── OS version ─────────────────────────────────────────────────
+  // A downgrade alerts (rollback to an unpatched build). An upgrade is returned as
+  // version_upgrade too, but runDriftAudit moves the baseline instead of alerting.
   const baseVer = baseline.os_version ?? null
   const curVer  = extractOsVersion(osInfo)
   if (baseVer && curVer && baseVer !== curVer) {
@@ -239,34 +250,8 @@ export function detectDrift(
     })
   }
 
-  // ── Packages ────────────────────────────────────────────────────
-  // Mirror ports_known: compare only when the baseline packages are KNOWN and the
-  // asset actually has current package data. A baseline captured before any SBOM
-  // (manual/CSV, passive, or a legacy `packages:{}`) has unknown packages, so the
-  // first SBOM that completes it can't look like every package is new; an asset
-  // with no current packages is also skipped so a completed baseline doesn't flag
-  // every package as removed from an empty/failed scan.
-  const basePkgs = baseline.packages ?? {}
-  const curPkgs  = extractPackages(osInfo)
-  if (baselinePackagesKnown(baseline) && Object.keys(curPkgs).length > 0) {
-    for (const [pkg, ver] of Object.entries(curPkgs)) {
-      if (!(pkg in basePkgs)) {
-        drifts.push({ type: 'new_package', severity: 'low', details: { package: pkg, version: ver } })
-      } else if (basePkgs[pkg] !== ver) {
-        const isDowngrade = compareVersions(ver, basePkgs[pkg] ?? '') < 0
-        drifts.push({
-          type:     isDowngrade ? 'version_downgrade' : 'version_upgrade',
-          severity: isDowngrade ? 'medium' : 'low',
-          details:  { changed_attribute: 'package_version', package: pkg, from: basePkgs[pkg], to: ver },
-        })
-      }
-    }
-    for (const pkg of Object.keys(basePkgs)) {
-      if (!(pkg in curPkgs)) {
-        drifts.push({ type: 'removed_package', severity: 'low', details: { package: pkg } })
-      }
-    }
-  }
+  // Packages are not compared: installed packages change with every update, and the
+  // ones that matter are covered by CVE alerts from the SBOM (routes/sbom.ts).
 
   // ── Hostname change ────────────────────────────────────────────
   if (baseline.hostname && asset.hostname && baseline.hostname !== asset.hostname) {
@@ -283,7 +268,7 @@ export function detectDrift(
   // baseline_state is left untouched; from/to show the actual stored values.
   const baselineMac = normalizeMac(baseline.mac_address)
   const currentMac  = normalizeMac(asset.macAddress)
-  if (baselineMac && currentMac && baselineMac !== currentMac) {
+  if (baselineMac && currentMac && baselineMac !== currentMac && !opts.agentMacs?.has(currentMac)) {
     drifts.push({
       type:     'config_change',
       severity: 'high',
@@ -368,10 +353,16 @@ function driftKey(assetId: string, type: EventType, details: Record<string, unkn
   return `${assetId}|${type}::${String(details.package ?? 'os')}`
 }
 
+// Types the audit owns. port_closed, version_upgrade and the package types are no longer
+// raised, but stay listed so alerts raised before are auto-resolved by the next audit.
 const DRIFT_TYPES: EventType[] = [
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'config_change', 'new_package', 'removed_package',
 ]
+
+// An alert auto-resolved this recently is reopened when its condition returns, rather
+// than raising a new one, so a condition that flaps between scans stays one alert.
+const REOPEN_WITHIN_DAYS = 14
 
 // Run statements in ~100-statement chunks (one db.batch = one subrequest).
 async function runBatched(db: DB, stmts: unknown[]): Promise<void> {
@@ -401,40 +392,67 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
   ))
   if (assetRows.length === 0) return 0
   const now = new Date()
+  const ids = assetRows.map(a => a.assetId)
 
-  // 1) Detect all drifts in memory (detectDrift is pure).
+  // 1) Prefetch, in ONE query each: the MACs agents reported for these machines, and
+  //    the drift alerts that still matter for these assets: open ones (to update or
+  //    auto-resolve), false positives (to keep suppressed) and recently auto-resolved
+  //    ones (to reopen if their condition returns).
+  const [macRows, existing] = await Promise.all([
+    db.select({ assetId: assetIdentifiers.assetId, value: assetIdentifiers.value })
+      .from(assetIdentifiers)
+      .where(and(inArray(assetIdentifiers.assetId, ids), eq(assetIdentifiers.kind, 'mac'))),
+    db.select({ eventId: events.eventId, assetId: events.assetId, eventType: events.eventType, details: events.details, status: events.status })
+      .from(events)
+      .where(and(
+        inArray(events.assetId, ids),
+        inArray(events.eventType, DRIFT_TYPES),
+        sql`(${events.status} IN ('open', 'in_progress', 'false_positive')
+          OR (${events.status} = 'resolved' AND ${events.resolutionNote} LIKE 'Auto-resolved%'
+              AND ${events.resolvedAt} > now() - make_interval(days => ${REOPEN_WITHIN_DAYS})))`,
+      )),
+  ])
+  const agentMacs = new Map<string, Set<string>>()
+  for (const r of macRows) {
+    const mac = normalizeMac(r.value)
+    if (!mac) continue
+    if (!agentMacs.has(r.assetId)) agentMacs.set(r.assetId, new Set())
+    agentMacs.get(r.assetId)!.add(mac)
+  }
+
+  // 2) Detect all drifts in memory (detectDrift is pure). An OS upgrade moves the
+  //    baseline instead of alerting; a scan that saw no open port freezes port alerts.
   const candidates: { assetId: string; type: EventType; severity: DriftEvent['severity']; details: Record<string, unknown> }[] = []
+  const stmts: unknown[] = []   // every write, run in db.batch chunks (one subrequest each)
+  const frozenPorts = new Set<string>()
   for (const asset of assetRows) {
     if (!asset.baselineState) continue
-    for (const d of detectDrift(asset.baselineState as AssetBaseline, asset)) {
+    const baseline = asset.baselineState as AssetBaseline
+    if (portsUnreliable(baseline, asset.osInfo as Record<string, unknown> | null)) frozenPorts.add(asset.assetId)
+    for (const d of detectDrift(baseline, asset, { agentMacs: agentMacs.get(asset.assetId) })) {
+      if (d.type === 'version_upgrade' && d.details.changed_attribute === 'os_version') {
+        stmts.push(db.update(assets)
+          .set({ baselineState: sql`${assets.baselineState} || ${JSON.stringify({ os_version: d.details.to })}::jsonb`, updatedAt: now })
+          .where(eq(assets.assetId, asset.assetId)))
+        continue
+      }
       candidates.push({ assetId: asset.assetId, type: d.type, severity: d.severity, details: d.details })
     }
   }
 
-  // 2) Prefetch, in ONE query, the drift alerts that still matter for these
-  //    assets: open ones (to update or auto-resolve) and false positives (to
-  //    keep suppressed).
-  const existing = await db
-    .select({ eventId: events.eventId, assetId: events.assetId, eventType: events.eventType, details: events.details, status: events.status })
-    .from(events)
-    .where(and(
-      inArray(events.assetId, assetRows.map(a => a.assetId)),
-      inArray(events.eventType, DRIFT_TYPES),
-      inArray(events.status, [...OPEN_STATUSES, 'false_positive']),
-    ))
-
-  const openByKey  = new Map<string, string>()
+  const openByKey  = new Map<string, { id: string; assetId: string; type: EventType }>()
+  const recentlyResolved = new Map<string, string>()
   const suppressed = new Set<string>()
   const duplicates: string[] = []   // e.g. two copies after merging duplicate assets
   for (const e of existing) {
     const key = driftKey(e.assetId, e.eventType, (e.details ?? {}) as Record<string, unknown>)
     if (e.status === 'false_positive') suppressed.add(key)
+    else if (e.status === 'resolved') recentlyResolved.set(key, e.eventId)
     else if (openByKey.has(key)) duplicates.push(e.eventId)
-    else openByKey.set(key, e.eventId)
+    else openByKey.set(key, { id: e.eventId, assetId: e.assetId, type: e.eventType })
   }
 
-  // 3) Decide per candidate: refresh its open alert, skip, or insert new.
-  const stmts: unknown[] = []
+  // 3) Decide per candidate: refresh its open alert, reopen a recent one, skip, or insert new.
   const currentKeys = new Set<string>()
   let driftCount = 0
   for (const c of candidates) {
@@ -443,7 +461,19 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
     currentKeys.add(key)
     if (suppressed.has(key)) continue
 
-    const openId = openByKey.get(key)
+    const openId = openByKey.get(key)?.id
+    const reopenId = openId ? undefined : recentlyResolved.get(key)
+    if (reopenId) {
+      stmts.push(db.update(events)
+        .set({
+          status: 'open', resolvedAt: null, resolvedBy: null,
+          resolutionNote: 'Reopened: the change was detected again',
+          lastSeen: now, occurrences: sql`${events.occurrences} + 1`,
+          severity: c.severity, details: c.details, updatedAt: now,
+        })
+        .where(eq(events.eventId, reopenId)))
+      continue
+    }
     if (openId) {
       stmts.push(db.update(events)
         .set({
@@ -475,7 +505,10 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
              resolutionNote: 'Merged into an identical open alert on the same asset' })
       .where(inArray(events.eventId, duplicates)))
   }
-  const gone = [...openByKey.entries()].filter(([key]) => !currentKeys.has(key)).map(([, id]) => id)
+  // A port alert on an asset whose last scan saw no open port is left as it is (frozen).
+  const gone = [...openByKey.entries()]
+    .filter(([key, e]) => !currentKeys.has(key) && !(frozenPorts.has(e.assetId) && (e.type === 'port_opened' || e.type === 'port_closed')))
+    .map(([, e]) => e.id)
   if (gone.length > 0) {
     stmts.push(db.update(events)
       .set({

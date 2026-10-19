@@ -4,6 +4,7 @@ import { runDriftAudit } from '../services/drift'
 import { savePostureSnapshot } from '../services/posture'
 import { purgeOldData } from '../services/retention'
 import { ingestAllFeeds } from '../services/cti'
+import { runAlertHygiene } from '../services/alertHygiene'
 
 // Maps cron expression to handler name for logging
 function getCronName(cron: string): string {
@@ -39,6 +40,8 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
         console.log('[posture-snapshot] Posture snapshot saved')
         const purged = await purgeOldData(db)
         console.log(`[retention] Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events`)
+        const closed = await runAlertHygiene(db)
+        console.log(`[alert-hygiene] Closed ${closed.cve} CVE alerts without an SBOM, ${closed.newDevices} reviewed or stale new-device alerts`)
         break
       }
 
