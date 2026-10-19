@@ -365,8 +365,9 @@ app.get('/pending', async (c) => {
   }
 })
 
-// (Retired with the 1.x agent: GET /agent-status/:scanId and POST /:scanId/start. The
-// current agent starts scans with POST /agent-start and never polls for cancellation.)
+// (Retired with the 1.x agent: GET /agent-status/:scanId. Active scans cannot be
+// cancelled from the dashboard, so the agent does not poll for it; SBOM scans can,
+// through GET /sboms/agent-status/:scanId.)
 
 // ── POST /:scanId/cancel ── tenant admin cancels pending/running SBOM scan ──
 app.post('/:scanId/cancel', authMiddleware,
@@ -532,6 +533,28 @@ app.post('/agent-reset', async (c) => {
   } catch (err) {
     console.error('scans POST /agent-reset error:', err)
     return c.json({ detail: 'Failed to reset scans' }, 500)
+  }
+})
+
+// ── POST /:scanId/start ── the agent began a scan from the dashboard ─────────
+// pending → running, so the dashboard shows the real state (and an agent restart
+// marks it interrupted like a local scan). Only the agent's own pending scans.
+app.post('/:scanId/start', async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const agent = await authenticateAgent(c, db)
+    if (!agent) return c.json({ detail: 'Invalid credentials' }, 401)
+    await db.update(scanResults)
+      .set({ status: 'running' })
+      .where(and(
+        eq(scanResults.scanId, c.req.param('scanId')),
+        eq(scanResults.agentId, agent.agentId),
+        eq(scanResults.status, 'pending'),
+      ))
+    return c.json({ ok: true })
+  } catch (err) {
+    console.error('scans POST /:scanId/start error:', err)
+    return c.json({ detail: 'Failed to update scan status' }, 500)
   }
 })
 

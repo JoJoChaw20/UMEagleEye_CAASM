@@ -153,19 +153,9 @@ class AgentClient:
 
     def mark_scan_running(self, scan_id: str) -> None:
         try:
-            self.session.post(f"{self.api_url}/scans/{scan_id}/start", timeout=10)
+            self.session.post(f"{self.api_url}/scans/{scan_id}/start", timeout=10).raise_for_status()
         except httpclient.RequestException as exc:
             log.warning("Could not mark scan %s as running: %s", scan_id[:8], exc)
-
-    def get_scan_status(self, scan_id: str) -> Optional[str]:
-        """Scan status, so a running local process can honour a cancellation."""
-        try:
-            resp = self.session.get(f"{self.api_url}/scans/agent-status/{scan_id}", timeout=10)
-            resp.raise_for_status()
-            return resp.json().get("status")
-        except httpclient.RequestException as exc:
-            log.warning("Could not check scan %s status: %s", scan_id[:8], exc)
-            return None
 
     def mark_scan_failed(self, scan_id: str, reason: str) -> None:
         """Mark a scan failed and keep a concise, user-visible reason."""

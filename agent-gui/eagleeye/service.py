@@ -148,8 +148,8 @@ class AgentService:
         ))
 
     def run_active(self, scan_id: Optional[str], subnet: str, trigger: str = "dashboard") -> PipelineResult:
-        cancelled = throttled(lambda: self.client.get_scan_status(scan_id) == "cancelled", 3.0) if scan_id else (lambda: False)
-        ctx = PipelineContext("active", scan_id=scan_id, subnet=subnet, scan_type="active", cancelled=cancelled)
+        # Active scans cannot be cancelled from the dashboard, so there is nothing to poll.
+        ctx = PipelineContext("active", scan_id=scan_id, subnet=subnet, scan_type="active")
         self.current = f"Scanning {subnet}"
         try:
             result = self._active_pipeline(subnet).run(ctx)

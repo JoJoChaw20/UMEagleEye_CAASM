@@ -27,9 +27,6 @@ class FakeClient:
     def mark_scan_running(self, scan_id):
         self.running.append(scan_id)
 
-    def get_scan_status(self, scan_id):
-        return self.statuses.get(scan_id, "running")
-
     def mark_scan_failed(self, scan_id, reason):
         self.failed.append((scan_id, reason))
 
@@ -258,17 +255,6 @@ def test_second_active_scan_waits_while_one_is_running(monkeypatch):
     assert client.running == ["a1"]            # a2 stays pending for the next poll
     release.append(1)
     wait_idle(svc)
-
-
-def test_cancellation_during_run_does_not_fail_or_upload(monkeypatch):
-    def run(self, ctx):
-        ctx.hosts = [HostRecord(ip="192.168.1.10")]
-    monkeypatch.setattr(scan_nmap.NmapScanStage, "run", run)
-    client = FakeClient(statuses={"x1": "cancelled"})
-    svc = service(client)
-    result = svc.run_active("x1", "192.168.1.0/24")
-    assert result.status == "cancelled"
-    assert client.ingested == [] and client.failed == []
 
 
 class FakeArp:
