@@ -5,7 +5,7 @@
  * Run: npx esbuild scripts/drift-noise-demo.ts --bundle --platform=node --format=cjs \
  *        --outfile=.drift-noise-demo.cjs && node .drift-noise-demo.cjs
  */
-import { detectDrift, portsUnreliable } from '../src/services/drift'
+import { detectDrift, frozenOnUnreliablePorts, portsUnreliable } from '../src/services/drift'
 
 let pass = 0
 let fail = 0
@@ -27,6 +27,7 @@ check('a scan that saw no open port is unreliable', portsUnreliable(base, { port
 check('…and is not judged (no port drift)', types(detectDrift(base, asset({ ports: [] }))), [])
 check('a scan with ports is reliable', portsUnreliable(base, { ports: ['80/tcp'] }), false)
 check('no port data at all (passive) is not "unreliable", just skipped', [portsUnreliable(base, {}), types(detectDrift(base, asset({})))], [false, []])
+check('such a scan freezes port_opened alerts but lets old port_closed alerts resolve', [frozenOnUnreliablePorts('port_opened'), frozenOnUnreliablePorts('port_closed')], [true, false])
 check('a host with no baseline ports that shows none is fine', portsUnreliable({ ...base, ports: [] }, { ports: [] }), false)
 
 // ── MAC ──

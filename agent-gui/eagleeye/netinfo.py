@@ -22,18 +22,29 @@ def local_ip() -> str:
         return "127.0.0.1"
 
 
-def parse_default_gateway(system: str, output: str) -> Optional[str]:
+def parse_default_gateway(system: str, output: str, via: Optional[str] = None) -> Optional[str]:
     """Pull the default gateway out of `route print` (Windows), `ip route` (Linux)
-    or `route -n get default` (macOS) output."""
+    or `route -n get default` (macOS) output.
+
+    Windows can list several default routes (Wi-Fi plus a VPN or a virtual adapter such
+    as the GNS3 KM-TEST loopback) in no fixed order. The one on the adapter holding `via`
+    (the address the OS really uses, local_ip()) wins, else the lowest metric: taking
+    the first line made the gateway, and with it the router's exposure, flip between
+    scans."""
     if system == "Windows":
+        routes: list[tuple[bool, int, str]] = []    # (not on `via`, metric, gateway)
         for line in output.splitlines():
             parts = line.split()
-            # "0.0.0.0  0.0.0.0  <gateway>  <iface>  <metric>". VPN/virtual adapters
-            # can list "On-link" here, so only accept a real IP.
-            if (len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0"
+            # Active: "0.0.0.0  0.0.0.0  <gateway>  <iface>  <metric>"; persistent:
+            # "0.0.0.0  0.0.0.0  <gateway>  <metric>". VPN/virtual adapters can list
+            # "On-link" as the gateway, so only accept a real IP.
+            if not (len(parts) >= 4 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0"
                     and _IPV4.fullmatch(parts[2]) and parts[2] != "0.0.0.0"):
-                return parts[2]
-        return None
+                continue
+            iface = parts[3] if _IPV4.fullmatch(parts[3]) else None
+            metric = int(parts[-1]) if parts[-1].isdigit() else 1 << 30
+            routes.append((not (via and iface == via), metric, parts[2]))
+        return min(routes)[2] if routes else None
     if system == "Darwin":
         m = re.search(r"gateway:\s*(\d{1,3}(?:\.\d{1,3}){3})", output)
         return m.group(1) if m else None
@@ -52,7 +63,7 @@ def default_gateway() -> Optional[str]:
         out = subprocess.run(command, capture_output=True, text=True, timeout=5).stdout
     except Exception:  # noqa: BLE001
         return None
-    return parse_default_gateway(system, out)
+    return parse_default_gateway(system, out, local_ip())
 
 
 def build_network_info(subnet: Optional[str], hosts: list[HostRecord]) -> dict[str, Any]:

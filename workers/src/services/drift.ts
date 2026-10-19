@@ -210,6 +210,13 @@ export function portsUnreliable(baseline: AssetBaseline, osInfo: Record<string, 
   return Array.isArray(osInfo?.ports) && extractPorts(osInfo).length === 0 && (baseline.ports ?? []).length > 0
 }
 
+/** Which open alerts a scan with unreliable ports leaves as they are: port_opened only.
+ *  port_closed is no longer raised, so its old alerts must still resolve; frozen, they
+ *  stayed open for good on a host whose last scan saw no port. */
+export function frozenOnUnreliablePorts(type: EventType): boolean {
+  return type === 'port_opened'
+}
+
 export function detectDrift(
   baseline: AssetBaseline,
   asset:    typeof assets.$inferSelect,
@@ -507,7 +514,7 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
   }
   // A port alert on an asset whose last scan saw no open port is left as it is (frozen).
   const gone = [...openByKey.entries()]
-    .filter(([key, e]) => !currentKeys.has(key) && !(frozenPorts.has(e.assetId) && (e.type === 'port_opened' || e.type === 'port_closed')))
+    .filter(([key, e]) => !currentKeys.has(key) && !(frozenPorts.has(e.assetId) && frozenOnUnreliablePorts(e.type)))
     .map(([, e]) => e.id)
   if (gone.length > 0) {
     stmts.push(db.update(events)

@@ -171,3 +171,24 @@ def test_a_large_report_sends_the_top_findings_and_every_key():
     assert [f["cve_id"] for f in body["findings"]] == ["CVE-2", "CVE-1"]
     assert body["total_findings"] == 3 and body["present_keys"] == ["CVE-0::p", "CVE-1::p", "CVE-2::p"]
     assert ok and "1 lower-priority" in detail
+
+
+# `route print -4 0.0.0.0` on a PC with Wi-Fi and the GNS3 KM-TEST loopback, which also
+# has a default gateway. Windows lists the two default routes in no fixed order.
+ROUTES_WIFI = "          0.0.0.0          0.0.0.0      192.168.0.1    192.168.0.139     55\n"
+ROUTES_LOOP = "          0.0.0.0          0.0.0.0      142.19.0.11       142.19.0.1    281\n"
+ROUTES_HEAD = "Active Routes:\nNetwork Destination        Netmask          Gateway       Interface  Metric\n"
+
+
+def test_default_gateway_is_the_one_on_the_adapter_in_use_whatever_the_order():
+    from eagleeye.netinfo import parse_default_gateway
+
+    for table in (ROUTES_HEAD + ROUTES_WIFI + ROUTES_LOOP, ROUTES_HEAD + ROUTES_LOOP + ROUTES_WIFI):
+        assert parse_default_gateway("Windows", table, "192.168.0.139") == "192.168.0.1"
+        assert parse_default_gateway("Windows", table) == "192.168.0.1"          # lowest metric
+    # The adapter in use wins even over a lower metric (e.g. a VPN that is not routing).
+    vpn = ROUTES_HEAD + ROUTES_WIFI + "          0.0.0.0          0.0.0.0       10.8.0.1       10.8.0.5      5\n"
+    assert parse_default_gateway("Windows", vpn, "192.168.0.139") == "192.168.0.1"
+    on_link = ROUTES_HEAD + "          0.0.0.0          0.0.0.0         On-link       10.8.0.5      5\n" + ROUTES_WIFI
+    assert parse_default_gateway("Windows", on_link) == "192.168.0.1"
+    assert parse_default_gateway("Windows", ROUTES_HEAD) is None
