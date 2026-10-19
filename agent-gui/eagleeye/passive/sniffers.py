@@ -1,5 +1,5 @@
-"""Passive network observation: ARP (host discovery), mDNS/NetBIOS-NS (hostnames and
-announced services) and DHCP (device fingerprints).
+"""Passive network observation: ARP and broadcast/multicast senders (host discovery),
+mDNS/NetBIOS-NS (hostnames and announced services) and DHCP (device fingerprints).
 
 ARP handling is ported from the original agent. The mDNS, NetBIOS and DHCP parsers were
 rewritten in Phase C because the originals extracted nothing from real traffic: mDNS
@@ -205,26 +205,44 @@ def _valid_ip(ip: Optional[str]) -> bool:
     return bool(ip) and not ip.startswith("0.") and ip != "0.0.0.0"
 
 
-# ── ARP: primary host discovery ──────────────────────────────────────────────
+def _is_multicast_mac(mac: str) -> bool:
+    try:
+        return bool(int(mac.split(":")[0], 16) & 1)
+    except (ValueError, IndexError):
+        return True
+
+
+# ── ARP + broadcast/multicast: primary host discovery ────────────────────────
 
 class ArpSniffer(_Sniffer):
-    """Records ip -> {mac, last_seen} for every host seen ARPing on the segment."""
+    """Records ip -> {mac, last_seen} for every host heard on the segment: its ARP, and
+    any IPv4 broadcast or multicast it sends (mDNS, NetBIOS, SSDP, LLMNR, ...).
 
-    bpf = "arp"
+    ARP alone hears almost nothing on a quiet Wi-Fi network: devices keep their ARP
+    caches warm, so in practice only the router ARPs, and everything else appeared only
+    after an active scan made it answer. Broadcast and multicast never leave the segment,
+    so their sender is a neighbour, and the frame's source MAC is the sender's own."""
+
+    bpf = "arp or (ip and (ether broadcast or ether multicast))"
     thread_name = "arp-sniffer"
-    label = "ARP sniffer"
+    label = "ARP/broadcast sniffer"
 
     def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
         super().__init__(interface, chooser)
         self._seen: dict[str, dict[str, Any]] = {}
 
     def _make_handler(self) -> Any:
-        from scapy.all import ARP  # type: ignore
+        from scapy.all import ARP, IP, Ether  # type: ignore
 
         def handle(pkt: Any) -> None:
-            if not pkt.haslayer(ARP):
+            if pkt.haslayer(ARP):
+                ip, mac = pkt[ARP].psrc, pkt[ARP].hwsrc
+            elif pkt.haslayer(IP) and pkt.haslayer(Ether):
+                ip, mac = pkt[IP].src, pkt[Ether].src.lower()
+                if ip == "255.255.255.255" or _is_multicast_mac(mac):
+                    return
+            else:
                 return
-            ip, mac = pkt[ARP].psrc, pkt[ARP].hwsrc
             if not _valid_ip(ip) or self._own(mac):
                 return
             with self._lock:

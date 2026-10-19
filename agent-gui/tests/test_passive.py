@@ -333,6 +333,27 @@ def test_sniffers_ignore_this_computers_own_packets():
     assert dhcp_sniffer.get_info_by_mac(WIFI_MAC) == {}
 
 
+def test_hosts_are_discovered_from_their_broadcast_and_multicast_not_only_arp():
+    # A quiet Wi-Fi network: only the router ARPs; the other devices are heard only
+    # through mDNS, NetBIOS or SSDP until an active scan makes them answer.
+    chooser = InterfaceChooser(probe=FakeProbe("192.168.100.71"))
+    chooser.refresh()
+    hosts = ArpSniffer(chooser=chooser)
+    feed = hosts._make_handler()
+    feed(arp("192.168.100.1", "98:48:27:cb:55:6c"))
+    feed(mdns4("192.168.100.186", IPAD_MAC, qd=DNSQR(qname="_airplay._tcp.local", qtype="PTR")))
+    feed(wire(Ether(src=PHONE_MAC, dst="ff:ff:ff:ff:ff:ff") / IP(src="192.168.100.50", dst="192.168.100.255")
+              / UDP(sport=137, dport=137)))
+    feed(wire(Ether(src=APPLE_MAC, dst="01:00:5e:7f:ff:fa") / IP(src="192.168.100.60", dst="239.255.255.250")
+              / UDP(sport=50000, dport=1900)))
+    feed(mdns4("192.168.100.71", WIFI_MAC, qd=DNSQR(qname="_googlecast._tcp.local", qtype="PTR")))  # the PC itself
+    feed(wire(Ether(src="98:48:27:cb:55:6c", dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255")
+              / UDP(sport=67, dport=68)))                                                      # no sender address
+    seen = {h.ip: h.mac.lower() for h in hosts.drain()}
+    assert seen == {"192.168.100.1": "98:48:27:cb:55:6c", "192.168.100.186": IPAD_MAC,
+                    "192.168.100.50": PHONE_MAC, "192.168.100.60": APPLE_MAC}
+
+
 def test_without_a_chooser_nothing_is_filtered():
     arp_sniffer = ArpSniffer()
     arp_sniffer._make_handler()(arp("142.19.0.1", LOOP_MAC))
