@@ -12,6 +12,7 @@ import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import WhyAlert from '../components/common/WhyAlert'
+import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
@@ -22,6 +23,7 @@ import {
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
+const GROUPED_KEY = 'alerts_cve_grouped'
 const DRIFT_CSV = [...DRIFT_TYPES].join(',')
 
 // Saved views — each is a work queue with its own filter + sort. Concern views
@@ -59,6 +61,10 @@ function useToast() {
   return { toast, show }
 }
 
+function readGrouped() {
+  try { return localStorage.getItem(GROUPED_KEY) !== 'false' } catch { return true }
+}
+
 function readLastVisit() {
   try { return localStorage.getItem(LAST_VISIT_KEY) } catch { return null }
 }
@@ -92,6 +98,11 @@ export default function AlertsPage() {
 
   const [events,    setEvents]    = useState([])
   const [total,     setTotal]     = useState(0)
+  // All CVEs tab: one row per vulnerable package on an asset ("upgrade X to Y fixes N CVEs")
+  const [grouped,   setGroupedState] = useState(readGrouped)
+  const [groups,    setGroups]    = useState([])
+  const [groupAlerts, setGroupAlerts] = useState(0)
+  const [selectedGroups, setSelectedGroups] = useState(new Set())
   const [stats,     setStats]     = useState(null)
   const [loading,   setLoading]   = useState(true)
   const [selected,  setSelected]  = useState(new Set())
@@ -110,6 +121,12 @@ export default function AlertsPage() {
   }, [search])
 
   const activeView = VIEWS.find(v => v.id === view) ?? VIEWS[0]
+  // Grouped while on All CVEs and not drilled into one package
+  const groupMode = view === 'cve' && grouped && !pkgFilter
+  const setGrouped = (v) => {
+    setGroupedState(v); setPage(1)
+    try { localStorage.setItem(GROUPED_KEY, String(v)) } catch { /* private mode */ }
+  }
 
   const queryParams = useMemo(() => {
     const p = { page, page_size: PAGE_SIZE, sort: activeView.sort ?? sort, ...activeView.params }
@@ -131,19 +148,27 @@ export default function AlertsPage() {
     try {
       const tParam = tenantFilter ? { tenant_id: tenantFilter } : {}
       const [eventsRes, statsRes] = await Promise.all([
-        client.get('/events', { params: queryParams }),
+        client.get(groupMode ? '/events/cve-groups' : '/events', { params: queryParams }),
         client.get('/events/stats/summary', { params: tParam }),
       ])
-      setEvents(eventsRes.data.items || [])
+      if (groupMode) {
+        setGroups(eventsRes.data.items || [])
+        setGroupAlerts(eventsRes.data.total_alerts || 0)
+        setEvents([])
+      } else {
+        setEvents(eventsRes.data.items || [])
+        setGroups([])
+      }
       setTotal(eventsRes.data.total || 0)
       setStats(statsRes.data)
       setSelected(new Set())
+      setSelectedGroups(new Set())
     } catch (err) {
       console.error('Alerts load error:', err)
     } finally {
       setLoading(false)
     }
-  }, [queryParams, tenantFilter])
+  }, [queryParams, tenantFilter, groupMode])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -168,11 +193,16 @@ export default function AlertsPage() {
   const resetPage = (fn) => (v) => { fn(v); setPage(1) }
 
   // ── Actions ──────────────────────────────────────────────────
+  // `ids` is a list of alert ids, or { groups } for whole fix groups (All CVEs, grouped)
   const runUpdate = async (ids, body) => {
     try {
-      if (ids.length === 1) await client.patch(`/events/${ids[0]}`, body)
+      let n = Array.isArray(ids) ? ids.length : 0
+      if (!Array.isArray(ids)) {
+        const res = await client.post('/events/group-update', { groups: ids.groups, ...body })
+        n = res.data.updated
+      } else if (ids.length === 1) await client.patch(`/events/${ids[0]}`, body)
       else await client.post('/events/bulk', { event_ids: ids, ...body })
-      showToast(ids.length === 1 ? 'Alert updated.' : `${ids.length} alerts updated.`)
+      showToast(n === 1 ? 'Alert updated.' : `${n} alerts updated.`)
       await loadData()
       return true
     } catch (err) {
@@ -181,9 +211,9 @@ export default function AlertsPage() {
     }
   }
 
-  const requestStatus = (ids, status) => {
+  const requestStatus = (ids, status, count) => {
     // Closing needs a reason on record; starting/reopening does not
-    if (CLOSE_STATUSES.has(status)) setAction({ ids, status })
+    if (CLOSE_STATUSES.has(status)) setAction({ ids, status, count })
     else runUpdate(ids, { status })
   }
 
@@ -220,6 +250,21 @@ export default function AlertsPage() {
   const pickCell = (sev, bucket) => { setView('open'); setSeverity(sev); setAge(bucket); setPage(1) }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
+  const toggleGroup = (key) => setSelectedGroups(s => {
+    const n = new Set(s)
+    n.has(key) ? n.delete(key) : n.add(key)
+    return n
+  })
+  const toggleAllGroups = () => setSelectedGroups(s => groups.every(g => s.has(groupKey(g))) ? new Set() : new Set(groups.map(groupKey)))
+  const chosenGroups = groups.filter(g => selectedGroups.has(groupKey(g)))
+  const groupTarget = { groups: chosenGroups.map(g => ({ asset_id: g.asset_id, package_name: g.package_name, package_version: g.package_version })) }
+  const groupAlertCount = chosenGroups.reduce((n, g) => n + g.cves, 0)
+  const openGroup = (g) => {
+    setPkgFilter(g.package_name)
+    setAssetFilter({ id: g.asset_id, label: g.asset_hostname || g.asset_ip })
+    setPage(1)
+  }
+  const backToFixes = () => { setPkgFilter(''); setAssetFilter(null); setPage(1) }
   const allOnPageSelected = events.length > 0 && events.every(e => selected.has(e.event_id))
   const toggleAll = () => setSelected(allOnPageSelected ? new Set() : new Set(events.map(e => e.event_id)))
   const toggleOne = (id) => setSelected(s => {
@@ -416,9 +461,36 @@ export default function AlertsPage() {
               <option value="time">Sort: last seen</option>
             </select>
           )}
-          <span className="text-dark-400 text-sm">{total} alert{total === 1 ? '' : 's'}</span>
+          {view === 'cve' && (
+            pkgFilter && grouped
+              ? <button onClick={backToFixes} className="text-xs text-eagle-400 hover:underline">← Back to fixes</button>
+              : (
+                <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer" title="One row per vulnerable package: upgrade it to fix its CVEs">
+                  <input type="checkbox" checked={grouped} onChange={e => setGrouped(e.target.checked)} /> Group by fix
+                </label>
+              )
+          )}
+          <span className="text-dark-400 text-sm">
+            {groupMode
+              ? `${total} fix${total === 1 ? '' : 'es'} · ${groupAlerts} alert${groupAlerts === 1 ? '' : 's'}`
+              : `${total} alert${total === 1 ? '' : 's'}`}
+          </span>
         </div>
       </div>
+
+      {/* ── Bulk action bar: whole fix groups ── */}
+      {canManage && groupMode && chosenGroups.length > 0 && (
+        <div className="glass-card px-4 py-2.5 flex items-center gap-2 flex-wrap border-eagle-500/40">
+          <span className="text-sm text-dark-200 font-medium mr-2">{chosenGroups.length} fix{chosenGroups.length === 1 ? '' : 'es'} · {groupAlertCount} alert{groupAlertCount === 1 ? '' : 's'}</span>
+          <AssignSelect assignees={assignees} value="" onChange={(v) => assign(groupTarget, v)} placeholder="Assign to…" />
+          {['in_progress', 'resolved', 'accepted_risk'].map(st => (
+            <button key={st} onClick={() => requestStatus(groupTarget, st, groupAlertCount)} className="btn-secondary text-xs py-1.5 px-3">
+              {ACTION_LABELS[st]}
+            </button>
+          ))}
+          <button onClick={() => setSelectedGroups(new Set())} className="ml-auto text-xs text-dark-400 hover:text-dark-200">Clear selection</button>
+        </div>
+      )}
 
       {/* ── Bulk action bar ── */}
       {canManage && selected.size > 0 && (
@@ -443,6 +515,9 @@ export default function AlertsPage() {
           <div className="flex justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
+        ) : groupMode && groups.length > 0 ? (
+          <CveGroupTable groups={groups} canManage={canManage} selected={selectedGroups}
+            onToggle={toggleGroup} onToggleAll={toggleAllGroups} onOpen={openGroup} />
         ) : events.length > 0 ? (
           <table className="data-table">
             <thead>
@@ -569,7 +644,7 @@ export default function AlertsPage() {
 
       {action && (
         <CloseDialog
-          count={action.ids.length}
+          count={action.count ?? action.ids.length}
           status={action.status}
           onCancel={() => setAction(null)}
           onConfirm={async (note) => {

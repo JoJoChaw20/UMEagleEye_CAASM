@@ -10,7 +10,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, desc, sql, gte, inArray, isNull, ilike } from 'drizzle-orm'
+import { eq, and, or, desc, sql, gte, inArray, isNull, ilike, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
@@ -23,6 +23,7 @@ import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '.
 import { priorityExpr } from '../lib/priority'
 import { softwareName, techniquesFor } from '../lib/attack'
 import { cweList } from '../lib/cwe'
+import { fixTarget } from '../lib/fixTarget'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -97,16 +98,9 @@ function statusCondition(raw: string | undefined) {
 //        device_type, q (host/IP/CVE/package), since (ISO), sort (priority|time),
 //        concern (see lib/concerns), age (lt1d|d1_3|d3_7|d7_30|gt30), overdue=true,
 //        package (exact CVE package name)
-app.get('/', authMiddleware, async (c) => {
-  try {
-    const user = c.get('user') as User
-    const db   = getDb(c.env.DATABASE_URL)
-    const q    = (k: string) => c.req.query(k)
-
-    const page     = Math.max(1, parseInt(q('page') ?? '1'))
-    const pageSize = Math.min(200, Math.max(1, parseInt(q('page_size') ?? q('limit') ?? '50')))
-    const offset   = (page - 1) * pageSize
-
+/** The list filters (query string → WHERE), shared by GET / and GET /cve-groups.
+ *  Requires `assets` joined on events.asset_id. */
+export function listConditions(user: User, q: (k: string) => string | undefined) {
     const tenantId   = scopeTenant(user, q('tenant_id'))
     const severities = csv(q('severity'), SEVERITY_VALUES)
     const eventType  = csv(q('event_type') ?? q('type'), EVENT_TYPE_VALUES)
@@ -141,7 +135,19 @@ app.get('/', authMiddleware, async (c) => {
         sql`${events.details}->>'package' ILIKE ${'%' + search + '%'}`,
       ) : undefined,
     ]
-    const whereClause = and(...conditions)
+    return conditions
+}
+
+app.get('/', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as User
+    const db   = getDb(c.env.DATABASE_URL)
+    const q    = (k: string) => c.req.query(k)
+
+    const page     = Math.max(1, parseInt(q('page') ?? '1'))
+    const pageSize = Math.min(200, Math.max(1, parseInt(q('page_size') ?? q('limit') ?? '50')))
+    const offset   = (page - 1) * pageSize
+    const whereClause = and(...listConditions(user, q))
 
     const order = q('sort') === 'priority'
       ? [desc(priorityExpr), desc(events.lastSeen)]
@@ -363,6 +369,111 @@ app.get('/stats/summary', authMiddleware, async (c) => {
   } catch (err) {
     console.error('events GET stats/summary error:', err)
     return c.json({ detail: 'Failed to fetch event stats' }, 500)
+  }
+})
+
+/** Open-CVE fix groups for GET /cve-groups (exported for tests). `where` must come from listConditions. */
+export function queryCveGroups(db: DB, where: SQL | undefined, limit: number, offset: number) {
+  const pkg = sql<string>`${events.details}->>'package_name'`
+  const ver = sql<string>`COALESCE(${events.details}->>'package_version', '')`
+  return db
+    .select({
+      assetId:          events.assetId,
+      packageName:      pkg,
+      packageVersion:   ver,
+      packageType:      sql<string | null>`max(${events.details}->>'package_type')`,
+      cves:             sql<number>`count(*)::int`,
+      critical:         sql<number>`count(*) filter (where ${events.severity} = 'critical')::int`,
+      high:             sql<number>`count(*) filter (where ${events.severity} = 'high')::int`,
+      medium:           sql<number>`count(*) filter (where ${events.severity} = 'medium')::int`,
+      low:              sql<number>`count(*) filter (where ${events.severity} = 'low')::int`,
+      kev:              sql<number>`count(*) filter (where ${events.details}->'kev' = 'true'::jsonb)::int`,
+      threatIntel:      sql<number>`count(*) filter (where ${events.details}->'has_cti_match' = 'true'::jsonb)::int`,
+      inProgress:       sql<number>`count(*) filter (where ${events.status} = 'in_progress')::int`,
+      maxCvss:          sql<number | null>`max((${events.details}->>'cvss_base_score')::float)`,
+      maxEpss:          sql<number | null>`max(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number' THEN (${events.details}->>'epss_score')::float END)`,
+      priority:         sql<number>`max(${priorityExpr})`,
+      firstSeen:        sql<string>`min(${events.firstSeen})`,
+      lastSeen:         sql<string>`max(${events.lastSeen})`,
+      fixVersions:      sql<unknown[]>`array_agg(${events.details}->'fix_versions')`,
+      // KEV first, then priority, then CVSS: what to read first in the group
+      topCves:          sql<string[]>`(array_agg(${events.details}->>'cve_id' ORDER BY COALESCE(${events.details}->'kev' = 'true'::jsonb, false) DESC,
+                          ${priorityExpr} DESC, (${events.details}->>'cvss_base_score')::float DESC NULLS LAST))[1:5]`,
+      assignees:        sql<string[]>`array_remove(array_agg(DISTINCT ${users.username}), NULL)`,
+      unassigned:       sql<number>`count(*) filter (where ${events.assignedTo} IS NULL)::int`,
+      assetHostname:    sql<string | null>`max(${assets.hostname})`,
+      assetIp:          sql<string | null>`max(${assets.ipAddress})`,
+      assetDeviceType:  sql<string | null>`max(${assets.deviceType}::text)`,
+      assetCriticality: sql<number | null>`max(${assets.criticalityScore})`,
+      assetInternetFacing: sql<boolean>`bool_or(${assets.isInternetFacing})`,
+      totalGroups:      sql<number>`(count(*) OVER ())::int`,
+      totalAlerts:      sql<number>`(sum(count(*)) OVER ())::int`,
+    })
+    .from(events)
+    .innerJoin(assets, eq(events.assetId, assets.assetId))
+    .leftJoin(users, eq(events.assignedTo, users.userId))
+    .where(where)
+    .groupBy(events.assetId, pkg, ver)
+    .orderBy(desc(sql`max(${priorityExpr})`), desc(sql`count(*)`))
+    .limit(limit)
+    .offset(offset)
+}
+
+// ── GET /cve-groups ─── open CVE alerts grouped by fix ───────────
+// One row per vulnerable package on an asset ("upgrade aiohttp 3.10.5 → 3.13.4 fixes
+// 138 CVEs"), with the same filters as GET /. The individual CVEs stay one alert each;
+// GET /?package=&asset_id= lists them.
+app.get('/cve-groups', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as User
+    const db   = getDb(c.env.DATABASE_URL)
+    const q    = (k: string) => c.req.query(k)
+    const page     = Math.max(1, parseInt(q('page') ?? '1'))
+    const pageSize = Math.min(100, Math.max(1, parseInt(q('page_size') ?? '20')))
+    const where = and(...listConditions(user, (k) => k === 'event_type' || k === 'type' ? 'cve_detected' : q(k)))
+
+    const rows = await queryCveGroups(db, where, pageSize, (page - 1) * pageSize)
+
+    return c.json({
+      total:        rows[0]?.totalGroups ?? 0,
+      total_alerts: rows[0]?.totalAlerts ?? 0,
+      page,
+      page_size:    pageSize,
+      items: rows.map(r => {
+        const fix = fixTarget(r.packageVersion, r.fixVersions)
+        return {
+          asset_id: r.assetId,
+          asset_hostname: r.assetHostname,
+          asset_ip: r.assetIp,
+          asset_device_type: r.assetDeviceType,
+          asset_criticality: r.assetCriticality,
+          asset_internet_facing: r.assetInternetFacing,
+          package_name: r.packageName,
+          package_version: r.packageVersion || null,
+          package_type: r.packageType,
+          cves: r.cves,
+          by_severity: { critical: r.critical, high: r.high, medium: r.medium, low: r.low },
+          severity: r.critical ? 'critical' : r.high ? 'high' : r.medium ? 'medium' : 'low',
+          kev: r.kev,
+          threat_intel: r.threatIntel,
+          in_progress: r.inProgress,
+          max_cvss: r.maxCvss,
+          max_epss: r.maxEpss,
+          priority_score: r.priority != null ? Number(r.priority) : null,
+          first_seen: r.firstSeen,
+          last_seen: r.lastSeen,
+          fix_to: fix.to,
+          fixed_by_target: fix.fixed,
+          no_fix: fix.noFix,
+          top_cves: r.topCves ?? [],
+          assignees: r.assignees ?? [],
+          unassigned: r.unassigned,
+        }
+      }),
+    })
+  } catch (err) {
+    console.error('events GET /cve-groups error:', err)
+    return c.json({ detail: 'Failed to fetch CVE groups' }, 500)
   }
 })
 
@@ -637,6 +748,65 @@ async function applyUpdate(
   return {}
 }
 
+// Same update applied to many alerts with a constant number of statements (one UPDATE
+// and the audit rows per 500 alerts), so it fits the Workers free plan's 50-subrequest
+// budget whatever the count. Drift alerts accepted as risk move their baseline one by one
+// (only drift alerts do; GET /bulk caps those at 200).
+export async function applyUpdateMany(
+  db: DB, user: User,
+  rows: Array<{ event: typeof events.$inferSelect; asset: typeof assets.$inferSelect }>,
+  body: UpdateBody,
+): Promise<{ updated: number; error?: string }> {
+  if (rows.length === 0) return { updated: 0 }
+  const now = new Date()
+  const closing = body.status !== undefined && (CLOSED_STATUSES as string[]).includes(body.status)
+  if (closing && (!body.note || body.note.length < 3)) {
+    return { updated: 0, error: 'A note (min 3 characters) is required to close an alert' }
+  }
+  if (body.assigned_to) {
+    const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role })
+      .from(users).where(eq(users.userId, body.assigned_to)).limit(1)
+    if (!assignee || !ACTION_ROLES.includes(assignee.role)
+        || rows.some(r => r.asset.tenantId && assignee.tenantId !== r.asset.tenantId)) {
+      return { updated: 0, error: 'Assignee must be an admin analyst in the asset\'s tenant' }
+    }
+  }
+  if (body.status === 'accepted_risk') {
+    for (const r of rows) if (DRIFT_TYPES.has(r.event.eventType)) await acceptIntoBaseline(db, r.event, r.asset)
+  }
+
+  const assigneeOf = (current: string | null) =>
+    body.assigned_to !== undefined ? body.assigned_to
+      : body.status === 'in_progress' && !current ? user.userId   // starting work takes ownership
+      : current
+  const set: Record<string, unknown> = { updatedAt: now }
+  if (body.assigned_to !== undefined) set.assignedTo = body.assigned_to
+  else if (body.status === 'in_progress') set.assignedTo = sql`COALESCE(${events.assignedTo}, ${user.userId}::uuid)`
+  if (body.status !== undefined) {
+    set.status = body.status
+    set.resolvedAt = closing ? now : null
+    set.resolvedBy = closing ? user.userId : null
+  }
+  if (body.note) set.resolutionNote = body.note
+
+  const stmts: unknown[] = []
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500)
+    stmts.push(db.update(events).set(set as Partial<typeof events.$inferInsert>)
+      .where(inArray(events.eventId, chunk.map(r => r.event.eventId))))
+    stmts.push(db.insert(auditLogs).values(chunk.map(r => ({
+      userId:        user.userId,
+      tenantId:      r.asset.tenantId ?? user.tenantId ?? null,
+      actionType:    'alert_update',
+      targetEntity:  r.event.eventId,
+      previousState: { status: r.event.status, assigned_to: r.event.assignedTo },
+      newState:      { status: body.status ?? r.event.status, assigned_to: assigneeOf(r.event.assignedTo), note: body.note ?? null },
+    }))))
+  }
+  await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+  return { updated: rows.length }
+}
+
 // ── PATCH /:eventId — change status / assignee / note ────────────
 app.patch('/:eventId', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', updateSchema), async (c) => {
   try {
@@ -679,17 +849,54 @@ app.post('/bulk', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('jso
         user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId, user.tenantId) : undefined,
       ))
 
-    let updated = 0
-    const errors: string[] = []
-    for (const row of rows) {
-      const r = await applyUpdate(db, user, row, body.data)
-      if (r.error) { errors.push(r.error); break }  // same body → same error for every row
-      updated++
-    }
-    if (errors.length > 0 && updated === 0) return c.json({ detail: errors[0] }, 400)
-    return c.json({ updated, skipped: event_ids.length - updated })
+    const result = await applyUpdateMany(db, user, rows, body.data)
+    if (result.error) return c.json({ detail: result.error }, 400)
+    return c.json({ updated: result.updated, skipped: event_ids.length - result.updated })
   } catch (err) {
     console.error('events POST bulk error:', err)
+    return c.json({ detail: 'Failed to update alerts' }, 500)
+  }
+})
+
+// ── POST /group-update — one update for every open CVE alert of some fix groups ──
+const groupSchema = z.object({
+  groups: z.array(z.object({
+    asset_id:        z.string().uuid(),
+    package_name:    z.string().min(1).max(300),
+    package_version: z.string().max(200).nullable(),
+  })).min(1).max(50),
+  status:      z.enum(STATUS_VALUES).optional(),
+  assigned_to: z.string().uuid().nullable().optional(),
+  note:        z.string().trim().max(1000).optional(),
+})
+
+app.post('/group-update', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', groupSchema), async (c) => {
+  try {
+    const user = c.get('user') as User
+    const db   = getDb(c.env.DATABASE_URL)
+    const { groups, ...rest } = c.req.valid('json')
+    const body = updateSchema.safeParse(rest)
+    if (!body.success) return c.json({ detail: 'Provide status, assigned_to or note' }, 400)
+
+    const rows = await db
+      .select({ event: events, asset: assets })
+      .from(events)
+      .innerJoin(assets, eq(events.assetId, assets.assetId))
+      .where(and(
+        eq(events.eventType, 'cve_detected'),
+        inArray(events.status, OPEN_STATUSES),
+        user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId, user.tenantId) : undefined,
+        or(...groups.map(g => and(
+          eq(events.assetId, g.asset_id),
+          sql`${events.details}->>'package_name' = ${g.package_name}`,
+          sql`COALESCE(${events.details}->>'package_version', '') = ${g.package_version ?? ''}`,
+        ))),
+      ))
+    const result = await applyUpdateMany(db, user, rows, body.data)
+    if (result.error) return c.json({ detail: result.error }, 400)
+    return c.json({ updated: result.updated })
+  } catch (err) {
+    console.error('events POST group-update error:', err)
     return c.json({ detail: 'Failed to update alerts' }, 500)
   }
 })
