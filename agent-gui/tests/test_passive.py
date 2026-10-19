@@ -14,7 +14,7 @@ import os
 import pytest
 
 scapy_all = pytest.importorskip("scapy.all")
-from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, IP, UDP, Ether, IPv6, load_layer  # noqa: E402
+from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, IP, UDP, Ether, IPv6, Raw, load_layer  # noqa: E402
 
 load_layer("netbios")
 from scapy.layers.netbios import (  # noqa: E402
@@ -22,7 +22,9 @@ from scapy.layers.netbios import (  # noqa: E402
     NBNSQueryRequest, NBNSQueryResponse, NBNSRegistrationRequest,
 )
 
-from eagleeye.passive.sniffers import ArpSniffer, DhcpSniffer, InterfaceChooser, MdnsNetbiosSniffer  # noqa: E402
+from eagleeye.passive.sniffers import (  # noqa: E402
+    ArpSniffer, DhcpSniffer, InterfaceChooser, MdnsNetbiosSniffer, SsdpSniffer, parse_ssdp,
+)
 from eagleeye.pipeline.record import HostRecord  # noqa: E402
 from eagleeye.stages import enrich_passive_hosts  # noqa: E402
 
@@ -103,6 +105,22 @@ def test_mdns_services_from_queries_and_announcements(mdns):
     assert mdns.get_mac_info(APPLE_MAC)["mdns_services"] == [
         "_companion-link._tcp", "_device-info._tcp", "_googlecast._tcp", "_rdlink._tcp"]
     assert "hostname" not in mdns.get_mac_info(APPLE_MAC)          # services alone give no name
+    # Only the TXT record in its own answer is something it provides; the rest it looked for.
+    assert mdns.get_mac_info(APPLE_MAC)["mdns_offered"] == ["_device-info._tcp"]
+
+
+def test_a_device_looking_for_a_chromecast_is_not_one(mdns):
+    mdns.feed(mdns4("192.168.100.50", PHONE_MAC, qr=0, qd=[DNSQR(qname="_googlecast._tcp.local.", qtype="PTR")]))
+    info = mdns.get_mac_info(PHONE_MAC)
+    assert info["mdns_services"] == ["_googlecast._tcp"]
+    assert "mdns_offered" not in info
+
+
+def test_a_chromecast_announcing_itself_offers_googlecast(mdns):
+    mdns.feed(mdns4("192.168.100.60", TV_MAC, qr=1, aa=1, an=[
+        DNSRR(rrname="_googlecast._tcp.local.", type="PTR", rdata="Living-Room-TV._googlecast._tcp.local."),
+        DNSRR(rrname="Living-Room-TV._googlecast._tcp.local.", type="TXT", rdata="md=Chromecast")]))
+    assert mdns.get_mac_info(TV_MAC)["mdns_offered"] == ["_googlecast._tcp"]
 
 
 # ── NetBIOS ──
@@ -209,6 +227,74 @@ def test_enrichment_falls_back_to_the_mac_and_adds_services(mdns, dhcp):
     assert ipad.hostname == "Jojos-iPad"
     assert ipad.os == {"mdns_services": ["_companion-link._tcp"], "mdns_name": "Jojos-iPad"}
     assert phone.os == {"name": "kept", "dhcp_vendor_class": "android-dhcp-13", "dhcp_device_hint": "Android"}
+
+
+# ── SSDP / UPnP ──
+TV_MAC = "70:2a:d5:11:22:33"
+ROUTER_MAC = "d4:d5:2e:44:55:66"
+
+
+def ssdp(src, mac, text, dst="239.255.255.250", sport=1900, dport=1900):
+    return wire(Ether(src=mac) / IP(src=src, dst=dst) / UDP(sport=sport, dport=dport) / Raw(load=text.replace("\n", "\r\n").encode()))
+
+
+@pytest.fixture
+def upnp():
+    sniffer = SsdpSniffer()
+    sniffer.feed = sniffer._make_handler()
+    return sniffer
+
+
+def test_parse_ssdp_kinds_and_headers():
+    assert parse_ssdp(b"NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nNT: upnp:rootdevice\r\n\r\n") == (
+        "notify", {"host": "239.255.255.250:1900", "nt": "upnp:rootdevice"})
+    assert parse_ssdp(b"HTTP/1.1 200 OK\r\nST: ssdp:all\r\n")[0] == "response"
+    assert parse_ssdp(b"M-SEARCH * HTTP/1.1\r\n")[0] == "search"
+    assert parse_ssdp(b"GET / HTTP/1.1\r\n") is None
+
+
+def test_ssdp_notify_records_server_and_device_types(upnp):
+    for nt in ("upnp:rootdevice", "uuid:1234", "urn:schemas-upnp-org:device:MediaRenderer:1",
+               "urn:dial-multiscreen-org:service:dial:1"):
+        upnp.feed(ssdp("192.168.100.60", TV_MAC,
+                       f"NOTIFY * HTTP/1.1\nHOST: 239.255.255.250:1900\nNT: {nt}\nNTS: ssdp:alive\n"
+                       f"SERVER: Linux/4.4 UPnP/1.0 Samsung SmartTV\nLOCATION: http://192.168.100.60:9197/dmr\n\n"))
+    assert upnp.get_mac_info(TV_MAC) == {
+        "ssdp_server": "Linux/4.4 UPnP/1.0 Samsung SmartTV",
+        "ssdp_types": ["device:MediaRenderer:1", "dial-multiscreen-org:service:dial:1"],
+    }
+    assert upnp.get_info("192.168.100.60") == upnp.get_mac_info(TV_MAC)
+
+
+def test_ssdp_answer_to_this_computers_search_counts(upnp):
+    upnp.feed(ssdp("192.168.100.1", ROUTER_MAC,
+                   "HTTP/1.1 200 OK\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\nSERVER: miniupnpd/2.1\n\n",
+                   dst="192.168.100.20", dport=50000))
+    assert upnp.get_mac_info(ROUTER_MAC)["ssdp_types"] == ["device:InternetGatewayDevice:1"]
+
+
+def test_ssdp_searches_say_nothing_about_the_sender(upnp):
+    upnp.feed(ssdp("192.168.100.50", PHONE_MAC,
+                   "M-SEARCH * HTTP/1.1\nST: urn:dial-multiscreen-org:service:dial:1\nUSER-AGENT: Android/14\n\n"))
+    assert upnp.get_mac_info(PHONE_MAC) == {}
+
+
+def test_ssdp_garbage_is_skipped(upnp):
+    upnp.feed(wire(Ether(src=TV_MAC) / IP(src="192.168.100.60", dst="239.255.255.250") / UDP(sport=1900, dport=1900) / Raw(load=b"\xff\xfe")))
+    assert upnp.get_mac_info(TV_MAC) == {}
+
+
+def test_enrichment_adds_ssdp_details(upnp):
+    upnp.feed(ssdp("192.168.100.60", TV_MAC,
+                   "NOTIFY * HTTP/1.1\nNT: urn:schemas-upnp-org:device:MediaRenderer:1\nSERVER: Roku/12.0 UPnP/1.0\n\n"))
+
+    class Suite:
+        mdns = None
+        dhcp = None
+    suite = Suite()
+    suite.ssdp = upnp
+    (tv,) = enrich_passive_hosts([HostRecord(ip="192.168.100.60", mac=TV_MAC, hostname=None, os={"name": "kept"})], suite)
+    assert tv.os == {"name": "kept", "ssdp_server": "Roku/12.0 UPnP/1.0", "ssdp_types": ["device:MediaRenderer:1"]}
 
 
 # ── Real traffic (local only) ──

@@ -22,7 +22,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 ### Network Discovery
 - **Active Scanning** — EagleEye agent dispatches Nmap (`-sV -T4` + NSE scripts: `smb-os-discovery`, `banner`) on demand; discovered hosts are AI-enriched and upserted as assets. Hosts that are up but expose none of the scanned ports are still reported (no `--open`), so port-less devices (phones, many IoT) appear in active results and a host that closes its last port correctly records `ports: []`
 - **SNMPv3 Device Detection** — When authPriv credentials are configured, the agent polls each active-scan host over UDP 161 for `sysDescr`/`sysObjectID` and walks the interface table; the backend classifies routers/switches (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) as `network` devices — signal Nmap's TCP-only port list cannot see
-- **Passive Scanning (ARP + mDNS/NetBIOS + DHCP)** — Three parallel daemon sniffers on the agent: ARP for host discovery, mDNS/NetBIOS for hostname resolution, DHCP fingerprinting for OS/device classification; no active probing required
+- **Passive Scanning (ARP + mDNS/NetBIOS + DHCP + SSDP/UPnP)** — Four parallel daemon sniffers on the agent: ARP for host discovery, mDNS/NetBIOS for hostnames and the services a device announces, DHCP fingerprinting, and SSDP/UPnP (agent 2.2.0) for what smart TVs, media boxes, printers and routers say they are (their `SERVER` header and UPnP device types, from their multicast announcements and their answers to this computer's own searches); no active probing required. In practice DHCP is rarely visible from a PC (renewals go straight to the router), while SSDP announcements repeat every few minutes, so SSDP and announced mDNS services are the useful passive device-type signals. Fingerbank (optional DHCP lookup, agent setting) is kept but adds little for the same reason
 - **Autonomous Passive Flush** — Agent drains the ARP buffer every `--passive-interval` seconds (default 60 s) and auto-creates scan records without dashboard interaction; dashboard-triggered passive scans flush the buffer on demand
 - **MAC Vendor Live Lookup** — Real-time OUI resolution via `api.macvendors.com` at ingest time; feeds the AI classification prompt
 - **DHCP Fingerprinting** — Captures option 12 (hostname), option 60 (vendor class), and option 55 (parameter list); optional Fingerbank API integration for confident device-type identification
@@ -117,7 +117,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 | Runtime | Python 3.12+; Windows desktop app (PySide6, system tray) and `eagleeye` command line; packaged with PyInstaller + Inno Setup |
 | Active Scanner | Nmap CLI (`-oX -`, own XML parser); built-in ping/port sweep when Nmap is missing |
 | SNMPv3 Polling | pysnmp (authPriv — SHA/MD5/SHA-2 auth, AES/DES priv); network-device detection during active scans |
-| Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68) on the adapter the OS routes through |
+| Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68, SSDP UDP 1900) on the adapter the OS routes through |
 | Endpoint Inventory | Windows (PowerShell/CIM) and Linux collectors: hardware, OS and patches, security settings, interfaces, listening services, installed software |
 | Transport | standard-library HTTPS client (no redirects, per-address timeouts) |
 | Auth | Bearer API key + agent ID (SHA-256 verified); key kept in the OS credential store |
@@ -141,7 +141,7 @@ Local Network ──► EagleEye Agent (Python, one per computer)
                     │     ├── GET  /scans/pending       (poll every 30 s) or POST /scans/agent-start
                     │     └── POST /scans/ingest        (Nmap / built-in sweep + SNMPv3 results)
                     ├── Passive listening
-                    │     ├── ARP, mDNS/NetBIOS, DHCP sniffers on the adapter the OS uses
+                    │     ├── ARP, mDNS/NetBIOS, DHCP, SSDP sniffers on the adapter the OS uses
                     │     └── POST /scans/ingest        (one Discovery record per agent per hour)
                     └── Endpoint inventory of its own computer
                           └── POST /agents/:id/inventory (every 6 h and on demand)

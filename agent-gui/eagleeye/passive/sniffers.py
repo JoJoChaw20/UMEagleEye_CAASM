@@ -1,12 +1,13 @@
 """Passive network observation: ARP and broadcast/multicast senders (host discovery),
-mDNS/NetBIOS-NS (hostnames and announced services) and DHCP (device fingerprints).
+mDNS/NetBIOS-NS (hostnames and announced services), DHCP (device fingerprints) and
+SSDP/UPnP (what smart TVs, media boxes, printers and routers say they are).
 
 ARP handling is ported from the original agent. The mDNS, NetBIOS and DHCP parsers were
 rewritten in Phase C because the originals extracted nothing from real traffic: mDNS
 ignored IPv6 and the additional section, NetBIOS decoded from the wrong byte, and DHCP
 looked options up by number (scapy names them) and dropped every 0.0.0.0 sender.
 
-All three need scapy and, for capture, Administrator/root plus Npcap/libpcap.
+All of them need scapy and, for capture, Administrator/root plus Npcap/libpcap.
 
 Where they listen is decided by InterfaceChooser (2.0.1): the adapter the operating
 system really uses for the network, re-checked while running, never scapy's default,
@@ -347,7 +348,7 @@ class MdnsNetbiosSniffer(_Sniffer):
 
     # -- recording (lock held by callers) --
     def _mac_entry(self, mac: str) -> dict[str, Any]:
-        return self._by_mac.setdefault(mac, {"services": set()})
+        return self._by_mac.setdefault(mac, {"services": set(), "offered": set()})
 
     def _set_name(self, ip: str, name: str, from_mdns: bool) -> None:
         if not _valid_ip(ip) or not name:
@@ -372,6 +373,8 @@ class MdnsNetbiosSniffer(_Sniffer):
             if getattr(rr, "type", None) == 28:
                 aaaa_by_name.setdefault(_text(rr.rrname).rstrip(".").lower(), set()).add(str(rr.rdata))
         services: set[str] = set()
+        offered: set[str] = set()          # in the device's own answers: it provides them
+        is_answer = bool(getattr(dns, "qr", 0))
         with self._lock:
             for rr in records:
                 rtype = getattr(rr, "type", None)
@@ -392,16 +395,20 @@ class MdnsNetbiosSniffer(_Sniffer):
                         stype = _service_type(candidate)
                         if stype:
                             services.add(stype)
+                            if is_answer:
+                                offered.add(stype)
             for q in _records(getattr(dns, "qd", None)):           # what the device looks for
                 stype = _service_type(_text(getattr(q, "qname", "")))
                 if stype:
                     services.add(stype)
             if mac and services:
-                known = self._mac_entry(mac)["services"]
-                for stype in sorted(services):
-                    if len(known) >= _MAX_SERVICES:
-                        break
-                    known.add(stype)
+                entry = self._mac_entry(mac)
+                for key, found in (("services", services), ("offered", offered)):
+                    known = entry[key]
+                    for stype in sorted(found):
+                        if len(known) >= _MAX_SERVICES:
+                            break
+                        known.add(stype)
 
     def _handle_netbios(self, pkt: Any, src_ip: Optional[str], mac: Optional[str]) -> None:
         from scapy.layers.netbios import NBNSHeader  # type: ignore
@@ -474,16 +481,20 @@ class MdnsNetbiosSniffer(_Sniffer):
             return self._hostnames.get(ip)
 
     def get_mac_info(self, mac: Optional[str]) -> dict[str, Any]:
-        """{hostname, mdns_name, netbios_name, mdns_services} seen from this MAC."""
+        """{hostname, mdns_name, netbios_name, mdns_services, mdns_offered} seen from this
+        MAC. mdns_services: every service type it announced or looked for; mdns_offered:
+        only the ones it announced (a phone looking for a Chromecast is not one)."""
         if not mac:
             return {}
         with self._lock:
             entry = self._by_mac.get(mac.lower())
             if not entry:
                 return {}
-            out: dict[str, Any] = {k: v for k, v in entry.items() if k != "services"}
+            out: dict[str, Any] = {k: v for k, v in entry.items() if k not in ("services", "offered")}
             if entry["services"]:
                 out["mdns_services"] = sorted(entry["services"])
+            if entry.get("offered"):
+                out["mdns_offered"] = sorted(entry["offered"])
         name = out.get("mdns_name") or out.get("netbios_name")
         if name:
             out["hostname"] = name
@@ -656,11 +667,125 @@ class DhcpSniffer(_Sniffer):
             return dict(self._by_mac.get(mac.lower(), {}))
 
 
-# ── The three together ───────────────────────────────────────────────────────
+# ── SSDP / UPnP: what devices say they are ─────────────────────────────────────
+
+_SSDP_MAX_TYPES = 16
+_SSDP_MAX_SERVER = 200
+
+
+def _ssdp_type(value: str) -> Optional[str]:
+    """'urn:schemas-upnp-org:device:MediaRenderer:1' -> 'device:MediaRenderer:1',
+    'urn:dial-multiscreen-org:service:dial:1' -> 'dial-multiscreen-org:service:dial:1'.
+    Instance ids (uuid:...) and the generic upnp:rootdevice say nothing and are dropped."""
+    v = value.strip()
+    low = v.lower()
+    if not v or low.startswith("uuid:") or low == "upnp:rootdevice" or low == "ssdp:all":
+        return None
+    if low.startswith("urn:schemas-upnp-org:"):
+        v = v[len("urn:schemas-upnp-org:"):]
+    elif low.startswith("urn:"):
+        v = v[4:]
+    return v[:80] or None
+
+
+def parse_ssdp(payload: bytes) -> Optional[tuple[str, dict[str, str]]]:
+    """('notify' | 'response' | 'search', lower-case headers) of one SSDP message."""
+    text = payload.decode("utf-8", errors="ignore")
+    lines = text.replace("\r\n", "\n").split("\n")
+    start = lines[0].strip().upper() if lines else ""
+    if start.startswith("NOTIFY"):
+        kind = "notify"
+    elif start.startswith("HTTP/1.1 200") or start.startswith("HTTP/1.0 200"):
+        kind = "response"
+    elif start.startswith("M-SEARCH"):
+        kind = "search"
+    else:
+        return None
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers.setdefault(key.strip().lower(), value.strip())
+    return kind, headers
+
+
+class SsdpSniffer(_Sniffer):
+    """Learns what UPnP devices are from SSDP (UDP 1900): the announcements they multicast
+    every few minutes (NOTIFY) and their answers to this computer's own searches, which
+    Windows sends regularly. Kept per sender MAC:
+      ssdp_server  the SERVER header, e.g. "Linux/4.4 UPnP/1.0 Samsung TV" or "miniupnpd/2.1"
+      ssdp_types   the device and service types it provides, e.g. device:MediaRenderer:1
+    Searches (M-SEARCH) are ignored: what a device looks for is not what it is.
+    Nothing is fetched from the devices; only what they broadcast is read."""
+
+    bpf = "udp port 1900"
+    thread_name = "ssdp-sniffer"
+    label = "SSDP/UPnP sniffer"
+
+    def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
+        super().__init__(interface, chooser)
+        self._by_mac: dict[str, dict[str, Any]] = {}
+        self._mac_by_ip: dict[str, str] = {}
+
+    def _record(self, mac: str, ip: Optional[str], headers: dict[str, str], type_header: str) -> None:
+        with self._lock:
+            entry = self._by_mac.setdefault(mac, {"types": set()})
+            server = headers.get("server", "")
+            if server and "ssdp_server" not in entry:
+                entry["ssdp_server"] = server[:_SSDP_MAX_SERVER]
+            stype = _ssdp_type(headers.get(type_header, ""))
+            if stype and len(entry["types"]) < _SSDP_MAX_TYPES:
+                entry["types"].add(stype)
+            if ip and _valid_ip(ip):
+                self._mac_by_ip[ip] = mac
+
+    def _make_handler(self) -> Any:
+        from scapy.all import IP, UDP  # type: ignore
+
+        def handle(pkt: Any) -> None:
+            try:
+                if not pkt.haslayer(UDP):
+                    return
+                mac = _mac_of(pkt)
+                if not mac or self._own(mac):
+                    return
+                parsed = parse_ssdp(bytes(pkt[UDP].payload))
+                if not parsed:
+                    return
+                kind, headers = parsed
+                if kind == "search":
+                    return
+                ip = pkt[IP].src if pkt.haslayer(IP) else None
+                self._record(mac, ip, headers, "nt" if kind == "notify" else "st")
+            except Exception as exc:  # noqa: BLE001 - one bad packet never stops the sniffer
+                log.debug("SSDP packet skipped: %s", exc)
+
+        return handle
+
+    def get_mac_info(self, mac: Optional[str]) -> dict[str, Any]:
+        """{ssdp_server, ssdp_types} seen from this MAC."""
+        if not mac:
+            return {}
+        with self._lock:
+            entry = self._by_mac.get(mac.lower())
+            if not entry:
+                return {}
+            out: dict[str, Any] = {k: v for k, v in entry.items() if k != "types"}
+            if entry["types"]:
+                out["ssdp_types"] = sorted(entry["types"])
+        return out
+
+    def get_info(self, ip: str) -> dict[str, Any]:
+        with self._lock:
+            mac = self._mac_by_ip.get(ip)
+        return self.get_mac_info(mac)
+
+
+# ── All of them together ─────────────────────────────────────────────────────
 
 class PassiveSuite:
-    """Starts and stops the three sniffers as a unit. Each one is optional: a sniffer
-    that cannot start is left as None and the rest keep working."""
+    """Starts and stops the sniffers as a unit. Each one is optional: a sniffer that
+    cannot start is left as None and the rest keep working."""
 
     def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None,
                  chooser: Optional[InterfaceChooser] = None) -> None:
@@ -670,6 +795,7 @@ class PassiveSuite:
         self.arp: Optional[ArpSniffer] = None
         self.mdns: Optional[MdnsNetbiosSniffer] = None
         self.dhcp: Optional[DhcpSniffer] = None
+        self.ssdp: Optional[SsdpSniffer] = None
 
     def start(self) -> bool:
         """True when ARP discovery (the primary source) is running."""
@@ -690,10 +816,16 @@ class PassiveSuite:
             self.dhcp = dhcp
         else:
             log.warning("DHCP sniffer could not start - DHCP fingerprinting disabled")
+
+        ssdp = SsdpSniffer(self.interface, self.chooser)
+        if ssdp.start():
+            self.ssdp = ssdp
+        else:
+            log.warning("SSDP sniffer could not start - UPnP device details disabled")
         return self.arp is not None
 
     def stop(self) -> None:
-        for sniffer in (self.arp, self.mdns, self.dhcp):
+        for sniffer in (self.arp, self.mdns, self.dhcp, self.ssdp):
             if sniffer:
                 sniffer.stop()
 
@@ -705,7 +837,7 @@ class PassiveSuite:
     def problems(self) -> list[str]:
         """Why a sniffer is not working (for display)."""
         out = []
-        for sniffer in (self.arp, self.mdns, self.dhcp):
+        for sniffer in (self.arp, self.mdns, self.dhcp, self.ssdp):
             if sniffer and sniffer.error:
                 out.append(f"{sniffer.label}: {sniffer.error}")
         return out

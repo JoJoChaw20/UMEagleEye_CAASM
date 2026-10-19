@@ -3,8 +3,8 @@
  *
  * For assets the port/OS classifier (scans.ts inferDeviceType) cannot place, mostly
  * phones and IoT that block every port, these rules look at other facts: the device's
- * own name (mDNS / NetBIOS / DHCP option 12), what it announces over mDNS, its DHCP
- * fingerprint, the MAC manufacturer and whether its MAC is a private (randomized) one.
+ * own name (mDNS / NetBIOS / DHCP option 12), what it announces over mDNS and SSDP/UPnP,
+ * its DHCP fingerprint, the MAC manufacturer and whether its MAC is a private (randomized) one.
  *
  * Every hint carries its rule, evidence and a confidence, and only HIGH-confidence rules
  * (a default device name, Android's DHCP vendor class) may set the type automatically —
@@ -50,7 +50,33 @@ const MOBILE_MAKERS = /\b(oppo|vivo mobile|realme|oneplus|honor device|motorola 
 const IOT_MAKERS_MEDIUM = /\b(espressif|tuya)\b/i
 const IOT_MAKERS_LOW = /\b(bilian)\b/i
 
+// mDNS service types a device ANNOUNCES (os_info.mdns_offered, agent 2.2.0+) that say what
+// it is. Only announced ones count: a phone looking for a Chromecast is not one.
+const OFFERED_SERVICES: Array<[RegExp, HintType, string]> = [
+  [/^_googlecast\._tcp$/, 'iot', 'Chromecast, Google TV or Nest speaker'],
+  [/^_androidtvremote2?\._tcp$/, 'iot', 'Android TV / Google TV'],
+  [/^_amzn-wplay\._tcp$/, 'iot', 'Amazon Fire TV or Echo'],
+  [/^_(ipp|ipps|pdl-datastream|printer|uscan|uscans)\._tcp$/, 'iot', 'Network printer or scanner'],
+  [/^_hap\._(tcp|udp)$/, 'iot', 'HomeKit accessory'],
+  [/^_matterc?\._(tcp|udp)$/, 'iot', 'Matter smart-home device'],
+]
+// UPnP device/service types a device provides (os_info.ssdp_types, from SSDP). MediaServer
+// is left out: Windows PCs sharing media announce it too.
+const SSDP_TYPES: Array<[RegExp, HintType, string, HintConfidence]> = [
+  [/^device:InternetGatewayDevice:/i, 'network', 'Router (UPnP Internet gateway)', 'high'],
+  [/^device:WFADevice:/i, 'network', 'Wi-Fi router or access point', 'medium'],
+  [/^device:MediaRenderer:|^dial-multiscreen-org:/i, 'iot', 'Smart TV or media player', 'medium'],
+  [/^device:Printer:|^service:PrintBasic:/i, 'iot', 'Network printer', 'medium'],
+]
+// The SSDP SERVER header names the device's software.
+const SSDP_SERVERS: Array<[RegExp, HintType, string]> = [
+  [/\b(miniupnpd|RouterOS|OpenWrt|DD-WRT|AsusWRT)\b/i, 'network', 'Router'],
+  [/\b(Roku|webOS|Tizen|SmartTV|BRAVIA|Chromecast|AppleTV|Fire ?TV)\b/i, 'iot', 'Smart TV or media player'],
+  [/\bIpBridge\b/i, 'iot', 'Philips Hue bridge'],
+]
+
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const strList = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : [])
 
 /** Type named in the LLM's free-text description (os_info.ai_description). The same
  *  keyword mapping the ingest used before Phase C, plus phones; an unverified guess. */
@@ -92,10 +118,31 @@ export function deviceTypeHint(input: HintInput): DeviceTypeHint | null {
   const dhcpHint = str(os['dhcp_device_hint'])
   if (/^Apple (iPhone|iPad)$/.test(dhcpHint)) return hint('mobile', dhcpHint, 'dhcp_vendor_class', 'high', `DHCP vendor class "${vendorClass}"`)
 
+  // ── SSDP/UPnP: what the device provides (high for an Internet gateway, else medium) ──
+  const ssdpTypes = strList(os['ssdp_types'])
+  const ssdpServer = str(os['ssdp_server'])
+  let ssdpMedium: DeviceTypeHint | null = null
+  for (const [re, type, label, confidence] of SSDP_TYPES) {
+    const t = ssdpTypes.find(x => re.test(x))
+    if (!t) continue
+    const h = hint(type, label, 'ssdp_device_type', confidence, `SSDP ${t}${ssdpServer ? ` (server "${ssdpServer}")` : ''}`)
+    if (confidence === 'high') return h
+    ssdpMedium ??= h
+  }
+
   // ── Medium: strong but not conclusive ──
   const fingerbank = str(os['fingerbank_device'])
   if (fingerbank && /phone|android|ipad|tablet|ios/i.test(fingerbank)) {
     return hint('mobile', fingerbank, 'dhcp_fingerprint', 'medium', `Fingerbank "${fingerbank}" (score ${os['fingerbank_score'] ?? '?'})`)
+  }
+  if (ssdpMedium) return ssdpMedium
+  for (const [re, type, label] of SSDP_SERVERS) {
+    if (re.test(ssdpServer)) return hint(type, label, 'ssdp_server', 'medium', `SSDP server "${ssdpServer}"`)
+  }
+  const offered = strList(os['mdns_offered'])
+  for (const [re, type, label] of OFFERED_SERVICES) {
+    const svc = offered.find(x => re.test(x))
+    if (svc) return hint(type, label, 'mdns_offered_service', 'medium', `announces mDNS ${svc}`)
   }
   const services = Array.isArray(os['mdns_services']) ? (os['mdns_services'] as unknown[]).map(String) : []
   const apple = services.filter(s => APPLE_ONLY_SERVICES.includes(s))

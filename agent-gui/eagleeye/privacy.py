@@ -4,7 +4,7 @@ notice is shown again."""
 
 from __future__ import annotations
 
-CONSENT_VERSION = 2     # 2: software packages (SBOM) added
+CONSENT_VERSION = 3     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive)
 
 NOTICE_TITLE = "What this agent collects"
 
@@ -20,8 +20,8 @@ network range you choose and records the devices it finds: IP and MAC addresses,
 names, open ports, the services behind them, and an operating-system guess.</p>
 
 <h3>Passive listening (optional, off by default)</h3>
-<p>Reads only broadcast discovery messages (ARP, mDNS, NetBIOS, DHCP) to learn device
-names and addresses. It never reads the contents of anyone's traffic.</p>
+<p>Reads only broadcast discovery messages (ARP, mDNS, NetBIOS, DHCP, SSDP/UPnP) to learn device
+names, addresses and what kind of device each one says it is. It never reads the contents of anyone's traffic.</p>
 
 <h3>This computer's inventory (optional)</h3>
 <p>Hardware model and serial number, operating system and patches, security settings

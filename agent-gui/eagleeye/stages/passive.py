@@ -8,14 +8,14 @@ from ..pipeline.runner import PipelineContext, Stage, StageError
 
 
 def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite) -> list[HostRecord]:
-    """Enrich ARP-discovered hosts with mDNS/NetBIOS names and services and DHCP
-    fingerprints, matched by IP and, failing that, by MAC (phones announce over IPv6
-    from the same MAC that ARP saw for their IPv4 address).
+    """Enrich ARP-discovered hosts with mDNS/NetBIOS names and services, DHCP
+    fingerprints and SSDP/UPnP details, matched by IP and, failing that, by MAC (phones
+    announce over IPv6 from the same MAC that ARP saw for their IPv4 address).
 
     Can only add or improve, never downgrade:
       hostname: mDNS/NetBIOS (by IP, then by MAC) > DHCP option 12 > existing reverse DNS
-      os:       DHCP fingerprint fields, mdns_services, mdns_name and netbios_name
-                merged additively; existing keys win
+      os:       DHCP fingerprint fields, mdns_services, mdns_offered, mdns_name,
+                netbios_name, ssdp_server and ssdp_types merged additively; existing keys win
     """
     for host in hosts:
         mac = (host.mac or "").lower() or None
@@ -28,10 +28,18 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite) -> list[H
 
         host.hostname = mdns_name or mac_info.get("hostname") or dhcp_info.get("dhcp_hostname") or host.hostname
 
+        ssdp = getattr(suite, "ssdp", None)
+        ssdp_info: dict = {}
+        if ssdp:
+            ssdp_info = (ssdp.get_mac_info(mac) if mac else {}) or ssdp.get_info(host.ip)
+
         extra = {k: v for k, v in dhcp_info.items() if k != "dhcp_hostname"}
-        for key in ("mdns_services", "mdns_name", "netbios_name"):
+        for key in ("mdns_services", "mdns_offered", "mdns_name", "netbios_name"):
             if mac_info.get(key):
                 extra[key] = mac_info[key]
+        for key in ("ssdp_server", "ssdp_types"):
+            if ssdp_info.get(key):
+                extra[key] = ssdp_info[key]
         if extra:
             merged = dict(host.os) if isinstance(host.os, dict) else {}
             for key, value in extra.items():

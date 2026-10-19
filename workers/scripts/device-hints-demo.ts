@@ -124,5 +124,20 @@ const created = planIngest([host({ ip: '192.168.100.40', rawMac: 'c4:fe:5b:a9:44
 const ins = (created.perHost[0]!.ops.find(o => o.k === 'insertAsset') as { values: Record<string, unknown> }).values
 check('new OPPO device: stays unknown, carries the medium suggestion', [ins.deviceType, (ins.deviceTypeHint as { rule: string }).rule], ['unknown', 'mobile_maker'])
 
+console.log('\n── SSDP/UPnP and announced mDNS services (agent 2.2.0) ──')
+check('UPnP Internet gateway → router, automatic', brief({ osInfo: { ssdp_types: ['device:InternetGatewayDevice:1'], ssdp_server: 'miniupnpd/2.1' } }), ['network', 'ssdp_device_type', 'high', true])
+check('UPnP MediaRenderer → smart TV, suggestion', brief({ osInfo: { ssdp_types: ['device:MediaRenderer:1'] } }), ['iot', 'ssdp_device_type', 'medium', false])
+check('DIAL (cast target) → smart TV', brief({ osInfo: { ssdp_types: ['dial-multiscreen-org:service:dial:1'] } })?.[0], 'iot')
+check('UPnP printer', brief({ osInfo: { ssdp_types: ['device:Printer:1'] } })?.[0], 'iot')
+check('MediaServer alone (Windows media sharing) says nothing', h({ osInfo: { ssdp_types: ['device:MediaServer:1'] } }), null)
+check('SSDP server Roku → smart TV', brief({ osInfo: { ssdp_server: 'Roku/12.0 UPnP/1.0' } }), ['iot', 'ssdp_server', 'medium', false])
+check('SSDP server miniupnpd → router (suggestion without the IGD type)', brief({ osInfo: { ssdp_server: 'Linux miniupnpd/2.2' } }), ['network', 'ssdp_server', 'medium', false])
+check('Hue bridge', h({ osInfo: { ssdp_server: 'Linux/3.14.0 UPnP/1.0 IpBridge/1.65.0' } })?.label, 'Philips Hue bridge')
+check('announces _googlecast → Chromecast', brief({ osInfo: { mdns_offered: ['_googlecast._tcp'] } }), ['iot', 'mdns_offered_service', 'medium', false])
+check('announces _ipp → printer', h({ osInfo: { mdns_offered: ['_ipp._tcp'] } })?.label, 'Network printer or scanner')
+check('only LOOKS for _googlecast (a phone) → no Chromecast hint', h({ osInfo: { mdns_services: ['_googlecast._tcp'] } }), null)
+check('a device name still wins over SSDP', brief({ hostname: 'Jos-iPhone', osInfo: { ssdp_types: ['device:MediaRenderer:1'] } })?.[0], 'mobile')
+check('IGD wins over a weaker medium rule', brief({ vendor: 'Espressif Inc.', osInfo: { ssdp_types: ['device:InternetGatewayDevice:1'] } })?.[0], 'network')
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
