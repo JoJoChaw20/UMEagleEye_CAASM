@@ -145,11 +145,17 @@ export function deviceTypeHint(input: HintInput): DeviceTypeHint | null {
     if (svc) return hint(type, label, 'mdns_offered_service', 'medium', `announces mDNS ${svc}`)
   }
   const services = Array.isArray(os['mdns_services']) ? (os['mdns_services'] as unknown[]).map(String) : []
-  const apple = services.filter(s => APPLE_ONLY_SERVICES.includes(s))
+  // Apple's Continuity services are announced only by Apple devices, but Windows apps
+  // (Phone Link, iCloud) LOOK for them. So: announced (mdns_offered), or looked for by a
+  // device with an Apple or private (randomized, as iPhones use) MAC.
+  const vendor = str(input.vendor)
+  const appleOffered = offered.filter(s => APPLE_ONLY_SERVICES.includes(s))
+  const appleSeen = services.filter(s => APPLE_ONLY_SERVICES.includes(s))
+  const appleMac = /\bapple\b/i.test(vendor) || classifyMac(input.mac).macClass === 'local'
+  const apple = appleOffered.length ? appleOffered : appleMac ? appleSeen : []
   if (apple.length) {
     return hint(null, 'Apple device (iPhone, iPad, Mac or Apple TV)', 'apple_services', 'medium', `mDNS ${apple.join(', ')}`)
   }
-  const vendor = str(input.vendor)
   if (MOBILE_MAKERS.test(vendor)) return hint('mobile', 'Mobile device', 'mobile_maker', 'medium', `MAC manufacturer ${vendor}`)
   if (IOT_MAKERS_MEDIUM.test(vendor)) return hint('iot', 'IoT device', 'iot_module_maker', 'medium', `MAC manufacturer ${vendor}`)
 

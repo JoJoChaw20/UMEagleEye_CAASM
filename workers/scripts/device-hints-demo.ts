@@ -53,7 +53,7 @@ check('AI "Samsung Android Phone" -> mobile suggestion', brief({ osInfo: { ai_de
 check('AI "TP-Link Home Router" -> network suggestion', brief({ osInfo: { ai_description: 'TP-Link Home Router' } })?.[0], 'network')
 check('AI text naming no type gives nothing', h({ osInfo: { ai_description: 'Unknown Apple device' } }), null)
 check('stronger evidence wins over the AI guess (Apple services, medium)',
-  brief({ osInfo: { ai_description: 'Apple Mac Desktop', mdns_services: ['_companion-link._tcp'] } })?.[1], 'apple_services')
+  brief({ vendor: 'Apple, Inc.', osInfo: { ai_description: 'Apple Mac Desktop', mdns_services: ['_companion-link._tcp'] } })?.[1], 'apple_services')
 check('the AI guess outranks the other low rules (it saw all the facts)',
   brief({ mac: '4a:15:f7:3b:8c:29', osInfo: { ports: [], ai_description: 'Apple iPhone' } })?.[1], 'ai_guess')
 check('label and evidence say it is an AI guess', [h({ osInfo: { ai_description: 'Apple Mac Desktop' } })?.label, h({ osInfo: { ai_description: 'Apple Mac Desktop' } })?.evidence],
@@ -137,6 +137,10 @@ check('announces _googlecast → Chromecast', brief({ osInfo: { mdns_offered: ['
 check('announces _ipp → printer', h({ osInfo: { mdns_offered: ['_ipp._tcp'] } })?.label, 'Network printer or scanner')
 check('only LOOKS for _googlecast (a phone) → no Chromecast hint', h({ osInfo: { mdns_services: ['_googlecast._tcp'] } }), null)
 check('a device name still wins over SSDP', brief({ hostname: 'Jos-iPhone', osInfo: { ssdp_types: ['device:MediaRenderer:1'] } })?.[0], 'mobile')
+check('Windows PC looking for _companion-link (Phone Link) is not an Apple device',
+  h({ vendor: 'AzureWave Technology Inc.', mac: 'a4:42:3b:11:22:33', osInfo: { mdns_services: ['_companion-link._tcp', '_dosvc._tcp'] } }), null)
+check('…but an announced _companion-link is', brief({ vendor: 'AzureWave Technology Inc.', osInfo: { mdns_offered: ['_companion-link._tcp'] } })?.[1], 'apple_services')
+check('…and a private-MAC device looking for it (an iPhone) still counts', brief({ mac: '0e:18:7c:8f:fd:91', osInfo: { mdns_services: ['_companion-link._tcp'] } })?.[1], 'apple_services')
 check('IGD wins over a weaker medium rule', brief({ vendor: 'Espressif Inc.', osInfo: { ssdp_types: ['device:InternetGatewayDevice:1'] } })?.[0], 'network')
 
 console.log(`\n${pass} passed, ${fail} failed`)
