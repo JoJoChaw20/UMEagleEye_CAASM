@@ -53,6 +53,17 @@ config files never share a key) by both the app and `config init`; the file then
 and `"secrets_in_keychain": true`. Where no credential store is available they stay in the file. A config written by an
 older version keeps working; its secrets move to the credential store the next time it is saved.
 
+**Two agents on one PC** (e.g. staging and production): give each its own config file and start it with
+`EAGLEEYE_CONFIG`. A file named `config-<name>.json` makes the instance `<name>`, with its own window (title
+"EagleEye Agent 2.2.1 (production)"), schedule state (`state-<name>.json`) and logs (`logs-<name>`), so both can run at
+the same time. In PowerShell, quote the path and start it with `&`:
+
+```powershell
+$env:EAGLEEYE_CONFIG = "$env:APPDATA\EagleEye\config-production.json"
+& "C:\Program Files\EagleEye Agent\EagleEyeAgent.exe"        # the desktop app
+& "C:\Program Files\EagleEye Agent\eagleeye.exe" run          # or without a window
+```
+
 ## Endpoint inventory
 While `run` is active the agent collects the inventory of its own machine on the first poll and then every
 `inventory_interval` seconds (default 6 hours), and posts it to `POST /agents/:id/inventory`. The server matches it

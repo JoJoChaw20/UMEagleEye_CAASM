@@ -85,3 +85,24 @@ def test_save_and_reload_roundtrip(tmp_path):
     path = save_settings(Settings(api_url="http://x", api_key="k", agent_id="a", passive=True), tmp_path / "sub" / "c.json")
     loaded = load_settings(path, env={})
     assert (loaded.api_url, loaded.api_key, loaded.agent_id, loaded.passive) == ("http://x", "k", "a", True)
+
+
+# ── several agents on one PC (EAGLEEYE_CONFIG) ──
+def test_default_config_is_the_unnamed_instance(tmp_path):
+    from eagleeye.config import instance_name, state_path
+    env = {"APPDATA": str(tmp_path)}
+    assert instance_name(env) == ""
+    assert state_path(env).name == "state.json"
+
+
+def test_a_named_config_is_its_own_instance_with_its_own_state(tmp_path):
+    from eagleeye.config import instance_name, state_path
+    env = {"EAGLEEYE_CONFIG": str(tmp_path / "config-production.json")}
+    assert instance_name(env) == "production"
+    assert state_path(env) == tmp_path / "state-production.json"
+
+
+def test_instance_names_are_safe_and_config_json_elsewhere_is_unnamed(tmp_path):
+    from eagleeye.config import instance_name
+    assert instance_name({"EAGLEEYE_CONFIG": str(tmp_path / "lab agent#2.json")}) == "lab_agent_2"
+    assert instance_name({"EAGLEEYE_CONFIG": str(tmp_path / "config.json")}) == ""

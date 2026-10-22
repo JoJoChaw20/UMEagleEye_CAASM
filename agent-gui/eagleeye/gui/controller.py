@@ -16,7 +16,7 @@ from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QTimer
 
-from ..config import Settings, default_config_path
+from ..config import Settings, state_path as instance_state_path
 from ..pipeline import PipelineEvent
 from ..service import AgentService, log_event
 
@@ -24,7 +24,7 @@ log = logging.getLogger("eagleeye.gui")
 
 
 def state_path():  # type: ignore[no-untyped-def]
-    return default_config_path().with_name("state.json")
+    return instance_state_path()
 
 
 # ── calls from any thread, run on the GUI thread ──

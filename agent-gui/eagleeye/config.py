@@ -138,6 +138,28 @@ def default_config_path(env: Optional[Mapping[str, str]] = None) -> Path:
     return Path(override) if override else config_dir() / "config.json"
 
 
+def instance_name(env: Optional[Mapping[str, str]] = None) -> str:
+    """Which agent this is when one computer runs several (EAGLEEYE_CONFIG): "" for the
+    default config, else the config file's name without "config-", e.g. "production" for
+    config-production.json. Each instance gets its own window lock, schedule state and
+    logs, so a staging and a production agent on one PC never share them."""
+    env = os.environ if env is None else env
+    override = env.get("EAGLEEYE_CONFIG")
+    if not override:
+        return ""
+    stem = Path(override).stem
+    name = stem[len("config-"):] if stem.lower().startswith("config-") else stem
+    if name.lower() in ("", "config"):
+        return ""
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:40]
+
+
+def state_path(env: Optional[Mapping[str, str]] = None) -> Path:
+    """Schedule state (last inventory/SBOM run...) of this instance, next to its config."""
+    name = instance_name(env)
+    return default_config_path(env).with_name(f"state-{name}.json" if name else "state.json")
+
+
 def _coerce(name: str, raw: Any, default: Any) -> Any:
     try:
         if isinstance(default, list):

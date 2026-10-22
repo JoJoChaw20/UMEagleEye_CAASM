@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import VERSION, deps
-from ..config import ConfigError, Settings, config_dir, default_config_path, load_settings, save_settings
+from ..config import ConfigError, Settings, config_dir, default_config_path, instance_name, load_settings, save_settings
 from ..keychain import Keychain
 from ..service import SCHEDULES_ENABLED
 from .consent import ConsentDialog, needs_consent
@@ -95,7 +95,8 @@ class MainWindow(QMainWindow):
         start_pump()
         self.store = store
         self.controller = AgentController()
-        self.setWindowTitle(f"{APP_NAME} {VERSION}")
+        inst = instance_name()
+        self.setWindowTitle(f"{APP_NAME} {VERSION}" + (f" ({inst})" if inst else ""))
         self.setWindowIcon(app_icon())
         self.resize(980, 720)
 
@@ -331,10 +332,14 @@ class SingleInstance:
     bring the running window forward."""
 
     def __init__(self, name: str) -> None:
+        # One per config file (instance_name): a production agent started with
+        # EAGLEEYE_CONFIG opens its own window instead of raising the staging one.
+        inst = instance_name()
+        suffix = f"-{inst}" if inst else ""
         config_dir().mkdir(parents=True, exist_ok=True)
-        self.lock = QLockFile(str(config_dir() / "agent-gui.lock"))
+        self.lock = QLockFile(str(config_dir() / f"agent-gui{suffix}.lock"))
         self.lock.setStaleLockTime(0)
-        self.server_name = f"{name}-{os.environ.get('USERNAME') or os.environ.get('USER') or 'user'}"
+        self.server_name = f"{name}{suffix}-{os.environ.get('USERNAME') or os.environ.get('USER') or 'user'}"
         self.server: Optional[QLocalServer] = None
 
     def acquire(self) -> bool:
@@ -421,7 +426,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if getattr(sys, stream) is None:
             setattr(sys, stream, open(os.devnull, "w", encoding="utf-8"))
     _hide_child_consoles()
-    log_dir = config_dir() / "logs"
+    inst = instance_name()
+    log_dir = config_dir() / (f"logs-{inst}" if inst else "logs")
     _setup_logging(log_dir)
     _install_crash_diagnostics(log_dir)
 
@@ -434,7 +440,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     guard = SingleInstance("EagleEyeAgent")
     if not guard.acquire():
         if not guard.signal_running():
-            QMessageBox.information(None, APP_NAME, "EagleEye Agent is already running. Look for its icon in the "
+            which = f" ({inst})" if inst else ""
+            QMessageBox.information(None, APP_NAME, f"EagleEye Agent{which} is already running. Look for its icon in the "
                                                     "system tray (it may be running as Administrator).")
         return 0
     app.single_instance = guard  # type: ignore[attr-defined]
