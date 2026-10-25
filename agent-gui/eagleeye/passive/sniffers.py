@@ -684,8 +684,15 @@ class DhcpSniffer(_Sniffer):
         from scapy.all import BOOTP, DHCP, IP  # type: ignore
 
         def _decode(v: Any) -> str:
+            # UTF-8 first: a device named in Chinese, Malay or any accented language
+            # sends its DHCP name that way, and reading it as ASCII dropped those
+            # characters. Bytes that are not UTF-8 are read as Latin-1, never lost.
             if isinstance(v, (bytes, bytearray)):
-                return v.decode("ascii", errors="ignore").strip()
+                raw = bytes(v).replace(b"\x00", b"")
+                try:
+                    return raw.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    return raw.decode("latin-1").strip()
             return str(v).strip() if v else ""
 
         def handle(pkt: Any) -> None:

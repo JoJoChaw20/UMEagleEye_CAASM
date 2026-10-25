@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Optional
 
+from ..hostnames import is_generic_hostname
 from ..passive import PassiveSuite
 from ..pipeline.record import HostRecord
 from ..pipeline.runner import PipelineContext, Stage, StageError
@@ -22,13 +23,17 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
     (phones announce over IPv6, so only their MAC links them to the IPv4 ARP saw).
 
     Can only add or improve, never downgrade:
-      hostname: mDNS/NetBIOS (by MAC, then by IP) > DHCP option 12 > reverse DNS,
-                which is asked only for the hosts still without a name
+      hostname: mDNS/NetBIOS (by MAC, then by IP) > DHCP option 12 > reverse DNS, but a
+                platform default ("Android", "android-<hex>", "iPhone") ranks below any
+                specific name, so an Oppo phone that says "Android" over mDNS and
+                "OPPO-A31" to DHCP is named OPPO-A31. Reverse DNS is asked only for the
+                hosts still without a name, or with only a default one
       os:       DHCP fingerprint fields, mdns_services, mdns_offered, mdns_name,
                 netbios_name, ssdp_server and ssdp_types merged additively; existing keys win
     `sources` counts where each host's name came from (mdns, netbios, dhcp, rdns, none).
     """
-    unnamed: list[HostRecord] = []
+    unnamed: list[HostRecord] = []                      # no name, or only a platform default
+    fallback_source: dict[int, Optional[str]] = {}       # where an unnamed host's default came from
     for host in hosts:
         mac = (host.mac or "").lower() or None
         mdns = suite.mdns
@@ -40,19 +45,25 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
                 dhcp_info = suite.dhcp.get_info_by_mac(mac)
             dhcp_info = dhcp_info or suite.dhcp.get_info(host.ip)
 
-        name, source = None, None
+        candidates: list[tuple[str, str]] = []                 # (name, source), best source first
         if mac_info.get("hostname"):
-            name, source = mac_info["hostname"], "mdns" if mac_info.get("mdns_name") else "netbios"
-        elif mdns and mdns.get_hostname(host.ip):
-            name = mdns.get_hostname(host.ip)
-            source = mdns.name_source(host.ip) if hasattr(mdns, "name_source") else "mdns"
-        elif dhcp_info.get("dhcp_hostname"):
-            name, source = dhcp_info["dhcp_hostname"], "dhcp"
-        if name:
-            host.hostname = name
-            if sources is not None:
-                sources[source or "mdns"] += 1
-        elif not host.hostname:
+            candidates.append((mac_info["hostname"], "mdns" if mac_info.get("mdns_name") else "netbios"))
+        ip_name = mdns.get_hostname(host.ip) if mdns else None
+        if ip_name:
+            candidates.append((ip_name, mdns.name_source(host.ip) if hasattr(mdns, "name_source") else "mdns"))
+        if dhcp_info.get("dhcp_hostname"):
+            candidates.append((dhcp_info["dhcp_hostname"], "dhcp"))
+        if host.hostname:
+            candidates.append((host.hostname, "existing"))
+        specific = next((c for c in candidates if not is_generic_hostname(c[0])), None)
+        if specific is not None:
+            host.hostname = specific[0]
+            if sources is not None and specific[1] != "existing":
+                sources[specific[1]] += 1
+        else:
+            # Nothing, or only a default: keep the default for now and ask reverse DNS.
+            host.hostname = candidates[0][0] if candidates else None
+            fallback_source[id(host)] = candidates[0][1] if candidates else "none"
             unnamed.append(host)
 
         ssdp = getattr(suite, "ssdp", None)
@@ -77,9 +88,12 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
     rdns = getattr(suite, "rdns", None)
     names = rdns.resolve([h.ip for h in unnamed]) if rdns is not None and unnamed else {}
     for host in unnamed:
-        host.hostname = names.get(host.ip)
-        if sources is not None:
-            sources["rdns" if host.hostname else "none"] += 1
+        found = names.get(host.ip)
+        source = fallback_source[id(host)]
+        if found and (not host.hostname or not is_generic_hostname(found)):
+            host.hostname, source = found, "rdns"
+        if sources is not None and source != "existing":
+            sources[source] += 1
     return hosts
 
 

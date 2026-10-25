@@ -13,10 +13,10 @@
  */
 
 const GENERIC_NAME_PATTERNS: RegExp[] = [
-  /^android$/,                                                        // Android's mDNS default
+  /^android(-\d{1,2})?$/,                                           // Android's mDNS default; -2 after a name clash
   /^android-[0-9a-f]{6,}$/,                                           // android-83f59958ba7e18a1
   /^localhost(\.localdomain)?$/,
-  /^iphone$/, /^ipad$/, /^macbook(-pro|-air)?$/,                      // Apple defaults before naming
+  /^(iphone|ipad|macbook(-pro|-air)?)(-\d{1,2})?$/,               // Apple defaults; -2 after a name clash
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,   // UUID-style
 ]
 

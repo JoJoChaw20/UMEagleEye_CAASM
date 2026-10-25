@@ -605,3 +605,83 @@ def test_reverse_dns_is_asked_only_for_hosts_no_sniffer_named(mdns):
     assert sorted(lookup.asked) == ["192.168.100.10", "192.168.100.11"]
     assert describe_sources(sources) == "names: mDNS 1, reverse DNS 1, none 1"
     suite.rdns.shutdown()
+
+
+# ── 2.2.3: platform default names rank last; DHCP names in any language ──
+from eagleeye.hostnames import is_generic_hostname  # noqa: E402
+
+OPPO_MAC = "b8:c9:b5:bf:81:f9"
+
+
+def _suite(mdns=None, dhcp=None, rdns=None):
+    class Suite:
+        pass
+    suite = Suite()
+    suite.mdns, suite.dhcp = mdns, dhcp
+    if rdns is not None:
+        suite.rdns = rdns
+    return suite
+
+
+def test_a_dhcp_name_beats_androids_default_mdns_name(mdns, dhcp):
+    # Seen on the home network: the router listed OPPO-A31, EagleEye said "Android".
+    mdns.feed(mdns4("192.168.0.141", OPPO_MAC, qr=1, aa=1,
+                    an=[DNSRR(rrname="Android.local.", type="A", rdata="192.168.0.141")]))
+    dhcp.feed(dhcp_pkt("0.0.0.0", OPPO_MAC, [("message-type", "request"), ("requested_addr", "192.168.0.141"),
+                                             ("hostname", b"OPPO-A31")]))
+    host = HostRecord(ip="192.168.0.141", mac=OPPO_MAC)
+    sources = Counter()
+    enrich_passive_hosts([host], _suite(mdns, dhcp), sources)
+    assert host.hostname == "OPPO-A31" and sources == Counter(dhcp=1)
+
+
+def test_a_default_name_is_kept_when_nothing_better_is_known_and_reverse_dns_is_asked(mdns):
+    mdns.feed(mdns4("192.168.0.180", "6e:dc:c8:20:6c:e8", qr=1, aa=1,
+                    an=[DNSRR(rrname="Android.local.", type="A", rdata="192.168.0.180")]))
+    mdns.feed(mdns4("10.0.0.20", "6e:dc:c8:20:6c:e9", qr=1, aa=1,
+                    an=[DNSRR(rrname="Android.local.", type="A", rdata="10.0.0.20")]))
+    lookup = SlowLookup({"10.0.0.20": "sales-tab-03.corp.local"})
+    rdns = ReverseDnsCache(lookup=lookup, budget=1)
+    home = HostRecord(ip="192.168.0.180", mac="6e:dc:c8:20:6c:e8")
+    office = HostRecord(ip="10.0.0.20", mac="6e:dc:c8:20:6c:e9")
+    sources = Counter()
+    enrich_passive_hosts([home, office], _suite(mdns, rdns=rdns), sources)
+    assert home.hostname == "Android"                       # nothing better: the default stays
+    assert office.hostname == "sales-tab-03.corp.local"     # the office DNS knew its real name
+    assert sorted(lookup.asked) == ["10.0.0.20", "192.168.0.180"]
+    assert sources == Counter(mdns=1, rdns=1)
+    rdns.shutdown()
+
+
+def test_a_specific_mdns_name_still_beats_dhcp(mdns, dhcp):
+    mdns.feed(mdns4("192.168.0.190", "7c:61:30:38:96:02", qr=1, aa=1,
+                    an=[DNSRR(rrname="Jojos-iPad.local.", type="A", rdata="192.168.0.190")]))
+    dhcp.feed(dhcp_pkt("0.0.0.0", "7c:61:30:38:96:02", [("message-type", "request"),
+                                                        ("requested_addr", "192.168.0.190"), ("hostname", b"iPad")]))
+    host = HostRecord(ip="192.168.0.190", mac="7c:61:30:38:96:02")
+    enrich_passive_hosts([host], _suite(mdns, dhcp))
+    assert host.hostname == "Jojos-iPad"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("庄某某的电脑".encode("utf-8"), "庄某某的电脑"),          # UTF-8 (Chinese)
+    ("Café-TV".encode("utf-8"), "Café-TV"),
+    ("Café-TV".encode("latin-1"), "Café-TV"),               # not UTF-8: read as Latin-1, never dropped
+    (b"OPPO-A31\x00\x00", "OPPO-A31"),                      # NUL padding
+])
+def test_dhcp_names_keep_every_character(dhcp, raw, expected):
+    dhcp.feed(dhcp_pkt("0.0.0.0", PHONE_MAC, [("message-type", "request"), ("requested_addr", "192.168.0.50"),
+                                              ("hostname", raw)]))
+    assert dhcp.get_info("192.168.0.50")["dhcp_hostname"] == expected
+
+
+@pytest.mark.parametrize("name", ["Android", "Android-2", "ANDROID.local", "android-83f59958ba7e18a1", "iPhone", "iPhone-3", "iPad",
+                                  "localhost", "MacBook-Pro", "7dff5f02-7c94-4a60-b5ee-ef77df02d62a"])
+def test_platform_defaults_are_generic(name):
+    assert is_generic_hostname(name)
+
+
+@pytest.mark.parametrize("name", ["OPPO-A31", "Galaxy-A14-5G", "Jojos-iPad", "zhuangmojoyang", "android-tv",
+                                  "KHZ4-4D50ED-11834F4F", "", None])
+def test_real_names_are_not_generic(name):
+    assert not is_generic_hostname(name)
