@@ -685,3 +685,44 @@ def test_platform_defaults_are_generic(name):
                                   "KHZ4-4D50ED-11834F4F", "", None])
 def test_real_names_are_not_generic(name):
     assert not is_generic_hostname(name)
+
+
+
+# ── 2.2.4: virtual adapters, and saying when listening resumes ──
+def test_when_wifi_drops_it_waits_instead_of_listening_on_the_gns3_loopback():
+    # Seen on the campus Wi-Fi: Windows routed through "Ethernet 2" (KM-TEST loopback,
+    # 142.19.0.1) for 13 minutes while Wi-Fi was down, and nothing was heard there.
+    probe, clock = FakeProbe("192.168.100.71"), Clock()
+    chooser = InterfaceChooser(probe=probe, clock=clock)
+    assert chooser.refresh() == "Wi-Fi"
+    probe.route_ip = "142.19.0.1"
+    clock.t = 31
+    assert chooser.refresh() is None and chooser.label == "waiting for a network connection"
+    probe.route_ip = "192.168.100.71"
+    clock.t = 62
+    assert chooser.refresh() == "Wi-Fi"
+
+
+def test_a_vpn_is_still_followed():
+    vpn = ADAPTERS + [{"name": "OpenVPN Data Channel Offload", "description": "OpenVPN Data Channel Offload",
+                       "ips": ["10.8.0.6"], "mac": "aa:bb:cc:dd:ee:01"}]
+    assert InterfaceChooser(probe=FakeProbe("10.8.0.6", vpn)).refresh() == "OpenVPN Data Channel Offload"
+
+
+def test_a_sniffer_says_when_it_listens_again(monkeypatch, caplog):
+    import scapy.all as scapy_mod
+    calls = {"n": 0}
+    sniffer = ArpSniffer(interface="Wi-Fi")
+
+    def fake_sniff(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("Network interface was not found")
+        sniffer._stop.set()                         # one good slice, then stop
+
+    monkeypatch.setattr(scapy_mod, "sniff", fake_sniff)
+    monkeypatch.setattr(sniffer._stop, "wait", lambda timeout=None: False)
+    with caplog.at_level("INFO", logger="eagleeye.passive"):
+        sniffer._loop()
+    text = caplog.text
+    assert "cannot listen on Wi-Fi" in text and "listening on Wi-Fi again" in text

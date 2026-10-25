@@ -71,6 +71,14 @@ function mergeOpToStmt(db: ReturnType<typeof getDb>, op: Exclude<MergeOp, { k: '
     case 'endAddressAt':      return db.update(assetAddresses).set({ endedAt: new Date(op.endedAt) }).where(eq(assetAddresses.addressId, op.addressId))
     case 'moveAddresses':     return db.update(assetAddresses).set({ assetId: op.survivorId }).where(inArray(assetAddresses.assetId, op.loserIds))
     case 'moveEvents':        return db.update(events).set({ assetId: op.survivorId }).where(inArray(events.assetId, op.loserIds))
+    case 'closeDuplicateNewDevice': return db.update(events).set({
+      status: 'resolved', resolvedAt: new Date(), updatedAt: new Date(),
+      resolutionNote: 'Merged: this device already has an earlier new-device alert',
+    }).where(and(
+      eq(events.assetId, op.survivorId), eq(events.eventType, 'new_device'), inArray(events.status, ['open', 'in_progress']),
+      sql`${events.eventId} <> (SELECT e2.event_id FROM events e2 WHERE e2.asset_id = ${op.survivorId}
+            AND e2.event_type = 'new_device' ORDER BY e2.timestamp ASC, e2.event_id ASC LIMIT 1)`,
+    ))
     case 'moveSboms':         return db.update(sboms).set({ assetId: op.survivorId }).where(inArray(sboms.assetId, op.loserIds))
     case 'moveDependencies':  return db.update(dependencies).set({ assetId: op.survivorId }).where(inArray(dependencies.assetId, op.loserIds))
     case 'deleteRelationships': return db.delete(assetRelationships).where(inArray(assetRelationships.relationshipId, op.ids))
@@ -337,6 +345,7 @@ app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) =>
       ? await db.select({
           addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
           ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt,
+          firstSeen: assetAddresses.firstSeen, lastSeen: assetAddresses.lastSeen,
         }).from(assetAddresses).where(inArray(assetAddresses.assetId, ids))
       : []
 
@@ -383,6 +392,7 @@ app.post('/duplicates/dismiss', authMiddleware, requireRoles(...WRITE_ROLES), zV
     const addrRows = await db.select({
       addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
       ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress, endedAt: assetAddresses.endedAt,
+      firstSeen: assetAddresses.firstSeen, lastSeen: assetAddresses.lastSeen,
     }).from(assetAddresses).where(inArray(assetAddresses.assetId, ids))
     const idRows = await tenantIdentifiers(db, ids)
     const dismissals = await tenantDismissals(db, tenantId)

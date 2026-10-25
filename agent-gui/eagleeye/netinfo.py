@@ -151,10 +151,14 @@ def own_mac(ip: str) -> Optional[str]:
 
 def build_network_info(subnet: Optional[str], hosts: list[HostRecord],
                        heard_on: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """The `network` block sent with each ingest: {subnet, gateway_ip, gateway_mac}.
+    """The `network` block sent with each ingest: {subnet, lan_subnet, gateway_ip, gateway_mac}.
 
     - subnet:      the scanned CIDR (active); for passive, the subnet the hosts were
                    heard on, else the local subnet now.
+    - lan_subnet:  the subnet of the LAN this computer is on (the one passive hosts were
+                   heard on). The server keys device identity by it, so a /22 office LAN
+                   is one network, not four /24s; for an active scan `subnet` is only the
+                   range that was scanned.
     - gateway_ip:  the gateway of the network the hosts were heard on, else the
                    default gateway now (best effort).
     - gateway_mac: only when the gateway appears among the discovered hosts, so it is
@@ -178,8 +182,7 @@ def build_network_info(subnet: Optional[str], hosts: list[HostRecord],
                 gateway_mac = h.mac
                 break
 
-    net_subnet = subnet or (heard_on or {}).get("subnet")
-    if not net_subnet:
-        net_subnet = local_network().get("subnet")
+    lan_subnet = (heard_on or {}).get("subnet") if heard_on is not None else local_network().get("subnet")
+    net_subnet = subnet or lan_subnet
 
-    return {"subnet": net_subnet, "gateway_ip": gateway_ip, "gateway_mac": gateway_mac}
+    return {"subnet": net_subnet, "lan_subnet": lan_subnet, "gateway_ip": gateway_ip, "gateway_mac": gateway_mac}

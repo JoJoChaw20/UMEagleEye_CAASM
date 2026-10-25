@@ -66,6 +66,9 @@ export type MergeOp =
   | { k: 'endAddressAt'; addressId: string; endedAt: string | Date }
   | { k: 'moveAddresses'; loserIds: string[]; survivorId: string }
   | { k: 'moveEvents'; loserIds: string[]; survivorId: string }
+  // One device has one "new device" alert: after the move, open copies other than the
+  // earliest are closed (the iPad merged from three copies showed three).
+  | { k: 'closeDuplicateNewDevice'; survivorId: string }
   | { k: 'moveSboms'; loserIds: string[]; survivorId: string }
   | { k: 'moveDependencies'; loserIds: string[]; survivorId: string }
   // Installed software describes one machine's current state, so the list of the asset
@@ -178,6 +181,19 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     macAddress: latest.macAddress,          // "latest seen"
     updatedAt: now,
   }
+  // The baseline describes the merged device, so its identity fields take the merged
+  // values: a survivor whose baseline held another copy's (private) MAC raised a false
+  // "MAC address changed" alert at the next drift audit.
+  const baseline = mergedFields.baselineState as Record<string, unknown> | null
+  if (baseline) {
+    mergedFields.baselineState = {
+      ...baseline,
+      mac_address: mergedFields.macAddress ?? null,
+      hostname: mergedFields.hostname ?? null,
+      device_type: mergedFields.deviceType,
+      is_internet_facing: mergedFields.isInternetFacing,
+    }
+  }
   // The newest endpoint inventory survives (one machine, so the latest report wins).
   const newestInventory = [...all]
     .filter(a => a.endpointInventory != null)
@@ -214,6 +230,7 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
   if (loserIds.length) {
     ops.push({ k: 'moveAddresses', loserIds, survivorId })
     ops.push({ k: 'moveEvents', loserIds, survivorId })
+    ops.push({ k: 'closeDuplicateNewDevice', survivorId })
     ops.push({ k: 'moveSboms', loserIds, survivorId })
     ops.push({ k: 'moveDependencies', loserIds, survivorId })
     // Software: keep the list of the asset whose inventory is newest (else the survivor's).

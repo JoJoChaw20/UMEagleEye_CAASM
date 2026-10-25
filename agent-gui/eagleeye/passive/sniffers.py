@@ -127,6 +127,11 @@ class InterfaceChooser:
             match = None
             if route_ip and not route_ip.startswith("127."):
                 match = next((a for a in adapters if route_ip in (a.get("ips") or [])), None)
+            if match is not None and _is_virtual_adapter(match):
+                # Wi-Fi dropped and Windows routed through a virtual adapter (the GNS3
+                # KM-TEST loopback, VMware, Hyper-V): nothing real is heard there, so
+                # wait for the network to come back instead.
+                match = None
             name = match["name"] if match else None
             label = f"{match['name']} ({route_ip})" if match else "waiting for a network connection"
             if name != self.name or label != self.label:
@@ -171,6 +176,17 @@ class InterfaceChooser:
         """True for a packet sent by one of this computer's adapters."""
         m = _norm_mac(mac)
         return m is not None and m in self._own_macs
+
+
+# Adapters that only ever carry this computer's own virtual networks. Passive listening
+# on them hears nothing of the LAN. VPN adapters are not listed: a VPN is a real route.
+_VIRTUAL_ADAPTER_WORDS = ("loopback", "km-test", "vmware", "virtualbox", "hyper-v", "vethernet",
+                          "wsl", "docker", "npcap loopback")
+
+
+def _is_virtual_adapter(adapter: dict[str, Any]) -> bool:
+    text = f"{adapter.get('name') or ''} {adapter.get('description') or ''}".lower()
+    return any(word in text for word in _VIRTUAL_ADAPTER_WORDS)
 
 
 def _local_network(ip: str) -> dict[str, Optional[str]]:
@@ -254,6 +270,8 @@ class _Sniffer:
                     kwargs.pop("iface", None)
                 try:
                     sniff(**kwargs)
+                    if failed_on is not None:
+                        log.info("%s: listening on %s again", self.label, iface or "default")
                     failed_on = None
                 except PermissionError:
                     raise

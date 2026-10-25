@@ -12,7 +12,8 @@ import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
 import { ACTIVE_MODEL, scoreAsset } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
-import { deriveNetworkKey } from '../lib/identity'
+import { resolveNetworkScope } from '../lib/networkScope'
+import { closeReviewedNewDevices } from '../services/alertHygiene'
 import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
   resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
@@ -334,7 +335,8 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
     const vendor = inv.hardware?.manufacturer?.trim() || null
     const ip = ips[0] ?? null
     const mac = primaryMac(inv)
-    const networkKey = ip ? deriveNetworkKey({ ip }) : null
+    // Same key as the scans of this tenant use for the address (lib/networkScope.ts).
+    const networkKey = ip ? (await resolveNetworkScope(db, tenantId, null)).keyFor(ip) : null
     const reportedType = deviceTypeFor(inv)
     const agentRole = typeof inv.os?.role === 'string' ? inv.os.role : null
     const now = new Date()
@@ -519,6 +521,8 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       }))))
     }
     await db.batch(statements as unknown as Parameters<typeof db.batch>[0])
+    // This computer now runs a bound agent, so its new-device alert has been dealt with.
+    await closeReviewedNewDevices(db, { assetIds: [assetId] }).catch(err => console.error('new-device hygiene failed:', err))
     // The agent's facts (hostname, adapters) may have changed: check drift now rather than
     // at the next scan or the 6-hourly audit. Same queue job scans send.
     try {

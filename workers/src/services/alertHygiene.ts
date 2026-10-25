@@ -37,19 +37,22 @@ export async function closeOrphanCveAlerts(db: DB, s: Scope = {}): Promise<numbe
 }
 
 /** Open new-device alerts whose device has been dealt with: added to My Assets, given an
- *  owner, or not seen for NEW_DEVICE_UNSEEN_DAYS. Alerts someone is working on
- *  (in_progress) are left alone. */
+ *  owner, running an EagleEye agent (it reports its own inventory, so it is known), or not
+ *  seen for NEW_DEVICE_UNSEEN_DAYS. Alerts someone is working on (in_progress) are left alone. */
 export async function closeReviewedNewDevices(db: DB, s: Scope = {}): Promise<number> {
   const res = await db.execute(sql`
     UPDATE events e SET status = 'resolved', resolved_at = now(), updated_at = now(),
       resolution_note = CASE
         WHEN a.in_my_assets THEN 'Auto-resolved: the device was added to My Assets'
         WHEN NULLIF(trim(a.owner), '') IS NOT NULL THEN 'Auto-resolved: the device was given an owner'
+        WHEN EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
+          THEN 'Auto-resolved: this computer runs an EagleEye agent'
         ELSE ${`Auto-resolved: the device has not been seen for ${NEW_DEVICE_UNSEEN_DAYS} days`} END
     FROM assets a
     WHERE a.asset_id = e.asset_id AND ${scopeSql(s)}
       AND e.event_type = 'new_device' AND e.status = 'open'
       AND (a.in_my_assets OR NULLIF(trim(a.owner), '') IS NOT NULL
+           OR EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
            OR COALESCE(a.last_scanned, a.created_at) < now() - make_interval(days => ${NEW_DEVICE_UNSEEN_DAYS}))
     RETURNING 1
   `)

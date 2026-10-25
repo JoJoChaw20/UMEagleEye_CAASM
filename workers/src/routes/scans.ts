@@ -19,7 +19,8 @@ import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
 import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
-import { isGenericHostname, pickHostname } from '../lib/hostnames'
+import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
+import { resolveNetworkScope } from '../lib/networkScope'
 
 // The scan classifier lives in lib/deviceClassify.ts (shared with "Automatic" type
 // reset); re-exported for scripts that import it from here.
@@ -644,6 +645,9 @@ const ingestSchema = z.object({
   // for identity — the network key is derived from each host IP's /24.
   network: z.object({
     subnet: z.string().max(64).nullish(),
+    // Agent 2.2.4+: the subnet of the LAN the agent listens on (for an active scan,
+    // `subnet` is the scanned range instead). Keys identity (lib/networkScope.ts).
+    lan_subnet: z.string().max(64).nullish(),
     gateway_ip: z.string().max(45).nullish(),
     gateway_mac: z.string().max(17).nullish(),
   }).nullish(),
@@ -692,6 +696,10 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const batchIps = [...new Set(hosts.map(h => h.ip))]
     const batchHostKeys = [...new Set(hosts.map(h => sanitizeHostKey((h.os as Record<string, unknown> | null)?.['smb_computer_name'])).filter((k): k is string => !!k))]
     const criticalityModel = ACTIVE_MODEL
+    // Which network each address is on: the LAN subnet the agent reports (2.2.4+; a
+    // passive upload's `subnet` from 2.2.2), widening the tenant's old /24 keys inside
+    // it first, so the matching below sees one network (lib/networkScope.ts).
+    const scope = await resolveNetworkScope(db, tenantId ?? null, network?.lan_subnet ?? (isPassive ? network?.subnet : null))
     const prefetch = await prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys)
 
     // LLM context (existing device_type/hostname/owner per IP) — built from the
@@ -980,7 +988,7 @@ Example:
 
     const planHosts = enhancedHosts.map(prepareHost)
     // Resolve the entire batch in memory against the prefetched candidates.
-    const plan = planIngest(planHosts, prefetch, { criticalityModel })
+    const plan = planIngest(planHosts, prefetch, { criticalityModel, networkKeyFor: scope.keyFor })
     for (const ph of plan.perHost) {
       if (ph.possibleDuplicateOf) {
         console.log(`identity: possible_duplicate hint ip=${ph.ip} rule=${ph.rule} relatedAsset=${ph.possibleDuplicateOf}`)
@@ -1006,6 +1014,7 @@ Example:
     const persistHostSlow = async (p: PlanHost, rawMac: unknown): Promise<string | null> => {
       const resolution = await resolveAssetIdentity(db, {
         tenantId: tenantId ?? null, ip: p.ip, rawMac, hostKey: p.hostKeyRaw, isManualSource: false,
+        networkKey: scope.keyFor(p.ip),
       })
       const mac = resolution.mac
       const networkKey = resolution.networkKey
@@ -1066,7 +1075,7 @@ Example:
           db.insert(assetAddresses).values(addressValues),
         ])
       }
-      await db.insert(events).values({ assetId: newAssetId, eventType: 'new_device', severity: p.internetFacing ? 'high' : 'medium', details: { ip: p.ip, mac: mac ?? null, hostname: p.hostname ?? null, source: p.isPassive ? 'passive_scan' : 'active_scan' } })
+      await db.insert(events).values({ assetId: newAssetId, eventType: 'new_device', severity: newDeviceSeverity({ internetFacing: p.internetFacing, mac, hostname: p.hostname }), details: { ip: p.ip, mac: mac ?? null, hostname: p.hostname ?? null, source: p.isPassive ? 'passive_scan' : 'active_scan' } })
       return newAssetId
     }
 

@@ -275,7 +275,11 @@ export function detectDrift(
   // baseline_state is left untouched; from/to show the actual stored values.
   const baselineMac = normalizeMac(baseline.mac_address)
   const currentMac  = normalizeMac(asset.macAddress)
-  if (baselineMac && currentMac && baselineMac !== currentMac && !opts.agentMacs?.has(currentMac)) {
+  // One private (locally administered) MAC replacing another is a phone or tablet
+  // rotating its random Wi-Fi address, not a hardware swap or spoofing: no alert.
+  const isPrivate = (m: string) => (parseInt(m.slice(0, 2), 16) & 0x02) !== 0
+  const rotation = !!baselineMac && !!currentMac && isPrivate(baselineMac) && isPrivate(currentMac)
+  if (baselineMac && currentMac && baselineMac !== currentMac && !rotation && !opts.agentMacs?.has(currentMac)) {
     drifts.push({
       type:     'config_change',
       severity: 'high',

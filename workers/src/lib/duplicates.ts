@@ -10,22 +10,17 @@
  */
 import { classifyMac, isSharedVirtualMac } from './identity'
 import { differentHardware, normalizeHardwareUuid } from './machineIdentity'
+import { isGenericHostname } from './hostnames'
 
-// Report-specific generic-hostname filter — intentionally NOT sanitizeHostKey
-// (that is tuned for ingest and must not change). Ignores localhost, default
-// iPhone/iPad, UUID-style names, and the REAL Android default ("android-" + 8+ hex).
-// Short names like "Android-2" are treated as SPECIFIC (so they can surface as REVIEW).
-const REPORT_GENERIC_HOST: RegExp[] = [
-  /^localhost$/,
-  /^iphone$/, /^ipad$/,
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,  // UUID-style
-  /^android-[0-9a-f]{8,}$/,                                          // real Android default
-]
+// A hostname is evidence only when someone chose it. Platform defaults ("Android",
+// "Android-2", "android-<hex>", "iPhone", UUID-style...; lib/hostnames.ts, the same
+// list the scans use) are shared by unrelated devices: three different phones called
+// "Android" were grouped as one, and had to be dismissed by hand.
 function reportHostname(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null
   const v = raw.trim().toLowerCase()
   if (!v) return null
-  return REPORT_GENERIC_HOST.some(re => re.test(v)) ? null : v
+  return isGenericHostname(v) ? null : v
 }
 
 export interface DupAsset {
@@ -47,6 +42,8 @@ export interface DupAddress {
   ipAddress: string
   macAddress: string | null
   endedAt: string | Date | null
+  firstSeen?: string | Date | null
+  lastSeen?: string | Date | null
 }
 /** A machine identifier an agent reported (asset_identifiers). */
 export interface DupIdentifier {
@@ -183,7 +180,25 @@ export function findDuplicateGroups(
     }
   }
 
-  // ── Hostname evidence (REVIEW): same specific (non-generic) hostname, different MACs ──
+  const netsOfAsset = (id: string) => new Set((addrByAsset.get(id) ?? []).map(a => a.networkKey).filter((n): n is string => n != null))
+  // When an asset was seen, from its address rows: [first seen, last seen]; null if unknown.
+  const seenSpan = (id: string): [number, number] | null => {
+    const rows = addrByAsset.get(id) ?? []
+    const firsts = rows.map(r => ms(r.firstSeen)).filter(n => n > 0)
+    const lasts = rows.map(r => Math.max(ms(r.lastSeen), ms(r.endedAt))).filter(n => n > 0)
+    return firsts.length && lasts.length ? [Math.min(...firsts), Math.max(...lasts)] : null
+  }
+  const privateMac = (mac: string | null): boolean => {
+    const { mac: m, macClass } = classifyMac(mac)
+    return !!m && macClass === 'local' && !isSharedVirtualMac(m)
+  }
+
+  // ── Hostname evidence: same specific (non-generic) hostname, different MACs ──
+  // REVIEW, except one case that is SAFE: both MACs private, a network in common, and
+  // never seen at the same time. That is a phone or tablet whose private MAC changed
+  // (Android and iOS rotate it, e.g. after the Wi-Fi is switched off and on); two
+  // devices that share a name (two people with the same phone model) are seen together.
+  // Scans never join them on their own (the analyst chose to decide here).
   const byHostname = new Map<string, string[]>()
   for (const a of assets) {
     const hn = reportHostname(a.hostname)
@@ -197,7 +212,14 @@ export function findDuplicateGroups(
       const x = assetById.get(uniq[i]!)!, y = assetById.get(uniq[j]!)!
       const mx = classifyMac(x.macAddress).mac, my = classifyMac(y.macAddress).mac
       if (mx && my && mx === my) continue   // same MAC already grouped as safe
-      edges.push({ a: x.assetId, b: y.assetId, confidence: 'review', reason: `same hostname "${hn}", different MACs` })
+      const sx = seenSpan(x.assetId), sy = seenSpan(y.assetId)
+      const sharedNet = [...netsOfAsset(x.assetId)].some(n => netsOfAsset(y.assetId).has(n))
+      const neverTogether = !!sx && !!sy && (sx[1] < sy[0] || sy[1] < sx[0])
+      if (privateMac(x.macAddress) && privateMac(y.macAddress) && sharedNet && neverTogether) {
+        edges.push({ a: x.assetId, b: y.assetId, confidence: 'safe', reason: `same name "${hn}", private MAC changed (never seen at the same time)` })
+      } else {
+        edges.push({ a: x.assetId, b: y.assetId, confidence: 'review', reason: `same hostname "${hn}", different MACs` })
+      }
     }
   }
 
@@ -208,7 +230,6 @@ export function findDuplicateGroups(
     if (!hk) continue
     const l = byHostKey.get(hk) ?? []; l.push(a.assetId); byHostKey.set(hk, l)
   }
-  const netsOfAsset = (id: string) => new Set((addrByAsset.get(id) ?? []).map(a => a.networkKey).filter((n): n is string => n != null))
   for (const [hk, ids] of byHostKey) {
     const uniq = [...new Set(ids)]
     if (uniq.length < 2) continue

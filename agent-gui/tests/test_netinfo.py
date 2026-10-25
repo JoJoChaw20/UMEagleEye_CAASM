@@ -54,7 +54,8 @@ def test_passive_hosts_go_up_with_the_network_they_were_heard_on(monkeypatch):
     campus = {"local_ip": "10.179.37.235", "subnet": "10.179.32.0/19", "gateway_ip": "10.179.63.254"}
     hosts = [HostRecord(ip="10.179.63.254", mac="9c:09:71:3b:f6:01")]
     assert netinfo.build_network_info(None, hosts, campus) == {
-        "subnet": "10.179.32.0/19", "gateway_ip": "10.179.63.254", "gateway_mac": "9c:09:71:3b:f6:01"}
+        "subnet": "10.179.32.0/19", "lan_subnet": "10.179.32.0/19",
+        "gateway_ip": "10.179.63.254", "gateway_mac": "9c:09:71:3b:f6:01"}
     # Gateway unknown for the old network: never borrow today's (it would flip the old router).
     assert netinfo.build_network_info(None, hosts, {**campus, "gateway_ip": None})["gateway_ip"] is None
     home = {"local_ip": "192.168.0.139", "subnet": "192.168.0.0/24", "gateway_ip": None}
@@ -94,3 +95,13 @@ def test_this_computer_gets_its_own_mac_and_name_in_an_active_scan(monkeypatch):
     scan_nmap.fill_own_host(hosts)
     assert (hosts[1].mac, hosts[1].hostname) == ("14:13:33:c3:f6:03", "LAPTOP-JOJO")
     assert (hosts[0].mac, hosts[0].hostname) == ("50:C2:E8:39:56:29", None)
+
+
+def test_an_active_scan_reports_the_lan_apart_from_the_range_it_scanned(monkeypatch):
+    # The server keys identity by the LAN (a /22 office is one network); the scanned
+    # range can be anything the user typed, e.g. one /24 of it.
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: "10.20.0.1")
+    monkeypatch.setattr(netinfo, "local_network",
+                        lambda ip=None: {"local_ip": "10.20.1.15", "subnet": "10.20.0.0/22", "gateway_ip": "10.20.0.1"})
+    info = netinfo.build_network_info("10.20.2.0/24", [])
+    assert (info["subnet"], info["lan_subnet"]) == ("10.20.2.0/24", "10.20.0.0/22")

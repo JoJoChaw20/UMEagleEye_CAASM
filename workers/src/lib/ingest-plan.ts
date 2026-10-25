@@ -19,7 +19,7 @@ import {
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
-import { isGenericHostname, pickHostname } from './hostnames'
+import { isGenericHostname, newDeviceSeverity, pickHostname } from './hostnames'
 import { ACTIVE_MODEL, scoreAsset, type CriticalityModel } from './rescore'
 import { applyHint, deviceTypeHint } from './deviceHints'
 import { buildBaseline, type AssetBaseline } from '../services/drift'
@@ -168,7 +168,11 @@ export function resolveIngestDeviceType(
 export function planIngest(
   hosts: PlanHost[],
   prefetch: IdentityPrefetch,
-  opts?: { newId?: () => string; now?: Date; criticalityModel?: CriticalityModel },
+  opts?: {
+    newId?: () => string; now?: Date; criticalityModel?: CriticalityModel
+    /** Network key of an address (lib/networkScope.ts); the /24 around it when absent. */
+    networkKeyFor?: (ip: string) => string | null
+  },
 ): IngestPlan {
   const newId = opts?.newId ?? (() => crypto.randomUUID())
   const now = opts?.now ?? new Date()
@@ -197,7 +201,7 @@ export function planIngest(
     const ops: IngestOp[] = []
     const { mac, macClass } = classifyMac(host.rawMac)
     const hostKey = sanitizeHostKey(host.hostKeyRaw)
-    const networkKey = deriveNetworkKey({ ip: host.ip, isManualSource: false })
+    const networkKey = opts?.networkKeyFor ? opts.networkKeyFor(host.ip) : deriveNetworkKey({ ip: host.ip, isManualSource: false })
     const usableMac = macClass === 'global' || macClass === 'local'
 
     const toCand = (w: WorkAddr): CandidateAddress => ({
@@ -391,7 +395,7 @@ export function planIngest(
       const nid = newId()
       ops.push({ k: 'insertAddress', values: addrValues(nid, assetId, networkKey, host.ip, mac, host.tenantId) })
       ops.push({ k: 'insertEvent', values: {
-        assetId, eventType: 'new_device', severity: host.internetFacing ? 'high' : 'medium',
+        assetId, eventType: 'new_device', severity: newDeviceSeverity({ internetFacing: host.internetFacing, mac, hostname: host.hostname }),
         details: { ip: host.ip, mac: mac ?? null, hostname: host.hostname ?? null, source: host.isPassive ? 'passive_scan' : 'active_scan' },
       } })
 

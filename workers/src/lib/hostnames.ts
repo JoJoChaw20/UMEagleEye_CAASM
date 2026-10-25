@@ -27,6 +27,19 @@ export function isGenericHostname(name: string | null | undefined): boolean {
   return v !== '' && GENERIC_NAME_PATTERNS.some(re => re.test(v))
 }
 
+/**
+ * Severity of a "new device" alert. Internet-facing: high. A private (randomised) MAC
+ * with no name, or only a platform default, is almost always a visitor's or employee's
+ * phone, and on a busy network those alerts drown the rest: low. Everything else: medium.
+ */
+export function newDeviceSeverity(h: { internetFacing: boolean; mac: string | null | undefined; hostname: string | null | undefined }): 'high' | 'medium' | 'low' {
+  if (h.internetFacing) return 'high'
+  const hex = (h.mac ?? '').replace(/[^0-9a-fA-F]/g, '')
+  const privateMac = hex.length === 12 && (parseInt(hex.slice(0, 2), 16) & 0x02) !== 0
+  const named = !!h.hostname?.trim() && !isGenericHostname(h.hostname)
+  return privateMac && !named ? 'low' : 'medium'
+}
+
 /** The hostname to store: fill-only, except that a generic stored name gives way to a
  *  specific one from the scan. */
 export function pickHostname(stored: string | null | undefined, incoming: string | null | undefined): string | null {

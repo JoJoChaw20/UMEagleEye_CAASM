@@ -209,6 +209,8 @@ export interface ResolveInput {
   rawMac: unknown
   hostKey: unknown
   isManualSource: boolean
+  /** The network key from lib/networkScope.ts; derived (/24) when absent. */
+  networkKey?: string | null
 }
 
 export interface ResolveResult {
@@ -222,7 +224,7 @@ export interface ResolveResult {
   mac: string | null                // normalized/classified MAC (null if unusable)
   macClass: MacClass
   hostKey: string | null            // sanitised host key
-  networkKey: string | null         // derived /24 (or null); caller stamps it on address rows
+  networkKey: string | null         // the network key (or null); caller stamps it on address rows
 }
 
 const tenantCond = (tenantId: string | null) =>
@@ -238,7 +240,9 @@ const tenantCond = (tenantId: string | null) =>
 export async function resolveAssetIdentity(db: DB, input: ResolveInput): Promise<ResolveResult> {
   const { mac, macClass } = classifyMac(input.rawMac)
   const hostKey = sanitizeHostKey(input.hostKey)
-  const networkKey = deriveNetworkKey({ ip: input.ip, isManualSource: input.isManualSource })
+  const networkKey = input.networkKey !== undefined && !input.isManualSource
+    ? input.networkKey
+    : deriveNetworkKey({ ip: input.ip, isManualSource: input.isManualSource })
   const usableMac = macClass === 'global' || macClass === 'local'
 
   // Tiebreaker ordering for all candidate sets: most-recent last_seen, then oldest
