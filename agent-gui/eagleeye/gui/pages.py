@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from .. import deps, installers
 from ..api import AgentClient
 from ..enrol import ConnectionCodeError, parse_connection_code
-from ..netinfo import local_ip
+from ..netinfo import local_ip, local_network
 from ..pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent
 from ..privacy import NOTICE_HTML
 from ..schedule import Schedule
@@ -81,11 +81,28 @@ def _table(headers: list[str], stretch: Optional[int] = None) -> QTableWidget:
     return t
 
 
-def default_subnet() -> str:
+# Larger networks are offered, but not first: Nmap needs hours for thousands of addresses.
+DEFAULT_SCAN_MIN_PREFIX = 22
+
+
+def scan_targets() -> list[str]:
+    """Scan ranges to offer, the default first: the network this computer is on (as
+    configured, e.g. a /22 office LAN) when it has at most 1024 addresses, else the /24
+    around this computer followed by the whole network."""
     try:
-        return str(ipaddress.ip_network(f"{local_ip()}/24", strict=False))
+        network = local_network()
+        ip = network.get("local_ip") or local_ip()
+        around = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+        subnet = network.get("subnet") or around
+        if ipaddress.ip_network(subnet).prefixlen >= DEFAULT_SCAN_MIN_PREFIX:
+            return list(dict.fromkeys([subnet, around]))
+        return [around, subnet]
     except ValueError:
-        return "192.168.1.0/24"
+        return ["192.168.1.0/24"]
+
+
+def default_subnet() -> str:
+    return scan_targets()[0]
 
 
 # ── Status ────────────────────────────────────────────────────────────────
@@ -164,7 +181,7 @@ class StatusPage(QWidget):
 
     def reload_subnets(self) -> None:
         current = self.subnet.currentText()
-        options = [default_subnet()] + [Schedule.from_dict(s).subnet for s in self.win.store.settings.schedules]
+        options = scan_targets() + [Schedule.from_dict(s).subnet for s in self.win.store.settings.schedules]
         self.subnet.clear()
         for opt in dict.fromkeys(o for o in options if o):
             self.subnet.addItem(opt)

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 from xml.etree import ElementTree
 
-from .. import deps
+from .. import deps, netinfo
 from ..pipeline.record import HostRecord
 from ..pipeline.runner import Cancelled, PipelineContext, Stage
 
@@ -351,6 +351,18 @@ def builtin_sweep(
     return sorted(live.values(), key=lambda h: ipaddress.ip_address(h.ip))
 
 
+def fill_own_host(hosts: list[HostRecord]) -> None:
+    """Nmap cannot see the MAC of the computer it runs on, so this computer came back
+    with none and was recorded as a separate, MAC-less asset. Give it its own adapter's
+    MAC and its computer name, so it matches the asset its inventory already made."""
+    me = netinfo.local_ip()
+    for host in hosts:
+        if host.ip == me:
+            host.mac = host.mac or netinfo.own_mac(me)
+            host.hostname = host.hostname or socket.gethostname() or None
+            return
+
+
 class NmapScanStage(Stage):
     name = "scan"
     label = "Discover and fingerprint hosts"
@@ -371,4 +383,5 @@ class NmapScanStage(Stage):
             log.warning("Nmap not found; install it for full results: %s", deps._hint("nmap"))
             ctx.hosts = builtin_sweep(target, ctx.progress, ctx.cancelled)
             ctx.summary["scanner"] = "builtin"
+        fill_own_host(ctx.hosts)
         ctx.progress(f"{len(ctx.hosts)} host(s) up", len(ctx.hosts), None)

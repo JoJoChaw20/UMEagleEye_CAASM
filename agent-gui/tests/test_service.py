@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -47,7 +48,10 @@ class FakeClient:
 
 @pytest.fixture(autouse=True)
 def no_network_lookups(monkeypatch):
-    monkeypatch.setattr(upload, "build_network_info", lambda subnet, hosts: {"subnet": subnet, "gateway_ip": None, "gateway_mac": None})
+    def network_info(subnet, hosts, heard_on=None):
+        heard_on = heard_on or {}
+        return {"subnet": subnet or heard_on.get("subnet"), "gateway_ip": heard_on.get("gateway_ip"), "gateway_mac": None}
+    monkeypatch.setattr(upload, "build_network_info", network_info)
 
 
 @pytest.fixture
@@ -257,21 +261,48 @@ def test_second_active_scan_waits_while_one_is_running(monkeypatch):
     wait_idle(svc)
 
 
+HOME = {"local_ip": "192.168.0.139", "subnet": "192.168.0.0/24", "gateway_ip": "192.168.0.1"}
+CAMPUS = {"local_ip": "10.179.37.235", "subnet": "10.179.32.0/19", "gateway_ip": "10.179.63.254"}
+
+
 class FakeArp:
-    def __init__(self, seen):
-        self.seen = seen
+    """The ARP sniffer's buffer: ip -> network it was heard on."""
+
+    def __init__(self, seen, network=None):
+        self.seen = {ip: network for ip in seen}
+
+    def hear(self, ip, network=None):
+        self.seen[ip] = network
 
     def pending(self):
         return len(self.seen)
 
-    def drain(self):
-        out, self.seen = [HostRecord(ip=ip) for ip in self.seen], []
-        return out
+    def drain_batches(self):
+        batches = {}
+        for ip, network in self.seen.items():
+            batches.setdefault(id(network), (network, []))[1].append(HostRecord(ip=ip))
+        self.seen = {}
+        return list(batches.values())
+
+    def restore(self, network, hosts):
+        for h in hosts:
+            self.seen.setdefault(h.ip, network)
 
 
 class FakeSuite:
-    def __init__(self, seen):
-        self.arp, self.mdns, self.dhcp = FakeArp(seen), None, None
+    def __init__(self, seen, network=None):
+        self.arp, self.mdns, self.dhcp = FakeArp(seen, network), None, None
+
+    def stop(self):
+        pass
+
+
+def wait_passive(svc, timeout=5):
+    deadline = time.time() + timeout
+    while svc.passive_running and time.time() < deadline:
+        time.sleep(0.01)
+    assert not svc.passive_running
+    svc._reap_passive()
 
 
 def test_autonomous_flush_is_skipped_when_nothing_was_heard():
@@ -291,10 +322,114 @@ def test_autonomous_flush_uploads_without_a_scan_id():
     svc.suite = FakeSuite(["192.168.1.40"])
     svc._last_flush = 0
     svc.poll_once()
+    wait_passive(svc)
     assert len(client.ingested) == 1
     sent = client.ingested[0]
     assert sent["scan_type"] == "passive" and sent["scan_id"] is None
     assert [h["ip"] for h in sent["hosts"]] == ["192.168.1.40"]
+
+
+class SlowClient(FakeClient):
+    """Uploads wait until released, like a slow server."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.release = threading.Event()
+        self.polls = 0
+
+    def get_pending_scans(self):
+        self.polls += 1
+        return super().get_pending_scans()
+
+    def ingest(self, *args, **kwargs):
+        self.release.wait(5)
+        return super().ingest(*args, **kwargs)
+
+
+def test_a_slow_upload_never_holds_up_polling_and_is_never_doubled():
+    client = SlowClient()
+    svc = service(client, passive=True, passive_interval=5)
+    svc.suite = FakeSuite(["192.168.1.40", "192.168.1.41"])
+    svc._last_flush = 0
+    svc.poll_once()                                   # starts the flush in its own worker
+    assert svc.passive_running
+    svc.suite.arp.hear("192.168.1.42")                # heard while it uploads
+    svc._last_flush = 0                               # the next round is due
+    svc.poll_once()
+    svc.poll_once()
+    assert client.polls == 3                          # polling went on
+    assert svc.suite.arp.pending() == 1               # not doubled: .42 waits in the buffer
+    client.release.set()
+    wait_passive(svc)
+    assert [[h["ip"] for h in c["hosts"]] for c in client.ingested] == [["192.168.1.40", "192.168.1.41"]]
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    assert [h["ip"] for h in client.ingested[1]["hosts"]] == ["192.168.1.42"]
+
+
+def test_rounds_start_on_time_however_long_the_upload_took(monkeypatch):
+    client = FakeClient()
+    svc = service(client, passive=True, passive_interval=300)
+    svc.suite = FakeSuite(["192.168.1.40"])
+    now = [1000.0]
+    monkeypatch.setattr("eagleeye.service.time.time", lambda: now[0])
+    svc._last_flush = 700.0
+    svc.poll_once()
+    wait_passive(svc)
+    assert svc._last_flush == 1000.0                  # counted from the start of the flush
+
+
+def test_a_failed_upload_keeps_the_hosts_for_the_next_flush():
+    client = FakeClient(ingest_ok=False)
+    svc = service(client, passive=True)
+    svc.suite = FakeSuite(["192.168.1.40"], CAMPUS)
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    assert len(client.ingested) == 1 and svc.suite.arp.seen == {"192.168.1.40": CAMPUS}
+    client.ingest_ok = True
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    assert [h["ip"] for h in client.ingested[1]["hosts"]] == ["192.168.1.40"]
+    assert svc.suite.arp.pending() == 0
+
+
+def test_hosts_heard_before_moving_to_another_network_go_up_with_their_own_network():
+    client = FakeClient()
+    svc = service(client, passive=True)
+    svc.suite = FakeSuite(["10.179.63.254", "10.179.48.123"], CAMPUS)
+    svc.suite.arp.hear("192.168.0.186", HOME)         # after the laptop came home
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    sent = [(c["network"]["subnet"], c["network"]["gateway_ip"], [h["ip"] for h in c["hosts"]]) for c in client.ingested]
+    assert sent == [("10.179.32.0/19", "10.179.63.254", ["10.179.63.254", "10.179.48.123"]),
+                    ("192.168.0.0/24", "192.168.0.1", ["192.168.0.186"])]
+
+
+def test_a_dashboard_passive_scan_with_nothing_heard_still_closes_its_record():
+    client = FakeClient(pending=[{"scanId": "p1", "scanType": "passive"}])
+    svc = service(client, passive=True)
+    svc.suite = FakeSuite([])
+    svc.poll_once()
+    wait_passive(svc)
+    assert client.ingested == [{"scan_type": "passive", "hosts": [], "scan_id": "p1",
+                                "network": {"subnet": None, "gateway_ip": None, "gateway_mac": None}}]
+
+
+def test_stopping_uploads_what_was_heard_since_the_last_flush():
+    client = FakeClient()
+    svc = service(client, passive=True)
+    svc.suite = FakeSuite(["192.168.1.40"])
+    svc.stop()
+    svc.stop()                                        # the window and the loop both stop it
+    deadline = time.time() + 5
+    while not client.ingested and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    assert [[h["ip"] for h in c["hosts"]] for c in client.ingested] == [["192.168.1.40"]]
 
 
 def test_throttled_limits_calls():

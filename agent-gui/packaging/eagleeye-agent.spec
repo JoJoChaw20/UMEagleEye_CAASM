@@ -22,6 +22,7 @@ hiddenimports = (
     collect_submodules("keyring.backends")
     + collect_submodules("pysnmp.smi.mibs")
     + collect_submodules("scapy.layers")
+    + ["scapy.libs.manuf"]          # MAC vendor list, loaded by name at run time (vendor.py)
     + ["win32ctypes.core"]
 )
 

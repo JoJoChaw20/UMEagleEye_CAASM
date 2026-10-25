@@ -9,9 +9,25 @@ from eagleeye.config import ConfigError, Settings, load_settings, save_settings
 
 def test_defaults(tmp_path):
     s = load_settings(tmp_path / "missing.json", env={})
-    assert (s.poll_interval, s.heartbeat_interval, s.passive_interval) == (30, 30, 60)
+    assert (s.poll_interval, s.heartbeat_interval, s.passive_interval) == (30, 30, 300)
     assert s.passive is False and not s.snmp_enabled
     assert s.problems() == ["api_url is not set", "api_key is not set", "agent_id is not set"]
+
+
+def test_a_config_saved_before_2_2_2_moves_from_the_old_60_s_default_to_5_minutes(tmp_path):
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"passive_interval": 60}))            # every old save wrote 60
+    s = load_settings(cfg, env={})
+    assert s.passive_interval == 300 and s.config_version == 2
+
+
+def test_an_interval_set_by_hand_is_kept(tmp_path):
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"passive_interval": 120}))           # old file, chosen value
+    assert load_settings(cfg, env={}).passive_interval == 120
+    save_settings(Settings(passive_interval=60), cfg)               # 60 chosen after 2.2.2
+    assert load_settings(cfg, env={}).passive_interval == 60
+    assert load_settings(cfg, env={"EAGLEEYE_PASSIVE_INTERVAL": "45"}).passive_interval == 45
 
 
 def test_precedence_file_then_env_then_flags(tmp_path):

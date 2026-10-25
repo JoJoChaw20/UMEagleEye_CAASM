@@ -4,7 +4,9 @@ Same behaviour as the original agent's main loop:
   * a heartbeat thread keeps the dashboard status green;
   * every poll interval, pending scans are fetched and dispatched;
   * active scans run one at a time in a background worker;
-  * passive scans and the periodic passive flush run on the polling thread.
+  * the periodic passive flush and passive scans run one at a time in their own
+    worker, so a slow upload never holds up polling; what a failed upload held goes
+    back into the buffer for the next flush, and stopping tries one last flush.
 
 Every run reports pipeline events. The SBOM of this computer (Syft + Grype) runs
 once a day and when the dashboard asks, in its own worker so it never holds up scans.
@@ -122,6 +124,9 @@ class AgentService:
         self._last_inventory = 0.0           # 0 = collect on the first poll
         self._inventory_supported = True
         self._last_flush = time.time()
+        self._passive_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="passive")
+        self._passive_future: Optional[Future[Optional[PipelineResult]]] = None
+        self._final_flush_started = False
         self._sbom_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sbom")
         self._sbom_future: Optional[Future[Optional[PipelineResult]]] = None
         self._next_sbom = time.time() + SBOM_FIRST_DELAY
@@ -134,10 +139,10 @@ class AgentService:
         stages.append(UploadStage(self.client, "active"))
         return Pipeline("active", stages, self.on_event)
 
-    def _passive_pipeline(self) -> Pipeline:
+    def _passive_pipeline(self, batch: Optional[tuple[Any, list[Any]]] = None) -> Pipeline:
         assert self.suite is not None
         return Pipeline("passive", [
-            PassiveCollectStage(self.suite),
+            PassiveCollectStage(self.suite, batch),
             PassiveEnrichStage(self.suite),
             UploadStage(self.client, "passive"),
         ], self.on_event)
@@ -159,14 +164,66 @@ class AgentService:
         self._record("active", trigger, subnet, result)
         return result
 
-    def run_passive(self, scan_id: Optional[str]) -> PipelineResult:
-        ctx = PipelineContext("passive", scan_id=scan_id, scan_type="passive")
-        result = self._passive_pipeline().run(ctx)
-        if result.ok and ctx.hosts:
-            self._last_flush = time.time()
-        self._finish(scan_id, result)
-        self._record("passive", "dashboard" if scan_id else "auto", "local network", result)
+    def run_passive(self, scan_id: Optional[str]) -> Optional[PipelineResult]:
+        """Upload what was heard since the last flush, one upload per network it was
+        heard on (several only after moving to another network). A batch whose upload
+        failed goes back into the buffer. A scan the dashboard asked for is answered
+        with the current network's batch, or with an empty upload that closes it."""
+        assert self.suite is not None and self.suite.arp is not None
+        arp = self.suite.arp
+        batches = arp.drain_batches()
+        if scan_id and not batches:
+            batches = [(None, [])]
+        result: Optional[PipelineResult] = None
+        for i, batch in enumerate(batches):
+            batch_scan_id = scan_id if i == len(batches) - 1 else None
+            ctx = PipelineContext("passive", scan_id=batch_scan_id, scan_type="passive")
+            result = self._passive_pipeline(batch).run(ctx)
+            if result.status == "failed" and batch[1]:
+                arp.restore(batch[0], batch[1])
+                log.info("Passive upload failed; %d host(s) kept for the next flush", len(batch[1]))
+            self._finish(batch_scan_id, result)
+            self._record("passive", "dashboard" if batch_scan_id else "auto", "local network", result)
         return result
+
+    @property
+    def passive_running(self) -> bool:
+        return self._passive_future is not None and not self._passive_future.done()
+
+    def _reap_passive(self) -> None:
+        if self._passive_future is not None and self._passive_future.done():
+            try:
+                self._passive_future.result()
+            except Exception as exc:  # noqa: BLE001
+                log.error("Passive flush failed: %s", exc, exc_info=True)
+            self._passive_future = None
+
+    def _submit_passive(self, scan_id: Optional[str]) -> bool:
+        if self._stop.is_set():
+            return False
+        try:
+            self._passive_future = self._passive_pool.submit(self.run_passive, scan_id)
+        except RuntimeError:            # stopped (settings saved) while this poll was running
+            return False
+        return True
+
+    def _maybe_flush_passive(self) -> None:
+        """Every passive interval, counted from the start of the last flush so rounds
+        stay on time: upload what was heard. A flush still uploading is never doubled;
+        what was heard meanwhile waits in the buffer for the next round."""
+        if not (self.settings.passive and self.suite is not None and self.suite.arp is not None):
+            return
+        self._reap_passive()
+        if time.time() - self._last_flush < self.settings.passive_interval:
+            return
+        if self.passive_running:
+            log.debug("Passive flush skipped: the previous one is still uploading")
+            return
+        self._last_flush = time.time()
+        if self.suite.arp.pending():
+            self._submit_passive(None)
+        else:
+            log.debug("Passive flush: nothing new heard")
 
     def run_inventory(self, trigger: str = "auto") -> PipelineResult:
         ctx = PipelineContext("inventory", scan_type="inventory")
@@ -395,8 +452,13 @@ class AgentService:
                 self._decline(scan_id, "This agent is not running in passive mode. "
                                        "Restart it with passive mode enabled (as Administrator/root) to sniff.")
                 return
+            self._reap_passive()
+            if self.passive_running:     # leave it pending; the next poll takes it
+                log.info("Leaving PASSIVE scan %s queued while a flush uploads", (scan_id or "?")[:8])
+                return
             log.info("Processing PASSIVE scan %s", (scan_id or "?")[:8])
-            self.run_passive(scan_id)
+            self._last_flush = time.time()
+            self._submit_passive(scan_id)
         elif scan_type == "active":
             if self._active_future is not None:
                 log.info("Leaving ACTIVE scan %s queued while another active scan runs", (scan_id or "?")[:8])
@@ -434,14 +496,7 @@ class AgentService:
         else:
             log.info("No pending scans")
         self._maybe_schedules()
-
-        if self.settings.passive and self.suite is not None and self.suite.arp is not None:
-            if time.time() - self._last_flush >= self.settings.passive_interval:
-                self._last_flush = time.time()
-                if self.suite.arp.pending():
-                    self.run_passive(None)
-                else:
-                    log.debug("Passive flush: nothing new heard")
+        self._maybe_flush_passive()
 
     # ── lifecycle ──
     def _heartbeat(self) -> None:
@@ -479,11 +534,26 @@ class AgentService:
         finally:
             self.stop()
 
+    def _final_flush(self) -> None:
+        """Stopping: upload what was heard since the last flush, on a daemon thread so
+        neither the window nor quitting waits for it (lost if the app quits first)."""
+        if self._final_flush_started or not (self.settings.passive and self.suite is not None
+                                             and self.suite.arp is not None and self.suite.arp.pending()):
+            return
+        self._final_flush_started = True
+        log.info("Uploading what passive listening heard before stopping")
+        threading.Thread(target=self.run_passive, args=(None,), daemon=True, name="passive-final").start()
+
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        try:
+            self._final_flush()
+        except Exception as exc:  # noqa: BLE001 - stopping must not fail
+            log.warning("Final passive flush not started: %s", exc)
         if self.suite:
             self.suite.stop()
+        self._passive_pool.shutdown(wait=False, cancel_futures=True)
         self._active_pool.shutdown(wait=False, cancel_futures=True)
         self._inventory_pool.shutdown(wait=False, cancel_futures=True)
         self._sbom_pool.shutdown(wait=False, cancel_futures=True)

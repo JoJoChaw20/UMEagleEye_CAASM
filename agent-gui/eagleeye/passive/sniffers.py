@@ -18,10 +18,12 @@ are ignored: the computer itself is reported by its inventory.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import socket
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Optional
 
 
@@ -32,6 +34,13 @@ log = logging.getLogger("eagleeye.passive")
 
 _SNIFF_SLICE_SECONDS = 5     # sniff() is restarted this often so stop() takes effect
 _IFACE_REFRESH_SECONDS = 30  # how often "automatic" re-checks which adapter to use
+# How long what the enrichment sniffers heard is kept. An address-keyed entry expires
+# sooner: DHCP hands a free address to another device, which must not inherit the old
+# owner's name. MAC-keyed entries belong to the device, and only expire to bound memory.
+_IP_TTL_SECONDS = 4 * 3600
+_MAC_TTL_SECONDS = 24 * 3600
+_PRUNE_EVERY_SECONDS = 600
+_LINK_LOCAL = ipaddress.ip_network("169.254.0.0/16")
 
 
 def _norm_mac(mac: Optional[str]) -> Optional[str]:
@@ -73,19 +82,29 @@ class InterfaceChooser:
     waits instead of listening on a wrong adapter while there is no network yet.
 
     It also knows the MACs of all of this computer's adapters, virtual ones included, so
-    the sniffers can ignore the computer's own packets."""
+    the sniffers can ignore the computer's own packets, and the network the adapter is on
+    ({local_ip, subnet, gateway_ip}): hosts are tagged with it when heard, so a batch
+    heard before a move to another network is uploaded with the network it came from,
+    and addresses outside the subnet (a laptop announcing the hotspot address it just
+    left) are not taken for hosts of this one."""
 
     def __init__(self, fixed: Optional[str] = None,
                  probe: Callable[[], tuple[str, list[dict[str, Any]]]] = _probe_interfaces,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 network_of: Optional[Callable[[str], dict[str, Optional[str]]]] = None) -> None:
         self.fixed = fixed or None
         self._probe = probe
         self._clock = clock
+        self._network_of = network_of or _local_network
         self._lock = threading.Lock()
         self._checked_at: Optional[float] = None
         self.name: Optional[str] = self.fixed
         self.label = f"{self.fixed} (set in Settings)" if self.fixed else "checking..."
         self._own_macs: frozenset[str] = frozenset()
+        # Replaced (never changed in place) when the network changes, so a host's tag
+        # keeps describing the network it was heard on.
+        self.network: Optional[dict[str, Optional[str]]] = None
+        self._net: Optional[ipaddress.IPv4Network] = None
 
     def refresh(self, force: bool = False) -> Optional[str]:
         """The interface to listen on now (None = no network yet: wait and ask again)."""
@@ -101,6 +120,9 @@ class InterfaceChooser:
                 return self.name
             self._own_macs = frozenset(m for m in (_norm_mac(a.get("mac")) for a in adapters) if m)
             if self.fixed:
+                fixed = next((a for a in adapters if a.get("name") == self.fixed), None)
+                ips = [ip for ip in (fixed or {}).get("ips") or [] if not ip.startswith(("127.", "169.254."))]
+                self._set_network(ips[0] if ips else None)
                 return self.name
             match = None
             if route_ip and not route_ip.startswith("127."):
@@ -110,12 +132,50 @@ class InterfaceChooser:
             if name != self.name or label != self.label:
                 log.info("Passive listening on %s", label)
             self.name, self.label = name, label
+            self._set_network(route_ip if match else None)
             return name
+
+    def _set_network(self, ip: Optional[str]) -> None:
+        """Look up the network of `ip` (lock held); log and replace it when it changed."""
+        network: Optional[dict[str, Optional[str]]] = None
+        if ip:
+            try:
+                network = dict(self._network_of(ip))
+            except Exception as exc:  # noqa: BLE001 - keep the last good answer
+                log.debug("Could not read the network of %s: %s", ip, exc)
+                return
+        if network == self.network:
+            return
+        self.network = network
+        try:
+            self._net = ipaddress.ip_network(network["subnet"], strict=False) if network and network.get("subnet") else None
+        except ValueError:
+            self._net = None
+        if network:
+            log.info("Network: subnet %s, gateway %s", network.get("subnet") or "unknown",
+                     network.get("gateway_ip") or "unknown")
+
+    def accepts(self, ip: str) -> bool:
+        """False for an address that cannot be a host of the network listened on: a
+        self-assigned 169.254.x.x, or one outside the subnet (when it is known)."""
+        try:
+            addr = ipaddress.IPv4Address(ip)
+        except ValueError:
+            return False
+        if addr in _LINK_LOCAL:
+            return False
+        net = self._net
+        return net is None or addr in net
 
     def is_own(self, mac: Optional[str]) -> bool:
         """True for a packet sent by one of this computer's adapters."""
         m = _norm_mac(mac)
         return m is not None and m in self._own_macs
+
+
+def _local_network(ip: str) -> dict[str, Optional[str]]:
+    from ..netinfo import local_network
+    return local_network(ip)
 
 
 class _Sniffer:
@@ -130,9 +190,21 @@ class _Sniffer:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None
+        self._clock: Callable[[], float] = time.time
+        self._pruned_at = 0.0
 
     def _make_handler(self) -> Any:  # pragma: no cover - implemented by subclasses
         raise NotImplementedError
+
+    def _maybe_prune(self) -> None:
+        """Drop expired entries every few minutes (lock held by the caller)."""
+        now = self._clock()
+        if now - self._pruned_at >= _PRUNE_EVERY_SECONDS:
+            self._pruned_at = now
+            self._prune(now)
+
+    def _prune(self, now: float) -> None:
+        """Remove what is older than its TTL; sniffers that keep nothing do nothing."""
 
     def start(self) -> bool:
         try:
@@ -246,8 +318,11 @@ class ArpSniffer(_Sniffer):
                 return
             if not _valid_ip(ip) or self._own(mac):
                 return
+            if self.chooser is not None and not self.chooser.accepts(ip):
+                return                      # 169.254.x.x, or an address from another network
+            network = self.chooser.network if self.chooser is not None else None
             with self._lock:
-                self._seen[ip] = {"mac": mac, "last_seen": time.time()}
+                self._seen[ip] = {"mac": mac, "last_seen": time.time(), "network": network}
 
         return handle
 
@@ -256,22 +331,31 @@ class ArpSniffer(_Sniffer):
         with self._lock:
             return len(self._seen)
 
-    def drain(self) -> list[HostRecord]:
-        """Snapshot of discovered hosts (with best-effort reverse DNS); clears the buffer."""
+    def drain_batches(self) -> list[tuple[Optional[dict[str, Optional[str]]], list[HostRecord]]]:
+        """What was heard since the last drain, one batch per network it was heard on
+        (oldest network first), as (network, hosts); clears the buffer. Names are added
+        later by the enrichment stage."""
         with self._lock:
             snapshot = dict(self._seen)
             self._seen.clear()
-
-        hosts = []
+        batches: dict[int, tuple[Optional[dict[str, Optional[str]]], list[HostRecord]]] = {}
         for ip, info in snapshot.items():
-            hostname: Optional[str] = None
-            try:
-                name = socket.gethostbyaddr(ip)[0]
-                hostname = name if name != ip else None
-            except (socket.herror, socket.gaierror, OSError):
-                pass
-            hosts.append(HostRecord(ip=ip, hostname=hostname, mac=info["mac"]))
-        return hosts
+            network = info.get("network")
+            key = id(network)                       # one dict per network (see InterfaceChooser)
+            batches.setdefault(key, (network, []))[1].append(HostRecord(ip=ip, mac=info["mac"]))
+        return list(batches.values())
+
+    def drain(self) -> list[HostRecord]:
+        """Every host heard since the last drain, whatever network; clears the buffer."""
+        return [host for _network, hosts in self.drain_batches() for host in hosts]
+
+    def restore(self, network: Optional[dict[str, Optional[str]]], hosts: list[HostRecord]) -> None:
+        """Put hosts whose upload failed back, for the next flush. A host heard again
+        meanwhile keeps its newer entry."""
+        with self._lock:
+            for host in hosts:
+                if host.ip not in self._seen:
+                    self._seen[host.ip] = {"mac": host.mac, "last_seen": time.time(), "network": network}
 
 
 # ── mDNS + NetBIOS-NS: hostname enrichment ───────────────────────────────────
@@ -334,7 +418,9 @@ class MdnsNetbiosSniffer(_Sniffer):
     NetBIOS-NS: only names a machine claims for itself count (registrations,
     refreshes, positive query responses, node-status responses), never the name
     in a query, which belongs to the machine being looked for.
-    Everything accumulates; read it with get_hostname(ip) / get_mac_info(mac)."""
+    Read it with get_hostname(ip) / get_mac_info(mac). It accumulates, but an address's
+    name expires after 4 hours without being heard again (the address may have gone to
+    another device) and a device's entry after 24 hours."""
 
     bpf = "udp port 5353 or udp port 137"
     thread_name = "mdns-sniffer"
@@ -342,22 +428,29 @@ class MdnsNetbiosSniffer(_Sniffer):
 
     def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
         super().__init__(interface, chooser)
-        self._hostnames: dict[str, str] = {}             # ip -> name
-        self._mdns_ips: set[str] = set()                  # ips whose name came from mDNS
-        self._by_mac: dict[str, dict[str, Any]] = {}      # mac -> {mdns_name, netbios_name, services}
+        self._hostnames: dict[str, tuple[str, bool, float]] = {}   # ip -> (name, from mDNS, heard at)
+        self._by_mac: dict[str, dict[str, Any]] = {}      # mac -> {mdns_name, netbios_name, services, _t}
 
     # -- recording (lock held by callers) --
     def _mac_entry(self, mac: str) -> dict[str, Any]:
-        return self._by_mac.setdefault(mac, {"services": set(), "offered": set()})
+        entry = self._by_mac.setdefault(mac, {"services": set(), "offered": set()})
+        entry["_t"] = self._clock()
+        self._maybe_prune()
+        return entry
 
     def _set_name(self, ip: str, name: str, from_mdns: bool) -> None:
         if not _valid_ip(ip) or not name:
             return
-        if from_mdns:
-            self._hostnames[ip] = name
-            self._mdns_ips.add(ip)
-        elif ip not in self._mdns_ips:            # never replace a better mDNS name
-            self._hostnames[ip] = name
+        now = self._clock()
+        current = self._hostnames.get(ip)
+        fresh = current is not None and now - current[2] < _IP_TTL_SECONDS
+        if from_mdns or not (fresh and current[1]):         # never replace a live mDNS name
+            self._hostnames[ip] = (name, from_mdns, now)
+        self._maybe_prune()
+
+    def _prune(self, now: float) -> None:
+        self._hostnames = {ip: v for ip, v in self._hostnames.items() if now - v[2] < _IP_TTL_SECONDS}
+        self._by_mac = {m: e for m, e in self._by_mac.items() if now - e.get("_t", now) < _MAC_TTL_SECONDS}
 
     @staticmethod
     def _clean_mdns(name: str) -> str:
@@ -478,7 +571,18 @@ class MdnsNetbiosSniffer(_Sniffer):
 
     def get_hostname(self, ip: str) -> Optional[str]:
         with self._lock:
-            return self._hostnames.get(ip)
+            entry = self._hostnames.get(ip)
+            if entry is None or self._clock() - entry[2] >= _IP_TTL_SECONDS:
+                return None
+            return entry[0]
+
+    def name_source(self, ip: str) -> Optional[str]:
+        """'mdns' or 'netbios' for the name get_hostname(ip) gives."""
+        with self._lock:
+            entry = self._hostnames.get(ip)
+            if entry is None or self._clock() - entry[2] >= _IP_TTL_SECONDS:
+                return None
+            return "mdns" if entry[1] else "netbios"
 
     def get_mac_info(self, mac: Optional[str]) -> dict[str, Any]:
         """{hostname, mdns_name, netbios_name, mdns_services, mdns_offered} seen from this
@@ -488,9 +592,9 @@ class MdnsNetbiosSniffer(_Sniffer):
             return {}
         with self._lock:
             entry = self._by_mac.get(mac.lower())
-            if not entry:
+            if not entry or self._clock() - entry.get("_t", 0) >= _MAC_TTL_SECONDS:
                 return {}
-            out: dict[str, Any] = {k: v for k, v in entry.items() if k not in ("services", "offered")}
+            out: dict[str, Any] = {k: v for k, v in entry.items() if k not in ("services", "offered", "_t")}
             if entry["services"]:
                 out["mdns_services"] = sorted(entry["services"])
             if entry.get("offered"):
@@ -543,7 +647,23 @@ class DhcpSniffer(_Sniffer):
         super().__init__(interface, chooser)
         self.fingerbank_key = fingerbank_key
         self._info: dict[str, dict[str, Any]] = {}       # ip -> fingerprint (same dicts as _by_mac)
-        self._by_mac: dict[str, dict[str, Any]] = {}     # mac -> fingerprint
+        self._info_t: dict[str, float] = {}              # ip -> when it was linked to that fingerprint
+        self._by_mac: dict[str, dict[str, Any]] = {}     # mac -> fingerprint (with _t: last heard)
+
+    def _link_ip(self, ip: str, entry: dict[str, Any]) -> None:
+        """Record that `ip` belongs to the device of `entry` (lock held)."""
+        self._info[ip] = entry
+        self._info_t[ip] = self._clock()
+        self._maybe_prune()
+
+    def _prune(self, now: float) -> None:
+        self._info_t = {ip: t for ip, t in self._info_t.items() if now - t < _IP_TTL_SECONDS}
+        self._info = {ip: e for ip, e in self._info.items() if ip in self._info_t}
+        self._by_mac = {m: e for m, e in self._by_mac.items() if now - e.get("_t", now) < _MAC_TTL_SECONDS}
+
+    @staticmethod
+    def _public(entry: Optional[dict[str, Any]]) -> dict[str, Any]:
+        return {k: v for k, v in (entry or {}).items() if k != "_t"}
 
     @staticmethod
     def _options(pkt: Any) -> dict[int, Any]:
@@ -585,7 +705,7 @@ class DhcpSniffer(_Sniffer):
                         with self._lock:
                             entry = self._by_mac.get(mac)
                             if entry is not None:
-                                self._info[assigned] = entry
+                                self._link_ip(assigned, entry)
                     return
                 if mtype not in (1, 3):                           # client Discover/Request only
                     return
@@ -622,8 +742,9 @@ class DhcpSniffer(_Sniffer):
                 with self._lock:
                     existing = self._by_mac.setdefault(mac, {})
                     existing.update(entry)
+                    existing["_t"] = self._clock()
                     if ip:
-                        self._info[ip] = existing
+                        self._link_ip(ip, existing)
                     already_looked_up = existing.get("fingerbank_device")
 
                 if self.fingerbank_key and param_list and not already_looked_up:
@@ -658,13 +779,18 @@ class DhcpSniffer(_Sniffer):
 
     def get_info(self, ip: str) -> dict[str, Any]:
         with self._lock:
-            return dict(self._info.get(ip, {}))
+            if self._clock() - self._info_t.get(ip, float("-inf")) >= _IP_TTL_SECONDS:
+                return {}
+            return self._public(self._info.get(ip))
 
     def get_info_by_mac(self, mac: Optional[str]) -> dict[str, Any]:
         if not mac:
             return {}
         with self._lock:
-            return dict(self._by_mac.get(mac.lower(), {}))
+            entry = self._by_mac.get(mac.lower())
+            if not entry or self._clock() - entry.get("_t", 0) >= _MAC_TTL_SECONDS:
+                return {}
+            return self._public(entry)
 
 
 # ── SSDP / UPnP: what devices say they are ─────────────────────────────────────
@@ -725,11 +851,13 @@ class SsdpSniffer(_Sniffer):
     def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
         super().__init__(interface, chooser)
         self._by_mac: dict[str, dict[str, Any]] = {}
-        self._mac_by_ip: dict[str, str] = {}
+        self._mac_by_ip: dict[str, tuple[str, float]] = {}     # ip -> (mac, heard at)
 
     def _record(self, mac: str, ip: Optional[str], headers: dict[str, str], type_header: str) -> None:
         with self._lock:
+            now = self._clock()
             entry = self._by_mac.setdefault(mac, {"types": set()})
+            entry["_t"] = now
             server = headers.get("server", "")
             if server and "ssdp_server" not in entry:
                 entry["ssdp_server"] = server[:_SSDP_MAX_SERVER]
@@ -737,7 +865,12 @@ class SsdpSniffer(_Sniffer):
             if stype and len(entry["types"]) < _SSDP_MAX_TYPES:
                 entry["types"].add(stype)
             if ip and _valid_ip(ip):
-                self._mac_by_ip[ip] = mac
+                self._mac_by_ip[ip] = (mac, now)
+            self._maybe_prune()
+
+    def _prune(self, now: float) -> None:
+        self._mac_by_ip = {ip: v for ip, v in self._mac_by_ip.items() if now - v[1] < _IP_TTL_SECONDS}
+        self._by_mac = {m: e for m, e in self._by_mac.items() if now - e.get("_t", now) < _MAC_TTL_SECONDS}
 
     def _make_handler(self) -> Any:
         from scapy.all import IP, UDP  # type: ignore
@@ -768,17 +901,96 @@ class SsdpSniffer(_Sniffer):
             return {}
         with self._lock:
             entry = self._by_mac.get(mac.lower())
-            if not entry:
+            if not entry or self._clock() - entry.get("_t", 0) >= _MAC_TTL_SECONDS:
                 return {}
-            out: dict[str, Any] = {k: v for k, v in entry.items() if k != "types"}
+            out: dict[str, Any] = {k: v for k, v in entry.items() if k not in ("types", "_t")}
             if entry["types"]:
                 out["ssdp_types"] = sorted(entry["types"])
         return out
 
     def get_info(self, ip: str) -> dict[str, Any]:
         with self._lock:
-            mac = self._mac_by_ip.get(ip)
+            found = self._mac_by_ip.get(ip)
+            mac = found[0] if found and self._clock() - found[1] < _IP_TTL_SECONDS else None
         return self.get_mac_info(mac)
+
+
+# ── Reverse DNS: the last resort for a name ──────────────────────────────────
+
+_RDNS_TTL_SECONDS = 3600
+_RDNS_WORKERS = 16
+_RDNS_BUDGET_SECONDS = 3.0
+
+
+def _gethostbyaddr(ip: str) -> Optional[str]:
+    try:
+        name = socket.gethostbyaddr(ip)[0]
+    except (socket.herror, socket.gaierror, OSError):
+        return None
+    return name if name and name != ip else None
+
+
+class ReverseDnsCache:
+    """Reverse DNS (PTR) names, asked only for hosts no sniffer named.
+
+    On an office LAN the DNS server knows domain-joined PCs, servers, switches and
+    printers that never announce themselves over mDNS or NetBIOS. Where no PTR records
+    exist (a campus Wi-Fi), each lookup waits for a timeout of several seconds: asked one
+    by one, 45 hosts took over six minutes per flush. So lookups run in parallel, a flush
+    waits at most a few seconds for them (an answer that comes later is kept for the next
+    flush), and every answer, found or not, is remembered for an hour."""
+
+    def __init__(self, lookup: Callable[[str], Optional[str]] = _gethostbyaddr,
+                 ttl: float = _RDNS_TTL_SECONDS, budget: float = _RDNS_BUDGET_SECONDS,
+                 workers: int = _RDNS_WORKERS, clock: Callable[[], float] = time.monotonic) -> None:
+        self._lookup = lookup
+        self._ttl = ttl
+        self._budget = budget
+        self._clock = clock
+        self._lock = threading.RLock()       # a done lookup runs its callback right away
+        self._cache: dict[str, tuple[Optional[str], float]] = {}    # ip -> (name or None, answered at)
+        self._inflight: dict[str, Future[Optional[str]]] = {}
+        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="rdns")
+
+    def _store(self, ip: str, fut: Future[Optional[str]]) -> None:
+        try:
+            name = fut.result()
+        except Exception:  # noqa: BLE001
+            name = None
+        with self._lock:
+            self._cache[ip] = (name, self._clock())
+            self._inflight.pop(ip, None)
+
+    def resolve(self, ips: list[str]) -> dict[str, Optional[str]]:
+        """ip -> name for the addresses answered within the time budget (None = no name)."""
+        now = self._clock()
+        out: dict[str, Optional[str]] = {}
+        waiting: list[Future[Optional[str]]] = []
+        with self._lock:
+            self._cache = {ip: v for ip, v in self._cache.items() if now - v[1] < self._ttl}
+            for ip in dict.fromkeys(ips):
+                if ip in self._cache:
+                    out[ip] = self._cache[ip][0]
+                    continue
+                fut = self._inflight.get(ip)
+                if fut is None:
+                    try:
+                        fut = self._pool.submit(self._lookup, ip)
+                    except RuntimeError:                    # shut down
+                        continue
+                    self._inflight[ip] = fut
+                    fut.add_done_callback(lambda f, ip=ip: self._store(ip, f))
+                waiting.append(fut)
+        if waiting:
+            wait(waiting, timeout=self._budget)
+        with self._lock:
+            for ip in ips:
+                if ip not in out and ip in self._cache:
+                    out[ip] = self._cache[ip][0]
+        return out
+
+    def shutdown(self) -> None:
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
 
 # ── All of them together ─────────────────────────────────────────────────────
@@ -796,6 +1008,7 @@ class PassiveSuite:
         self.mdns: Optional[MdnsNetbiosSniffer] = None
         self.dhcp: Optional[DhcpSniffer] = None
         self.ssdp: Optional[SsdpSniffer] = None
+        self.rdns = ReverseDnsCache()
 
     def start(self) -> bool:
         """True when ARP discovery (the primary source) is running."""
@@ -828,6 +1041,7 @@ class PassiveSuite:
         for sniffer in (self.arp, self.mdns, self.dhcp, self.ssdp):
             if sniffer:
                 sniffer.stop()
+        self.rdns.shutdown()
 
     @property
     def listening_on(self) -> str:

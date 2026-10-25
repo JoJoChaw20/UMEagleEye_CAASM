@@ -19,6 +19,10 @@ from .keychain import SECRET_FIELDS, Keychain
 
 log = logging.getLogger("eagleeye.config")
 KEYCHAIN_MARKER = "secrets_in_keychain"
+# Layout of the saved config file. 2 (agent 2.2.2): passive_interval defaults to 300 s;
+# a version-1 file holding the old default of 60 s is moved to 300 s when it is read.
+CONFIG_VERSION = 2
+OLD_PASSIVE_INTERVAL = 60
 
 
 class ConfigError(ValueError):
@@ -34,7 +38,7 @@ class Settings:
     heartbeat_interval: int = 30
     passive: bool = False
     passive_interface: str = ""
-    passive_interval: int = 60
+    passive_interval: int = 300         # seconds between passive uploads (5 min)
     fingerbank_key: str = ""
     snmp_user: str = ""
     snmp_auth_key: str = ""
@@ -57,6 +61,7 @@ class Settings:
     # The data-collection notice the person accepted in the GUI (0 = never shown).
     consent_version: int = 0
     consent_at: str = ""
+    config_version: int = CONFIG_VERSION
 
     @property
     def inventory_options(self) -> dict[str, bool]:
@@ -201,6 +206,11 @@ def load_settings(
         for name, raw in file_data.items():
             if name in defaults:
                 setattr(settings, name, _coerce(name, raw, defaults[name]))
+        if "config_version" not in file_data or settings.config_version < CONFIG_VERSION:
+            # Before 2.2.2 every save wrote the 60 s default, so 60 there was not chosen.
+            if settings.passive_interval == OLD_PASSIVE_INTERVAL:
+                settings.passive_interval = defaults["passive_interval"]
+            settings.config_version = CONFIG_VERSION
         if file_data.get(KEYCHAIN_MARKER):
             store = keychain or Keychain()
             if not store.available():

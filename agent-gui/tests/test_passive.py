@@ -444,3 +444,164 @@ def test_without_a_chooser_nothing_is_filtered():
     arp_sniffer = ArpSniffer()
     arp_sniffer._make_handler()(arp("142.19.0.1", LOOP_MAC))
     assert arp_sniffer.pending() == 1
+
+
+# ── 2.2.2: the network hosts were heard on, expiring caches, reverse DNS last ──
+from collections import Counter  # noqa: E402
+
+from eagleeye.passive import sniffers  # noqa: E402
+from eagleeye.passive.sniffers import ReverseDnsCache  # noqa: E402
+from eagleeye.stages.passive import describe_sources  # noqa: E402
+
+CAMPUS_MAC = "9c:09:71:3b:f6:01"
+
+
+@pytest.fixture(autouse=True)
+def fixed_networks(monkeypatch):
+    """Networks come from a fake route lookup, never from this computer's own table."""
+    nets = {"192.168.100.71": {"local_ip": "192.168.100.71", "subnet": "192.168.100.0/24", "gateway_ip": "192.168.100.1"},
+            "10.179.37.235": {"local_ip": "10.179.37.235", "subnet": "10.179.32.0/19", "gateway_ip": "10.179.63.254"}}
+    monkeypatch.setattr(sniffers, "_local_network", lambda ip: dict(nets.get(ip, {"local_ip": ip, "subnet": None, "gateway_ip": None})))
+    return nets
+
+
+def campus_adapters():
+    return [{"name": "Wi-Fi", "description": "Wi-Fi", "ips": ["10.179.37.235"], "mac": WIFI_MAC}]
+
+
+def test_the_chooser_knows_the_subnet_and_refuses_addresses_from_elsewhere():
+    chooser = InterfaceChooser(probe=FakeProbe("10.179.37.235", campus_adapters()))
+    chooser.refresh()
+    assert chooser.network == {"local_ip": "10.179.37.235", "subnet": "10.179.32.0/19", "gateway_ip": "10.179.63.254"}
+    assert chooser.accepts("10.179.53.238") and chooser.accepts("10.179.63.254")   # a /19, not the /24
+    assert not chooser.accepts("172.20.10.6")          # the hotspot address a laptop just left
+    assert not chooser.accepts("169.254.15.196")       # self-assigned
+    assert not chooser.accepts("not an ip")
+
+
+def test_without_a_known_subnet_only_self_assigned_addresses_are_refused():
+    chooser = InterfaceChooser(probe=FakeProbe("172.31.5.9", [{"name": "Wi-Fi", "ips": ["172.31.5.9"], "mac": WIFI_MAC}]))
+    chooser.refresh()
+    assert chooser.accepts("10.1.2.3") and not chooser.accepts("169.254.1.1")
+
+
+def test_an_interface_set_in_settings_takes_the_network_of_its_own_address():
+    chooser = InterfaceChooser("Wi-Fi", probe=FakeProbe("192.168.100.71", campus_adapters()))
+    chooser.refresh()
+    assert chooser.network["subnet"] == "10.179.32.0/19"
+
+
+def test_hosts_are_kept_per_network_and_a_failed_batch_goes_back():
+    probe, clock = FakeProbe("10.179.37.235", campus_adapters()), Clock()
+    chooser = InterfaceChooser(probe=probe, clock=clock)
+    chooser.refresh()
+    hosts = ArpSniffer(chooser=chooser)
+    feed = hosts._make_handler()
+    feed(arp("10.179.63.254", CAMPUS_MAC))
+    feed(arp("172.20.10.6", "10:91:d1:b7:25:78"))     # stale hotspot address: not a host here
+    feed(arp("169.254.15.196", "10:91:d1:b7:25:78"))
+    probe.route_ip, probe.adapters = "192.168.100.71", ADAPTERS          # the laptop came home
+    clock.t = 31
+    chooser.refresh()
+    feed(arp("192.168.100.186", IPAD_MAC))
+    batches = hosts.drain_batches()
+    assert [(n["subnet"], [h.ip for h in hs]) for n, hs in batches] == [
+        ("10.179.32.0/19", ["10.179.63.254"]), ("192.168.100.0/24", ["192.168.100.186"])]
+    assert hosts.pending() == 0
+    hosts.restore(*batches[0])
+    feed(arp("192.168.100.187", PHONE_MAC))
+    again = hosts.drain_batches()
+    assert [(n["gateway_ip"], [h.ip for h in hs]) for n, hs in again] == [
+        ("10.179.63.254", ["10.179.63.254"]), ("192.168.100.1", ["192.168.100.187"])]
+
+
+def test_an_address_name_expires_but_the_devices_own_name_wins(mdns):
+    clock = Clock()
+    mdns._clock = clock
+    mdns.feed(mdns4("192.168.100.149", "4a:15:f7:3b:8c:29", qr=1, aa=1,
+                    an=[DNSRR(rrname="Jos-iPhone.local.", type="A", rdata="192.168.100.149")]))
+    clock.t = 4 * 3600 + 1                             # DHCP may have given the address away
+    assert mdns.get_hostname("192.168.100.149") is None
+    assert mdns.get_mac_info("4a:15:f7:3b:8c:29")["hostname"] == "Jos-iPhone"
+    clock.t = 24 * 3600 + 1
+    assert mdns.get_mac_info("4a:15:f7:3b:8c:29") == {}
+    mdns._maybe_prune()
+    assert mdns._hostnames == {} and mdns._by_mac == {}
+
+
+def test_a_device_on_a_reused_address_keeps_its_own_name_not_the_old_owners(mdns, dhcp):
+    # The old owner announced 192.168.100.50; the address now belongs to a phone that
+    # told DHCP its own name.
+    mdns.feed(mdns4("192.168.100.50", APPLE_MAC, qr=1, aa=1,
+                    an=[DNSRR(rrname="Old-MacBook.local.", type="A", rdata="192.168.100.50")]))
+    mdns.feed(mdns4("192.168.100.60", PHONE_MAC, qr=1, aa=1,
+                    an=[DNSRR(rrname="Galaxy-S23.local.", type="A", rdata="192.168.100.60")]))
+
+    class Suite:
+        pass
+    suite = Suite()
+    suite.mdns, suite.dhcp = mdns, dhcp
+    host = HostRecord(ip="192.168.100.50", mac=PHONE_MAC)
+    sources = Counter()
+    enrich_passive_hosts([host], suite, sources)
+    assert host.hostname == "Galaxy-S23" and sources == Counter(mdns=1)
+
+
+def test_dhcp_address_links_expire(dhcp):
+    clock = Clock()
+    dhcp._clock = clock
+    dhcp.feed(dhcp_pkt("0.0.0.0", PHONE_MAC, [("message-type", "request"), ("requested_addr", "192.168.100.235"),
+                                              ("vendor_class_id", b"android-dhcp-13")]))
+    assert dhcp.get_info("192.168.100.235")["dhcp_device_hint"] == "Android"
+    assert "_t" not in dhcp.get_info_by_mac(PHONE_MAC)
+    clock.t = 4 * 3600 + 1
+    assert dhcp.get_info("192.168.100.235") == {}
+    assert dhcp.get_info_by_mac(PHONE_MAC)["dhcp_device_hint"] == "Android"
+
+
+class SlowLookup:
+    def __init__(self, names, slow=()):
+        self.names, self.slow, self.asked = names, set(slow), []
+
+    def __call__(self, ip):
+        self.asked.append(ip)
+        if ip in self.slow:
+            import time as _t
+            _t.sleep(0.5)
+        return self.names.get(ip)
+
+
+def test_reverse_dns_runs_in_parallel_within_a_budget_and_remembers_answers():
+    lookup = SlowLookup({"10.0.0.5": "fin-pc07.corp.local", "10.0.0.6": "srv-file01.corp.local"}, slow={"10.0.0.6"})
+    clock = Clock()
+    rdns = ReverseDnsCache(lookup=lookup, budget=0.2, clock=clock)
+    first = rdns.resolve(["10.0.0.5", "10.0.0.6", "10.0.0.7"])
+    assert first == {"10.0.0.5": "fin-pc07.corp.local", "10.0.0.7": None}   # .6 was too slow this time
+    import time as _t
+    _t.sleep(0.6)
+    second = rdns.resolve(["10.0.0.5", "10.0.0.6", "10.0.0.7"])
+    assert second == {"10.0.0.5": "fin-pc07.corp.local", "10.0.0.6": "srv-file01.corp.local", "10.0.0.7": None}
+    assert sorted(lookup.asked) == ["10.0.0.5", "10.0.0.6", "10.0.0.7"]     # each asked once
+    clock.t = 3601
+    rdns.resolve(["10.0.0.7"])
+    assert lookup.asked.count("10.0.0.7") == 2                              # asked again after an hour
+    rdns.shutdown()
+
+
+def test_reverse_dns_is_asked_only_for_hosts_no_sniffer_named(mdns):
+    mdns.feed(mdns4("192.168.100.149", "4a:15:f7:3b:8c:29", qr=1, aa=1,
+                    an=[DNSRR(rrname="Jos-iPhone.local.", type="A", rdata="192.168.100.149")]))
+    lookup = SlowLookup({"192.168.100.10": "printer-2f.corp.local"})
+
+    class Suite:
+        pass
+    suite = Suite()
+    suite.mdns, suite.dhcp, suite.rdns = mdns, None, ReverseDnsCache(lookup=lookup, budget=1)
+    hosts = [HostRecord(ip="192.168.100.149", mac="4a:15:f7:3b:8c:29"), HostRecord(ip="192.168.100.10"),
+             HostRecord(ip="192.168.100.11")]
+    sources = Counter()
+    enrich_passive_hosts(hosts, suite, sources)
+    assert [h.hostname for h in hosts] == ["Jos-iPhone", "printer-2f.corp.local", None]
+    assert sorted(lookup.asked) == ["192.168.100.10", "192.168.100.11"]
+    assert describe_sources(sources) == "names: mDNS 1, reverse DNS 1, none 1"
+    suite.rdns.shutdown()

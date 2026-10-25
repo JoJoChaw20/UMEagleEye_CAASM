@@ -19,11 +19,15 @@ class HostRecord:
     snmp: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
-        """The host exactly as POST /scans/ingest expects it."""
+        """The host exactly as POST /scans/ingest expects it. mac_vendor is looked up
+        offline here (None for a private MAC); the server falls back for older agents."""
+        from ..vendor import mac_vendor
+
         payload: dict[str, Any] = {
             "ip": self.ip,
             "hostname": self.hostname,
             "mac": self.mac,
+            "mac_vendor": mac_vendor(self.mac),
             "ports": self.ports,
             "os": self.os,
         }

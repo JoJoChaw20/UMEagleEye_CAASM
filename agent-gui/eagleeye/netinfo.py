@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import platform
 import re
 import socket
@@ -66,15 +67,110 @@ def default_gateway() -> Optional[str]:
     return parse_default_gateway(system, out, local_ip())
 
 
-def build_network_info(subnet: Optional[str], hosts: list[HostRecord]) -> dict[str, Any]:
+def _slash24(ip: str) -> Optional[str]:
+    try:
+        return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+    except ValueError:
+        return None
+
+
+def network_of(ip: str, routes: list[tuple[Any, ...]]) -> tuple[Optional[str], Optional[str]]:
+    """(subnet, default gateway) of the adapter holding `ip`, from a route table in
+    scapy's form: (network, netmask, gateway, interface, source address, metric) with
+    network and netmask as integers.
+
+    The subnet is the on-link route that holds the address with the longest prefix
+    short of /32 (host and broadcast routes), so a /19 campus Wi-Fi or a /22 office LAN
+    is reported as it is configured instead of as the /24 around the address. The
+    gateway is the lowest-metric default route out of that address."""
+    try:
+        addr = int(ipaddress.IPv4Address(ip))
+    except ValueError:
+        return None, None
+    best: Optional[tuple[int, int]] = None                 # (prefix length, network)
+    gateway: Optional[tuple[int, str]] = None              # (metric, gateway)
+    for route in routes:
+        try:
+            net, mask, gw, _iface, src, metric = route[:6]
+            net, mask, metric = int(net), int(mask), int(metric)
+        except (TypeError, ValueError):
+            continue
+        if src != ip:
+            continue
+        if mask == 0 and net == 0:
+            if gw and gw != "0.0.0.0" and _IPV4.fullmatch(str(gw)) and (gateway is None or metric < gateway[0]):
+                gateway = (metric, str(gw))
+            continue
+        prefix = bin(mask).count("1")
+        if prefix >= 32 or (gw and gw != "0.0.0.0") or (addr & mask) != (net & mask):
+            continue
+        if best is None or prefix > best[0]:
+            best = (prefix, net & mask)
+    subnet = f"{ipaddress.IPv4Address(best[1])}/{best[0]}" if best else None
+    return subnet, (gateway[1] if gateway else None)
+
+
+def _scapy_routes() -> list[tuple[Any, ...]]:
+    try:
+        from scapy.all import conf  # type: ignore
+        try:
+            conf.route.resync()
+        except Exception:  # noqa: BLE001 - keep scapy's last copy of the table
+            pass
+        return list(conf.route.routes)
+    except Exception:  # noqa: BLE001 - no scapy: fall back to /24
+        return []
+
+
+def local_network(ip: Optional[str] = None) -> dict[str, Optional[str]]:
+    """{local_ip, subnet, gateway_ip} of the adapter the OS uses (or of `ip`). The
+    subnet falls back to the /24 around the address when the route table is unknown."""
+    ip = ip or local_ip()
+    subnet, gateway = network_of(ip, _scapy_routes()) if ip and not ip.startswith("127.") else (None, None)
+    return {"local_ip": ip, "subnet": subnet or (_slash24(ip) if ip else None), "gateway_ip": gateway}
+
+
+def local_subnet() -> str:
+    """The subnet this computer is on, e.g. 10.179.32.0/19 (192.168.1.0/24 when unknown)."""
+    return local_network().get("subnet") or "192.168.1.0/24"
+
+
+def own_mac(ip: str) -> Optional[str]:
+    """MAC of this computer's adapter that holds `ip` (Nmap cannot see its own)."""
+    try:
+        from scapy.all import conf  # type: ignore
+        for iface in conf.ifaces.values():
+            ips = list((getattr(iface, "ips", None) or {}).get(4, []) or [])
+            if ip in ips or getattr(iface, "ip", None) == ip:
+                mac = getattr(iface, "mac", None)
+                return str(mac).lower() if mac else None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def build_network_info(subnet: Optional[str], hosts: list[HostRecord],
+                       heard_on: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """The `network` block sent with each ingest: {subnet, gateway_ip, gateway_mac}.
 
-    - subnet:      the scanned CIDR (active); for passive, the local /24 when not given.
-    - gateway_ip:  default gateway, best effort.
+    - subnet:      the scanned CIDR (active); for passive, the subnet the hosts were
+                   heard on, else the local subnet now.
+    - gateway_ip:  the gateway of the network the hosts were heard on, else the
+                   default gateway now (best effort).
     - gateway_mac: only when the gateway appears among the discovered hosts, so it is
                    never guessed.
+    `heard_on` is the network passive hosts were heard on (local_network() at the
+    time): hosts buffered before a move to another network are uploaded with the
+    network they came from, not with the new one's gateway.
     """
-    gateway_ip = default_gateway()
+    if heard_on is None:
+        gateway_ip = default_gateway()
+    else:
+        # Today's gateway only while still on the network the hosts were heard on;
+        # another network's gateway would flip the old router's exposure.
+        gateway_ip = heard_on.get("gateway_ip")
+        if not gateway_ip and heard_on.get("local_ip") == local_ip():
+            gateway_ip = default_gateway()
     gateway_mac: Optional[str] = None
     if gateway_ip:
         for h in hosts:
@@ -82,10 +178,8 @@ def build_network_info(subnet: Optional[str], hosts: list[HostRecord]) -> dict[s
                 gateway_mac = h.mac
                 break
 
-    net_subnet = subnet
+    net_subnet = subnet or (heard_on or {}).get("subnet")
     if not net_subnet:
-        ip = local_ip()
-        if ip and ip.count(".") == 3:
-            net_subnet = ".".join(ip.split(".")[:3]) + ".0/24"
+        net_subnet = local_network().get("subnet")
 
     return {"subnet": net_subnet, "gateway_ip": gateway_ip, "gateway_mac": gateway_mac}

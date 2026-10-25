@@ -18,25 +18,32 @@ import { runAlertHygiene } from '../services/alertHygiene'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
+import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
 
 // The scan classifier lives in lib/deviceClassify.ts (shared with "Automatic" type
 // reset); re-exported for scripts that import it from here.
 export { inferDeviceType }
 
-// ── Real-time MAC vendor lookup (api.macvendors.com) ────────────────────────
-// Resolves the hardware vendor name from a MAC address at scan time.
-// Returns null on error, rate limit, or unknown MAC — non-fatal.
+/** Thrown to leave the LLM block early when every host was unchanged. */
+class SkipLlm extends Error {}
+
+// ── Online MAC vendor lookup (api.macvendors.com) ───────────────────────────
+// For real MACs the agent's offline list could not name, and older agents
+// (lib/hostEvidence.ts). Returns the vendor, '' when
+// the prefix is unknown (404, cached as such), or null on error or rate limit
+// (not cached, asked again next time) — always non-fatal.
 async function fetchMacVendor(mac: string | null | undefined): Promise<string | null> {
   if (!mac) return null
   try {
-    // Normalise: strip extra chars, keep first 6 hex digits (OUI)
-    const clean = mac.replace(/[^0-9a-fA-F]/g, '').substring(0, 6)
+    // Hex digits only: 6 for the 3-byte block, 9 to pin an MA-M/MA-S sub-block.
+    const clean = mac.replace(/[^0-9a-fA-F]/g, '').substring(0, 12)
     if (clean.length < 6) return null
     const res = await fetch(`https://api.macvendors.com/${encodeURIComponent(clean)}`, {
       headers: { 'User-Agent': 'EagleEye-CAASM/2.0' },
       signal: AbortSignal.timeout(4000),  // 4s timeout per lookup
     })
-    if (!res.ok) return null  // 404 = unknown, 429 = rate limited
+    if (res.status === 404) return ''   // unknown prefix
+    if (!res.ok) return null            // 429 = rate limited
     const vendor = (await res.text()).trim()
     return vendor || null
   } catch {
@@ -617,6 +624,9 @@ const hostSchema = z.object({
   ip: z.string().min(1).max(45),
   hostname: z.string().max(255).nullish(),
   mac: z.string().max(17).nullish(),
+  // Agent 2.2.2+: vendor looked up offline; null when its list has none (a private MAC,
+  // or a prefix it lacks: those real MACs, and older agents' hosts, are looked up online).
+  mac_vendor: z.string().max(255).nullish(),
   ports: z.array(z.unknown()).optional(),
   os: z.record(z.unknown()).nullish(),
   snmp_sysdescr: z.string().nullish(),
@@ -693,30 +703,65 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
       if (a) existingAssetMap.set(addr.ipAddress, { deviceType: a.deviceType, hostname: a.hostname, owner: a.owner, hardwareVendor: a.hardwareVendor })
     }
 
-    // ── MAC vendor lookup — deduped by OUI and capped, so subrequests stay
-    // constant regardless of host count (api.macvendors.com is one fetch each). ──
-    const VENDOR_OUI_CAP = 16
-    const ouiOf = (m: string | null): string | null => (m ? m.replace(/:/g, '').slice(0, 6) : null)
-    const uniqueOuis = [...new Set(hosts.map(h => ouiOf(classifyMac(h.mac).mac)).filter((o): o is string => !!o))].slice(0, VENDOR_OUI_CAP)
-    const ouiVendor = new Map<string, string | null>()
-    await Promise.all(uniqueOuis.map(async (oui) => { ouiVendor.set(oui, await fetchMacVendor(oui)) }))
-    const macVendorMap: Map<string, string | null> = new Map()
-    for (const h of hosts) {
-      const oui = ouiOf(classifyMac(h.mac).mac)
-      macVendorMap.set(h.ip, oui ? (ouiVendor.get(oui) ?? null) : null)
-    }
+    // ── Hardware vendor: the agent's offline lookup; online (cached) for real MACs
+    // it could not name and for older agents, never for private MACs (lib/hostEvidence.ts). ──
+    const macVendorMap = await resolveVendors(hosts, fetchMacVendor, c.env.KV_CACHE)
+
+    // Gateway for internet-exposure inference and for the LLM: the agent's current
+    // default gateway from this ingest, else the last one it reported on heartbeat.
+    // Anything that isn't a real IPv4 ("On-link", blank) is ignored so it can't
+    // switch off the fallback inference.
+    const reportedGateways = [
+      network?.gateway_ip,
+      ((agent.config ?? {}) as Record<string, unknown>).default_gateway as string | undefined,
+    ]
+    const defaultGateway = reportedGateways.find(isIPv4)
 
     // ── LLM Asset Suggestion (DeepSeek via OpenRouter) ──
-    let enhancedHosts = [...hosts]
+    // Only hosts whose evidence changed since their stored description are sent: a
+    // passive round re-uploads every device it heard, mostly unchanged.
+    const assetOsByMac = new Map<string, Record<string, unknown> | null>()
+    for (const a of prefetch.assets) {
+      const m = normalizeMac(a.macAddress)
+      if (m && !assetOsByMac.has(m)) assetOsByMac.set(m, a.osInfo)
+    }
+    const assetOsByIp = new Map<string, Record<string, unknown> | null>()
+    for (const addr of prefetch.addresses) {
+      const a = assetByIdForCtx.get(addr.assetId)
+      if (a && !assetOsByIp.has(addr.ipAddress)) assetOsByIp.set(addr.ipAddress, a.osInfo)
+    }
+    const evidenceByIp = new Map<string, string>()
+    const reused = new Map<string, { description: string; suggestion: string | null }>()
+    for (const h of hosts) {
+      const key = aiEvidenceKey({
+        hostname: h.hostname, mac: h.mac, vendor: macVendorMap.get(h.ip) ?? null,
+        ports: h.ports ?? null, os: (h.os ?? null) as Record<string, unknown> | null,
+        isGateway: h.ip === defaultGateway,
+      })
+      evidenceByIp.set(h.ip, key)
+      const mac = normalizeMac(h.mac)
+      const priorOs = (mac && assetOsByMac.get(mac)) || assetOsByIp.get(h.ip)
+      const prior = reusableDescription(priorOs, key)
+      if (prior) reused.set(h.ip, prior)
+    }
+    const needLlm = hosts.filter(h => !reused.has(h.ip))
+
+    let enhancedHosts = hosts.map(h => {
+      const prior = reused.get(h.ip)
+      return prior
+        ? { ...h, description: prior.description, ...(prior.suggestion ? { suggestion: prior.suggestion } : {}), aiDescribed: true }
+        : { ...h }
+    })
     if (hosts.length > 0 && c.env.OPENROUTER_API_KEY) {
       try {
         // Build enriched payload: real vendor name + existing DB context
-        const payload = hosts.map(h => {
+        const payload = needLlm.map(h => {
           const existing = existingAssetMap.get(h.ip)
           return {
             ip: h.ip,
             mac: h.mac,
             mac_vendor: macVendorMap.get(h.ip) ?? null,  // e.g. "TP-Link Technologies Co. Ltd."
+            is_gateway: h.ip === defaultGateway,           // this network's router, as the agent reports it
             os: h.os,
             ports: h.ports,
             existing_device_type: existing?.deviceType ?? null,
@@ -740,12 +785,14 @@ Rules for consistent, accurate output:
 - If "mac_vendor" is present and no other signals exist, use it to identify the manufacturer.
 - If "hostname" contains words like "router", "switch", "ap", "printer", "cam" → strong device-type signal.
 - If "existing_device_type" is "network", lean toward "Accept - Corporate Device".
-- Gateway IPs (ending in .1 or .254) are ALWAYS network infrastructure — use "Accept - Corporate Device".
+- If "is_gateway" is true, the host is this network's router/gateway: network infrastructure — use "Accept - Corporate Device".
+- Do NOT infer a router or gateway from the address alone: on many networks addresses ending in .1 or .254 are ordinary PCs and phones. A hostname like "DESKTOP-..." or "LAPTOP-..." is a Windows workstation.
 - Only use "Investigate - Unknown" when there is genuinely NO identifying information (no vendor, no ports, no DHCP, no hostname, no existing record).
 
 Example:
 { "hosts": [ { "ip": "192.168.0.1", "description": "TP-Link Home Router", "suggestion": "Accept - Corporate Device" } ] }`
 
+        if (payload.length === 0) throw new SkipLlm()
         const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -762,7 +809,7 @@ Example:
           })
         })
 
-        console.log(`[scans] LLM call → ${c.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat'}, status=${res.status}, hosts=${hosts.length}`)
+        console.log(`[scans] LLM call → ${c.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-chat'}, status=${res.status}, hosts=${payload.length} (${reused.size} unchanged, not sent)`)
         if (res.ok) {
           const data = await res.json() as any
           let content = data.choices?.[0]?.message?.content || '[]'
@@ -791,16 +838,14 @@ Example:
           try {
             const parsed = JSON.parse(content)
             type LlmHost = { ip: string; description: string; suggestion: string }
-            if (Array.isArray(parsed) && parsed.length > 0 && !Array.isArray(parsed[0])) {
-              const parsedArray = parsed as LlmHost[]
-              enhancedHosts = hosts.map(h => {
-                const match = parsedArray.find((p) => p.ip?.trim() === h.ip?.trim())
+            const answers: LlmHost[] | null = Array.isArray(parsed) && parsed.length > 0 && !Array.isArray(parsed[0])
+              ? parsed as LlmHost[]
+              : (parsed && Array.isArray(parsed.hosts) ? parsed.hosts as LlmHost[] : null)
+            if (answers) {
+              enhancedHosts = enhancedHosts.map(h => {
+                if (reused.has(h.ip)) return h
+                const match = answers.find((p) => p.ip?.trim() === h.ip?.trim())
                 return match ? { ...h, description: match.description, suggestion: match.suggestion, aiDescribed: true } : h
-              })
-            } else if (parsed && Array.isArray(parsed.hosts)) {
-              enhancedHosts = (hosts as typeof enhancedHosts).map(h => {
-                const match = (parsed.hosts as LlmHost[]).find((p) => p.ip?.trim() === h.ip?.trim())
-                return match ? { ...h, description: match.description, suggestion: match.suggestion, aiDescribed: true } : { ...h }
               })
             }
           } catch (parseErr) {
@@ -810,7 +855,7 @@ Example:
           console.error('OpenRouter API returned error:', res.status)
         }
       } catch (err) {
-        console.error('LLM asset suggestion failed:', err)
+        if (!(err instanceof SkipLlm)) console.error('LLM asset suggestion failed:', err)
       }
 
       // Fallback: if LLM produced no description/suggestion, use a deterministic fallback
@@ -825,8 +870,7 @@ Example:
         }
         if (!hAny['suggestion']) {
           const existing = existingAssetMap.get(h.ip)
-          const last = h.ip.split('.').pop()
-          const isGateway = last === '1' || last === '254'
+          const isGateway = h.ip === defaultGateway
           hAny['suggestion'] = isGateway ? 'Accept - Corporate Device'
             : (existing ? 'Accept - Corporate Device' : 'Investigate - Unknown')
         }
@@ -892,16 +936,6 @@ Example:
     const upsertedAssetIds: string[] = []
     let failedHosts = 0
 
-    // Gateway for internet-exposure inference: the agent's current default
-    // gateway from this ingest, else the last one it reported on heartbeat.
-    // Anything that isn't a real IPv4 ("On-link", blank) is ignored so it can't
-    // switch off the fallback inference.
-    const reportedGateways = [
-      network?.gateway_ip,
-      ((agent.config ?? {}) as Record<string, unknown>).default_gateway as string | undefined,
-    ]
-    const defaultGateway = reportedGateways.find(isIPv4)
-
     // Precompute each host's device type + observed os_info (same logic as before),
     // producing the PlanHost inputs the pure batch planner consumes.
     const prepareHost = (host: typeof enhancedHosts[number]): PlanHost => {
@@ -918,6 +952,12 @@ Example:
       const hostAny = host as Record<string, unknown>
       if (hostAny['aiDescribed'] && typeof hostAny['description'] === 'string' && hostAny['description'].trim()) {
         observedOsInfo.ai_description = String(hostAny['description']).trim().slice(0, 200)
+        // What it was described from, so an unchanged host skips the LLM next time.
+        const evidence = evidenceByIp.get(host.ip)
+        if (evidence) observedOsInfo.ai_evidence = evidence
+        if (typeof hostAny['suggestion'] === 'string' && hostAny['suggestion']) {
+          observedOsInfo.ai_suggestion = String(hostAny['suggestion']).slice(0, 60)
+        }
       }
       if (host.snmp_sysdescr) observedOsInfo.snmp_sysdescr = host.snmp_sysdescr
       if (host.snmp_sysobjectid) observedOsInfo.snmp_sysobjectid = host.snmp_sysobjectid

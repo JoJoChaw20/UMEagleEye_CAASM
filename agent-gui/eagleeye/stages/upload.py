@@ -24,7 +24,10 @@ class UploadStage(Stage):
         return not (self.scan_type == "passive" and not ctx.hosts and not ctx.scan_id)
 
     def run(self, ctx: PipelineContext) -> None:
-        ctx.network = build_network_info(ctx.subnet if self.scan_type == "active" else None, ctx.hosts)
+        if self.scan_type == "active":
+            ctx.network = build_network_info(ctx.subnet, ctx.hosts)
+        else:   # passive: the collect stage left the network the hosts were heard on
+            ctx.network = build_network_info(None, ctx.hosts, ctx.network)
         ctx.progress(f"Uploading {len(ctx.hosts)} host(s)")
         result = self.client.ingest(
             self.scan_type,
