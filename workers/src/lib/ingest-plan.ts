@@ -19,6 +19,7 @@ import {
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
+import { isGenericHostname, pickHostname } from './hostnames'
 import { ACTIVE_MODEL, scoreAsset, type CriticalityModel } from './rescore'
 import { applyHint, deviceTypeHint } from './deviceHints'
 import { buildBaseline, type AssetBaseline } from '../services/drift'
@@ -249,8 +250,9 @@ export function planIngest(
       // source = last observation method. Membership (in_my_assets) is NEVER
       // changed by ingest, so a rescan no longer needs the old sticky-manual CASE.
       const resolvedSource = host.isPassive ? 'scan_passive' : 'scan_active'
-      // Fill-only: an empty stored name (e.g. saved from an empty Edit field) counts as missing.
-      const newHostname = st.hostname || host.hostname || null
+      // Fill-only: an empty stored name (e.g. saved from an empty Edit field) counts as
+      // missing, and a generic one ("Android") gives way to a specific one (lib/hostnames.ts).
+      const newHostname = pickHostname(st.hostname, host.hostname)
       const newMac = mac ?? st.macAddress ?? null
       const newHostKey = st.hostKey ?? hostKey ?? null
       const newVendor = host.hardwareVendor ?? st.hardwareVendor ?? null
@@ -316,6 +318,13 @@ export function planIngest(
           nextBaseline = { ...st.baseline, ...patch }
           set.baselineState = nextBaseline
         }
+      }
+      // A real name replacing a generic one is classification, not drift: an automatic
+      // baseline that still holds the generic name moves with it.
+      if (nextBaseline && nextBaseline.auto_set === true && newHostname !== st.hostname
+          && isGenericHostname(st.hostname) && nextBaseline.hostname === st.hostname) {
+        nextBaseline = { ...nextBaseline, hostname: newHostname }
+        set.baselineState = nextBaseline
       }
       // A hint filling an unknown type is classification, not drift: an automatic
       // baseline that still says "unknown" moves with it (also on passive scans).

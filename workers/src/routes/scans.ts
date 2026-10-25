@@ -19,6 +19,7 @@ import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
 import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
+import { isGenericHostname, pickHostname } from '../lib/hostnames'
 
 // The scan classifier lives in lib/deviceClassify.ts (shared with "Automatic" type
 // reset); re-exported for scripts that import it from here.
@@ -1018,9 +1019,15 @@ Example:
         const exposed = existing?.internetFacingOverride ?? p.internetFacing
         const crit = scoreAsset({ deviceType: resolvedDeviceType, deviceTypeSource: hinted.deviceTypeSource, deviceTypeHint: slowHint, isInternetFacing: exposed, internetFacingOverride: existing?.internetFacingOverride ?? null, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged, agentRole: agentRoleOf(existing?.endpointInventory) }, criticalityModel)
         const baselineForUpdate = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? existing?.hostname ?? null, macAddress: mac ?? existing?.macAddress ?? null, isInternetFacing: exposed, deviceType: resolvedDeviceType, autoSet: true, portsKnown: !p.isPassive })
+        const slowHostname = pickHostname(existing?.hostname, p.hostname)
+        const existingBaseline = existing?.baselineState as { auto_set?: boolean; hostname?: string | null } | null | undefined
+        // A real name replacing a generic one is not drift (see lib/hostnames.ts).
+        const renamedBaseline = existingBaseline && existingBaseline.auto_set === true && slowHostname !== existing?.hostname
+          && isGenericHostname(existing?.hostname) && existingBaseline.hostname === existing?.hostname
+          ? { ...existingBaseline, hostname: slowHostname } : null
         await db.update(assets).set({
           ipAddress: p.ip,
-          hostname: existing?.hostname || p.hostname || null,
+          hostname: slowHostname,
           macAddress: mac ?? existing?.macAddress ?? null,
           hostKey: existing?.hostKey ?? resolution.hostKey ?? null,
           hardwareVendor: p.hardwareVendor ?? existing?.hardwareVendor ?? null,
@@ -1033,7 +1040,7 @@ Example:
           criticalityModel,
           source: p.isPassive ? 'scan_passive' : 'scan_active',
           lastScanned: new Date(), updatedAt: new Date(),
-          ...(existing?.baselineState ? {} : { baselineState: baselineForUpdate }),
+          ...(existing?.baselineState ? (renamedBaseline ? { baselineState: renamedBaseline as typeof baselineForUpdate } : {}) : { baselineState: baselineForUpdate }),
         }).where(eq(assets.assetId, resolution.assetId))
         await recordMatchedAddress(db, { assetId: resolution.assetId, tenantId: tenantId ?? null, networkKey, ip: p.ip, mac, currentAddress: resolution.currentAddress })
         return resolution.assetId
