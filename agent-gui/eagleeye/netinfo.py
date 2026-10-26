@@ -110,8 +110,60 @@ def network_of(ip: str, routes: list[tuple[Any, ...]]) -> tuple[Optional[str], O
     return subnet, (gateway[1] if gateway else None)
 
 
+def _copy_ctypes(value: Any) -> Any:
+    """A deep copy of what scapy's _struct_to_dict returns, with every ctypes array
+    (still a view into the native table) turned into a list of plain values."""
+    import ctypes
+    if isinstance(value, dict):
+        return {k: _copy_ctypes(v) for k, v in value.items()}
+    if isinstance(value, ctypes.Array):
+        return [_copy_ctypes(v) for v in value]
+    return value
+
+
+def _get_ip_forward_table2(AF: int = 0) -> list[dict[str, Any]]:  # noqa: N803 - scapy's signature
+    """scapy's GetIpForwardTable2, but the rows are copied BEFORE FreeMibTable.
+
+    scapy 2.8.0 frees the table first and then reads each route's addresses out of the
+    freed memory (its rows hold ctypes arrays that point into the table). That mostly
+    works, until Windows releases the memory, which happens around Wi-Fi sleep and
+    standby: then the agent dies with an access violation (crash.log, 2.2.4)."""
+    import ctypes
+    from scapy.arch.windows import structures as s  # type: ignore
+    table = s.PMIB_IPFORWARD_TABLE2()
+    res = s._GetIpForwardTable2(AF, ctypes.byref(table))
+    if res != 0:
+        raise RuntimeError(f"Error retrieving table ({res})")
+    try:
+        return [_copy_ctypes(s._struct_to_dict(table.contents.Table[i])) for i in range(table.contents.NumEntries)]
+    finally:
+        s._FreeMibTable(table)
+
+
+def patch_scapy_route_reader() -> bool:
+    """Make scapy read the Windows route table with _get_ip_forward_table2. Call it before
+    `import scapy.all` (which reads the table once) and before every route resync.
+    Returns True when the patch is in place; does nothing off Windows or without scapy."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        import scapy.arch.windows as win  # type: ignore
+        from scapy.arch.windows import structures as s  # type: ignore
+    except Exception:  # noqa: BLE001 - no scapy (or no Npcap): nothing to patch
+        return False
+    if getattr(win, "GetIpForwardTable2", None) is _get_ip_forward_table2:
+        return True
+    needed = ("PMIB_IPFORWARD_TABLE2", "_GetIpForwardTable2", "_FreeMibTable", "_struct_to_dict")
+    if not all(hasattr(s, name) for name in needed) or not hasattr(win, "GetIpForwardTable2"):
+        return False                                   # another scapy layout: leave it alone
+    s.GetIpForwardTable2 = _get_ip_forward_table2
+    win.GetIpForwardTable2 = _get_ip_forward_table2    # what _read_routes_c calls
+    return True
+
+
 def _scapy_routes() -> list[tuple[Any, ...]]:
     try:
+        patch_scapy_route_reader()
         from scapy.all import conf  # type: ignore
         try:
             conf.route.resync()

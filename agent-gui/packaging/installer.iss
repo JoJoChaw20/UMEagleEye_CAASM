@@ -8,7 +8,8 @@
 ;    and linked from the Start menu;
 ;  - starting at sign-in is ON by default (the agent is meant to keep running), as an
 ;    elevated logon task so passive listening and the full inventory work without a UAC
-;    prompt each time; unticking it on an upgrade removes the task;
+;    prompt each time, kept running on battery and with no time limit; unticking it on an
+;    upgrade removes the task;
 ;  - "Open EagleEye Agent now" starts it through that task, so the first run already has
 ;    Administrator rights; without the task it starts as the signed-in user;
 ;  - an upgrade closes the running agent first and keeps its settings.
@@ -65,6 +66,12 @@ Name: "{autodesktop}\EagleEye Agent"; Filename: "{app}\EagleEyeAgent.exe"; Tasks
 ; A logon task with highest privileges starts the agent elevated without a UAC prompt at each sign-in.
 Filename: "{sys}\schtasks.exe"; \
   Parameters: "/Create /F /TN ""EagleEye Agent"" /TR ""\""{app}\EagleEyeAgent.exe\"" --minimized"" /SC ONLOGON /RL HIGHEST /IT"; \
+  Flags: runhidden; Tasks: autostart
+; schtasks' defaults would stop the agent: it is killed when the laptop switches to battery
+; (no crash log, no Windows crash report: seen entering standby, 2.2.4), is not started
+; on battery, and is killed after 72 hours. Keep it running regardless.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Set-ScheduledTask -TaskName 'EagleEye Agent' -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew)"""; \
   Flags: runhidden; Tasks: autostart
 ; Unticked on an upgrade: remove the task an earlier install created (no error if there is none).
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""EagleEye Agent"""; \

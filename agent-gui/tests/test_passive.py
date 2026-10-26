@@ -726,3 +726,26 @@ def test_a_sniffer_says_when_it_listens_again(monkeypatch, caplog):
         sniffer._loop()
     text = caplog.text
     assert "cannot listen on Wi-Fi" in text and "listening on Wi-Fi again" in text
+
+
+# ── 2.2.5: the route table is read when the address changes, not every 30 s ──
+def test_the_network_is_reread_only_when_the_address_changes_or_after_ten_minutes():
+    probe, clock = FakeProbe("192.168.100.71"), Clock()
+    reads = []
+
+    def network_of(ip):
+        reads.append(ip)
+        return {"local_ip": ip, "subnet": "192.168.100.0/24", "gateway_ip": "192.168.100.1"}
+    chooser = InterfaceChooser(probe=probe, clock=clock, network_of=network_of)
+    for t in range(0, 600, 31):                       # ten minutes of 30 s adapter checks
+        clock.t = t
+        chooser.refresh()
+    assert reads == ["192.168.100.71"]
+    clock.t = 620
+    chooser.refresh()
+    assert reads == ["192.168.100.71", "192.168.100.71"]          # slow recheck: a new gateway
+    probe.route_ip, clock.t = "10.179.37.235", 651               # moved network
+    probe.adapters = ADAPTERS + [{"name": "Wi-Fi 2", "description": "Intel Wi-Fi", "ips": ["10.179.37.235"],
+                                  "mac": "aa:bb:cc:dd:ee:02"}]
+    chooser.refresh()
+    assert reads[-1] == "10.179.37.235"

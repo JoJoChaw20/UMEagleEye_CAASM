@@ -105,3 +105,39 @@ def test_an_active_scan_reports_the_lan_apart_from_the_range_it_scanned(monkeypa
                         lambda ip=None: {"local_ip": "10.20.1.15", "subnet": "10.20.0.0/22", "gateway_ip": "10.20.0.1"})
     info = netinfo.build_network_info("10.20.2.0/24", [])
     assert (info["subnet"], info["lan_subnet"]) == ("10.20.2.0/24", "10.20.0.0/22")
+
+
+# ── 2.2.5: scapy read the Windows route table after freeing it ──
+def test_copied_route_rows_hold_plain_values_not_views_into_native_memory():
+    import ctypes
+    addr = (ctypes.c_ubyte * 4)(192, 168, 0, 1)
+    row = {"NextHop": {"Ipv4": {"sin_addr": {"byte": addr}}}, "Metric": 25}
+    copy = netinfo._copy_ctypes(row)
+    addr[0] = 10                                         # the native table changing or freed
+    assert copy == {"NextHop": {"Ipv4": {"sin_addr": {"byte": [192, 168, 0, 1]}}}, "Metric": 25}
+    assert bytes(bytearray(copy["NextHop"]["Ipv4"]["sin_addr"]["byte"])) == b"\xc0\xa8\x00\x01"
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows route table")
+def test_scapy_reads_the_windows_route_table_through_the_safe_copy():
+    pytest.importorskip("scapy.all")
+    import ctypes
+
+    import scapy.arch.windows as win
+    original = win.GetIpForwardTable2
+    try:
+        before = sorted(win._read_routes_c(False))
+        assert netinfo.patch_scapy_route_reader() is True
+        assert netinfo.patch_scapy_route_reader() is True             # idempotent
+        assert win.GetIpForwardTable2 is netinfo._get_ip_forward_table2
+        assert sorted(win._read_routes_c(False)) == before            # same routes as scapy's own
+
+        def views(v):
+            if isinstance(v, dict):
+                return any(views(x) for x in v.values())
+            if isinstance(v, list):
+                return any(views(x) for x in v)
+            return isinstance(v, (ctypes.Array, ctypes.Structure, ctypes.Union))
+        assert not views(netinfo._get_ip_forward_table2(2))
+    finally:
+        win.GetIpForwardTable2 = original

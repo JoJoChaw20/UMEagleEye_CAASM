@@ -34,6 +34,7 @@ log = logging.getLogger("eagleeye.passive")
 
 _SNIFF_SLICE_SECONDS = 5     # sniff() is restarted this often so stop() takes effect
 _IFACE_REFRESH_SECONDS = 30  # how often "automatic" re-checks which adapter to use
+_NETWORK_RECHECK_SECONDS = 600  # how often the subnet/gateway is re-read on an unchanged address
 # How long what the enrichment sniffers heard is kept. An address-keyed entry expires
 # sooner: DHCP hands a free address to another device, which must not inherit the old
 # owner's name. MAC-keyed entries belong to the device, and only expire to bound memory.
@@ -105,6 +106,8 @@ class InterfaceChooser:
         # keeps describing the network it was heard on.
         self.network: Optional[dict[str, Optional[str]]] = None
         self._net: Optional[ipaddress.IPv4Network] = None
+        self._network_ip: Optional[str] = None           # the address self.network was read for
+        self._network_at: Optional[float] = None
 
     def refresh(self, force: bool = False) -> Optional[str]:
         """The interface to listen on now (None = no network yet: wait and ask again)."""
@@ -141,7 +144,15 @@ class InterfaceChooser:
             return name
 
     def _set_network(self, ip: Optional[str]) -> None:
-        """Look up the network of `ip` (lock held); log and replace it when it changed."""
+        """Look up the network of `ip` (lock held); log and replace it when it changed.
+
+        Reading it means reading the route table, so it is done when the address changes
+        and otherwise only every _NETWORK_RECHECK_SECONDS (a new gateway on the same
+        address), not on every 30 s adapter check."""
+        now = self._clock()
+        if (ip and ip == self._network_ip and self._network_at is not None
+                and now - self._network_at < _NETWORK_RECHECK_SECONDS):
+            return
         network: Optional[dict[str, Optional[str]]] = None
         if ip:
             try:
@@ -149,6 +160,7 @@ class InterfaceChooser:
             except Exception as exc:  # noqa: BLE001 - keep the last good answer
                 log.debug("Could not read the network of %s: %s", ip, exc)
                 return
+        self._network_ip, self._network_at = ip, now
         if network == self.network:
             return
         self.network = network
@@ -224,6 +236,8 @@ class _Sniffer:
 
     def start(self) -> bool:
         try:
+            from ..netinfo import patch_scapy_route_reader
+            patch_scapy_route_reader()                 # before scapy.all reads the routes
             import scapy.all  # noqa: F401
         except ImportError:
             log.warning("scapy not installed - %s disabled. Run: pip install scapy", self.label)
