@@ -20,6 +20,7 @@ export const EVENT_TYPE_LABELS = {
   new_package:       'New Package',
   removed_package:   'Removed Package',
   new_device:        'New Device',
+  os_patch_missing:  'Windows Updates Missing',
 }
 
 const CONFIG_CHANGE_LABELS = {
@@ -43,6 +44,7 @@ export const RISKY_PORTS = {
 export function alertLabel(e) {
   if (e.event_type === 'cti_match' && e.details?.match_kind === 'watchlist') return 'Watched Software Found'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
+  if (e.event_type === 'os_patch_missing' && e.details?.patch_status === 'unsupported') return 'Windows Out of Support'
   return EVENT_TYPE_LABELS[e.event_type] || e.event_type
 }
 
@@ -68,7 +70,16 @@ export function renderDetail(e) {
   if (e.event_type === 'new_package')     return `+${d.package ?? ''}${d.version ? ` ${d.version}` : ''}`
   if (e.event_type === 'removed_package') return `-${d.package ?? ''}`
   if (e.event_type === 'new_device')      return `New: ${d.ip ?? ''}${d.mac ? ` (${d.mac})` : ''}`
+  if (e.event_type === 'os_patch_missing') return windowsPatchSummary(d)
   return d.changed_attribute ?? '—'
+}
+
+// "1,009 missing fixes (25 critical, 1 exploited) · install KB5127648"
+export function windowsPatchSummary(d) {
+  const extra = [d.critical ? `${d.critical} critical` : null, d.exploited ? `${d.exploited} exploited` : null].filter(Boolean)
+  const fixes = d.cves ? `${Number(d.cves).toLocaleString()} missing fix${d.cves === 1 ? '' : 'es'}${extra.length ? ` (${extra.join(', ')})` : ''}` : null
+  if (d.patch_status === 'unsupported') return ['No longer receives updates', fixes].filter(Boolean).join(' · ')
+  return [fixes, d.kb ? `install KB${d.kb}` : null].filter(Boolean).join(' · ') || 'Windows updates missing'
 }
 
 // The alert categories to look at before the general backlog. Ids and meaning
@@ -91,7 +102,7 @@ export const CONCERNS = [
   },
   {
     id: 'exploitable', title: 'Likely-exploited CVEs', short: 'Exploitable CVEs', icon: Bug, tone: 'serious',
-    why: 'Exploited in the wild (CISA KEV), ≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
+    why: 'Exploited in the wild (CISA KEV, or a missing Windows update Microsoft marks exploited), ≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
     action: 'Patch within 72h',
   },
   {
@@ -135,6 +146,12 @@ export function riskReasons(e) {
     if (d.kev) out.push({ label: 'Actively exploited (CISA KEV)', tone: 'critical' })
     if (titles.length) out.push({ label: `In threat intel: ${titles[0]}${titles.length > 1 ? ` +${titles.length - 1}` : ''}`, tone: 'critical' })
     if (!d.kev && !titles.length) out.push({ label: 'Named in threat intel', tone: 'critical' })
+  }
+  if (e.event_type === 'os_patch_missing') {
+    if (d.exploited) out.push({ label: `${d.exploited} exploited in the wild (Microsoft)`, tone: 'critical' })
+    if (d.patch_status === 'unsupported') out.push({ label: 'Out of support', tone: 'critical' })
+    if (d.critical) out.push({ label: `${d.critical} critical`, tone: 'serious' })
+    if (d.kb) out.push({ label: `Fix: KB${d.kb}`, tone: 'good' })
   }
   if (exposed) out.push({ label: 'Internet-facing', tone: 'critical' })
   if (d.port != null && RISKY_PORTS[d.port]) out.push({ label: `${RISKY_PORTS[d.port]} is a common attack target`, tone: 'serious' })
@@ -206,6 +223,15 @@ function basePlaybook(e) {
         return { urgency: '≤72h', text: `Patch ${d.package_name ?? 'the package'}${fix}. Internet exposure or high exploit likelihood — do not wait for the patch cycle.` }
       }
       return { urgency: 'Patch cycle', text: `Schedule upgrade of ${d.package_name ?? 'the package'}${fix} in the next patch window.` }
+    }
+    case 'os_patch_missing': {
+      if (d.patch_status === 'unsupported') {
+        return { urgency: '≤3d', text: `This Windows version no longer receives security updates. Plan an upgrade to a supported version (Windows 10 22H2 needs Extended Security Updates). Until then, limit what the machine can reach.` }
+      }
+      const kb = d.kb ? `KB${d.kb}` : 'the latest cumulative update'
+      return d.exploited || exposed
+        ? { urgency: '≤72h', text: `Install ${kb} through Windows Update and restart. It fixes ${d.exploited ? 'a CVE attackers are already using' : 'CVEs on an internet-facing machine'}, so do not wait for the patch cycle.` }
+        : { urgency: 'Patch cycle', text: `Install ${kb} through Windows Update and restart in the next patch window. One cumulative update fixes every CVE listed; the alert closes itself at the next inventory.` }
     }
     case 'port_opened': {
       const svc = RISKY_PORTS[d.port]

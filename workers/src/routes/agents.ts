@@ -14,6 +14,7 @@ import { ACTIVE_MODEL, scoreAsset } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
 import { resolveNetworkScope } from '../lib/networkScope'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
+import { checkWindowsPatch } from '../services/windowsPatch'
 import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
   resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
@@ -535,6 +536,12 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       await matchIocs(db, { assetId })
     } catch (err) {
       console.error('inventory: threat-intel matching failed:', err)
+    }
+    // Windows build against the fixes Microsoft has released: one alert while it is behind.
+    try {
+      await checkWindowsPatch(db, c.env.REPORTS_BUCKET, assetId, inv)
+    } catch (err) {
+      console.error('inventory: Windows patch check failed:', err)
     }
 
     return c.json({

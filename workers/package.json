@@ -17,7 +17,10 @@
     "db:staging:mark": "node scripts/db/staging.mjs mark",
     "db:staging:sanitize": "node scripts/db/staging.mjs sanitize",
     "db:staging:sanitize:apply": "node scripts/db/staging.mjs sanitize --apply",
-    "deploy:staging": "wrangler deploy --env staging"
+    "deploy:staging": "wrangler deploy --env staging",
+    "msrc:build": "node scripts/msrc/build-msrc.mjs --out .msrc-out",
+    "msrc:upload:staging": "node scripts/msrc/upload-msrc.mjs .msrc-out staging",
+    "msrc:upload:prod": "node scripts/msrc/upload-msrc.mjs .msrc-out production"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.4.1",

@@ -20,6 +20,17 @@ function chain(e) {
         rule: 'R1 · A package with a known vulnerability (Grype matched it against its vulnerability database)',
       }
     }
+    case 'os_patch_missing': {
+      const known = d.patch_status === 'unsupported'
+        ? ['Microsoft has stopped releasing security updates for this Windows version']
+        : [`Microsoft has released build ${d.latest_build ?? 'newer'}${d.kb ? ` (KB${d.kb})` : ''}, which fixes ${Number(d.cves ?? 0).toLocaleString()} CVEs this build is missing`]
+      if (d.exploited) known.push(`${d.exploited} of them ${d.exploited === 1 ? 'is' : 'are'} marked "exploited" by Microsoft: attackers are using ${d.exploited === 1 ? 'it' : 'them'} now`)
+      return {
+        evidence: `${where} runs ${d.product ?? 'Windows'}, build ${d.build ?? '?'} (EagleEye agent inventory)`,
+        knowledge: known,
+        rule: "R8 · A Windows build older than Microsoft's fixed builds (Security Update Guide) is missing those fixes",
+      }
+    }
     case 'cti_match': {
       const sources = (d.sources ?? []).join(', ') || 'a threat feed'
       if (d.match_kind === 'watchlist') {

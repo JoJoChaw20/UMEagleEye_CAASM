@@ -12,6 +12,7 @@ import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import WhyAlert from '../components/common/WhyAlert'
+import WindowsCveList from '../components/common/WindowsCveList'
 import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
@@ -827,6 +828,14 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 e.event_type === 'cti_match' && d.observed && ['Matched', `${d.matched_on === 'ip' ? 'Public IP' : d.matched_on === 'hostname' ? 'Hostname' : d.matched_on === 'package' ? 'SBOM package' : 'Installed software'}: ${d.observed}`],
                 e.event_type === 'cti_match' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
                 e.event_type === 'cti_match' && Array.isArray(d.sources) && d.sources.length > 0 && ['Listed by', d.sources.join(', ')],
+                e.event_type === 'os_patch_missing' && ['Windows', `${d.product ?? '—'}`],
+                e.event_type === 'os_patch_missing' && ['Installed build', d.build],
+                e.event_type === 'os_patch_missing' && d.latest_build && ['Latest build', d.kb
+                  ? <span>{d.latest_build} · <a href={`https://support.microsoft.com/help/${d.kb}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">KB{d.kb}</a></span>
+                  : d.latest_build],
+                e.event_type === 'os_patch_missing' && d.cves > 0 && ['Missing fixes', `${Number(d.cves).toLocaleString()} CVEs · ${d.critical ?? 0} critical · ${d.exploited ?? 0} exploited in the wild`],
+                e.event_type === 'os_patch_missing' && d.behind_since && ['Behind since', `${new Date(d.behind_since).toLocaleDateString()} (fixes released then)`],
+                e.event_type === 'os_patch_missing' && d.patch_status === 'unsupported' && ['Support', <span className="text-red-300">{d.reason ?? 'No longer receives security updates'}</span>],
                 e.composite_risk_score != null && ['Risk score', e.composite_risk_score],
                 d.port != null && ['Port', `${d.port}/${d.protocol ?? 'tcp'}${RISKY_PORTS[d.port] ? ` — ${RISKY_PORTS[d.port]}` : ''}`],
                 d.port != null && serviceOn(e.asset, d.port) && ['Service', serviceOn(e.asset, d.port)],
@@ -836,6 +845,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 d.source && ['Detected by', d.source.replace('_', ' ')],
               ]} />
               {d.description && <p className="text-xs text-dark-400 mt-2 leading-relaxed">{d.description}</p>}
+              {e.event_type === 'os_patch_missing' && d.cves > 0 && <WindowsCveList eventId={e.event_id} />}
               {d.package_name && (
                 <button onClick={() => onPackageAlerts(d.package_name)} className="text-xs text-eagle-400 hover:underline mt-2">
                   All open alerts for {d.package_name} →

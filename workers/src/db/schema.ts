@@ -20,7 +20,9 @@ export const severityEnum = pgEnum('severity', [
 export const eventTypeEnum = pgEnum('event_type', [
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'cve_detected', 'new_device', 'config_change', 'new_package',
-  'removed_package', 'cti_match'
+  'removed_package', 'cti_match',
+  // One per Windows machine missing fixes Microsoft released (services/windowsPatch.ts)
+  'os_patch_missing'
 ])
 // Alert triage lifecycle. open/in_progress count as "open" everywhere
 // (see lib/eventStatus.ts); the other three close the alert.

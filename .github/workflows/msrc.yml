@@ -1,0 +1,35 @@
+# Windows patch data: rebuilds Microsoft's last 12 months of Security Update Guide data
+# (workers/scripts/msrc/build-msrc.mjs) and uploads it to R2 for the Worker's Windows patch
+# alerts. Weekly on Wednesday morning, the day after Patch Tuesday (second Tuesday of the
+# month); the other weeks pick up Microsoft's revisions of older months.
+#
+# Needs the repository secret CLOUDFLARE_API_TOKEN (a token with "Workers R2 Storage: Edit").
+# The account id comes from workers/wrangler.toml.
+name: Windows patch data
+
+on:
+  schedule:
+    - cron: '0 6 * * 3'
+  workflow_dispatch:
+
+jobs:
+  msrc:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/package-lock.json
+      - run: npm ci
+      - run: node scripts/msrc/build-msrc.mjs --out ../msrc-out
+      - run: node scripts/msrc/upload-msrc.mjs ../msrc-out staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - run: node scripts/msrc/upload-msrc.mjs ../msrc-out production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

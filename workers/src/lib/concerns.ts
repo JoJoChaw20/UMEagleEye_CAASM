@@ -20,6 +20,8 @@ const hasCtiMatch = sql`${events.details}->'has_cti_match' = 'true'::jsonb`
 const isCve = eq(events.eventType, 'cve_detected')
 // cti_match on watched software (rule R6) is exposure, not compromise
 const isWatchlist = and(eq(events.eventType, 'cti_match'), sql`${events.details}->>'match_kind' = 'watchlist'`)!
+const isExploitedPatch = and(eq(events.eventType, 'os_patch_missing'),
+  sql`COALESCE((${events.details}->>'exploited')::int, 0) > 0`)!
 const epssAtLeast = (v: number) => sql`(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number'
   THEN (${events.details}->>'epss_score')::float ELSE 0 END) >= ${v}`
 
@@ -43,7 +45,8 @@ export function concernCondition(id: ConcernId): SQL {
       return and(eq(events.eventType, 'config_change'),
         sql`${events.details}->>'changed_attribute' IN ('mac_address', 'hostname')`)!
     case 'exploitable':
-      return or(isWatchlist, and(isCve, or(
+      // A Windows machine missing a fix for a CVE Microsoft says is exploited counts too
+      return or(isWatchlist, isExploitedPatch, and(isCve, or(
         hasCtiMatch,
         epssAtLeast(EPSS_LIKELY),
         and(eq(events.severity, 'critical'), eq(assets.isInternetFacing, true)),

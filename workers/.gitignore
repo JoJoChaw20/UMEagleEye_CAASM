@@ -5,3 +5,4 @@ wrangler.test.toml
 .env.staging
 .env.production
 .*.cjs
+.msrc-out/

@@ -25,6 +25,7 @@ import { softwareName, techniquesFor } from '../lib/attack'
 import { cweList } from '../lib/cwe'
 import { fixTarget } from '../lib/fixTarget'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
+import { loadMsrcMonth } from '../services/windowsPatch'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -34,7 +35,7 @@ const SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 const EVENT_TYPE_VALUES = [
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'cve_detected', 'new_device', 'config_change', 'new_package',
-  'removed_package', 'cti_match',
+  'removed_package', 'cti_match', 'os_patch_missing',
 ] as const
 const DRIFT_TYPES = new Set([
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
@@ -808,6 +809,40 @@ export async function applyUpdateMany(
 }
 
 // ── PATCH /:eventId — change status / assignee / note ────────────
+// ── GET /:eventId/windows-cves — the CVEs behind a Windows patch alert ──
+// The alert stores counts only; the list comes from Microsoft's data in R2, per missing
+// fix (month + fixed build) of the alert's Windows version.
+app.get('/:eventId/windows-cves', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as User
+    const db   = getDb(c.env.DATABASE_URL)
+    const row  = await loadScopedEvent(db, user, c.req.param('eventId'))
+    if (!row) return c.json({ detail: 'Event not found' }, 404)
+    if (row.event.eventType !== 'os_patch_missing') return c.json({ detail: 'Not a Windows patch alert' }, 400)
+    const d = (row.event.details ?? {}) as { product?: string; missing?: { month: string; fixed_build: string; kb: string | null }[] }
+    const missing = Array.isArray(d.missing) ? d.missing : []
+    const months = [...new Set(missing.map(m => m.month))]
+    const docs = new Map(await Promise.all(months.map(async m => [m, await loadMsrcMonth(c.env.REPORTS_BUCKET, m)] as const)))
+    const seen = new Set<string>()
+    const cves: { cve: string; title: string; severity: string | null; exploited: boolean; month: string; kb: string | null; fixed_build: string }[] = []
+    for (const m of missing) {
+      const doc = docs.get(m.month)
+      for (const id of (d.product && doc?.products[d.product]?.[m.fixed_build]) || []) {
+        if (seen.has(id)) continue
+        seen.add(id)
+        const [title, severity, exploited] = doc!.cves[id] ?? ['', null, false]
+        cves.push({ cve: id, title, severity, exploited, month: m.month, kb: m.kb, fixed_build: m.fixed_build })
+      }
+    }
+    const rank: Record<string, number> = { Critical: 0, Important: 1, Moderate: 2, Low: 3 }
+    cves.sort((a, b) => Number(b.exploited) - Number(a.exploited) || (rank[a.severity ?? ''] ?? 9) - (rank[b.severity ?? ''] ?? 9) || b.cve.localeCompare(a.cve))
+    return c.json({ product: d.product ?? null, cves, unavailable: months.filter(m => !docs.get(m)) })
+  } catch (err) {
+    console.error('events GET /:eventId/windows-cves error:', err)
+    return c.json({ detail: 'Failed to load the CVE list' }, 500)
+  }
+})
+
 app.patch('/:eventId', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', updateSchema), async (c) => {
   try {
     const user = c.get('user') as User
