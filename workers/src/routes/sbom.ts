@@ -391,10 +391,14 @@ async function hostScan(db: ReturnType<typeof getDb>, agent: AgentRow, scanId: s
 
 // ── POST /agent-start ─── the agent starts an SBOM run ──────────────────────
 // For its daily schedule (no scan_id: a new record is created) and for a job the
-// dashboard queued (scan_id: that pending record is marked running).
+// dashboard queued (scan_id: that pending record is marked running). `mode` (agent 2.2.6+):
+// a full run lists every folder; a quick (daily) run only the folders that changed. It is
+// kept in the record's network_info (unused by SBOM records otherwise) so "Run SBOM" on the
+// dashboard can say which kind of run is busy.
 const agentStartSchema = z.object({
   trigger: z.enum(['schedule', 'manual', 'dashboard']),
   scan_id: z.string().uuid().optional(),
+  mode:    z.enum(['full', 'quick']).default('full'),
 })
 
 app.post('/agent-start', zValidator('json', agentStartSchema), async (c) => {
@@ -403,8 +407,9 @@ app.post('/agent-start', zValidator('json', agentStartSchema), async (c) => {
     const agent = await authenticateAgent(c, db)
     if (!agent) return c.json({ detail: 'Invalid agent credentials' }, 401)
     if (!agent.hostAssetId) return c.json({ detail: NOT_BOUND }, 409)
-    const { trigger, scan_id } = c.req.valid('json')
+    const { trigger, scan_id, mode } = c.req.valid('json')
     const now = new Date()
+    const networkInfo = { sbom_mode: mode }
 
     if (scan_id) {
       const { scan, error } = await hostScan(db, agent, scan_id)
@@ -416,13 +421,16 @@ app.post('/agent-start', zValidator('json', agentStartSchema), async (c) => {
         return c.json({ detail: error[0] }, error[1])
       }
       if (scan!.status !== 'pending') return c.json({ detail: `This SBOM job is already ${scan!.status}` }, 409)
-      await db.update(scanResults).set({ status: 'running', startedAt: now }).where(eq(scanResults.scanId, scan_id))
+      await db.update(scanResults).set({ status: 'running', startedAt: now, networkInfo }).where(eq(scanResults.scanId, scan_id))
       return c.json({ scan_id, status: 'running' })
     }
 
-    // A run of its own: replaces any job still queued for this computer.
-    await db.update(scanResults).set({ status: 'cancelled', completedAt: now, failureReason: 'Replaced by a scheduled SBOM run' })
-      .where(and(eq(scanResults.subnet, agent.hostAssetId), eq(scanResults.scanType, 'sbom'), eq(scanResults.status, 'pending')))
+    // A full run of its own answers any job still queued for this computer. A quick run
+    // does not (it lists only changed folders), so the job waits and runs after it.
+    if (mode === 'full') {
+      await db.update(scanResults).set({ status: 'cancelled', completedAt: now, failureReason: 'Replaced by a scheduled full SBOM run' })
+        .where(and(eq(scanResults.subnet, agent.hostAssetId), eq(scanResults.scanType, 'sbom'), eq(scanResults.status, 'pending')))
+    }
     const [scan] = await db.insert(scanResults).values({
       agentId: agent.agentId,
       tenantId: agent.tenantId ?? null,
@@ -430,9 +438,10 @@ app.post('/agent-start', zValidator('json', agentStartSchema), async (c) => {
       subnet: agent.hostAssetId,
       status: 'running',
       rawResults: [],
+      networkInfo,
     }).returning({ scanId: scanResults.scanId })
     if (!scan) return c.json({ detail: 'Failed to create scan record' }, 500)
-    console.log(`agent ${agent.agentId} started SBOM ${scan.scanId} (${trigger})`)
+    console.log(`agent ${agent.agentId} started SBOM ${scan.scanId} (${trigger}, ${mode})`)
     return c.json({ scan_id: scan.scanId, status: 'running' }, 201)
   } catch (err) {
     console.error('sbom agent-start error:', err)
@@ -469,6 +478,17 @@ const sbomIngestSchema = z.object({
   scan_id:  z.string().uuid(),
   sbom:     z.record(z.unknown()),
   scope:    z.array(z.string().max(300)).max(50).optional(),   // folders Syft scanned
+  // How the agent built it (2.2.6+): full or quick, and the folders whose packages are
+  // older than this run (kept from their last listing) or missing (never listed).
+  run:      z.object({
+    mode:      z.enum(['full', 'quick']),
+    seconds:   z.number().int().nonnegative(),
+    folders:   z.number().int().nonnegative(),
+    listed:    z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    kept:      z.array(z.object({ folder: z.string().max(300), listed_at: z.string().max(40).nullable(), reason: z.string().max(300) })).max(50),
+    missing:   z.array(z.object({ folder: z.string().max(300), reason: z.string().max(300) })).max(50),
+  }).optional(),
 })
 
 app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
@@ -477,7 +497,7 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
     const agent = await authenticateAgent(c, db)
     if (!agent) return c.json({ detail: 'Invalid agent credentials' }, 401)
 
-    const { scan_id, sbom: sbomJson, scope } = c.req.valid('json')
+    const { scan_id, sbom: sbomJson, scope, run } = c.req.valid('json')
     const { scan: scanRow, error } = await hostScan(db, agent, scan_id)
     if (error) return c.json({ detail: error[0] }, error[1])
     if (scanRow!.status === 'cancelled') {
@@ -549,7 +569,7 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
         assetId,
         format:        'cyclonedx',
         formatVersion,
-        rawData:       storedInR2 ? sbomSummary(sbomJson, components.length, scope) : sbomJson,
+        rawData:       storedInR2 ? sbomSummary(sbomJson, components.length, scope, run) : sbomJson,
         toolUsed:      'syft',
         r2Path:        storedInR2 ? r2Key : null,
       }),

@@ -208,8 +208,13 @@ class StatusPage(QWidget):
     def _sbom_now(self) -> None:
         svc = self.win.controller.service
         if svc is not None:
+            if svc.sbom_running and svc.sbom_mode == "full":
+                self.stage.setText("A full SBOM is already running; its result will appear when it finishes.")
+            elif svc.sbom_running:
+                self.stage.setText("Queued: a full SBOM starts when the current daily SBOM finishes.")
+            else:
+                self.stage.setText("Building this computer's full SBOM (this can take 10-30 minutes)...")
             svc.request_sbom()
-            self.stage.setText("Building this computer's SBOM (this can take several minutes)...")
 
     def on_event(self, event: PipelineEvent) -> None:
         if event.kind in (EventKind.STAGE_STARTED, EventKind.STAGE_PROGRESS):
@@ -262,8 +267,12 @@ class StatusPage(QWidget):
         self.scan_btn.setEnabled(svc is not None and not svc.active_running)
         self.inv_btn.setEnabled(svc is not None and s.inventory and not svc.inventory_running)
         self.inv_btn.setToolTip("" if s.inventory else "Inventory is switched off on the Privacy page")
-        self.sbom_btn.setEnabled(svc is not None and s.sbom and not svc.sbom_running)
-        self.sbom_btn.setToolTip("" if s.sbom else "SBOM is switched off on the Privacy page")
+        # During a daily (quick) run it stays available: the full run it asks for starts after it.
+        full_running = svc is not None and svc.sbom_running and svc.sbom_mode == "full"
+        self.sbom_btn.setEnabled(svc is not None and s.sbom and not full_running)
+        self.sbom_btn.setToolTip("SBOM is switched off on the Privacy page" if not s.sbom
+                                 else "A full SBOM is already running; its result will appear when it finishes"
+                                 if full_running else "")
 
         if svc is not None and len(svc.history) != self._history_len:
             self._history_len = len(svc.history)

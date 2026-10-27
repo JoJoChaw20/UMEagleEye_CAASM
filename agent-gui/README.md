@@ -222,11 +222,22 @@ they matched, so the Nmap parser tests in `tests/test_scan.py` now carry that gu
 - Syft's readers for compiled programs (Go binaries, Windows .exe/.dll, Linux kernel images) are off by default
   (`sbom_include_binaries`, Privacy page > "Include compiled programs", `--sbom-include-binaries`). On a test PC
   they produced about 90% of the findings, almost all Go standard-library CVEs in Docker Desktop and WSL kernel
-  matches that only those vendors can fix. Syft gets 45 minutes for all folders, Grype 20.
+  matches that only those vendors can fix. Grype gets 20 minutes.
 - Program Files, Program Files (x86) and ProgramData are scanned one program folder at a time (two at once),
-  each with a 10-minute limit, so one huge or unreadable folder is skipped (and listed in the log) instead of
-  using up the whole SBOM. Windows' own folders (WindowsApps, Windows Defender, ProgramData\Microsoft, Package
-  Cache...) and links/junctions are not scanned. Ctrl+C or Cancel on the dashboard stops Syft/Grype within seconds.
+  so one huge or unreadable folder costs only itself. Windows' own folders (WindowsApps, Windows Defender,
+  ProgramData\Microsoft, Package Cache...) and links/junctions are not scanned. Ctrl+C or Cancel on the dashboard
+  stops Syft/Grype within seconds.
+- SBOM runs learn and adapt (2.2.6). A **full run** (the first, once a week, and every "Build SBOM now" or
+  dashboard request) lists every folder and remembers per folder its packages, a fingerprint (files, size,
+  newest change), how long Syft took and the limit it needs (twice that, from 10 up to 60 minutes; doubled after
+  a timeout). A **daily run** fingerprints every folder and lists only those that changed, reusing the rest, so
+  it takes minutes instead of the full run's 10-30. Grype always checks every package, so new CVEs in unchanged
+  folders are still found. A folder that is not listed (timed out, failed, or out of time) keeps the packages of
+  its last listing, so its CVE alerts stay open; the upload names such folders. Limits count awake time only:
+  45 minutes for a daily run, 90 for a full one. What was learned is in `sbom-cache.json` next to the settings
+  (`sbom-cache-<instance>.json` for EAGLEEYE_CONFIG instances); another Syft version or SBOM setting starts it
+  over. Requests never move the daily or weekly times; one made during a daily run starts a full run after it,
+  one made during a full run is answered by that run. Uploads after waking are retried for a few minutes.
 - Failed scans always carry a reason, including passive scans on an agent that is not in passive mode.
 - Uploads are retried (network errors and 5xx) before a scan is marked failed.
 - SNMP polling runs up to 8 hosts in parallel; sniffers can be stopped cleanly.

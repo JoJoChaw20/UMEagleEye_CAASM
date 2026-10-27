@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import VERSION, deps
-from .config import ConfigError, Settings, default_config_path, load_settings, save_settings, state_path
+from .config import ConfigError, Settings, default_config_path, load_settings, save_settings, sbom_cache_path, state_path
 from .enrol import ConnectionCodeError, parse_connection_code
 from .keychain import Keychain
 from .passive import PassiveSuite
@@ -174,7 +174,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for d in missing:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
 
-    service = AgentService(settings, state_path=state_path())
+    service = AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path())
     if SCHEDULES_ENABLED:
         for sched in settings.schedules:
             log.info("Schedule     : %s %s", sched.get("subnet"), Schedule.from_dict(sched).describe())

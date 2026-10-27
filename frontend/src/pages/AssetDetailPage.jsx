@@ -87,6 +87,13 @@ export default function AssetDetailPage() {
     client.get(`/assets/${assetId}/software`).then((r) => setSoftware(r.data)).catch(() => setSoftware({ items: [], total: 0 }))
     client.get('/sboms', { params: { asset_id: assetId, page_size: 1 } })
       .then((r) => setSbom(r.data.items?.[0] ?? null)).catch(() => setSbom(null))
+    // An SBOM already running (daily or weekly run, or one asked for elsewhere): follow it
+    // too, so "Run SBOM scan" is unavailable until it finishes.
+    client.get(`/assets/${assetId}/sbom-scan-status`).then(({ data }) => {
+      if (data.status === 'pending' || data.status === 'running') {
+        setSbomScan((cur) => cur ?? { status: data.status, mode: data.mode })
+      }
+    }).catch(() => {})
     if (!isBusinessOwner) {
       client.get(`/relationships/graph/${assetId}`).then((r) => setGraph(r.data)).catch(() => setGraph({ nodes: [], edges: [] }))
     }
@@ -124,7 +131,7 @@ export default function AssetDetailPage() {
       try {
         const { data } = await client.get(`/assets/${assetId}/sbom-scan-status`)
         if (data.status === 'pending' || data.status === 'running') {
-          setSbomScan((cur) => ({ ...cur, status: data.status }))
+          setSbomScan((cur) => ({ ...cur, status: data.status, mode: data.mode }))
           return
         }
         setSbomScan({ status: data.status, message: data.status === 'completed'
@@ -336,7 +343,7 @@ export default function AssetDetailPage() {
             )}
             {!isReadOnly && inv && (
               <button onClick={handleRunSbom} disabled={sbomActive} className="btn-secondary text-sm flex items-center gap-2"
-                title="The EagleEye agent on this computer lists its packages and checks them for CVEs">
+                title={sbomActive ? sbomBusyText(sbomScan?.mode) : 'The EagleEye agent on this computer lists its packages and checks them for CVEs'}>
                 <Package className={`w-4 h-4 ${sbomActive ? 'animate-pulse' : ''}`} /> {sbomActive ? 'SBOM scan running…' : 'Run SBOM scan'}
               </button>
             )}
@@ -358,7 +365,7 @@ export default function AssetDetailPage() {
         <div className={`glass-card px-4 py-2.5 flex items-center gap-2 text-sm ${sbomScan.status === 'failed' ? 'border-red-500/30' : 'border-eagle-500/30'}`} role="status">
           <Package className={`w-4 h-4 ${sbomScan.status === 'failed' ? 'text-red-400' : 'text-eagle-400'}`} />
           <span className="text-dark-100">
-            {sbomScan.status === 'running' ? 'Running: the agent is listing packages and checking them for CVEs.' : sbomScan.message}
+            {sbomScan.status === 'running' ? sbomBusyText(sbomScan.mode) : (sbomScan.message || 'SBOM scan queued: the agent picks it up within 30 seconds.')}
           </span>
           {!sbomActive && <button onClick={() => setSbomScan(null)} className="ml-auto text-xs text-dark-400 hover:text-dark-100">Dismiss</button>}
         </div>
@@ -594,6 +601,13 @@ export default function AssetDetailPage() {
 
 // ── Criticality explanation ──
 // The formula (v2) with each factor and where it came from.
+// What the SBOM run in progress is (agents 2.2.6+ say full or quick), for the button and banner.
+function sbomBusyText(mode) {
+  if (mode === 'quick') return 'A daily SBOM of this device is running (only the folders that changed); it usually finishes within a few minutes.'
+  if (mode === 'full') return 'A full SBOM of this device is running; its result will appear here when it finishes.'
+  return 'Running: the agent is listing packages and checking them for CVEs.'
+}
+
 const SOURCE_TAG = {
   agent: 'agent', manual: 'set by hand', scan: 'scan', analyst: 'analyst', inferred: 'inferred', hostname: 'hostname',
 }

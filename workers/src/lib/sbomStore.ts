@@ -11,8 +11,9 @@ export const sbomObjectKey = (assetId: string) => `sboms/${assetId}.json`
 
 type Json = Record<string, unknown>
 
-/** Summary stored in sboms.raw_data for an SBOM whose document is in R2. */
-export function sbomSummary(doc: Json, componentCount: number, scope: unknown): Json {
+/** Summary stored in sboms.raw_data for an SBOM whose document is in R2. `run` is how the
+ *  agent built it (2.2.6+), including the folders it could not list this time. */
+export function sbomSummary(doc: Json, componentCount: number, scope: unknown, run?: unknown): Json {
   const meta = (doc.metadata ?? {}) as Json
   const tools = meta.tools as Json | unknown[] | undefined
   const toolComponents = Array.isArray(tools) ? tools : Array.isArray((tools as Json | undefined)?.components) ? (tools as Json).components as unknown[] : []
@@ -23,6 +24,7 @@ export function sbomSummary(doc: Json, componentCount: number, scope: unknown): 
     spec_version: doc.specVersion ?? null,
     generated_by: tool ? `${tool.name ?? 'syft'} ${tool.version ?? ''}`.trim() : null,
     scope: Array.isArray(scope) ? scope.slice(0, 50).map(String) : [],
+    ...(run ? { run } : {}),
   }
 }
 

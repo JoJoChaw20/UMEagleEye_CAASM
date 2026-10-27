@@ -165,6 +165,12 @@ def state_path(env: Optional[Mapping[str, str]] = None) -> Path:
     return default_config_path(env).with_name(f"state-{name}.json" if name else "state.json")
 
 
+def sbom_cache_path(env: Optional[Mapping[str, str]] = None) -> Path:
+    """What this instance's SBOM runs learned per folder (sbom.FolderCache), next to its config."""
+    name = instance_name(env)
+    return default_config_path(env).with_name(f"sbom-cache-{name}.json" if name else "sbom-cache.json")
+
+
 def _coerce(name: str, raw: Any, default: Any) -> Any:
     try:
         if isinstance(default, list):

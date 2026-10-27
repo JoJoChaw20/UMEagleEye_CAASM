@@ -1512,6 +1512,7 @@ app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES
         failureReason: scanResults.failureReason,
         startedAt: scanResults.startedAt,
         completedAt: scanResults.completedAt,
+        networkInfo: scanResults.networkInfo,
       })
       .from(scanResults)
       .where(and(eq(scanResults.subnet, assetId), eq(scanResults.scanType, 'sbom')))
@@ -1524,6 +1525,8 @@ app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES
       started_at:   row.startedAt,
       completed_at: row.completedAt,
       failure_reason: row.failureReason,
+      // full | quick for runs of agents 2.2.6+ (see sboms /agent-start), else null
+      mode:         (row.networkInfo as { sbom_mode?: string } | null)?.sbom_mode ?? null,
     })
   } catch (err) {
     console.error('sbom-scan-status error:', err)
@@ -1567,10 +1570,20 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES), as
           + 'Install the agent on it (its first inventory links the agent to this asset).' }, 409)
       }
 
-      const [running] = await db.select({ scanId: scanResults.scanId }).from(scanResults)
+      // One SBOM at a time. Agents from 2.2.6 say which kind is running (network_info.sbom_mode).
+      const [running] = await db.select({ scanId: scanResults.scanId, networkInfo: scanResults.networkInfo }).from(scanResults)
         .where(and(eq(scanResults.subnet, assetId), eq(scanResults.scanType, 'sbom'), eq(scanResults.status, 'running')))
         .limit(1)
-      if (running) return c.json({ detail: 'An SBOM scan of this device is already running' }, 409)
+      if (running) {
+        const mode = (running.networkInfo as { sbom_mode?: string } | null)?.sbom_mode
+        return c.json({
+          detail: mode === 'quick'
+            ? 'A daily SBOM of this device is running; it usually finishes within a few minutes. Try again then for a full SBOM.'
+            : mode === 'full'
+              ? 'A full SBOM of this device is already running; its result will appear here when it finishes.'
+              : 'An SBOM scan of this device is already running',
+        }, 409)
+      }
 
       // Cancel any existing pending SBOM scans for this asset to avoid duplicates.
       await db.update(scanResults)

@@ -8,8 +8,14 @@ Same behaviour as the original agent's main loop:
     worker, so a slow upload never holds up polling; what a failed upload held goes
     back into the buffer for the next flush, and stopping tries one last flush.
 
-Every run reports pipeline events. The SBOM of this computer (Syft + Grype) runs
-once a day and when the dashboard asks, in its own worker so it never holds up scans.
+Every run reports pipeline events. The SBOM of this computer (Syft + Grype) runs in its
+own worker so it never holds up scans: daily (15 minutes after the agent starts, then
+every 24 hours), as a full run once a week, and whenever someone asks (dashboard or
+the agent's "Build SBOM now", always full). Asking never moves the daily or weekly
+times. One SBOM runs at a time: a request made during a daily run starts a full one
+right after it; one made during a full run is answered by that run when it succeeds.
+A daily or weekly run that comes due during a full run is answered by it the same way,
+and the next one stays on its own time.
 
 Added for the GUI: local schedules and "Scan now" / "Collect inventory now"
 requests. Requests may come from any thread; they are queued and handled on the
@@ -29,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import sbom as sbom_tools
 from .api import AgentClient
 from .config import Settings
 from .passive import PassiveSuite
@@ -102,6 +109,7 @@ class AgentService:
         client: Optional[AgentClient] = None,
         on_event: Callable[[PipelineEvent], None] = log_event,
         state_path: Optional[Path] = None,
+        sbom_cache_path: Optional[Path] = None,
     ) -> None:
         self.settings = settings
         self.client = client or AgentClient(settings.api_url, settings.api_key, settings.agent_id)
@@ -129,7 +137,12 @@ class AgentService:
         self._final_flush_started = False
         self._sbom_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sbom")
         self._sbom_future: Optional[Future[Optional[PipelineResult]]] = None
-        self._next_sbom = time.time() + SBOM_FIRST_DELAY
+        self._next_sbom = time.time() + SBOM_FIRST_DELAY     # the daily run (in memory: a restart starts over)
+        self.sbom_cache = sbom_tools.FolderCache(sbom_cache_path)   # also holds the weekly run's time
+        self.sbom_mode: Optional[str] = None                 # full | quick while an SBOM runs
+        self._sbom_last: Optional[tuple[str, bool]] = None   # (mode, succeeded) of the run that just ended
+        self._sbom_wanted: Optional[str] = None              # "queued" | "covered": a Build SBOM now waiting
+        self._sbom_due_waiting: Optional[float] = None       # a daily/weekly run that came due during a run
 
     # ── pipelines ──
     def _active_pipeline(self, subnet: str) -> Pipeline:
@@ -236,10 +249,14 @@ class AgentService:
         self._record("inventory", trigger, "this computer", result)
         return result
 
-    def run_sbom(self, scan_id: Optional[str] = None, trigger: str = "schedule") -> Optional[PipelineResult]:
+    def run_sbom(self, scan_id: Optional[str] = None, trigger: str = "schedule",
+                 full: bool = True) -> Optional[PipelineResult]:
         """Build this computer's SBOM and upload it with its CVE findings. scan_id is the
-        dashboard's job; without one the server creates a record for this run."""
-        started_id, reason = self.client.start_sbom(trigger, scan_id)
+        dashboard's job; without one the server creates a record for this run. A daily
+        run (full=False) lists only the folders that changed; a scheduled full run that
+        succeeds is this week's full run."""
+        started_at = time.time()
+        started_id, reason = self.client.start_sbom(trigger, scan_id, "full" if full else "quick")
         if not started_id:
             log.warning("SBOM not started: %s", reason)
             if scan_id:      # leave a reason on the dashboard's job instead of letting it expire
@@ -251,9 +268,13 @@ class AgentService:
         ctx = PipelineContext("sbom", scan_id=started_id, scan_type="sbom",
                               cancelled=lambda: self._stop.is_set() or dashboard_cancelled())
         result = Pipeline("sbom", [
-            SbomBuildStage(self.settings.sbom_extra_paths, include_binaries=self.settings.sbom_include_binaries),
+            SbomBuildStage(self.settings.sbom_extra_paths, include_binaries=self.settings.sbom_include_binaries,
+                           cache=self.sbom_cache, full=full),
             CveCheckStage(), SbomUploadStage(self.client),
         ], self.on_event).run(ctx)
+        if result.ok and trigger == "schedule" and ctx.summary.get("sbom_full", full):
+            self.sbom_cache.last_full = started_at      # only a scheduled one: Run now never moves the week
+            self.sbom_cache.save()
         self._finish(started_id, result)
         if result.status == "cancelled":    # no-op when the dashboard already cancelled it
             self.client.mark_scan_failed(started_id, "The agent was stopped before the SBOM scan finished")
@@ -266,41 +287,76 @@ class AgentService:
 
     def _reap_sbom(self) -> None:
         if self._sbom_future is not None and self._sbom_future.done():
+            ok = False
             try:
-                self._sbom_future.result()
+                result = self._sbom_future.result()
+                ok = result is not None and result.ok
             except Exception as exc:  # noqa: BLE001
                 log.error("SBOM worker failed: %s", exc, exc_info=True)
+            self._sbom_last = (self.sbom_mode or "full", ok)
             self._sbom_future = None
+            self.sbom_mode = None
 
-    def _submit_sbom(self, scan_id: Optional[str], trigger: str) -> bool:
+    def _submit_sbom(self, scan_id: Optional[str], trigger: str, full: bool = True) -> bool:
         if self._stop.is_set():
             return False
         try:
-            self._sbom_future = self._sbom_pool.submit(self.run_sbom, scan_id, trigger)
+            self._sbom_future = self._sbom_pool.submit(self.run_sbom, scan_id, trigger, full)
         except RuntimeError:            # stopped (settings saved) while this poll was running
             return False
+        self.sbom_mode, self._sbom_last = ("full" if full else "quick"), None
         return True
 
     def _maybe_sbom(self, force: bool = False) -> None:
-        """The daily SBOM (or one requested on this computer)."""
+        """The daily and weekly SBOM, and "Build SBOM now" on this computer (force)."""
         self._reap_sbom()
         if not self.settings.sbom:
             if force:
                 log.warning("SBOM is switched off on this computer (Privacy page); nothing built")
             return
+        if force:
+            if not self.sbom_running:
+                self._submit_sbom(None, "manual", True)
+            elif self.sbom_mode == "full":
+                self._sbom_wanted = "covered"
+                log.info("Build SBOM now: a full SBOM is already running; its result will appear when it finishes")
+            else:
+                self._sbom_wanted = "queued"
+                log.info("Build SBOM now: queued, a full SBOM starts when the current daily SBOM finishes")
+            return
         if self.sbom_running:
-            if force:
-                log.info("An SBOM is already being built")
+            if self._sbom_due_waiting is None and time.time() >= self._next_sbom:
+                self._sbom_due_waiting = self._next_sbom
+                log.info("The scheduled SBOM came due while another SBOM runs; it waits for that one")
             return
-        if not force and time.time() < self._next_sbom:
+        finished_full = self._sbom_last == ("full", True)
+        if self._sbom_wanted is not None:
+            wanted, self._sbom_wanted = self._sbom_wanted, None
+            if wanted == "covered" and finished_full:
+                log.info("Build SBOM now: answered by the full SBOM that just finished")
+            else:                       # queued behind a daily run, or the full run failed
+                self._submit_sbom(None, "manual", True)
+                return
+        if self._sbom_due_waiting is not None:
+            due, self._sbom_due_waiting = self._sbom_due_waiting, None
+            if finished_full:
+                # Answered by that run. The schedule keeps its own times: the next daily run
+                # 24 h after this one was due, and a weekly run that was due counts as done then.
+                if self.sbom_cache.weekly_due(due):
+                    self.sbom_cache.last_full = due
+                    self.sbom_cache.save()
+                self._next_sbom = due + self.settings.sbom_interval
+                log.info("The scheduled SBOM was answered by the full SBOM that just finished")
+                return
+        now = time.time()
+        if now < self._next_sbom:
             return
-        from . import sbom as sbom_tools
-        if not force and not (sbom_tools.find_tool("syft") and sbom_tools.find_tool("grype")):
+        if not (sbom_tools.find_tool("syft") and sbom_tools.find_tool("grype")):
             log.info("Daily SBOM skipped: Syft and Grype are not both installed (see Dependencies)")
-            self._next_sbom = time.time() + self.settings.sbom_interval
+            self._next_sbom = now + self.settings.sbom_interval
             return
-        if self._submit_sbom(None, "manual" if force else "schedule"):
-            self._next_sbom = time.time() + self.settings.sbom_interval
+        if self._submit_sbom(None, "schedule", full=self.sbom_cache.weekly_due(now)):
+            self._next_sbom = now + self.settings.sbom_interval
 
     def _maybe_inventory(self, force: bool = False) -> None:
         if not self.settings.inventory or not self._inventory_supported:
@@ -476,8 +532,7 @@ class AgentService:
                 log.info("Leaving SBOM job %s queued while an SBOM is being built", (scan_id or "?")[:8])
                 return
             log.info("Processing SBOM job %s", (scan_id or "?")[:8])
-            if self._submit_sbom(scan_id, "dashboard"):
-                self._next_sbom = time.time() + self.settings.sbom_interval
+            self._submit_sbom(scan_id, "dashboard", True)      # always full; the schedule stays as it is
         else:
             self._decline(scan_id, f"Unsupported scan type '{scan_type}'.")
 
@@ -487,7 +542,6 @@ class AgentService:
         self._reap_active()
         self._handle_requests()
         self._maybe_inventory()
-        self._maybe_sbom()
         pending = self.client.get_pending_scans()
         if pending:
             log.info("Found %d pending scan(s)", len(pending))
@@ -495,6 +549,7 @@ class AgentService:
                 self._dispatch(scan)
         else:
             log.info("No pending scans")
+        self._maybe_sbom()              # after the dashboard's jobs: a full run they asked for goes first
         self._maybe_schedules()
         self._maybe_flush_passive()
 

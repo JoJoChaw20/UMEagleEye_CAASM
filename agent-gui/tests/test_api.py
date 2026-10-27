@@ -140,11 +140,11 @@ def test_mark_failed_truncates_the_reason():
 def test_start_sbom_marks_the_dashboard_job_or_creates_one():
     c, session, _ = client(FakeResponse(200, {"scan_id": "sb1"}), FakeResponse(201, {"scan_id": "own"}))
     assert c.start_sbom("dashboard", "sb1") == ("sb1", None)
-    assert c.start_sbom("schedule") == ("own", None)
+    assert c.start_sbom("schedule", mode="quick") == ("own", None)
     (m1, u1, k1), (_, _, k2) = session.calls
     assert (m1, u1) == ("POST", "https://api.example/api/v1/sboms/agent-start")
-    assert json.loads(k1["data"]) == {"trigger": "dashboard", "scan_id": "sb1"}
-    assert json.loads(k2["data"]) == {"trigger": "schedule"}
+    assert json.loads(k1["data"]) == {"trigger": "dashboard", "scan_id": "sb1", "mode": "full"}
+    assert json.loads(k2["data"]) == {"trigger": "schedule", "mode": "quick"}
 
 
 def test_start_sbom_refused_returns_the_servers_reason():

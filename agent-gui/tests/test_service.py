@@ -119,18 +119,19 @@ class SbomClient(FakeClient):
     def __init__(self, start_error=None, **kw):
         super().__init__(**kw)
         self.start_error = start_error
-        self.sbom_starts, self.sboms, self.cve_uploads = [], [], []
+        self.sbom_starts, self.sboms, self.cve_uploads, self.sbom_modes = [], [], [], []
 
     def sbom_status(self, scan_id):
         return getattr(self, "sbom_statuses", {}).get(scan_id, "running")
 
-    def start_sbom(self, trigger, scan_id=None):
+    def start_sbom(self, trigger, scan_id=None, mode="full"):
         self.sbom_starts.append((trigger, scan_id))
+        self.sbom_modes.append(mode)
         if self.start_error:
             return None, self.start_error
         return scan_id or "own-1", None
 
-    def send_sbom(self, scan_id, document, scope):
+    def send_sbom(self, scan_id, document, scope, run=None):
         self.sboms.append((scan_id, document, scope))
         return True, "1 package(s) stored"
 
@@ -145,6 +146,7 @@ def fake_sbom(monkeypatch):
     from eagleeye.stages import sbom as sbom_stages
 
     def build(self, ctx):
+        ctx.summary["sbom_full"] = self.full
         ctx.summary.update(grype="grype", sbom={"specVersion": "1.6", "components": [{"type": "library", "name": "a", "version": "1"}]},
                            sbom_scope=["/apps"])
 

@@ -133,6 +133,7 @@ export default function SBOMPage() {
         startedAt: data.started_at,
         completedAt: data.completed_at,
         failureReason: data.failure_reason,
+        mode: data.mode,       // full | quick (agents 2.2.6+)
       }
 
       if (data.status === 'pending' || data.status === 'running') {
@@ -630,7 +631,9 @@ export default function SBOMPage() {
                           disabled={['pending', 'running'].includes(scanning[sbom.asset_id]?.status)}
                           className="p-1.5 hover:bg-eagle-500/10 rounded text-eagle-400 transition-colors disabled:opacity-40"
                           title={['pending', 'running'].includes(scanning[sbom.asset_id]?.status)
-                            ? `SBOM scan ${scanning[sbom.asset_id].status}`
+                            ? ({ quick: 'A daily SBOM is running (only the folders that changed); it usually finishes within a few minutes',
+                                 full: 'A full SBOM is already running; its result will appear here when it finishes' }[scanning[sbom.asset_id].mode]
+                               ?? `SBOM scan ${scanning[sbom.asset_id].status}`)
                             : 'Re-trigger SBOM scan for this asset'}
                         >
                           {['pending', 'running'].includes(scanning[sbom.asset_id]?.status)

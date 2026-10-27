@@ -18,6 +18,7 @@ from .netinfo import default_gateway, local_ip
 log = logging.getLogger("eagleeye.api")
 
 RETRY_DELAYS = (2.0, 5.0)   # seconds before the 2nd and 3rd attempt
+UNREACHABLE = "could not reach the server"   # starts the message of an upload that never got an answer
 
 
 @dataclass
@@ -188,11 +189,13 @@ class AgentClient:
         data = resp.json()
         return IngestResult(True, data.get("hosts_discovered", 0), data.get("assets_upserted", 0))
 
-    def start_sbom(self, trigger: str, scan_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    def start_sbom(self, trigger: str, scan_id: Optional[str] = None,
+                   mode: str = "full") -> tuple[Optional[str], Optional[str]]:
         """POST /sboms/agent-start - mark the dashboard's SBOM job `scan_id` running, or
-        (without one) create a record for an SBOM this agent starts itself.
+        (without one) create a record for an SBOM this agent starts itself. `mode` (full or
+        quick) lets the dashboard say which kind of run is busy.
         Returns (scan_id, None) or (None, reason)."""
-        body: dict[str, Any] = {"trigger": trigger}
+        body: dict[str, Any] = {"trigger": trigger, "mode": mode}
         if scan_id:
             body["scan_id"] = scan_id
         try:
@@ -215,13 +218,17 @@ class AgentClient:
             log.debug("Could not check SBOM %s status: %s", scan_id[:8], exc)
             return None
 
-    def send_sbom(self, scan_id: str, document: dict[str, Any], scope: list[str]) -> tuple[bool, str]:
-        """POST /sboms/ingest - the CycloneDX SBOM of this computer."""
-        body = {"agent_id": self.agent_id, "scan_id": scan_id, "sbom": document, "scope": scope[:50]}
+    def send_sbom(self, scan_id: str, document: dict[str, Any], scope: list[str],
+                  run: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
+        """POST /sboms/ingest - the CycloneDX SBOM of this computer, with how it was built
+        (sbom.run_report: kind of run, folders kept from an earlier listing or missing)."""
+        body: dict[str, Any] = {"agent_id": self.agent_id, "scan_id": scan_id, "sbom": document, "scope": scope[:50]}
+        if run is not None:
+            body["run"] = run
         try:
             resp = self._request("POST", "/sboms/ingest", 120, data=json.dumps(body))
         except httpclient.RequestException as exc:
-            return False, f"could not reach the server: {exc}"
+            return False, f"{UNREACHABLE}: {exc}"
         if not resp.ok:
             return False, f"server rejected the SBOM ({self._detail(resp)})"
         return True, f"{resp.json().get('dependencies_inserted', 0)} package(s) stored"
@@ -239,7 +246,7 @@ class AgentClient:
         try:
             resp = self._request("POST", "/sboms/ingest-cve", 120, data=json.dumps(body))
         except httpclient.RequestException as exc:
-            return False, f"could not reach the server: {exc}"
+            return False, f"{UNREACHABLE}: {exc}"
         if not resp.ok:
             return False, f"server rejected the vulnerabilities ({self._detail(resp)})"
         data = resp.json()
