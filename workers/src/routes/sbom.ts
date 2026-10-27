@@ -223,6 +223,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
         generated_by: raw.generated_by ?? null,
         stored_in_r2: isStoredInR2(raw),
         scope: Array.isArray(raw.scope) ? raw.scope : [],
+        run: raw.run ?? null,          // how the agent built it (2.2.6+), see sbomSummary
         generated_at: s.generatedAt,
         component_count: componentCountOf(raw),
       }
@@ -253,6 +254,7 @@ app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       generated_by: raw.generated_by ?? null,
       stored_in_r2: isStoredInR2(raw),
       scope: Array.isArray(raw.scope) ? raw.scope : [],
+      run: raw.run ?? null,
       generated_at: sbom.generatedAt,
       component_count: componentCountOf(raw),
     })

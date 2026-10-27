@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom'
 import { HardDrive, ShieldCheck, Wrench, Radio, Package, Cable, CheckCircle2, XCircle, AlertTriangle, HelpCircle, Search } from 'lucide-react'
 import { Section, Field, Empty, fmtDate, fmtDateTime, fmtBytes } from './DetailParts'
 import { RISKY_PORTS } from '../common/alertMeta'
+import SbomRunNote from '../common/SbomRunNote'
 
 const FORM_FACTOR = { laptop: 'Laptop', desktop: 'Desktop', server: 'Server', virtual: 'Virtual machine', unknown: 'Unknown' }
 const ROLE = { workstation: 'Workstation', server: 'Server', domain_controller: 'Domain controller' }
@@ -231,6 +232,7 @@ export function SoftwareSection({ software, sbom, inventoryAt, className = '' })
             <Field label="Collected">{fmtDateTime(sbom.generated_at)}</Field>
             <Field label="Tool">{sbom.tool_used}</Field>
             <div className="pt-2"><Link to="/sbom" className="text-xs text-eagle-400 hover:underline">Open in SBOM</Link></div>
+            <SbomRunNote run={sbom.run} compact />
           </dl>
         ) : <Empty>No software reported. Install the EagleEye agent on this machine to list its software.</Empty>}
       </Section>
@@ -261,6 +263,7 @@ export function SoftwareSection({ software, sbom, inventoryAt, className = '' })
         </table>
         {!filtered.length && <Empty>No software matches “{q}”.</Empty>}
       </div>
+      <SbomRunNote run={sbom?.run} compact />
     </Section>
   )
 }

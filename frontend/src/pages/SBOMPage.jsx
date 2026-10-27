@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Package, Shield, Search, ChevronDown, ChevronUp,
   RefreshCw, FileCode2, Database, Cpu, CheckCircle2, Trash2,
-  Clock3, AlertCircle, XCircle, Download,
+  Clock3, AlertCircle, AlertTriangle, XCircle, Download,
 } from 'lucide-react'
 import {
   BarChart, Bar, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import SbomRunNote, { sbomRunProblems } from '../components/common/SbomRunNote'
 
 // ── Package-manager icon/label map ────────────────────────────
 const PM_META = {
@@ -610,6 +611,11 @@ export default function SBOMPage() {
                       <span className="text-lg font-bold text-eagle-400">
                         {sbom.component_count ?? '—'}
                       </span>
+                      {sbomRunProblems(sbom.run) > 0 && (
+                        <span title={`${sbomRunProblems(sbom.run)} folder(s) not listed in the last run; expand the row for details`}>
+                          <AlertTriangle className="inline w-4 h-4 ml-1.5 text-amber-400 align-text-bottom" />
+                        </span>
+                      )}
                     </td>
                     <td className="text-dark-300 text-xs">{sbom.generated_by || sbom.tool_used}</td>
                     <td onClick={e => e.stopPropagation()}>
@@ -674,6 +680,7 @@ export default function SBOMPage() {
                             </div>
                           ) : (
                             <>
+                              <SbomRunNote run={sbom.run} />
                               {/* Dependency filter bar */}
                               <div className="flex items-center gap-3 mb-3 flex-wrap">
                                 <h4 className="text-sm font-semibold text-dark-200">
