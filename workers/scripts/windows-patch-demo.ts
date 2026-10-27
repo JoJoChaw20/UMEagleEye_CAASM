@@ -56,13 +56,17 @@ const index: MsrcIndex = {
   },
 }
 const inv = (os: Record<string, unknown>, platform = 'windows') => ({ platform, os })
+// What agent 2.x sends (collectors/windows.py): build and patch number joined, a role
 const pc = (ubr: number, over: Record<string, unknown> = {}) =>
-  windowsOs(inv({ build: '26200', ubr, architecture: '64-bit', product_type: 1, display_version: '25H2', ...over }))
+  windowsOs(inv({ build: `26200.${ubr}`, architecture: '64-bit', role: 'workstation', display_version: '25H2', ...over }))
 const NOW = new Date('2026-10-27T00:00:00Z')
 
 // ── reading the inventory ──
 check('a Windows inventory gives build, patch number, arch, workstation',
   pc(9711), { build: 26200, ubr: 9711, arch: 'x64', server: false, displayVersion: '25H2' })
+check('the agent payload (as stored on staging) is read', windowsOs(inv({ name: 'Microsoft Windows 11 Home', build: '26200.9711', display_version: '25H2', architecture: '64-bit', role: 'workstation' })),
+  { build: 26200, ubr: 9711, arch: 'x64', server: false, displayVersion: '25H2' })
+check('role server / domain controller = server', [windowsOs(inv({ build: '26100.1', role: 'server' }))?.server, windowsOs(inv({ build: '26100.1', role: 'domain_controller' }))?.server], [true, true])
 check('ARM and server are recognised', [windowsOs(inv({ build: 26200, ubr: 1, architecture: 'ARM 64-bit Processor', product_type: 1 }))?.arch,
   windowsOs(inv({ build: 26100, ubr: 1, architecture: '64-bit', product_type: 3 }))?.server], ['arm64', true])
 check('a Linux inventory, or one without a patch number, is not assessed',

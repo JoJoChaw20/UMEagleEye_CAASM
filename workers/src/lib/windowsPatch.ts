@@ -79,21 +79,27 @@ export interface WindowsOs {
   displayVersion: string | null
 }
 
-/** Windows os block of an inventory, or null for other platforms or missing build numbers. */
+/** Windows os block of an inventory, or null for other platforms or missing build numbers.
+ *  The agent sends build and patch number as one string ("26200.9711", collectors/windows.py)
+ *  and the machine's role ("workstation", "server", "domain_controller"); the separate
+ *  build/ubr/product_type of the raw collector output are accepted too. */
 export function windowsOs(inventory: unknown): WindowsOs | null {
   const inv = (inventory && typeof inventory === 'object' ? inventory : {}) as Rec
   if (String(inv['platform'] ?? '').toLowerCase() !== 'windows') return null
   const os = (inv['os'] && typeof inv['os'] === 'object' ? inv['os'] : {}) as Rec
-  const build = num(os['build'])
-  const ubr = num(os['ubr'])
+  const joined = /^(?:10\.0\.)?(\d+)\.(\d+)$/.exec(String(os['build'] ?? '').trim())
+  const build = joined ? Number(joined[1]) : num(os['build'])
+  const ubr = joined ? Number(joined[2]) : num(os['ubr'])
   if (build == null || ubr == null) return null
   // Win32_OperatingSystem.OSArchitecture: "64-bit", "32-bit", "ARM 64-bit Processor"
   const a = String(os['architecture'] ?? '').toLowerCase()
   const arch = a.includes('arm') ? 'arm64' : a.includes('64') ? 'x64' : a.includes('32') ? 'x86' : null
-  // ProductType: 1 workstation, 2 domain controller, 3 server
+  // role from the agent, or ProductType (1 workstation, 2 domain controller, 3 server)
+  const role = typeof os['role'] === 'string' ? os['role'].toLowerCase() : null
   const pt = num(os['product_type'])
+  const server = role ? role !== 'workstation' : pt != null && pt !== 1
   const dv = typeof os['display_version'] === 'string' ? os['display_version'].trim() : ''
-  return { build, ubr, arch, server: pt != null && pt !== 1, displayVersion: dv || null }
+  return { build, ubr, arch, server, displayVersion: dv || null }
 }
 
 const parseBuild = (s: string): [number, number] | null => {

@@ -55,6 +55,7 @@ export async function checkWindowsPatch(
   if (!os) return 'none'
   const index = await loadMsrcIndex(bucket)
   const a = assessPatch(os, index, now)
+  console.log(`windows patch: asset=${assetId} build=${a.build} ${a.status}${a.product ? ` (${a.product})` : ''}${a.cves ? `, ${a.cves} missing CVEs` : ''}${a.reason ? `: ${a.reason}` : ''}`)
   if (a.status === 'unknown') return 'none'   // no data, or a version we cannot place: leave alerts as they are
 
   const rows = await db.select({ eventId: events.eventId, status: events.status, details: events.details })
