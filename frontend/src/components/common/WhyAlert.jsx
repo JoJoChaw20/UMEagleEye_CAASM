@@ -1,7 +1,7 @@
 // "Why this alert": what was observed on the asset (evidence), what it was compared
 // with (knowledge) and the rule that turned the two into an alert. Built from the alert's
 // details only, so it works for every alert the server stores.
-import { Eye, BookOpen, Scale } from 'lucide-react'
+import { Eye, BookOpen, Scale, Radar } from 'lucide-react'
 import { RISKY_PORTS, riskReasons } from './alertMeta'
 
 const host = (e) => e.asset?.hostname || e.asset?.ip_address || 'this asset'
@@ -75,6 +75,31 @@ function chain(e) {
   }
 }
 
+// What the targeted active scan of a new device found (tenant setting "Investigate new
+// devices automatically"; details.investigation, written by the server).
+function investigationText(inv, ip) {
+  const when = (t) => (t ? ` (${new Date(t).toLocaleString()})` : '')
+  switch (inv.status) {
+    case 'queued':
+      return `An active scan of ${ip ?? 'this device'} is queued; the agent that heard it runs it a few minutes after it was found.`
+    case 'no_answer':
+      return `The active scan got no answer${when(inv.completed_at)}: the device left the network or blocks probes.`
+    case 'failed':
+      return `The active scan did not run: ${inv.reason ?? 'unknown reason'}.`
+    case 'completed': {
+      const ports = (inv.open_ports ?? []).map((p) =>
+        [`${p.port}/${p.protocol ?? 'tcp'}`, p.service, [p.product, p.version].filter(Boolean).join(' ')].filter(Boolean).join(' '))
+      return [
+        ports.length ? `Open ports: ${ports.join(', ')}` : 'No open ports found',
+        inv.os ? `OS guess: ${inv.os}` : null,
+        inv.hostname ? `Name: ${inv.hostname}` : null,
+      ].filter(Boolean).join(' · ') + when(inv.completed_at)
+    }
+    default:
+      return null
+  }
+}
+
 function Step({ icon: Icon, label, children }) {
   return (
     <div className="flex gap-2.5">
@@ -99,6 +124,9 @@ export default function WhyAlert({ event }) {
         <ul className="space-y-0.5">{c.knowledge.map((k, i) => <li key={i}>{k}</li>)}</ul>
       </Step>
       <Step icon={Scale} label="Rule">{c.rule}</Step>
+      {event.event_type === 'new_device' && event.details?.investigation && investigationText(event.details.investigation, event.details.ip) && (
+        <Step icon={Radar} label="Investigated">{investigationText(event.details.investigation, event.details.ip)}</Step>
+      )}
       {reasons.length > 0 && (
         <p className="text-[11px] text-dark-400">Ranked up by: {reasons.map(r => r.label).join(' · ')}</p>
       )}

@@ -89,6 +89,16 @@ def test_active_scan_runs_and_uploads(fake_scan):
     assert client.failed == []
 
 
+def test_new_device_investigation_runs_as_an_active_scan_of_one_ip(fake_scan):
+    client = FakeClient(pending=[{"scan_id": "n1", "scan_type": "active", "subnet": "192.168.1.23",
+                                  "network_info": {"trigger": "new_device", "event_id": "e1"}}])
+    svc = service(client)
+    svc.poll_once()
+    wait_idle(svc)
+    assert client.running == ["n1"] and client.ingested[0]["scan_id"] == "n1"
+    assert svc.history[0].trigger == "new_device" and svc.history[0].target == "192.168.1.23"
+
+
 def test_snake_case_pending_keys_are_accepted(fake_scan):
     client = FakeClient(pending=[{"scan_id": "s2", "scan_type": "active", "subnet": "10.0.0.0/24"}])
     svc = service(client)
@@ -478,7 +488,7 @@ def test_inventory_request_runs_even_between_intervals(monkeypatch):
     calls = []
     client = FakeClient()
     svc = service(client, inventory=True)
-    monkeypatch.setattr(svc, "run_inventory", lambda trigger="auto": calls.append(trigger))
+    monkeypatch.setattr(svc, "run_inventory", lambda trigger="auto", scan_id=None: calls.append(trigger))
     svc._last_inventory = time.time()                 # not due yet
     svc.request_inventory()
     svc.poll_once()
@@ -486,6 +496,35 @@ def test_inventory_request_runs_even_between_intervals(monkeypatch):
     while not calls and time.time() < deadline:
         time.sleep(0.01)
     assert calls == ["manual"]
+
+
+def test_dashboard_inventory_job_is_marked_running_and_collected(monkeypatch):
+    calls = []
+    client = FakeClient(pending=[{"scan_id": "i1", "scan_type": "inventory"}])
+    svc = service(client, inventory=True)
+    monkeypatch.setattr(svc, "run_inventory", lambda trigger="auto", scan_id=None: calls.append((trigger, scan_id)))
+    svc._last_inventory = time.time()                 # not due: the job runs anyway
+    svc.poll_once()
+    deadline = time.time() + 5
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+    assert client.running == ["i1"] and calls == [("dashboard", "i1")] and client.failed == []
+
+
+def test_dashboard_inventory_job_is_declined_when_inventory_is_off():
+    client = FakeClient(pending=[{"scan_id": "i1", "scan_type": "inventory"}])
+    service(client, inventory=False).poll_once()
+    assert client.running == [] and client.failed[0][0] == "i1" and "switched off" in client.failed[0][1]
+
+
+def test_failed_dashboard_inventory_marks_its_job_failed(monkeypatch):
+    from eagleeye.pipeline import PipelineResult
+    client = FakeClient()
+    svc = service(client, inventory=True)
+    monkeypatch.setattr("eagleeye.service.Pipeline.run",
+                        lambda self, ctx: PipelineResult("failed", error="server rejected the inventory (HTTP 400)"))
+    svc.run_inventory("dashboard", "i1")
+    assert client.failed == [("i1", "server rejected the inventory (HTTP 400)")]
 
 
 def test_inventory_request_is_ignored_when_inventory_is_off(monkeypatch):
@@ -526,6 +565,31 @@ def test_new_schedule_does_not_fire_immediately_then_fires_when_due(fake_scan, t
     assert client.started == [("192.168.1.0/24", "schedule")]
     assert svc.schedule_state.last_runs["s1"] == now + timedelta(hours=1)
     assert svc.history[0].trigger == "schedule"
+
+
+def test_local_scans_turned_off_by_the_admin_never_reach_the_server(fake_scan, tmp_path):
+    from datetime import datetime, timedelta
+    client = FakeClient()
+    svc = _sched_service(client, tmp_path)
+    now = datetime(2026, 10, 11, 10, 0)
+    svc._maybe_schedules(now)                              # the schedule is new: not due yet
+    client.local_scans_allowed = False                     # the admin turns local scans off
+    svc._maybe_schedules(now + timedelta(hours=1))         # due, but held back
+    assert svc._start_local_scan("192.168.1.0/24", "manual").startswith("your administrator")
+    assert getattr(client, "started", []) == []
+    client.local_scans_allowed = True                      # allowed again: the due schedule runs
+    svc._maybe_schedules(now + timedelta(hours=1))
+    wait_idle(svc)
+    assert client.started == [("192.168.1.0/24", "schedule")]
+
+
+def test_dashboard_scans_still_run_when_local_scans_are_off(fake_scan):
+    client = FakeClient(pending=[{"scanId": "s1", "scanType": "active", "subnet": "192.168.1.0/24"}])
+    client.local_scans_allowed = False
+    svc = service(client)
+    svc.poll_once()
+    wait_idle(svc)
+    assert client.running == ["s1"] and len(client.ingested) == 1
 
 
 def test_unreachable_server_postpones_the_schedule_without_marking_it(tmp_path):

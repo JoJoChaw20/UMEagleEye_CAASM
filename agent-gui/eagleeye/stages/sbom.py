@@ -7,7 +7,7 @@ import time
 from typing import Any, Callable, Optional
 
 from .. import sbom
-from ..api import UNREACHABLE, AgentClient
+from ..api import TRY_AGAIN_LATER, AgentClient
 from ..pipeline.runner import Cancelled, PipelineContext, Stage, StageError
 
 
@@ -101,7 +101,7 @@ class SbomUploadStage(Stage):
             ok, detail = send()
             if ok:
                 return detail
-            if not detail.startswith(UNREACHABLE) or not delays:
+            if not detail.startswith(TRY_AGAIN_LATER) or not delays:
                 raise StageError(detail)
             delay = delays.pop(0)
             ctx.progress(f"{detail}; trying again in {int(delay)} s")

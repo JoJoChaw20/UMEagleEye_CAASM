@@ -1064,7 +1064,7 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
           .from(scanResults)
           .where(and(
             existing.tenantId ? eq(scanResults.tenantId, existing.tenantId) : isNull(scanResults.tenantId),
-            sql`${scanResults.scanType} <> 'sbom'`,
+            sql`${scanResults.scanType} NOT IN ('sbom', 'inventory')`,
             or(...ips.map(ip => sql`${scanResults.rawResults} @> ${JSON.stringify([{ ip }])}::jsonb`)),
           ))
       : []
@@ -1531,6 +1531,92 @@ app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES
   } catch (err) {
     console.error('sbom-scan-status error:', err)
     return c.json({ detail: 'Failed to fetch SBOM scan status' }, 500)
+  }
+})
+
+// ── GET /:assetId/inventory-job-status ─── frontend polls this after "Collect inventory" ───
+app.get('/:assetId/inventory-job-status', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+    const [row] = await db
+      .select({ scanId: scanResults.scanId, status: scanResults.status, failureReason: scanResults.failureReason,
+        startedAt: scanResults.startedAt, completedAt: scanResults.completedAt })
+      .from(scanResults)
+      .where(and(eq(scanResults.subnet, assetId), eq(scanResults.scanType, 'inventory')))
+      .orderBy(desc(scanResults.startedAt))
+      .limit(1)
+    if (!row) return c.json({ status: 'none' })
+    return c.json({ scan_id: row.scanId, status: row.status, started_at: row.startedAt,
+      completed_at: row.completedAt, failure_reason: row.failureReason })
+  } catch (err) {
+    console.error('inventory-job-status error:', err)
+    return c.json({ detail: 'Failed to fetch inventory job status' }, 500)
+  }
+})
+
+// ── POST /:assetId/collect-inventory ────────────────────────────
+// Queues an inventory job for the agent installed ON this asset, like scan-sbom. The agent
+// (2.3.0+) picks it up via GET /scans/pending and posts its inventory; any inventory from
+// that agent completes its open jobs (agents POST /:agentId/inventory).
+app.post('/:assetId/collect-inventory', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db   = getDb(c.env.DATABASE_URL)
+    const { assetId } = c.req.param()
+
+    const [asset] = await db
+      .select({ assetId: assets.assetId, tenantId: assets.tenantId })
+      .from(assets).where(eq(assets.assetId, assetId)).limit(1)
+    if (!asset) return c.json({ detail: 'Asset not found' }, 404)
+    if (user.role !== 'superadmin' && user.tenantId && asset.tenantId !== user.tenantId) {
+      return c.json({ detail: 'Asset not found' }, 404)
+    }
+
+    const [agent] = await db
+      .select({
+        agentId: agents.agentId,
+        online: sql<boolean>`(${agents.lastHeartbeat} > now() - interval '2 minutes')`,
+      })
+      .from(agents)
+      .where(and(eq(agents.hostAssetId, assetId), isNull(agents.retiredAt)))
+      .orderBy(desc(agents.lastHeartbeat))
+      .limit(1)
+    if (!agent) {
+      return c.json({ detail: 'No EagleEye agent is installed on this device, so it cannot collect an inventory. '
+        + 'Install the agent on it (its first inventory links the agent to this asset).' }, 409)
+    }
+
+    // One job at a time: a queued or running one already brings a fresh inventory.
+    const [open] = await db.select({ scanId: scanResults.scanId, status: scanResults.status }).from(scanResults)
+      .where(and(eq(scanResults.subnet, assetId), eq(scanResults.scanType, 'inventory'),
+        inArray(scanResults.status, ['pending', 'running'])))
+      .limit(1)
+    if (open) {
+      return c.json({ scan_id: open.scanId, status: open.status,
+        message: 'An inventory of this device is already on its way.' }, 202)
+    }
+
+    const [scan] = await db.insert(scanResults).values({
+      agentId:   agent.agentId,
+      tenantId:  asset.tenantId,
+      scanType:  'inventory',
+      subnet:    assetId,
+      status:    'pending',
+      rawResults: [],
+    }).returning({ scanId: scanResults.scanId })
+    if (!scan) return c.json({ detail: 'Failed to create the inventory job' }, 500)
+
+    return c.json({
+      scan_id: scan.scanId,
+      status:  'pending',
+      message: agent.online
+        ? 'Inventory requested. The agent on this device sends it within a minute.'
+        : 'The agent on this device is offline. It collects the inventory if it reconnects within 30 minutes.',
+    }, 202)
+  } catch (err) {
+    console.error('collect-inventory error:', err)
+    return c.json({ detail: 'Failed to request an inventory' }, 500)
   }
 })
 

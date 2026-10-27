@@ -120,6 +120,13 @@
       "when": 1793098008778,
       "tag": "0016_os_patch_missing",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793103964345,
+      "tag": "0017_tenant_scan_policy",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,2 @@
+ALTER TABLE "tenants" ADD COLUMN "auto_investigate_new_devices" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "tenants" ADD COLUMN "allow_local_scans" boolean DEFAULT true NOT NULL;

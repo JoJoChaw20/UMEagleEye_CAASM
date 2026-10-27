@@ -5,7 +5,7 @@ import { eq, count, and, ne } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles, requireTenantAccess } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { tenants, users, assets } from '../db/schema'
+import { tenants, users, assets, auditLogs } from '../db/schema'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -85,13 +85,16 @@ router.get('/:tenantId', ...tenantViewAccess, async (c) => {
     slug: tenant.slug,
     is_active: tenant.isActive,
     created_at: tenant.createdAt,
+    auto_investigate_new_devices: tenant.autoInvestigateNewDevices,
+    allow_local_scans: tenant.allowLocalScans,
     user_count: Number(userCountRow?.value ?? 0),
     asset_count: Number(assetCountRow?.value ?? 0),
   })
 })
 
 // ── PATCH /:tenantId — Update tenant ─────────────────────────────
-// superadmin: name + is_active; tenant_superadmin: name only (own tenant)
+// superadmin: name + is_active; tenant_superadmin: name only (own tenant). Both: the scan
+// policy (auto-investigate new devices, allow agents' local scans), audited.
 router.patch(
   '/:tenantId',
   authMiddleware,
@@ -104,6 +107,8 @@ router.patch(
   zValidator('json', z.object({
     name: z.string().min(1).max(100).optional(),
     is_active: z.boolean().optional(),
+    auto_investigate_new_devices: z.boolean().optional(),
+    allow_local_scans: z.boolean().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -120,16 +125,39 @@ router.patch(
     if (updates.is_active !== undefined && user.role === 'superadmin') {
       updateData.isActive = updates.is_active
     }
+    const policy: Record<string, boolean> = {}
+    if (updates.auto_investigate_new_devices !== undefined && updates.auto_investigate_new_devices !== existing.autoInvestigateNewDevices) {
+      updateData.autoInvestigateNewDevices = policy.auto_investigate_new_devices = updates.auto_investigate_new_devices
+    }
+    if (updates.allow_local_scans !== undefined && updates.allow_local_scans !== existing.allowLocalScans) {
+      updateData.allowLocalScans = policy.allow_local_scans = updates.allow_local_scans
+    }
+    if (Object.keys(updateData).length === 0) {
+      return c.json({
+        tenant_id: existing.tenantId, name: existing.name, slug: existing.slug, is_active: existing.isActive,
+        auto_investigate_new_devices: existing.autoInvestigateNewDevices, allow_local_scans: existing.allowLocalScans,
+      })
+    }
 
     const updatedRows = await db.update(tenants).set(updateData).where(eq(tenants.tenantId, tenantId)).returning()
     const updated = updatedRows[0]
     if (!updated) return c.json({ detail: 'Tenant not found' }, 404)
+
+    if (Object.keys(policy).length) {
+      await db.insert(auditLogs).values({
+        userId: user.userId, tenantId, actionType: 'tenant.scan_policy', targetEntity: tenantId,
+        previousState: { auto_investigate_new_devices: existing.autoInvestigateNewDevices, allow_local_scans: existing.allowLocalScans },
+        newState: policy,
+      }).catch(err => console.error('tenant scan policy audit failed:', err))
+    }
 
     return c.json({
       tenant_id: updated.tenantId,
       name: updated.name,
       slug: updated.slug,
       is_active: updated.isActive,
+      auto_investigate_new_devices: updated.autoInvestigateNewDevices,
+      allow_local_scans: updated.allowLocalScans,
     })
   }
 )

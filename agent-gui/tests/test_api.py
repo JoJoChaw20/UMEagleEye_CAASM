@@ -99,8 +99,15 @@ def test_retries_connection_errors_then_succeeds():
 def test_retries_5xx_then_gives_up_with_a_reason():
     c, session, sleeps = client(FakeResponse(502), FakeResponse(503), FakeResponse(500))
     result = c.ingest("active", [], scan_id="s")
-    assert not result.ok and "could not reach the server" in result.error
+    # The server answered, so this is a server error, not an unreachable server (27 Oct log).
+    assert not result.ok and result.error == "server error (HTTP 500) after 3 tries"
     assert len(session.calls) == 3
+
+
+def test_no_answer_on_every_try_says_unreachable():
+    c, _, _ = client(httpclient.ConnectionError("down"), httpclient.ConnectionError("down"), httpclient.Timeout("slow"))
+    result = c.ingest("active", [], scan_id="s")
+    assert not result.ok and result.error == "could not reach the server: slow"
 
 
 def test_4xx_is_not_retried_and_reports_the_server_detail():
@@ -121,6 +128,17 @@ def test_heartbeat_payload_and_failure(monkeypatch):
 
     c2, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
     assert c2.send_heartbeat() is False
+
+
+def test_heartbeat_answer_carries_the_local_scan_policy(monkeypatch):
+    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.1.20")
+    monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
+    c, _, _ = client(FakeResponse(200, {"ok": True, "policy": {"local_scans": False}}),
+                     FakeResponse(200, {"ok": True}), FakeResponse(200, {"ok": True, "policy": {"local_scans": True}}))
+    assert c.local_scans_allowed is True                   # until a server says otherwise
+    assert c.send_heartbeat() and c.local_scans_allowed is False
+    assert c.send_heartbeat() and c.local_scans_allowed is False   # an older server: unchanged
+    assert c.send_heartbeat() and c.local_scans_allowed is True
 
 
 def test_pending_scans_and_failures_are_tolerated():

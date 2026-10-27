@@ -67,6 +67,13 @@ export const tenants = pgTable('tenants', {
   // Criticality formula of this tenant. Historical: since Release 2 every tenant
   // scores with v2 (lib/rescore.ts ACTIVE_MODEL) and nothing switches it.
   criticalityModel: smallint('criticality_model').notNull().default(2),
+  // A device first heard by passive listening gets a targeted active scan of its IP by the
+  // agent that heard it (services/autoInvestigate.ts). Off by default: active probing of a
+  // company network is the admin's call.
+  autoInvestigateNewDevices: boolean('auto_investigate_new_devices').notNull().default(false),
+  // Agents may start active scans themselves (their own "Scan now" and schedules). When
+  // off, only the dashboard starts them (scans POST /agent-start refuses).
+  allowLocalScans: boolean('allow_local_scans').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 

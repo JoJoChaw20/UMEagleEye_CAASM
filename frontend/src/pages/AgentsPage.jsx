@@ -6,6 +6,7 @@ import {
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import ScanPolicyCard from '../components/common/ScanPolicyCard'
 import { formatSeen } from '../utils/time'
 import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
 
@@ -425,6 +426,10 @@ export default function AgentsPage() {
           </div>
         )}
       </div>
+
+      {/* Platform superadmin: the policy of the tenant picked in the filter */}
+      <ScanPolicyCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId}
+        canEdit={isSuperadmin || user?.role === 'tenant_superadmin'} />
 
       {retired.length > 0 && (
         <div className="glass-card overflow-hidden">

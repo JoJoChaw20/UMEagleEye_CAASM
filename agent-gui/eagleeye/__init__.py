@@ -1,3 +1,3 @@
 """EagleEye pipeline agent for the UMEagleEye CAASM platform."""
 
-VERSION = "2.2.6"
+VERSION = "2.3.0"

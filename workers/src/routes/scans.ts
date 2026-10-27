@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, sql, desc, ne, inArray } from 'drizzle-orm'
+import { eq, and, sql, desc, inArray, notInArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { scanResults, agents, assets, assetAddresses, events } from '../db/schema'
+import { scanResults, agents, assets, assetAddresses, events, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
 import { ACTIVE_MODEL, agentRoleOf, scoreAsset } from '../lib/rescore'
 import { applyHint, deviceTypeHint } from '../lib/deviceHints'
@@ -21,6 +21,10 @@ import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
 import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
 import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
 import { resolveNetworkScope } from '../lib/networkScope'
+import {
+  INVESTIGATE_EXPIRE_HOURS, INVESTIGATE_TRIGGER, isInvestigation, queueInvestigations, recordInvestigationFailure,
+  recordInvestigationResult, type InvestigationInfo,
+} from '../services/autoInvestigate'
 
 // The scan classifier lives in lib/deviceClassify.ts (shared with "Automatic" type
 // reset); re-exported for scripts that import it from here.
@@ -170,8 +174,8 @@ app.get('/', authMiddleware, async (c) => {
     const tenantCondition = effectiveTenantId ? eq(scanResults.tenantId, effectiveTenantId) : undefined
 
     const whereClause = tenantCondition
-      ? and(ne(scanResults.scanType, 'sbom'), tenantCondition)
-      : ne(scanResults.scanType, 'sbom')
+      ? and(notInArray(scanResults.scanType, ['sbom', 'inventory']), tenantCondition)
+      : notInArray(scanResults.scanType, ['sbom', 'inventory'])
 
     const rows = await db
       .select()
@@ -195,8 +199,8 @@ app.get('/compare', authMiddleware, async (c) => {
     const db = getDb(c.env.DATABASE_URL)
 
     const tenantCond = (user.role !== 'superadmin' && user.tenantId)
-      ? and(eq(scanResults.status, 'completed'), ne(scanResults.scanType, 'sbom'), eq(scanResults.tenantId, user.tenantId))
-      : and(eq(scanResults.status, 'completed'), ne(scanResults.scanType, 'sbom'))
+      ? and(eq(scanResults.status, 'completed'), notInArray(scanResults.scanType, ['sbom', 'inventory']), eq(scanResults.tenantId, user.tenantId))
+      : and(eq(scanResults.status, 'completed'), notInArray(scanResults.scanType, ['sbom', 'inventory']))
 
     const scans = await db
       .select()
@@ -358,14 +362,48 @@ app.get('/pending', async (c) => {
           OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '3 hours'))`,
       ))
 
+    // Inventory jobs: a few seconds of work, so give up sooner than SBOM jobs.
+    await db.update(scanResults)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        failureReason: sql`CASE WHEN ${scanResults.status} = 'pending'
+          THEN 'The agent did not pick up this inventory job within 30 minutes (it was offline, closed or older than 2.3.0)'
+          ELSE 'The inventory did not arrive within 15 minutes' END`,
+      })
+      .where(and(
+        eq(scanResults.agentId, agentId),
+        eq(scanResults.scanType, 'inventory'),
+        sql`((${scanResults.status} = 'pending' AND ${scanResults.startedAt} < now() - interval '30 minutes')
+          OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '15 minutes'))`,
+      ))
+
+    // New-device investigations the agent never picked up: give up, and say so on the alert.
+    const expired = await db.update(scanResults)
+      .set({ status: 'failed', completedAt: new Date(),
+        failureReason: `The agent did not pick up this new-device scan within ${INVESTIGATE_EXPIRE_HOURS} hours` })
+      .where(and(
+        eq(scanResults.agentId, agentId),
+        eq(scanResults.status, 'pending'),
+        sql`${scanResults.networkInfo}->>'trigger' = ${INVESTIGATE_TRIGGER}`,
+        sql`${scanResults.startedAt} < now() - make_interval(hours => ${INVESTIGATE_EXPIRE_HOURS})`,
+      ))
+      .returning({ scanId: scanResults.scanId, networkInfo: scanResults.networkInfo, failureReason: scanResults.failureReason })
+    for (const row of expired) {
+      if (isInvestigation(row.networkInfo)) await recordInvestigationFailure(db, row.networkInfo, row.scanId, row.failureReason ?? 'expired')
+    }
+
     const pending = await db
       .select()
       .from(scanResults)
       .where(and(
         eq(scanResults.agentId, agentId),
         eq(scanResults.status, 'pending'),
-        // Skip SBOM scans whose asset (stored in subnet) no longer exists
-        sql`(${scanResults.scanType} != 'sbom' OR EXISTS (
+        // A new-device investigation waits a few minutes before it is handed out
+        sql`(${scanResults.networkInfo}->>'not_before' IS NULL
+          OR (${scanResults.networkInfo}->>'not_before')::timestamptz <= now())`,
+        // Skip SBOM and inventory jobs whose asset (stored in subnet) no longer exists
+        sql`(${scanResults.scanType} NOT IN ('sbom', 'inventory') OR EXISTS (
           SELECT 1 FROM assets WHERE asset_id::text = ${scanResults.subnet}
         ))`,
       ))
@@ -522,7 +560,10 @@ async function failInterruptedScans(db: ReturnType<typeof getDb>, agentId: strin
       eq(scanResults.scanType, 'active'),
       eq(scanResults.status, 'running'),
     ))
-    .returning({ scanId: scanResults.scanId })
+    .returning({ scanId: scanResults.scanId, networkInfo: scanResults.networkInfo, failureReason: scanResults.failureReason })
+  for (const r of rows) {
+    if (isInvestigation(r.networkInfo)) await recordInvestigationFailure(db, r.networkInfo, r.scanId, r.failureReason ?? 'interrupted')
+  }
   return rows.length
 }
 
@@ -598,6 +639,16 @@ app.post('/agent-start', zValidator('json', agentStartSchema, (result, c) => {
     if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
 
     const { subnet, trigger } = c.req.valid('json')
+
+    // The tenant may keep active scanning to the dashboard (Tenant settings → Scan policy).
+    if (agent.tenantId) {
+      const [tenant] = await db.select({ allowLocalScans: tenants.allowLocalScans }).from(tenants)
+        .where(eq(tenants.tenantId, agent.tenantId)).limit(1)
+      if (tenant && !tenant.allowLocalScans) {
+        return c.json({ detail: 'Your administrator has turned off scans started on this computer. '
+          + 'Active scans are started from the EagleEye dashboard.' }, 403)
+      }
+    }
 
     // The agent runs one active scan at a time and only asks when it is idle, so
     // any of its scans still 'running' here was interrupted (app closed or crashed).
@@ -896,10 +947,13 @@ Example:
     // What the Discovery record holds: this upload, or for a folded passive record the
     // hosts heard over the last hour (asset upserts below still use only this upload).
     let recordHosts: unknown[] = enhancedHosts
+    let investigation: InvestigationInfo | null = null
+    let investigatedIp: string | null = null
     if (scan_id) {
       const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
       if (!scan) return c.json({ detail: 'Scan not found' }, 404)
       effectiveScanId = scan_id
+      if (isInvestigation(scan.networkInfo)) { investigation = scan.networkInfo; investigatedIp = scan.subnet }
     } else if (isPassive) {
       // Fold into this agent's passive record of the last hour, so the Discovery log
       // gets one record per agent per hour instead of one per upload (about a minute).
@@ -1121,7 +1175,8 @@ Example:
         status: 'completed',
         hostsDiscovered: recordHosts.length,
         rawResults: recordHosts,
-        ...(network ? { networkInfo: network } : {}),   // store agent network block for reference
+        // the agent's network block, for reference (merged: keeps an investigation's link)
+        ...(network ? { networkInfo: sql`COALESCE(${scanResults.networkInfo}, '{}'::jsonb) || ${JSON.stringify(network)}::jsonb` } : {}),
         completedAt: new Date(),
       })
       .where(eq(scanResults.scanId, effectiveScanId))
@@ -1140,6 +1195,18 @@ Example:
       await matchIocs(db, { assetIds: upsertedAssetIds })
     } catch (err) {
       console.error('scan ingest: threat-intel matching failed:', err)
+    }
+
+    // A targeted scan of a new device: its findings go on the device's new-device alert.
+    // A passive upload that found new devices may queue such scans (tenant setting).
+    try {
+      if (investigation && investigatedIp) {
+        await recordInvestigationResult(db, investigation, effectiveScanId, investigatedIp, hosts as Record<string, unknown>[])
+      } else if (isPassive && upsertedAssetIds.length) {
+        await queueInvestigations(db, { tenantId: tenantId ?? null, agentId: agent_id, assetIds: upsertedAssetIds })
+      }
+    } catch (err) {
+      console.error('scan ingest: new-device investigation failed:', err)
     }
 
     return c.json({
@@ -1187,18 +1254,18 @@ app.post('/fail', async (c) => {
     }
 
     if (scan_id) {
-      await db
+      const failureReason = typeof reason === 'string' ? reason.slice(0, 1000) : 'Scan failed on agent'
+      const failed = await db
         .update(scanResults)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          failureReason: typeof reason === 'string' ? reason.slice(0, 1000) : 'Scan failed on agent',
-        })
+        .set({ status: 'failed', completedAt: new Date(), failureReason })
         .where(and(
           eq(scanResults.scanId, scan_id),
           eq(scanResults.agentId, agent_id),     // an agent can only fail its own scans
           inArray(scanResults.status, ['pending', 'running']),
         ))
+        .returning({ networkInfo: scanResults.networkInfo })
+      const info = failed[0]?.networkInfo
+      if (isInvestigation(info)) await recordInvestigationFailure(db, info, scan_id, failureReason)
     }
 
     return c.json({ message: 'Scan marked as failed' })

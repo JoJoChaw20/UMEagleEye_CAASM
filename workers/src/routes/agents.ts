@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
-import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs } from '../db/schema'
+import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, scanResults, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
 import { generateApiKey } from '../lib/auth'
 import { isIPv4 } from '../lib/exposure'
@@ -268,7 +268,12 @@ router.post(
 
     await db.update(agents).set(updateData).where(eq(agents.agentId, agentId))
 
-    return c.json({ ok: true })
+    // The tenant's scan policy, so the agent app can grey out what the admin turned off
+    // (agents 2.3.0+; older ones ignore it, and scans /agent-start refuses anyway).
+    const [tenant] = agent.tenantId
+      ? await db.select({ allowLocalScans: tenants.allowLocalScans }).from(tenants).where(eq(tenants.tenantId, agent.tenantId)).limit(1)
+      : []
+    return c.json({ ok: true, policy: { local_scans: tenant?.allowLocalScans ?? true } })
   }
 )
 
@@ -509,6 +514,10 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         hostKey: sql`COALESCE(${assets.hostKey}, ${hostKey})`,
       }).where(eq(assets.assetId, assetId)),
       db.update(agents).set({ hostAssetId: assetId }).where(eq(agents.agentId, agentId)),
+      // Any inventory from this agent answers its dashboard "Collect inventory" jobs.
+      db.update(scanResults).set({ status: 'completed', completedAt: now, failureReason: null })
+        .where(and(eq(scanResults.agentId, agentId), eq(scanResults.scanType, 'inventory'),
+          inArray(scanResults.status, ['pending', 'running']))),
     )
     for (let i = 0; i < diff.deleteIds.length; i += 500) {
       statements.push(db.delete(assetSoftware).where(inArray(assetSoftware.softwareId, diff.deleteIds.slice(i, i + 500))))

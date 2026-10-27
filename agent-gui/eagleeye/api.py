@@ -19,6 +19,16 @@ log = logging.getLogger("eagleeye.api")
 
 RETRY_DELAYS = (2.0, 5.0)   # seconds before the 2nd and 3rd attempt
 UNREACHABLE = "could not reach the server"   # starts the message of an upload that never got an answer
+SERVER_ERROR = "server error"                # starts the message of one answered 5xx on every try
+TRY_AGAIN_LATER = (UNREACHABLE, SERVER_ERROR)  # failures that may pass on their own
+
+
+def failure(exc: Exception) -> str:
+    """Why a request that raised failed: no answer at all, or 5xx on every attempt."""
+    response = getattr(exc, "response", None)
+    if isinstance(exc, httpclient.HTTPError) and response is not None:
+        return f"{SERVER_ERROR} (HTTP {response.status_code}) after {len(RETRY_DELAYS) + 1} tries"
+    return f"{UNREACHABLE}: {exc}"
 
 
 @dataclass
@@ -51,6 +61,8 @@ class AgentClient:
         self.api_url = api_url.rstrip("/")
         self.agent_id = agent_id
         self._sleep = sleep
+        # The tenant's scan policy, from each heartbeat answer (servers before 2.3.0 send none).
+        self.local_scans_allowed = True
         # No redirects: the API key must never be sent anywhere but the configured server.
         self.session = session or httpclient.Session(follow_redirects=False)
         self.session.headers.update({
@@ -99,10 +111,20 @@ class AgentClient:
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
             resp.raise_for_status()
-            return True
         except httpclient.RequestException as exc:
             log.warning("Heartbeat failed: %s", exc)
             return False
+        try:
+            policy = resp.json().get("policy") or {}
+        except (ValueError, AttributeError):
+            policy = {}
+        if isinstance(policy, dict) and "local_scans" in policy:
+            allowed = bool(policy["local_scans"])
+            if allowed != self.local_scans_allowed:
+                log.info("Scans started on this computer are now %s by the administrator",
+                         "allowed" if allowed else "turned off")
+            self.local_scans_allowed = allowed
+        return True
 
     def check_connection(self) -> tuple[bool, str]:
         """Send one heartbeat and explain the outcome (for the setup screen)."""
@@ -135,7 +157,7 @@ class AgentClient:
         try:
             resp = self._request("POST", "/scans/agent-start", 15, data=json.dumps(body))
         except httpclient.RequestException as exc:
-            return None, f"could not reach the server: {exc}"
+            return None, failure(exc)
         if not resp.ok:
             return None, f"the server did not start the scan ({self._detail(resp)})"
         scan_id = resp.json().get("scan_id")
@@ -183,7 +205,7 @@ class AgentClient:
         try:
             resp = self._request("POST", "/scans/ingest", 120, data=json.dumps(payload))
         except httpclient.RequestException as exc:
-            return IngestResult(False, error=f"could not reach the server: {exc}")
+            return IngestResult(False, error=failure(exc))
         if not resp.ok:
             return IngestResult(False, error=f"server rejected the results ({self._detail(resp)})")
         data = resp.json()
@@ -201,7 +223,7 @@ class AgentClient:
         try:
             resp = self._request("POST", "/sboms/agent-start", 15, data=json.dumps(body))
         except httpclient.RequestException as exc:
-            return None, f"could not reach the server: {exc}"
+            return None, failure(exc)
         if not resp.ok:
             return None, self._detail(resp)
         new_id = resp.json().get("scan_id")
@@ -228,7 +250,7 @@ class AgentClient:
         try:
             resp = self._request("POST", "/sboms/ingest", 120, data=json.dumps(body))
         except httpclient.RequestException as exc:
-            return False, f"{UNREACHABLE}: {exc}"
+            return False, failure(exc)
         if not resp.ok:
             return False, f"server rejected the SBOM ({self._detail(resp)})"
         return True, f"{resp.json().get('dependencies_inserted', 0)} package(s) stored"
@@ -246,7 +268,7 @@ class AgentClient:
         try:
             resp = self._request("POST", "/sboms/ingest-cve", 120, data=json.dumps(body))
         except httpclient.RequestException as exc:
-            return False, f"{UNREACHABLE}: {exc}"
+            return False, failure(exc)
         if not resp.ok:
             return False, f"server rejected the vulnerabilities ({self._detail(resp)})"
         data = resp.json()
@@ -261,7 +283,7 @@ class AgentClient:
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/inventory", 120, data=json.dumps(inventory))
         except httpclient.RequestException as exc:
-            return InventoryResult(False, error=f"could not reach the server: {exc}")
+            return InventoryResult(False, error=failure(exc))
         if not resp.ok:
             return InventoryResult(False, error=f"server rejected the inventory ({self._detail(resp)})")
         data = resp.json()

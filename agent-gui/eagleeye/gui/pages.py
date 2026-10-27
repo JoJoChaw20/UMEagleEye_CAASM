@@ -31,7 +31,8 @@ from .controller import gui_call, run_in_thread
 if TYPE_CHECKING:
     from .app import MainWindow
 
-TRIGGERS = {"dashboard": "Dashboard", "schedule": "Schedule", "manual": "Scan now / button", "auto": "Automatic"}
+TRIGGERS = {"dashboard": "Dashboard", "schedule": "Schedule", "manual": "Scan now / button", "auto": "Automatic",
+            "new_device": "New device found"}
 TASKS = {"active": "Active scan", "passive": "Passive upload", "inventory": "Inventory", "sbom": "SBOM + CVE check"}
 
 
@@ -264,7 +265,10 @@ class StatusPage(QWidget):
                 busy_bits.append("Building SBOM")
         self.current.setText(" | ".join(busy_bits) if busy_bits else ("Idle" if svc else "Stopped"))
         self.busy.setVisible(bool(busy_bits))
-        self.scan_btn.setEnabled(svc is not None and not svc.active_running)
+        local_ok = svc is None or svc.local_scans_allowed
+        self.scan_btn.setEnabled(svc is not None and local_ok and not svc.active_running)
+        self.scan_btn.setToolTip("" if local_ok else "Your administrator has turned off scans started on this "
+                                 "computer. Active scans are started from the EagleEye dashboard.")
         self.inv_btn.setEnabled(svc is not None and s.inventory and not svc.inventory_running)
         self.inv_btn.setToolTip("" if s.inventory else "Inventory is switched off on the Privacy page")
         # During a daily (quick) run it stays available: the full run it asks for starts after it.

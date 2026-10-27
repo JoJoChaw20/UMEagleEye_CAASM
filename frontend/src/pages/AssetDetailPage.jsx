@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Pencil, RefreshCw, Bookmark, MinusCircle, CheckCircle, Trash2, Zap,
-  Server, Cpu, Network, Bell, GitBranch, History, Link2, ShieldAlert, Eraser, Package,
+  Server, Cpu, Network, Bell, GitBranch, History, Link2, ShieldAlert, Eraser, Package, ClipboardList,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -66,6 +66,7 @@ export default function AssetDetailPage() {
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [adoptTarget, setAdoptTarget] = useState(null)
   const [sbomScan, setSbomScan] = useState(null)    // { status, message } of an SBOM scan started here
+  const [invJob, setInvJob] = useState(null)        // { status, message } of a "Collect inventory" job
 
   const loadAsset = useCallback(async () => {
     try {
@@ -94,6 +95,9 @@ export default function AssetDetailPage() {
         setSbomScan((cur) => cur ?? { status: data.status, mode: data.mode })
       }
     }).catch(() => {})
+    client.get(`/assets/${assetId}/inventory-job-status`).then(({ data }) => {
+      if (data.status === 'pending' || data.status === 'running') setInvJob((cur) => cur ?? { status: data.status })
+    }).catch(() => {})
     if (!isBusinessOwner) {
       client.get(`/relationships/graph/${assetId}`).then((r) => setGraph(r.data)).catch(() => setGraph({ nodes: [], edges: [] }))
     }
@@ -112,7 +116,7 @@ export default function AssetDetailPage() {
     // dialogs from the previous asset as well.
     setEditing(false); setShowBlast(false); setShowDuplicates(false); setAdoptTarget(null); setNotice(null)
     setStatus('loading'); setAsset(null); setScore(null); setAddresses(null); setAlerts(null)
-    setSbom(undefined); setSoftware(undefined); setGraph(null); setDupGroups([]); setSbomScan(null)
+    setSbom(undefined); setSoftware(undefined); setGraph(null); setDupGroups([]); setSbomScan(null); setInvJob(null)
     loadAsset()
     loadPanels()
   }, [loadAsset, loadPanels])
@@ -142,6 +146,26 @@ export default function AssetDetailPage() {
     }, 10000)
     return () => clearInterval(t)
   }, [sbomActive, assetId, loadPanels])
+
+  // Same for a "Collect inventory" job: it takes seconds once the agent picks it up.
+  const invActive = invJob?.status === 'pending' || invJob?.status === 'running'
+  useEffect(() => {
+    if (!invActive) return
+    const t = setInterval(async () => {
+      try {
+        const { data } = await client.get(`/assets/${assetId}/inventory-job-status`)
+        if (data.status === 'pending' || data.status === 'running') {
+          setInvJob((cur) => ({ ...cur, status: data.status }))
+          return
+        }
+        setInvJob({ status: data.status, message: data.status === 'completed'
+          ? 'Inventory collected. Hardware, OS, patch and software details are up to date.'
+          : (data.failure_reason || `Inventory ${data.status}.`) })
+        if (data.status === 'completed') { await loadAsset(); loadPanels() }
+      } catch { /* keep polling */ }
+    }, 5000)
+    return () => clearInterval(t)
+  }, [invActive, assetId, loadAsset, loadPanels])
 
   const match = useMemo(() => buildMatchIndex(dupGroups).get(assetId) ?? null, [dupGroups, assetId])
 
@@ -229,6 +253,15 @@ export default function AssetDetailPage() {
       setSbomScan({ status: 'pending', message: data.message })
     } catch (err) {
       setSbomScan({ status: 'failed', message: err?.response?.data?.detail || 'Failed to queue the SBOM scan' })
+    }
+  }
+
+  const handleCollectInventory = async () => {
+    try {
+      const { data } = await client.post(`/assets/${assetId}/collect-inventory`)
+      setInvJob({ status: data.status, message: data.message })
+    } catch (err) {
+      setInvJob({ status: 'failed', message: err?.response?.data?.detail || 'Failed to request an inventory' })
     }
   }
 
@@ -342,6 +375,12 @@ export default function AssetDetailPage() {
               <button onClick={handleAdopt} className="btn-primary text-sm flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Adopt into My Assets</button>
             )}
             {!isReadOnly && inv && (
+              <button onClick={handleCollectInventory} disabled={invActive} className="btn-secondary text-sm flex items-center gap-2"
+                title={invActive ? 'Waiting for the agent on this computer to send its inventory' : 'Ask the EagleEye agent on this computer for a fresh inventory now'}>
+                <ClipboardList className={`w-4 h-4 ${invActive ? 'animate-pulse' : ''}`} /> {invActive ? 'Collecting inventory…' : 'Collect inventory'}
+              </button>
+            )}
+            {!isReadOnly && inv && (
               <button onClick={handleRunSbom} disabled={sbomActive} className="btn-secondary text-sm flex items-center gap-2"
                 title={sbomActive ? sbomBusyText(sbomScan?.mode) : 'The EagleEye agent on this computer lists its packages and checks them for CVEs'}>
                 <Package className={`w-4 h-4 ${sbomActive ? 'animate-pulse' : ''}`} /> {sbomActive ? 'SBOM scan running…' : 'Run SBOM scan'}
@@ -368,6 +407,17 @@ export default function AssetDetailPage() {
             {sbomScan.status === 'running' ? sbomBusyText(sbomScan.mode) : (sbomScan.message || 'SBOM scan queued: the agent picks it up within 30 seconds.')}
           </span>
           {!sbomActive && <button onClick={() => setSbomScan(null)} className="ml-auto text-xs text-dark-400 hover:text-dark-100">Dismiss</button>}
+        </div>
+      )}
+
+      {invJob && (
+        <div className={`glass-card px-4 py-2.5 flex items-center gap-2 text-sm ${invJob.status === 'failed' ? 'border-red-500/30' : 'border-eagle-500/30'}`} role="status">
+          <ClipboardList className={`w-4 h-4 ${invJob.status === 'failed' ? 'text-red-400' : 'text-eagle-400'}`} />
+          <span className="text-dark-100">
+            {invJob.status === 'running' ? 'The agent is collecting the inventory of this computer…'
+              : (invJob.message || 'Inventory requested: the agent sends it within a minute.')}
+          </span>
+          {!invActive && <button onClick={() => setInvJob(null)} className="ml-auto text-xs text-dark-400 hover:text-dark-100">Dismiss</button>}
         </div>
       )}
 

@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import sbom as sbom_tools
-from .api import AgentClient
+from .api import TRY_AGAIN_LATER, AgentClient
 from .config import Settings
 from .passive import PassiveSuite
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
@@ -46,6 +46,9 @@ from .stages import (
     CveCheckStage, InventoryUploadStage, LocalInventoryStage, NmapScanStage, PassiveCollectStage,
     PassiveEnrichStage, SbomBuildStage, SbomUploadStage, SnmpPollStage, UploadStage,
 )
+
+LOCAL_SCANS_OFF = ("your administrator has turned off scans started on this computer; "
+                   "active scans are started from the EagleEye dashboard")
 
 log = logging.getLogger("eagleeye.service")
 event_log = logging.getLogger("eagleeye.pipeline")
@@ -238,14 +241,17 @@ class AgentService:
         else:
             log.debug("Passive flush: nothing new heard")
 
-    def run_inventory(self, trigger: str = "auto") -> PipelineResult:
-        ctx = PipelineContext("inventory", scan_type="inventory")
+    def run_inventory(self, trigger: str = "auto", scan_id: Optional[str] = None) -> PipelineResult:
+        """Collect and upload this computer's inventory. scan_id is the dashboard's
+        "Collect inventory" job; the server completes it when the inventory arrives."""
+        ctx = PipelineContext("inventory", scan_id=scan_id, scan_type="inventory")
         result = Pipeline("inventory", [
             LocalInventoryStage(options=self.settings.inventory_options), InventoryUploadStage(self.client),
         ], self.on_event).run(ctx)
         if result.status == "failed" and "not available on" in (result.error or ""):
             # Linux/macOS until their collectors exist: report it once, then stop trying.
             self._inventory_supported = False
+        self._finish(scan_id, result)
         self._record("inventory", trigger, "this computer", result)
         return result
 
@@ -358,7 +364,8 @@ class AgentService:
         if self._submit_sbom(None, "schedule", full=self.sbom_cache.weekly_due(now)):
             self._next_sbom = now + self.settings.sbom_interval
 
-    def _maybe_inventory(self, force: bool = False) -> None:
+    def _maybe_inventory(self, force: bool = False, trigger: Optional[str] = None,
+                         scan_id: Optional[str] = None) -> None:
         if not self.settings.inventory or not self._inventory_supported:
             if force:
                 log.warning("Inventory is switched off (or not supported on this system); nothing collected")
@@ -378,7 +385,8 @@ class AgentService:
         if force or time.time() - self._last_inventory >= self.settings.inventory_interval:
             self._last_inventory = time.time()
             try:
-                self._inventory_future = self._inventory_pool.submit(self.run_inventory, "manual" if force else "auto")
+                self._inventory_future = self._inventory_pool.submit(
+                    self.run_inventory, trigger or ("manual" if force else "auto"), scan_id)
             except RuntimeError:        # stopped (settings saved) while this poll was running
                 pass
 
@@ -398,6 +406,8 @@ class AgentService:
             subnet = validate_target(subnet)
         except ValueError as exc:
             return str(exc)
+        if not self.local_scans_allowed:
+            return LOCAL_SCANS_OFF
         if self._active_future is not None:
             return "another active scan is still running"
         if self._stop.is_set():
@@ -414,9 +424,14 @@ class AgentService:
             return "the agent is stopping"
         return None
 
+    @property
+    def local_scans_allowed(self) -> bool:
+        """False when the tenant's admin keeps active scans to the dashboard (heartbeat policy)."""
+        return getattr(self.client, "local_scans_allowed", True)
+
     def _maybe_schedules(self, now: Optional[datetime] = None) -> None:
-        if not self.schedules_enabled:
-            return
+        if not self.schedules_enabled or not self.local_scans_allowed:
+            return                      # not marked: they run again once the admin allows it
         now = now or datetime.now()
         schedules = [Schedule.from_dict(raw) for raw in self.settings.schedules]
         self.schedule_state.forget_except({s.id for s in schedules})
@@ -429,7 +444,7 @@ class AgentService:
             if reason is None:
                 self.schedule_state.mark(sched.id, now)
                 return                      # one active scan at a time; others wait
-            if reason.startswith("could not reach"):
+            if reason.startswith(TRY_AGAIN_LATER):
                 log.warning("Scheduled scan of %s postponed: %s", sched.subnet, reason)
                 self._schedule_retry_at = time.time() + SCHEDULE_RETRY_SECONDS
                 return
@@ -519,10 +534,14 @@ class AgentService:
             if self._active_future is not None:
                 log.info("Leaving ACTIVE scan %s queued while another active scan runs", (scan_id or "?")[:8])
                 return
-            log.info("Processing ACTIVE scan %s subnet=%s", (scan_id or "?")[:8], subnet)
+            info = scan.get("network_info") or scan.get("networkInfo") or {}
+            new_device = isinstance(info, dict) and info.get("trigger") == "new_device"
+            log.info("Processing ACTIVE scan %s subnet=%s%s", (scan_id or "?")[:8], subnet,
+                     " (investigating a new device)" if new_device else "")
             if scan_id:
                 self.client.mark_scan_running(scan_id)
-            self._active_future = self._active_pool.submit(self.run_active, scan_id, subnet)
+            self._active_future = self._active_pool.submit(
+                self.run_active, scan_id, subnet, "new_device" if new_device else "dashboard")
         elif scan_type == "sbom":
             if not self.settings.sbom:
                 self._decline(scan_id, "SBOM is switched off on this computer (agent Privacy page).")
@@ -533,6 +552,18 @@ class AgentService:
                 return
             log.info("Processing SBOM job %s", (scan_id or "?")[:8])
             self._submit_sbom(scan_id, "dashboard", True)      # always full; the schedule stays as it is
+        elif scan_type == "inventory":
+            if not self.settings.inventory or not self._inventory_supported:
+                self._decline(scan_id, "Inventory collection is switched off on this computer "
+                                       "(agent Privacy page) or not supported on this system.")
+                return
+            if self.inventory_running:   # its upload completes this job too
+                log.info("Inventory job %s: an inventory is already being collected", (scan_id or "?")[:8])
+                return
+            log.info("Processing INVENTORY job %s", (scan_id or "?")[:8])
+            if scan_id:
+                self.client.mark_scan_running(scan_id)
+            self._maybe_inventory(force=True, trigger="dashboard", scan_id=scan_id)
         else:
             self._decline(scan_id, f"Unsupported scan type '{scan_type}'.")
 
