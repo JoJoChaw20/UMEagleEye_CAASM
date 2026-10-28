@@ -324,7 +324,9 @@ export const assetRelationships = pgTable('asset_relationships', {
 // ─── Table 11: Audit Logs ────────────────────────────────────────
 export const auditLogs = pgTable('audit_logs', {
   logId: uuid('log_id').primaryKey().default(newUuid()),
-  userId: uuid('user_id').notNull().references(() => users.userId, { onDelete: 'cascade' }),
+  // NULL for what the system did on its own (e.g. threat-intel matching auto-resolving
+  // or reopening an alert); the alert's activity shows those as "system".
+  userId: uuid('user_id').references(() => users.userId, { onDelete: 'cascade' }),
   tenantId: uuid('tenant_id').references(() => tenants.tenantId),
   actionType: varchar('action_type', { length: 100 }).notNull(),
   targetEntity: varchar('target_entity', { length: 255 }),

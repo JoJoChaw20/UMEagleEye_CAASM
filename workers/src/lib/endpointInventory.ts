@@ -21,6 +21,7 @@ export interface InventoryInterface {
   name?: string | null
   mac?: string | null
   physical?: boolean
+  virtual?: boolean
   ipv4?: string[]
 }
 export interface InventoryPayload {
@@ -61,11 +62,15 @@ export function inventoryHostKey(inv: InventoryPayload): string | null {
   return sanitizeHostKey(inv.identity.hostname ?? null)
 }
 
-/** IPv4 addresses of the physical NICs, primary first. */
+/** IPv4 addresses of the physical NICs, primary first. The primary is left out when it
+ *  sits on a virtual adapter: before the Wi-Fi is up, Windows may route through one (the
+ *  GNS3 KM-TEST loopback, 28 Oct: 142.19.0.1), and the machine would move to that address. */
 export function inventoryIps(inv: InventoryPayload): string[] {
   const ips: string[] = []
   const primary = inv.network.primary_ip
-  if (primary && /^\d{1,3}(\.\d{1,3}){3}$/.test(primary) && primary !== '127.0.0.1') ips.push(primary)
+  const onVirtual = (inv.network.interfaces ?? []).some(nic => (nic.ipv4 ?? []).includes(primary ?? '')
+    && (nic.virtual === true || nic.physical === false))
+  if (primary && /^\d{1,3}(\.\d{1,3}){3}$/.test(primary) && primary !== '127.0.0.1' && !onVirtual) ips.push(primary)
   for (const nic of inv.network.interfaces ?? []) {
     if (!nic.physical) continue
     for (const ip of nic.ipv4 ?? []) if (!ips.includes(ip) && !ip.startsWith('169.254.')) ips.push(ip)

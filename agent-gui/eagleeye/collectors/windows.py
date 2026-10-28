@@ -272,7 +272,7 @@ def normalize(raw: dict[str, Any], collected_at: Optional[datetime] = None) -> d
             "local_admin_count": sec.get("local_admin_count"),
         },
         "network": {
-            "primary_ip": local_ip(),
+            "primary_ip": primary_ip(local_ip(), interfaces),
             "interfaces": interfaces,
             "listening": listening,
         },
@@ -285,6 +285,22 @@ def normalize(raw: dict[str, Any], collected_at: Optional[datetime] = None) -> d
         },
         "errors": [_s(e, 500) for e in _list(raw.get("errors")) if _s(e, 500)],
     }
+
+
+def primary_ip(routed: Optional[str], interfaces: list[dict[str, Any]]) -> Optional[str]:
+    """The address the OS routes through, unless it is on a virtual adapter. Before the
+    Wi-Fi is up, Windows may route through the GNS3 KM-TEST loopback (28 Oct: 142.19.0.1)
+    and the dashboard moved the machine there. Then the first physical NIC's address, or
+    none (the server keeps the address it has)."""
+    on = [nic for nic in interfaces if routed in nic.get("ipv4", [])]
+    if routed and routed != "127.0.0.1" and not any(nic.get("virtual") for nic in on):
+        return routed
+    for nic in interfaces:
+        if nic.get("physical"):
+            for ip in nic.get("ipv4", []):
+                if not ip.startswith(("169.254.", "127.")):
+                    return ip
+    return None
 
 
 def collect(user_software: bool = False, admin_names: bool = False) -> dict[str, Any]:

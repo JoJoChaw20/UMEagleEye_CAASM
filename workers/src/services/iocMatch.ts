@@ -133,7 +133,7 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       FROM hit GROUP BY asset_id, itype, ivalue
     ),
     ex AS (
-      SELECT e.event_id, e.asset_id, e.status, e.details->>'indicator_type' AS itype, e.details->>'indicator_value' AS ivalue
+      SELECT e.event_id, e.asset_id, a.tenant_id, e.status, e.details->>'indicator_type' AS itype, e.details->>'indicator_value' AS ivalue
       FROM events e JOIN assets a ON a.asset_id = e.asset_id
       WHERE e.event_type = 'cti_match' AND ${inScope}
     ),
@@ -155,7 +155,7 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       WHERE e.event_id = ex.event_id AND ex.asset_id = d.asset_id AND ex.itype = d.itype AND ex.ivalue = d.ivalue
         AND ex.status IN ('open', 'in_progress', 'resolved')
         AND (ex.status = 'resolved' OR e.details IS DISTINCT FROM e.details || d.details OR e.severity <> d.severity)
-      RETURNING (ex.status = 'resolved') AS reopened
+      RETURNING e.event_id, ex.tenant_id, ex.status AS prev, (ex.status = 'resolved') AS reopened
     ),
     res AS (
       UPDATE events e SET status = 'resolved', resolved_at = now(), updated_at = now(),
@@ -163,6 +163,18 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       FROM ex
       WHERE e.event_id = ex.event_id AND ex.status IN ('open', 'in_progress')
         AND NOT EXISTS (SELECT 1 FROM d WHERE d.asset_id = ex.asset_id AND d.itype = ex.itype AND d.ivalue = ex.ivalue)
+      RETURNING e.event_id, ex.tenant_id, ex.status AS prev
+    ),
+    -- What matching did on its own goes in the alert's activity (user_id NULL = system).
+    log AS (
+      INSERT INTO audit_logs (user_id, tenant_id, action_type, target_entity, previous_state, new_state)
+      SELECT NULL, x.tenant_id, 'alert_auto', x.event_id::text, jsonb_build_object('status', x.prev),
+             jsonb_build_object('status', x.next, 'note', x.note)
+      FROM (
+        SELECT event_id, tenant_id, prev::text, 'open' AS next, 'the indicator matches this asset again' AS note FROM upd WHERE reopened
+        UNION ALL
+        SELECT event_id, tenant_id, prev::text, 'resolved', 'the indicator no longer matches (removed, unpublished, or the asset changed)' FROM res
+      ) x
       RETURNING 1
     )
     SELECT (SELECT count(*) FROM ins)::int AS created,

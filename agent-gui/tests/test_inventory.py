@@ -258,3 +258,14 @@ def test_inventory_disabled_by_setting():
     svc = AgentService(Settings(api_url="http://x", api_key="k", agent_id="a", inventory=False), client=FakeClient(), on_event=lambda e: None)
     svc._maybe_inventory()
     assert svc._inventory_future is None
+
+
+def test_primary_ip_skips_a_virtual_adapter_the_os_routes_through():
+    # 28 Oct: before the Wi-Fi was up, Windows routed through the GNS3 KM-TEST loopback.
+    from eagleeye.collectors.windows import primary_ip
+    loopback = {"virtual": True, "physical": False, "ipv4": ["142.19.0.1"]}
+    wifi = {"virtual": False, "physical": True, "ipv4": ["169.254.3.4", "192.168.0.139"]}
+    assert primary_ip("142.19.0.1", [loopback, wifi]) == "192.168.0.139"
+    assert primary_ip("142.19.0.1", [loopback, {**wifi, "ipv4": []}]) is None
+    assert primary_ip("192.168.0.139", [loopback, wifi]) == "192.168.0.139"
+    assert primary_ip("127.0.0.1", [loopback]) is None
