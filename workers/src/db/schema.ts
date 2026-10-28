@@ -72,8 +72,9 @@ export const tenants = pgTable('tenants', {
   // company network is the admin's call.
   autoInvestigateNewDevices: boolean('auto_investigate_new_devices').notNull().default(false),
   // Agents may start active scans themselves (their own "Scan now" and schedules). When
-  // off, only the dashboard starts them (scans POST /agent-start refuses).
-  allowLocalScans: boolean('allow_local_scans').notNull().default(true),
+  // off, only the dashboard starts them (scans POST /agent-start refuses). Off for new
+  // tenants: probing the network is the admin's decision (tenants created before keep theirs).
+  allowLocalScans: boolean('allow_local_scans').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 

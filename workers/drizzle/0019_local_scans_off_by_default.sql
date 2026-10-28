@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ALTER COLUMN "allow_local_scans" SET DEFAULT false;

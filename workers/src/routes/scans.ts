@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, sql, desc, inArray, notInArray } from 'drizzle-orm'
+import { eq, and, sql, desc, inArray, notInArray, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -161,6 +161,30 @@ app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tena
   }
 })
 
+// Active scans (New scan, new-device investigations) that no agent picked up within
+// ACTIVE_EXPIRE_HOURS fail with a reason instead of staying 'pending' for ever (the agent
+// was offline or closed). Runs when an agent polls and when the dashboard lists scans.
+const ACTIVE_EXPIRE_HOURS = INVESTIGATE_EXPIRE_HOURS
+async function expireStaleActiveScans(db: ReturnType<typeof getDb>, scope: SQL | undefined): Promise<void> {
+  const expired = await db.update(scanResults)
+    .set({
+      status: 'failed', completedAt: new Date(),
+      failureReason: sql`CASE WHEN ${scanResults.networkInfo}->>'trigger' = ${INVESTIGATE_TRIGGER}
+        THEN ${`The agent did not pick up this new-device scan within ${ACTIVE_EXPIRE_HOURS} hours`}
+        ELSE ${`The agent did not pick up this scan within ${ACTIVE_EXPIRE_HOURS} hours (it was offline or closed)`} END`,
+    })
+    .where(and(
+      scope,
+      eq(scanResults.scanType, 'active'),
+      eq(scanResults.status, 'pending'),
+      sql`${scanResults.startedAt} < now() - make_interval(hours => ${ACTIVE_EXPIRE_HOURS})`,
+    ))
+    .returning({ scanId: scanResults.scanId, networkInfo: scanResults.networkInfo, failureReason: scanResults.failureReason })
+  for (const row of expired) {
+    if (isInvestigation(row.networkInfo)) await recordInvestigationFailure(db, row.networkInfo, row.scanId, row.failureReason ?? 'expired')
+  }
+}
+
 // ── GET / ─── list scans for authenticated user ──────────────────
 app.get('/', authMiddleware, async (c) => {
   try {
@@ -176,6 +200,8 @@ app.get('/', authMiddleware, async (c) => {
     const whereClause = tenantCondition
       ? and(notInArray(scanResults.scanType, ['sbom', 'inventory']), tenantCondition)
       : notInArray(scanResults.scanType, ['sbom', 'inventory'])
+
+    await expireStaleActiveScans(db, tenantCondition)
 
     const rows = await db
       .select()
@@ -378,20 +404,7 @@ app.get('/pending', async (c) => {
           OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '15 minutes'))`,
       ))
 
-    // New-device investigations the agent never picked up: give up, and say so on the alert.
-    const expired = await db.update(scanResults)
-      .set({ status: 'failed', completedAt: new Date(),
-        failureReason: `The agent did not pick up this new-device scan within ${INVESTIGATE_EXPIRE_HOURS} hours` })
-      .where(and(
-        eq(scanResults.agentId, agentId),
-        eq(scanResults.status, 'pending'),
-        sql`${scanResults.networkInfo}->>'trigger' = ${INVESTIGATE_TRIGGER}`,
-        sql`${scanResults.startedAt} < now() - make_interval(hours => ${INVESTIGATE_EXPIRE_HOURS})`,
-      ))
-      .returning({ scanId: scanResults.scanId, networkInfo: scanResults.networkInfo, failureReason: scanResults.failureReason })
-    for (const row of expired) {
-      if (isInvestigation(row.networkInfo)) await recordInvestigationFailure(db, row.networkInfo, row.scanId, row.failureReason ?? 'expired')
-    }
+    await expireStaleActiveScans(db, eq(scanResults.agentId, agentId))
 
     const pending = await db
       .select()
@@ -510,6 +523,25 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
     if (!effectiveTenantId && agent_id) {
       const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
       if (agent?.tenantId) effectiveTenantId = agent.tenantId
+    }
+
+    // The same scan already waiting for this agent: return it instead of queueing a
+    // second one (several clicks on New scan would otherwise scan the subnet several times).
+    if (effectiveScanType === 'active' && agent_id) {
+      const [waiting] = await db.select({ scanId: scanResults.scanId, status: scanResults.status })
+        .from(scanResults)
+        .where(and(
+          eq(scanResults.agentId, agent_id),
+          eq(scanResults.scanType, 'active'),
+          eq(scanResults.subnet, effectiveSubnet),
+          eq(scanResults.status, 'pending'),
+          sql`${scanResults.networkInfo}->>'trigger' IS DISTINCT FROM ${INVESTIGATE_TRIGGER}`,
+        ))
+        .limit(1)
+      if (waiting) {
+        return c.json({ scan_id: waiting.scanId, status: waiting.status, scan_type: 'active',
+          message: 'This scan is already queued for that agent' }, 202)
+      }
     }
 
     // Passive scans are ARP-driven on the agent side — they run continuously

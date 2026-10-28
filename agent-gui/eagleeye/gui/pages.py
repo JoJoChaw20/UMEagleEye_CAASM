@@ -271,12 +271,11 @@ class StatusPage(QWidget):
                                  "computer. Active scans are started from the EagleEye dashboard.")
         self.inv_btn.setEnabled(svc is not None and s.inventory and not svc.inventory_running)
         self.inv_btn.setToolTip("" if s.inventory else "Inventory is switched off on the Privacy page")
-        # During a daily (quick) run it stays available: the full run it asks for starts after it.
-        full_running = svc is not None and svc.sbom_running and svc.sbom_mode == "full"
-        self.sbom_btn.setEnabled(svc is not None and s.sbom and not full_running)
+        # Unavailable during any SBOM run, like the dashboard's button and the other actions.
+        sbom_busy = svc is not None and svc.sbom_running
+        self.sbom_btn.setEnabled(svc is not None and s.sbom and not sbom_busy)
         self.sbom_btn.setToolTip("SBOM is switched off on the Privacy page" if not s.sbom
-                                 else "A full SBOM is already running; its result will appear when it finishes"
-                                 if full_running else "")
+                                 else "An SBOM is being built; try again when it finishes" if sbom_busy else "")
 
         if svc is not None and len(svc.history) != self._history_len:
             self._history_len = len(svc.history)
