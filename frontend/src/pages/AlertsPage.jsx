@@ -94,7 +94,7 @@ export default function AlertsPage() {
   const [onlyExposed,  setOnlyExposed]  = useState(false)
   const [onlyNew,      setOnlyNew]      = useState(false)
   const [sort,         setSort]         = useState('priority')
-  const [tenantFilter, setTenantFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
   const [page,         setPage]         = useState(1)
 
   const [events,    setEvents]    = useState([])
@@ -188,8 +188,9 @@ export default function AlertsPage() {
     if (detailId) next.event = detailId
     if (assetFilter) { next.asset_id = assetFilter.id; if (assetFilter.label) next.label = assetFilter.label }
     if (pkgFilter) next.package = pkgFilter
+    if (tenantFilter) next.tenant_id = tenantFilter
     setSearchParams(next, { replace: true })
-  }, [view, debounced, detailId, assetFilter, pkgFilter, setSearchParams])
+  }, [view, debounced, detailId, assetFilter, pkgFilter, tenantFilter, setSearchParams])
 
   const resetPage = (fn) => (v) => { fn(v); setPage(1) }
 
@@ -289,7 +290,7 @@ export default function AlertsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8 alerts-page">
       {toast && (
         <div className={`fixed top-4 right-4 z-[60] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium
           ${toast.type === 'success'
@@ -301,12 +302,10 @@ export default function AlertsPage() {
       )}
 
       {/* ── Header ── */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-dark-50">Alerts</h1>
-          <p className="text-dark-400 text-sm mt-1">
-            {stats ? `${fmtNum(stats.open_total)} open. ` : ''}Pick a quick filter or work the queue from P1 down
-          </p>
+          <h1 className="text-3xl font-semibold tracking-tight text-dark-50">Alerts</h1>
+          <p className="text-dark-400 text-sm mt-2">Review and prioritize open security findings.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={resetPage(setTenantFilter)} />
@@ -319,25 +318,44 @@ export default function AlertsPage() {
         </div>
       </div>
 
+      {/* ── Open alert summary ── */}
+      <section aria-label="Open alert summary" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="glass-card p-5 xl:p-6 border-l-4 border-l-eagle-500/80">
+          <p className="text-xs uppercase tracking-wide text-dark-400 font-semibold">Open alerts</p>
+          <p className="text-5xl font-semibold tracking-tight tabular-nums text-dark-50 mt-3">{stats ? fmtNum(stats.open_total) : '—'}</p>
+          <p className="text-sm text-dark-400 mt-2">Current active queue</p>
+        </div>
+        {[
+          { label: 'Critical', value: stats?.by_severity?.critical, tone: 'text-red-400' },
+          { label: 'High', value: stats?.by_severity?.high, tone: 'text-orange-400' },
+          { label: 'Past SLA', value: stats?.sla_breaches, tone: (stats?.sla_breaches ?? 0) > 0 ? 'text-red-400' : 'text-dark-50' },
+        ].map(metric => (
+          <div key={metric.label} className="glass-card p-5 xl:p-6 flex flex-col justify-center">
+            <p className="text-xs uppercase tracking-wide text-dark-400 font-semibold">{metric.label}</p>
+            <p className={`text-4xl font-semibold tracking-tight tabular-nums mt-3 ${metric.tone}`}>{stats ? fmtNum(metric.value) : '—'}</p>
+          </div>
+        ))}
+      </section>
+
       {/* ── Quick filters (the dashboard explains each category) ── */}
       <ConcernFilterBar counts={stats?.concerns} loading={!stats} active={view}
         onPick={(id) => pickView(view === id ? 'open' : id)} />
 
       {/* ── Backlog shape ── */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="glass-card p-5 xl:col-span-2">
-          <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2">
+        <div className="glass-card p-6 xl:col-span-2">
+          <h3 className="text-lg font-semibold text-dark-100 flex items-center gap-2">
             <Timer className="w-4 h-4 text-eagle-400" /> How long has open work been waiting?
           </h3>
-          <p className="text-xs text-dark-500 mt-1 mb-4">
-            Rows are severity, columns are time since first detection. Old critical and high alerts are the SLA breaches.
+          <p className="text-sm text-dark-400 mt-2 mb-5">
+            Older critical and high alerts are past their response target.
             {stats?.sla_breaches > 0 && <> <button onClick={() => pickView('overdue')} className="text-red-400 hover:underline">{fmtNum(stats.sla_breaches)} past SLA →</button></>}
           </p>
           <AgingHeatmap aging={stats?.aging} onCell={pickCell} />
         </div>
 
-        <div className="glass-card p-5 flex flex-col">
-          <h3 className="text-base font-semibold text-dark-100 flex items-center gap-2">
+        <div className="glass-card p-6 flex flex-col">
+          <h3 className="text-lg font-semibold text-dark-100 flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-eagle-400" /> Is the team keeping up?
           </h3>
           {(() => {
@@ -345,17 +363,17 @@ export default function AlertsPage() {
             const mttr = stats?.mttr_hours
             return (
               <>
-                <div className="flex items-baseline gap-2 mt-3">
-                  <span className={`text-4xl font-bold ${net > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>
+                <div className="flex items-baseline gap-3 mt-5">
+                  <span className={`text-5xl font-semibold tracking-tight tabular-nums ${net > 0 ? 'text-orange-400' : 'text-emerald-400'}`}>
                     {net == null ? '—' : `${net > 0 ? '+' : ''}${fmtNum(net)}`}
                   </span>
                   <span className="text-sm text-dark-300">{net == null ? '' : net > 0 ? 'backlog grew in 7 days' : net < 0 ? 'backlog shrank in 7 days' : 'backlog unchanged'}</span>
                 </div>
-                <p className="text-xs text-dark-500 mt-1">
+                <p className="text-sm text-dark-400 mt-2">
                   {stats ? <>{fmtNum(stats.new_7d)} new · {fmtNum(stats.resolved_7d)} closed · {fmtNum(stats.by_status?.in_progress)} in progress
                     {mttr != null && <> · fixes take {mttr < 48 ? `${mttr}h` : `${Math.round(mttr / 24)}d`} on average</>}</> : ''}
                 </p>
-                <div className="mt-4 flex-1 min-h-[160px]">
+                <div className="mt-6 flex-1 min-h-[190px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={trendData} barGap={2} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                       <CartesianGrid vertical={false} stroke="rgb(var(--dark-700))" />

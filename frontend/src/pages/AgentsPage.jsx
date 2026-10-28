@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Plus, Trash2, Copy, Check, X, RefreshCw, Radio, AlertCircle, KeyRound, Pencil, ChevronDown, ChevronRight, Monitor,
 } from 'lucide-react'
@@ -259,6 +259,7 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
 // ── Main page ─────────────────────────────────────────────────────
 export default function AgentsPage() {
   const { user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [agents, setAgents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -269,7 +270,7 @@ export default function AgentsPage() {
   const [renaming, setRenaming] = useState(null)
   const [showRetired, setShowRetired] = useState(false)
   const [tenants, setTenants] = useState([])
-  const [tenantFilter, setTenantFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
 
   const isSuperadmin = user?.role === 'superadmin'
   const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
@@ -291,6 +292,10 @@ export default function AgentsPage() {
     load()
     if (isSuperadmin) client.get('/tenants').then((r) => setTenants(r.data.tenants || [])).catch(() => {})
   }, [load, isSuperadmin])
+
+  useEffect(() => {
+    setTenantFilter(searchParams.get('tenant_id') ?? '')
+  }, [searchParams])
 
   useEffect(() => {
     if (!notice) return undefined
@@ -381,7 +386,13 @@ export default function AgentsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
+          <TenantSelector value={tenantFilter} onChange={(tenantId) => {
+            setTenantFilter(tenantId)
+            const next = new URLSearchParams(searchParams)
+            if (tenantId) next.set('tenant_id', tenantId)
+            else next.delete('tenant_id')
+            setSearchParams(next, { replace: true })
+          }} />
           <button onClick={load} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FileSearch, X, CheckCircle, ShieldAlert, UserPlus, Filter, Sparkles } from 'lucide-react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
@@ -11,11 +11,12 @@ export default function AdvisoriesPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [advisories, setAdvisories] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedAdvisory, setSelectedAdvisory] = useState(null)
-  const [statusFilter, setStatusFilter] = useState('all')
-  const [tenantFilter, setTenantFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState(() => STATUS_OPTIONS.includes(searchParams.get('status')) ? searchParams.get('status') : 'all')
+  const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
   const isSuperadmin = user?.role === 'superadmin'
   const canManageAdvisories = user?.role === 'tenant_superadmin' || user?.role === 'tenant_admin'
 
@@ -42,6 +43,15 @@ export default function AdvisoriesPage() {
   }, [statusFilter, tenantFilter])
 
   useEffect(() => { fetchAdvisories() }, [fetchAdvisories])
+
+  useEffect(() => {
+    const status = searchParams.get('status')
+    setStatusFilter(STATUS_OPTIONS.includes(status) ? status : 'all')
+  }, [searchParams])
+
+  useEffect(() => {
+    setTenantFilter(searchParams.get('tenant_id') ?? '')
+  }, [searchParams])
 
   const handleStatus = async (id, status) => {
     try {
@@ -82,11 +92,24 @@ export default function AdvisoriesPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-white">AI Advisories</h1>
         <div className="flex items-center gap-2 flex-wrap">
-          <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
+          <TenantSelector value={tenantFilter} onChange={(tenantId) => {
+            setTenantFilter(tenantId)
+            const next = new URLSearchParams(searchParams)
+            if (tenantId) next.set('tenant_id', tenantId)
+            else next.delete('tenant_id')
+            setSearchParams(next, { replace: true })
+          }} />
           <Filter className="w-4 h-4 text-dark-400" />
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {
+              const status = e.target.value
+              setStatusFilter(status)
+              const next = new URLSearchParams(searchParams)
+              if (status === 'all') next.delete('status')
+              else next.set('status', status)
+              setSearchParams(next, { replace: true })
+            }}
             className="input-field text-sm py-1.5 w-40"
           >
             {STATUS_OPTIONS.map(s => (

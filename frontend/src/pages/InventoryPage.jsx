@@ -30,6 +30,7 @@ const GAP_LABELS = {
   stale:        'Not seen by a scan in 7 days',
   no_sbom:      'Servers & PCs without an SBOM',
   no_agent:     'Servers & PCs without the EagleEye agent',
+  owner:        'Assets without an owner',
   posture_issues: 'Machines failing an endpoint security check',
 }
 
@@ -53,7 +54,7 @@ function readLinkFilter(sp) {
 
 function readScope(sp) {
   const s = sp.get('scope')
-  if (s === 'mine' || s === 'discovered') return s
+  if (s === 'mine' || s === 'discovered' || s === 'any') return s
   // Both scopes only through a link (there is no "All" tab).
   return readLinkFilter(sp) ? 'any' : 'mine'
 }
@@ -74,7 +75,7 @@ export default function InventoryPage() {
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '')
   const [deviceTypeFilter, setDeviceTypeFilter] = useState(() => searchParams.get('device_type') ?? '')
   const [sourceFilter, setSourceFilter] = useState(() => searchParams.get('source') ?? '')
-  const [tenantFilter, setTenantFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
   const [page, setPage] = useState(1)
 
   const [assets, setAssets] = useState([])
@@ -103,6 +104,7 @@ export default function InventoryPage() {
     setSearch(searchParams.get('q') ?? '')
     setDeviceTypeFilter(searchParams.get('device_type') ?? '')
     setSourceFilter(searchParams.get('source') ?? '')
+    setTenantFilter(searchParams.get('tenant_id') ?? '')
     setPage(1)
   }, [searchParams])
 
@@ -115,8 +117,10 @@ export default function InventoryPage() {
   const changeScope = (next) => {
     setActiveTab('inventory')
     // Switching scope drops link filters but keeps the search term.
-    const params = next === 'mine' ? {} : { scope: next }
-    if (search) params.q = search
+    const params = new URLSearchParams()
+    if (next !== 'mine') params.set('scope', next)
+    if (search) params.set('q', search)
+    if (tenantFilter) params.set('tenant_id', tenantFilter)
     setSearchParams(params, { replace: true })
   }
 
@@ -134,7 +138,12 @@ export default function InventoryPage() {
     setPage(1)
   }
 
-  const clearLinkFilter = () => setSearchParams(scope === 'discovered' ? { scope } : {}, { replace: true })
+  const clearLinkFilter = () => {
+    const next = new URLSearchParams()
+    if (scope === 'discovered' || scope === 'any') next.set('scope', scope)
+    if (tenantFilter) next.set('tenant_id', tenantFilter)
+    setSearchParams(next, { replace: true })
+  }
 
   const loadAssets = useCallback(async () => {
     setLoading(true)
@@ -358,7 +367,7 @@ export default function InventoryPage() {
       {/* Scope + view toggles */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50" role="tablist" aria-label="Asset scope">
-          {['mine', 'discovered'].map((s) => (
+          {['mine', 'discovered', 'any'].map((s) => (
             <button
               key={s}
               role="tab"
@@ -366,7 +375,7 @@ export default function InventoryPage() {
               onClick={() => changeScope(s)}
               className={`tab-toggle ${scope === s ? 'active' : ''}`}
             >
-              {SCOPES[s].label}
+              {SCOPES[s]?.label ?? 'All known'}
               {scopeCounts[s] != null && <span className="text-xs text-dark-400 ml-0.5">{scopeCounts[s]}</span>}
             </button>
           ))}
@@ -428,7 +437,13 @@ export default function InventoryPage() {
         <>
           {/* Filters */}
           <div className="flex items-center gap-3 flex-wrap">
-            <TenantSelector value={tenantFilter} onChange={(id) => { setTenantFilter(id); setPage(1) }} />
+            <TenantSelector value={tenantFilter} onChange={(id) => {
+              setTenantFilter(id); setPage(1)
+              const next = new URLSearchParams(searchParams)
+              if (id) next.set('tenant_id', id)
+              else next.delete('tenant_id')
+              setSearchParams(next, { replace: true })
+            }} />
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
               <input

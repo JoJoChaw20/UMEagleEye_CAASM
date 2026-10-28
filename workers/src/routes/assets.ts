@@ -232,6 +232,8 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     } else if (gap === 'no_agent') {
       // Servers and PCs no agent reports for: their posture is unassessed.
       conditions.push(sql`${assets.deviceType} IN ('server', 'workstation') AND ${assets.endpointInventory} IS NULL`)
+    } else if (gap === 'owner') {
+      conditions.push(sql`NULLIF(btrim(${assets.owner}), '') IS NULL`)
     } else if (gap === 'posture_issues') {
       // At least one failed endpoint security check.
       conditions.push(sql`${assets.postureChecks} @> '[{"state":"bad"}]'::jsonb`)

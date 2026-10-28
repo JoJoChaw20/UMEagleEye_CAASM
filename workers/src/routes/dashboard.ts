@@ -11,7 +11,7 @@ import { eq, and, desc, sql, inArray, isNull } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, agents, scanResults, sboms, events, advisories } from '../db/schema'
+import { assets, agents, scanResults, sboms, events, advisories, users } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
 import { RISKY_PORTS, compareVersions } from '../lib/exposure'
@@ -35,6 +35,7 @@ app.get('/summary', authMiddleware, async (c) => {
     const tenantId = user.role === 'superadmin' ? (tenantIdParam || undefined) : (user.tenantId ?? undefined)
     const assetScope = tenantId ? eq(assets.tenantId, tenantId) : undefined
     const now = Date.now()
+    const sevenDaysAgo = new Date(now - 7 * DAY)
 
     const openScope = and(assetScope, isOpenEvent())
     const sevCount = (sev: string) => sql<number>`count(*) filter (where ${events.severity} = ${sev})::int`
@@ -42,7 +43,7 @@ app.get('/summary', authMiddleware, async (c) => {
     const pkgName = sql<string>`${events.details}->>'package_name'`
 
     const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows,
-           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows] = await Promise.all([
+           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows, priorityMetrics, advisoryMetrics] = await Promise.all([
       db.select({ agentId: agents.agentId, name: agents.name, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
         .from(agents).where(tenantId ? and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt)) : isNull(agents.retiredAt)),
       db.select({
@@ -54,7 +55,7 @@ app.get('/summary', authMiddleware, async (c) => {
         .orderBy(desc(scanResults.startedAt)).limit(20),
       db.select({
           assetId: assets.assetId, hostname: assets.hostname, ip: assets.ipAddress, mac: assets.macAddress,
-          vendor: assets.hardwareVendor, deviceType: assets.deviceType, osInfo: assets.osInfo,
+          vendor: assets.hardwareVendor, owner: assets.owner, deviceType: assets.deviceType, osInfo: assets.osInfo,
           criticality: assets.criticalityScore, internetFacing: assets.isInternetFacing,
           internetFacingOverride: assets.internetFacingOverride,
           lastScanned: assets.lastScanned, createdAt: assets.createdAt, source: assets.source,
@@ -70,13 +71,15 @@ app.get('/summary', authMiddleware, async (c) => {
       db.select({
           eventId: events.eventId, eventType: events.eventType, severity: events.severity, details: events.details,
           riskScore: events.compositeRiskScore, status: events.status, firstSeen: events.firstSeen, lastSeen: events.lastSeen,
-          occurrences: events.occurrences, assetId: assets.assetId, hostname: assets.hostname, ip: assets.ipAddress,
+          occurrences: events.occurrences, assignedTo: events.assignedTo, assignee: users.username,
+          assetId: assets.assetId, hostname: assets.hostname, owner: assets.owner, ip: assets.ipAddress,
           internetFacing: assets.isInternetFacing, criticality: assets.criticalityScore, deviceType: assets.deviceType,
           priority: priorityExpr,
         })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .leftJoin(users, eq(events.assignedTo, users.userId))
         .where(and(assetScope, isOpenEvent()))
-        .orderBy(desc(priorityExpr), desc(events.lastSeen)).limit(5),
+        .orderBy(desc(priorityExpr), desc(events.lastSeen)).limit(30),
       db.select({ count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(assetScope, isOpenEvent(), eq(events.eventType, 'config_change'),
@@ -132,6 +135,36 @@ app.get('/summary', authMiddleware, async (c) => {
         .groupBy(assets.assetId)
         .orderBy(desc(sql`max(${priorityExpr}) + 10 * ln(1 + ${sevCount('critical')}) + 3 * ln(1 + ${sevCount('high')})`))
         .limit(6),
+      // Dashboard-only aggregate signals use the same open-event and priority rules as the queue.
+      db.select({
+          urgent: sql<number>`count(*) filter (where ${priorityExpr} >= 100)::int`,
+          urgentNew7d: sql<number>`count(*) filter (where ${priorityExpr} >= 100 and ${events.firstSeen} >= ${sevenDaysAgo})::int`,
+          highRiskExposureAssets: sql<number>`count(distinct ${assets.assetId}) filter (
+            where ${assets.isInternetFacing} = true and ${events.severity} in ('critical','high'))::int`,
+          kevCves: sql<number>`count(distinct ${events.details}->>'cve_id') filter (
+            where ${events.eventType} = 'cve_detected' and ${events.details}->'kev' = 'true'::jsonb)::int`,
+          kevAssets: sql<number>`count(distinct ${assets.assetId}) filter (
+            where ${events.eventType} = 'cve_detected' and ${events.details}->'kev' = 'true'::jsonb)::int`,
+          threatIntelMatches: sql<number>`count(*) filter (where
+            (${events.eventType} = 'cti_match' and COALESCE(${events.details}->>'match_kind', '') <> 'watchlist') or
+            (${events.eventType} <> 'cve_detected' and ${events.eventType} <> 'cti_match' and ${events.details}->'has_cti_match' = 'true'::jsonb))::int`,
+          threatIntelAssets: sql<number>`count(distinct ${assets.assetId}) filter (where
+            (${events.eventType} = 'cti_match' and COALESCE(${events.details}->>'match_kind', '') <> 'watchlist') or
+            (${events.eventType} <> 'cve_detected' and ${events.eventType} <> 'cti_match' and ${events.details}->'has_cti_match' = 'true'::jsonb))::int`,
+          highPriorityFixGroups: sql<number>`count(distinct (${events.assetId},
+            COALESCE(${events.details}->>'package_name', ''), COALESCE(${events.details}->>'package_version', '')))
+            filter (where ${events.eventType} = 'cve_detected' and ${priorityExpr} >= 75)::int`,
+        })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(openScope),
+      db.select({
+          status: advisories.status,
+          count: sql<number>`count(*)::int`,
+          unassigned: sql<number>`count(*) filter (where ${advisories.assignedTo} is null)::int`,
+          slaBreaches: sql<number>`count(*) filter (where ${advisories.status} = 'open' and
+            ${advisories.createdAt} < ${new Date(now - 72 * 60 * 60 * 1000)})::int`,
+        })
+        .from(advisories).innerJoin(events, eq(advisories.eventId, events.eventId))
+        .innerJoin(assets, eq(events.assetId, assets.assetId)).where(assetScope).groupBy(advisories.status),
     ])
 
     // ── Collection health ──────────────────────────────────────────
@@ -139,7 +172,8 @@ app.get('/summary', authMiddleware, async (c) => {
       const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).getTime() : 0
       return {
         agent_id: a.agentId, name: a.name, version: a.version, last_heartbeat: a.lastHeartbeat,
-        online: a.status !== 'offline' && hb > 0 && now - hb < AGENT_STALE_MS,
+        status: a.status,
+        online: a.status === 'online' && hb > 0 && now - hb < AGENT_STALE_MS,
       }
     })
     const lastOf = (type: string) => scanRows.find(s => s.scanType === type && s.status === 'completed')
@@ -147,7 +181,7 @@ app.get('/summary', authMiddleware, async (c) => {
     const lastPassive = lastOf('passive')
     const recentFailures = scanRows.filter(s => s.status === 'failed').slice(0, 3)
 
-    // ── Priority actions (top 5 open alerts) ───────────────────────
+    // ── Priority actions (top 30 open alerts; UI consolidates CVEs by fix) ─
     const topIds = topRows.map(r => r.eventId)
     const advByEvent = new Map<string, { recommendedAction: string; advisoryId: string }>()
     if (topIds.length > 0) {
@@ -162,7 +196,8 @@ app.get('/summary', authMiddleware, async (c) => {
         risk_score: r.riskScore != null ? Number(r.riskScore) : null, status: r.status,
         first_seen: r.firstSeen, last_seen: r.lastSeen, occurrences: r.occurrences,
         priority_score: r.priority != null ? Number(r.priority) : null,
-        asset: { asset_id: r.assetId, hostname: r.hostname, ip: r.ip, internet_facing: r.internetFacing, criticality: r.criticality, device_type: r.deviceType },
+        assigned_to: r.assignedTo, assignee: r.assignee,
+        asset: { asset_id: r.assetId, hostname: r.hostname, owner: r.owner, ip: r.ip, internet_facing: r.internetFacing, criticality: r.criticality, device_type: r.deviceType },
         advisory_id: adv?.advisoryId ?? null,
         recommended_action: adv?.recommendedAction?.slice(0, 280) ?? null,
       }
@@ -280,6 +315,8 @@ app.get('/summary', authMiddleware, async (c) => {
       collection: {
         agents_total:  agentsOut.length,
         agents_online: agentsOut.filter(a => a.online).length,
+        agents_degraded: agentsOut.filter(a => a.status === 'degraded').length,
+        agents_offline: agentsOut.filter(a => !a.online && a.status !== 'degraded').length,
         agents:        agentsOut,
         last_active_scan:  lastActive  ? { scan_id: lastActive.scanId, subnet: lastActive.subnet, hosts: lastActive.hostsDiscovered, completed_at: lastActive.completedAt } : null,
         last_passive_scan: lastPassive ? { scan_id: lastPassive.scanId, hosts: lastPassive.hostsDiscovered, completed_at: lastPassive.completedAt } : null,
@@ -318,6 +355,24 @@ app.get('/summary', authMiddleware, async (c) => {
         asset_id: a.assetId, hostname: a.hostname, ip: a.ip, device_type: a.deviceType, criticality: a.criticality,
         inventory_at: a.inventoryAt, posture_score: a.postureScore, posture_checks: a.postureChecks,
       }))),
+      overview: {
+        known_assets: assetRows.length,
+        new_assets_7d: newDevices.length,
+        assets_without_owner: assetRows.filter(a => !a.owner?.trim()).length,
+        urgent_issues: priorityMetrics[0]?.urgent ?? 0,
+        urgent_issues_new_7d: priorityMetrics[0]?.urgentNew7d ?? 0,
+        high_risk_exposure_assets: priorityMetrics[0]?.highRiskExposureAssets ?? 0,
+        kev_cves: priorityMetrics[0]?.kevCves ?? 0,
+        kev_assets: priorityMetrics[0]?.kevAssets ?? 0,
+        threat_intel_matches: priorityMetrics[0]?.threatIntelMatches ?? 0,
+        threat_intel_assets: priorityMetrics[0]?.threatIntelAssets ?? 0,
+        high_priority_fix_groups: priorityMetrics[0]?.highPriorityFixGroups ?? 0,
+      },
+      remediation: {
+        by_status: Object.fromEntries(advisoryMetrics.map(a => [a.status, a.count])),
+        unassigned: advisoryMetrics.reduce((sum, a) => sum + a.unassigned, 0),
+        sla_breaches: advisoryMetrics.reduce((sum, a) => sum + a.slaBreaches, 0),
+      },
     })
   } catch (err) {
     console.error('dashboard GET /summary error:', err)

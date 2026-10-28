@@ -1,8 +1,8 @@
 // Visual building blocks shared by the Dashboard and Alerts pages. Every color
 // here carries a meaning (severity or urgency) and is always paired with a text
 // label, so nothing is readable by color alone.
-import { ChevronRight, Clock, CheckCircle2, Globe } from 'lucide-react'
-import { SEVERITY_COLORS, TONE, CONCERNS, priorityTier, dueInfo, alertLabel, renderDetail } from './alertMeta'
+import { ChevronRight, Clock, CheckCircle2 } from 'lucide-react'
+import { SEVERITY_COLORS, TONE, CONCERNS, priorityTier, dueInfo } from './alertMeta'
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low']
 const cap = (s) => s[0].toUpperCase() + s.slice(1)
@@ -40,15 +40,15 @@ export function SeverityStack({ counts, onSelect, height = 10, legend = true }) 
   )
 }
 
-// One "should I worry?" category: count, why it matters, what to do, examples.
-export function ConcernCard({ meta, count, examples = [], loading, onOpen, onExample, active }) {
+// One "should I worry?" category: a large count, short context, and a direct path into the queue.
+export function ConcernCard({ meta, count, loading, onOpen }) {
   const Icon = meta.icon
   const clear = !loading && count === 0
   const t = clear ? TONE.good : TONE[meta.tone]
   return (
-    <div className={`glass-card w-full p-4 border-l-4 transition-colors flex flex-col
+    <div className={`glass-card w-full p-5 border-l-4 transition-colors flex flex-col min-h-[190px]
         ${clear ? 'border-l-emerald-500/50 opacity-80' : t.bg}
-        ${active ? 'ring-2 ring-eagle-500/60' : 'hover:border-eagle-500/40'}`}
+        hover:border-eagle-500/40`}
       style={!clear ? { borderLeftColor: t.bar } : undefined}>
       {/* Header area opens the whole category */}
       <button type="button" onClick={onOpen} disabled={clear || loading || !onOpen} className="text-left group"
@@ -57,34 +57,16 @@ export function ConcernCard({ meta, count, examples = [], loading, onOpen, onExa
           <Icon className={`w-4 h-4 ${clear ? 'text-emerald-400' : t.text}`} />
           <span className="text-sm font-semibold text-dark-100 group-hover:text-eagle-300">{meta.title}</span>
         </div>
-        <div className="flex items-baseline gap-2 mt-2">
-          <span className={`text-4xl font-bold leading-none ${clear ? 'text-dark-400' : 'text-dark-50'}`}>{loading ? '…' : fmtNum(count)}</span>
+        <div className="flex items-baseline gap-2 mt-4">
+          <span className={`text-5xl font-semibold leading-none tracking-tight tabular-nums ${clear ? 'text-dark-400' : 'text-dark-50'}`}>{loading ? '…' : fmtNum(count)}</span>
           {clear
             ? <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" />All clear</span>
             : !loading && <span className={`text-xs font-semibold ${t.text}`}>{meta.action}</span>}
         </div>
-        <p className="text-xs text-dark-400 mt-2 leading-relaxed">{meta.why}</p>
+        <p className="text-sm text-dark-400 mt-3 leading-relaxed line-clamp-2">{meta.why}</p>
       </button>
-      {/* Each example opens that specific alert */}
-      {!clear && examples.length > 0 && (
-        <ul className="mt-3 space-y-0.5 border-t border-dark-700/60 pt-2">
-          {examples.map(e => (
-            <li key={e.event_id} className="min-w-0">
-              <button type="button" onClick={() => onExample?.(e)} disabled={!onExample} title="Open this alert"
-                className="w-full text-left text-xs min-w-0 rounded px-1 -mx-1 py-0.5 hover:bg-dark-700/30">
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: SEVERITY_COLORS[e.severity] }} />
-                  <span className="text-dark-200 truncate" title={e.asset?.hostname || e.asset?.ip}>{e.asset?.hostname || e.asset?.ip}</span>
-                  {e.asset?.internet_facing && <Globe className="w-3 h-3 text-accent-amber flex-shrink-0" title="Internet-facing" />}
-                </span>
-                <span className="block font-mono text-[11px] text-dark-400 truncate pl-3" title={shortDetail(e)}>{shortDetail(e)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
       {!clear && !loading && onOpen && (
-        <button type="button" onClick={onOpen} className="mt-auto pt-3 text-xs text-eagle-400 hover:underline inline-flex items-center gap-0.5 self-start">
+        <button type="button" onClick={onOpen} className="mt-auto pt-4 text-sm text-eagle-400 hover:underline inline-flex items-center gap-0.5 self-start">
           Review {count === 1 ? 'it' : `all ${fmtNum(count)}`} <ChevronRight className="w-3.5 h-3.5" />
         </button>
       )}
@@ -96,8 +78,8 @@ export function ConcernCard({ meta, count, examples = [], loading, onOpen, onExa
 // Alerts page (the Dashboard carries the full explanations).
 export function ConcernFilterBar({ counts, loading, active, onPick }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-dark-500 mr-1">Quick filters</span>
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-dark-500 mr-1">Quick filters</span>
       {CONCERNS.map(meta => {
         const Icon = meta.icon
         const n = counts?.[meta.id] ?? 0
@@ -107,7 +89,7 @@ export function ConcernFilterBar({ counts, loading, active, onPick }) {
         return (
           <button key={meta.id} type="button" onClick={() => onPick(meta.id)} title={`${meta.why} ${meta.action}.`}
             aria-pressed={on}
-            className={`inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg border text-[13px] transition-colors
+            className={`inline-flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-lg border text-sm transition-colors
               ${on ? 'border-eagle-500 bg-eagle-500/10 text-dark-50' : 'border-dark-700 bg-dark-800/60 text-dark-200 hover:border-dark-500'}`}>
             <Icon className={`w-4 h-4 ${clear ? 'text-emerald-400' : t.text}`} />
             {meta.short ?? meta.title}
@@ -122,12 +104,6 @@ export function ConcernFilterBar({ counts, loading, active, onPick }) {
   )
 }
 
-function shortDetail(e) {
-  if (e.event_type === 'new_device') return e.details?.mac ?? 'new'
-  if (e.event_type === 'config_change') return alertLabel(e).replace(' Changed', '')
-  return renderDetail(e)
-}
-
 // Severity × "how long has it been open" grid. Cell shade = count (one hue,
 // log scale); cells past the SLA target are flagged with a clock + red outline.
 const SLA_PAST = { critical: ['d3_7', 'd7_30', 'gt30'], high: ['d7_30', 'gt30'] }
@@ -140,7 +116,7 @@ export function AgingHeatmap({ aging, onCell }) {
   const colTotals = buckets.map(b => SEVERITIES.reduce((s, sev) => s + (aging?.[sev]?.[b] ?? 0), 0))
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-xs border-separate" style={{ borderSpacing: 2 }}>
+      <table className="w-full text-sm border-separate" style={{ borderSpacing: 3 }}>
         <thead>
           <tr>
             <th className="text-left text-dark-500 font-medium pb-1 pr-2">Open for →</th>
@@ -165,7 +141,7 @@ export function AgingHeatmap({ aging, onCell }) {
                     <td key={b} className="p-0">
                       <button type="button" disabled={!n} onClick={() => onCell?.(sev, b)}
                         title={`${fmtNum(n)} ${sev} alert${n === 1 ? '' : 's'} open ${BUCKET_LABELS[b]}${late ? ' — past SLA' : ''}`}
-                        className={`w-full h-9 rounded text-center tabular-nums transition-colors
+                        className={`w-full h-11 rounded-lg text-center tabular-nums transition-colors
                           ${n ? 'text-dark-50 font-semibold hover:ring-2 hover:ring-eagle-400/60 cursor-pointer' : 'text-dark-600 cursor-default'}
                           ${late ? 'ring-1 ring-inset ring-red-500/70' : ''}`}
                         style={{ background: n ? `rgba(51,147,255,${shade(n)})` : 'rgb(var(--dark-700) / 0.25)' }}>
@@ -187,7 +163,7 @@ export function AgingHeatmap({ aging, onCell }) {
           </tr>
         </tbody>
       </table>
-      <p className="text-[11px] text-dark-500 mt-2 flex items-center gap-3 flex-wrap">
+      <p className="text-xs text-dark-500 mt-3 flex items-center gap-3 flex-wrap">
         <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3 text-red-400" />red outline = past SLA (critical &gt; 3 days, high &gt; 7 days)</span>
         <span>Darker = more alerts · click a cell to list them</span>
       </p>

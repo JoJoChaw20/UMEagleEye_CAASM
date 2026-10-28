@@ -20,7 +20,13 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const requestUrl = error.config?.url || ''
+    const isAuthenticationAttempt = /^\/?auth\/(login|register|google|mfa\/verify)(?:\?|$)/.test(requestUrl)
+
+    // A failed sign-in is expected to return 401. Keep it on the login form so
+    // LoginPage can show the API's "Invalid credentials" message instead of
+    // reloading the page and clearing the form.
+    if (error.response?.status === 401 && !isAuthenticationAttempt) {
       localStorage.removeItem('access_token')
       localStorage.removeItem('user')
       window.location.href = '/login'
