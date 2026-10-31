@@ -2,7 +2,7 @@
 // with (knowledge) and the rule that turned the two into an alert. Built from the alert's
 // details only, so it works for every alert the server stores.
 import { Eye, BookOpen, Scale, Radar } from 'lucide-react'
-import { RISKY_PORTS, riskReasons } from './alertMeta'
+import { RISKY_PORTS, riskReasons, affectedVersions, versionList } from './alertMeta'
 
 const host = (e) => e.asset?.hostname || e.asset?.ip_address || 'this asset'
 
@@ -15,7 +15,9 @@ function chain(e) {
       if (d.kev) known.push("On CISA's Known Exploited Vulnerabilities list: attackers are using it now")
       for (const t of d.ti_event_titles ?? []) known.push(`Named in threat-intel event "${t}"`)
       return {
-        evidence: `${d.package_name}${d.package_version ? ` ${d.package_version}` : ''} is in ${where}'s SBOM (packages listed by the EagleEye agent on that computer)`,
+        evidence: affectedVersions(d).length > 1
+          ? `${d.package_name} ${versionList(affectedVersions(d).map(v => v.version))} are in ${where}'s SBOM (packages listed by the EagleEye agent on that computer)`
+          : `${d.package_name}${d.package_version ? ` ${d.package_version}` : ''} is in ${where}'s SBOM (packages listed by the EagleEye agent on that computer)`,
         knowledge: known,
         rule: 'R1 · A package with a known vulnerability (Grype matched it against its vulnerability database)',
       }

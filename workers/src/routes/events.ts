@@ -24,6 +24,7 @@ import { priorityExpr } from '../lib/priority'
 import { softwareName, techniquesFor } from '../lib/attack'
 import { cweList } from '../lib/cwe'
 import { fixTarget } from '../lib/fixTarget'
+import { alsoAffected } from '../lib/affectedVersions'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 import { loadMsrcMonth } from '../services/windowsPatch'
 import { UNSEEN_NOTE } from '../services/alertHygiene'
@@ -400,6 +401,7 @@ export function queryCveGroups(db: DB, where: SQL | undefined, limit: number, of
       firstSeen:        sql<string>`min(${events.firstSeen})`,
       lastSeen:         sql<string>`max(${events.lastSeen})`,
       fixVersions:      sql<unknown[]>`array_agg(${events.details}->'fix_versions')`,
+      affectedVersions: sql<unknown[]>`array_agg(${events.details}->'affected_versions')`,
       // KEV first, then priority, then CVSS: what to read first in the group
       topCves:          sql<string[]>`(array_agg(${events.details}->>'cve_id' ORDER BY COALESCE(${events.details}->'kev' = 'true'::jsonb, false) DESC,
                           ${priorityExpr} DESC, (${events.details}->>'cvss_base_score')::float DESC NULLS LAST))[1:5]`,
@@ -456,6 +458,8 @@ app.get('/cve-groups', authMiddleware, async (c) => {
           asset_internet_facing: r.assetInternetFacing,
           package_name: r.packageName,
           package_version: r.packageVersion || null,
+          // Other installed versions these CVEs also affect, each with its own upgrade.
+          also_affected: alsoAffected(r.packageVersion, r.affectedVersions),
           package_type: r.packageType,
           cves: r.cves,
           by_severity: { critical: r.critical, high: r.high, medium: r.medium, low: r.low },

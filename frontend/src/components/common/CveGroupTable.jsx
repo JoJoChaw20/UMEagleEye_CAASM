@@ -72,6 +72,15 @@ export default function CveGroupTable({ groups, canManage, selected, onToggle, o
                   {g.no_fix > 0 && `${g.fix_to ? ' · ' : ''}${g.no_fix} with no fixed version yet`}
                   {g.package_type && <span className="text-dark-500"> · {g.package_type}</span>}
                 </p>
+                {g.also_affected?.length > 0 && (
+                  <p className="text-xs text-amber-300/90 mt-0.5" title="Other installed versions of this package these CVEs also affect">
+                    Also installed: {g.also_affected.map((v, i) => (
+                      <span key={v.version} className="font-mono">
+                        {i > 0 && ', '}{v.version}{v.to ? ` → ${v.to}` : ' (no fix yet)'}
+                      </span>
+                    ))}
+                  </p>
+                )}
               </td>
               <td className="text-xs">
                 <div className="flex items-center gap-1.5 mb-1">

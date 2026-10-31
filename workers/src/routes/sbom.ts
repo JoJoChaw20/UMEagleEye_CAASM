@@ -16,6 +16,7 @@ import { cveIntelFor, linkCveIndicators, type CveIntel } from '../services/threa
 import { matchIocs } from '../services/iocMatch'
 import { isStoredInR2, licenseNames, sbomObjectKey, sbomSummary } from '../lib/sbomStore'
 import { computerState, SBOM_STALE_HOURS } from '../lib/sbomCoverage'
+import { collectAffectedVersions } from '../lib/affectedVersions'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -892,6 +893,8 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
       existingMap.set(key, { eventId: row.eventId, details: d, status: row.status })
     }
     const seenKeys = new Set<string>()
+    // Every installed version each CVE affects (lib/affectedVersions.ts), from all findings.
+    const affectedByKey = collectAffectedVersions(allFindings)
     // Everything still present on the machine, including findings past the cap.
     const presentKeys = new Set<string>([...(present_keys ?? []), ...allFindings.map(f => `${f.cve_id}::${f.package_name}`)])
     const now = new Date()
@@ -905,8 +908,11 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
               package_version, fix_versions, description, cwe_ids } = finding
       if (!cve_id || !package_name) continue
       const dedupKey  = `${cve_id}::${package_name}`
-      if (seenKeys.has(dedupKey)) continue    // same CVE reported for two copies of a package
+      if (seenKeys.has(dedupKey)) continue    // same CVE on another copy or version: one alert
       seenKeys.add(dedupKey)
+      // The alert names the oldest affected version (stable between SBOMs) and lists them all.
+      const affected  = affectedByKey.get(dedupKey) ?? []
+      const shown     = affected[0] ?? { version: package_version, fix_versions }
 
       const epss      = epssMap.get(cve_id) ?? 0
       const ctiMatch  = ctiMatches.has(cve_id)
@@ -921,14 +927,15 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
         ti_event_titles: intel.get(cve_id)?.titles ?? [],
         advisory_id:     finding.advisory_id ?? null,
         package_type:    finding.package_type ?? null,
-        fix_versions,
+        fix_versions:    shown.fix_versions,
+        affected_versions: affected,
         description:     description.slice(0, 500),
         cwe_ids,
       }
 
       if (existing) {
         // Refresh all scored fields plus the freshest data from this scan
-        const mergedDetails = { ...existing.details, ...fresh, package_version }
+        const mergedDetails = { ...existing.details, ...fresh, package_version: shown.version }
         // Still vulnerable after being marked resolved: the fix did not take, so
         // reopen. False positives and accepted risks stay closed.
         const reopen = existing.status === 'resolved'
@@ -953,7 +960,7 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
           eventType:          'cve_detected',
           severity,
           compositeRiskScore: String(riskScore),
-          details: { cve_id, package_name, package_version, ...fresh },
+          details: { cve_id, package_name, package_version: shown.version, ...fresh },
         })
       }
     }

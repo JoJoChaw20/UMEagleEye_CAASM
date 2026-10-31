@@ -17,6 +17,7 @@ import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
+  affectedVersions, versionList,
 } from '../components/common/alertMeta'
 import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
@@ -585,7 +586,14 @@ export default function AlertsPage() {
                       </a>
                     ) : renderDetail(e)}
                     {e.details?.package_name && (
-                      <p className="text-dark-400 font-sans">{e.details.package_name}{e.details.package_version ? ` ${e.details.package_version}` : ''}</p>
+                      <p className="text-dark-400 font-sans">
+                        {e.details.package_name}{e.details.package_version ? ` ${e.details.package_version}` : ''}
+                        {affectedVersions(e.details).length > 1 && (
+                          <span className="text-dark-500" title={`Affected versions installed: ${versionList(affectedVersions(e.details).map(v => v.version))}`}>
+                            {` +${affectedVersions(e.details).length - 1} more`}
+                          </span>
+                        )}
+                      </p>
                     )}
                   </td>
                   <td>
@@ -839,6 +847,15 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                   </span>
                 ))}</span>],
                 Array.isArray(d.fix_versions) && d.fix_versions.length > 0 && ['Fixed in', d.fix_versions.join(', ')],
+                affectedVersions(d).length > 1 && ['Installed versions', <span className="block space-y-0.5">
+                  {affectedVersions(d).map(v => (
+                    <span key={v.version} className="block font-mono">
+                      {v.version}
+                      <span className="text-dark-400 font-sans">{v.fix_versions?.length ? ` · fixed in ${v.fix_versions.join(', ')}` : ' · no fix published'}</span>
+                    </span>
+                  ))}
+                  <span className="block text-dark-500 font-sans">All of them are affected; the alert closes when none is left.</span>
+                </span>],
                 d.cvss_base_score != null && ['CVSS', d.cvss_base_score],
                 d.epss_score != null && ['EPSS', `${(d.epss_score * 100).toFixed(1)}% chance of exploitation in 30 days`],
                 d.kev && ['Exploited in the wild', <a href={`https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=${d.cve_id}`} target="_blank" rel="noreferrer" className="text-red-300 hover:underline">Yes, on CISA's Known Exploited Vulnerabilities list</a>],

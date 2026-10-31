@@ -269,6 +269,17 @@ function basePlaybook(e) {
   }
 }
 
+// A CVE alert covers every installed version of its package the CVE affects
+// (details.affected_versions, oldest first); package_version is the oldest.
+export const affectedVersions = (d) =>
+  Array.isArray(d?.affected_versions) && d.affected_versions.length
+    ? d.affected_versions
+    : (d?.package_version ? [{ version: d.package_version, fix_versions: d.fix_versions ?? [] }] : [])
+
+/** "1.1.11, 1.1.12 and 2.0.2" */
+export const versionList = (versions) =>
+  versions.length <= 1 ? (versions[0] ?? '') : `${versions.slice(0, -1).join(', ')} and ${versions[versions.length - 1]}`
+
 export const STATUS_META = {
   open:           { label: 'Open',           cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   in_progress:    { label: 'In progress',    cls: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
