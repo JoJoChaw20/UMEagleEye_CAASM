@@ -17,7 +17,7 @@ import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
 import {
   SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
-  affectedVersions, versionList,
+  affectedVersions, versionList, fixFor,
 } from '../components/common/alertMeta'
 import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
@@ -846,12 +846,12 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                     {w.name && <span className="text-dark-300"> {w.name}</span>}
                   </span>
                 ))}</span>],
-                Array.isArray(d.fix_versions) && d.fix_versions.length > 0 && ['Fixed in', d.fix_versions.join(', ')],
+                affectedVersions(d).length <= 1 && Array.isArray(d.fix_versions) && d.fix_versions.length > 0 && ['Fixed in', d.fix_versions.join(', ')],
                 affectedVersions(d).length > 1 && ['Installed versions', <span className="block space-y-0.5">
                   {affectedVersions(d).map(v => (
-                    <span key={v.version} className="block font-mono">
+                    <span key={v.version} className="block">
                       {v.version}
-                      <span className="text-dark-400 font-sans">{v.fix_versions?.length ? ` · fixed in ${v.fix_versions.join(', ')}` : ' · no fix published'}</span>
+                      <span className="text-dark-400">{fixFor(v.version, v.fix_versions) ? ` · upgrade to ${fixFor(v.version, v.fix_versions)}` : ' · no fix published'}</span>
                     </span>
                   ))}
                   <span className="block text-dark-500 font-sans">All of them are affected; the alert closes when none is left.</span>

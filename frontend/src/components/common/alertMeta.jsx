@@ -212,7 +212,7 @@ function basePlaybook(e) {
   switch (e.event_type) {
     case 'cve_detected': {
       const epss = d.epss_score ?? 0
-      const fix = Array.isArray(d.fix_versions) && d.fix_versions.length ? ` to ${d.fix_versions[0]}` : ''
+      const fix = upgradePlan(d)
       if (d.has_cti_match) {
         const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
         const why = d.kev ? "It is on CISA's Known Exploited Vulnerabilities list: attackers are using it now."
@@ -279,6 +279,40 @@ export const affectedVersions = (d) =>
 /** "1.1.11, 1.1.12 and 2.0.2" */
 export const versionList = (versions) =>
   versions.length <= 1 ? (versions[0] ?? '') : `${versions.slice(0, -1).join(', ')} and ${versions[versions.length - 1]}`
+
+// Same rule as the server (workers/src/lib/fixTarget.ts): numeric parts compared, and a
+// version's fix is the SMALLEST listed version above it, so it stays on its release line
+// (2.0.2 -> 2.1.2, not 1.1.16).
+const cleanVer = (v) => String(v).trim().replace(/^[^\d]+/, '')
+function compareVer(a, b) {
+  const pa = cleanVer(a).split(/[.\-+_:~]/), pb = cleanVer(b).split(/[.\-+_:~]/)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? '0', y = pb[i] ?? '0'
+    const nx = Number(x), ny = Number(y)
+    const c = !Number.isNaN(nx) && !Number.isNaN(ny) ? nx - ny : x.localeCompare(y)
+    if (c) return c
+  }
+  return 0
+}
+export const fixFor = (version, fixes) =>
+  (fixes ?? []).filter(f => compareVer(f, version) > 0).sort(compareVer)[0] ?? null
+
+/** How to fix a CVE alert's package: " to 1.1.16", or for several installed versions
+ *  " (1.1.11 and 1.1.12 to 1.1.16; 2.0.2 to 2.1.2)". Empty when no fix is published. */
+export function upgradePlan(d) {
+  const versions = affectedVersions(d)
+  const byTarget = new Map()
+  for (const v of versions) {
+    const to = fixFor(v.version, v.fix_versions)
+    if (!to) continue
+    byTarget.set(to, [...(byTarget.get(to) ?? []), v.version])
+  }
+  if (byTarget.size === 0) return ''
+  if (versions.length <= 1) return ` to ${[...byTarget.keys()][0]}`
+  const parts = [...byTarget].sort(([a], [b]) => compareVer(a, b)).map(([to, from]) => `${versionList(from)} to ${to}`)
+  const unfixed = versions.filter(v => !fixFor(v.version, v.fix_versions)).map(v => v.version)
+  return ` (${parts.join('; ')}${unfixed.length ? `; ${versionList(unfixed)}: no fix yet` : ''})`
+}
 
 export const STATUS_META = {
   open:           { label: 'Open',           cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
