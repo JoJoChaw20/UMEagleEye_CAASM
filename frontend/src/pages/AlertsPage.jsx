@@ -37,6 +37,7 @@ const VIEWS = [
   { id: 'drift',     label: 'Drift to review',            params: { status: 'open', event_type: DRIFT_CSV } },
   { id: 'cve',       label: 'All CVEs',                   params: { status: 'open', event_type: 'cve_detected' } },
   { id: 'closed',    label: 'Closed (audit)',             params: { status: 'closed' }, sort: 'time' },
+  { id: 'unreviewed', label: 'Closed – not reviewed',     params: { status: 'closed', closed: 'unreviewed' }, sort: 'time' },
   ...CONCERNS.map(c => ({ id: c.id, label: c.title, params: { status: 'open', concern: c.id }, concern: true })),
 ]
 // Older links (bookmarks, other pages) used these ids
@@ -614,7 +615,7 @@ export default function AlertsPage() {
                     {e.occurrences > 1 && <div className="text-dark-500">×{e.occurrences} · since {timeAgo(e.first_seen)}</div>}
                     {(e.status === 'open' || e.status === 'in_progress') && <div className="mt-0.5"><DueLabel e={e} /></div>}
                   </td>
-                  <td><StatusBadge status={e.status} /></td>
+                  <td><StatusBadge status={e.status} note={e.resolution_note} /></td>
                   <td className="text-xs text-dark-300 whitespace-nowrap">
                     {e.assignee_name ? <span className="inline-flex items-center gap-1"><User className="w-3 h-3" />{e.assignee_name}</span> : <span className="text-dark-500">Unassigned</span>}
                   </td>
@@ -775,7 +776,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
             <div>
               <div className="flex items-center gap-2 flex-wrap mb-2">
                 <SevBadge sev={e.severity} />
-                <StatusBadge status={e.status} />
+                <StatusBadge status={e.status} note={e.resolution_note} />
                 {e.asset?.is_internet_facing && (
                   <span className="text-xs px-2 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400 inline-flex items-center gap-1">
                     <Globe className="w-3 h-3" />internet-facing{e.asset.internet_facing_confirmed ? '' : ' (inferred)'}

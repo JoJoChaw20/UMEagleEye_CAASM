@@ -14,7 +14,7 @@ import { mergeOsInfo } from '../lib/osInfo'
 import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
 import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
-import { runAlertHygiene } from '../services/alertHygiene'
+import { reopenReturnedNewDevices, runAlertHygiene } from '../services/alertHygiene'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
@@ -1119,11 +1119,16 @@ Example:
         const crit = scoreAsset({ deviceType: resolvedDeviceType, deviceTypeSource: hinted.deviceTypeSource, deviceTypeHint: slowHint, isInternetFacing: exposed, internetFacingOverride: existing?.internetFacingOverride ?? null, hostname: p.hostname ?? existing?.hostname, owner: existing?.owner ?? null, osInfo: merged, agentRole: agentRoleOf(existing?.endpointInventory) }, criticalityModel)
         const baselineForUpdate = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? existing?.hostname ?? null, macAddress: mac ?? existing?.macAddress ?? null, isInternetFacing: exposed, deviceType: resolvedDeviceType, autoSet: true, portsKnown: !p.isPassive })
         const slowHostname = pickHostname(existing?.hostname, p.hostname)
-        const existingBaseline = existing?.baselineState as { auto_set?: boolean; hostname?: string | null } | null | undefined
-        // A real name replacing a generic one is not drift (see lib/hostnames.ts).
-        const renamedBaseline = existingBaseline && existingBaseline.auto_set === true && slowHostname !== existing?.hostname
+        const existingBaseline = existing?.baselineState as { auto_set?: boolean; hostname?: string | null; ports_known?: boolean } | null | undefined
+        // A real name replacing a generic one is not drift (see lib/hostnames.ts), and an
+        // active scan completing a baseline captured without ports (added by hand, or seen
+        // passively) is learning, not "port opened" (same as the fast path, lib/ingest-plan.ts).
+        let renamedBaseline: Record<string, unknown> | null = existingBaseline && existingBaseline.auto_set === true && slowHostname !== existing?.hostname
           && isGenericHostname(existing?.hostname) && existingBaseline.hostname === existing?.hostname
           ? { ...existingBaseline, hostname: slowHostname } : null
+        if (existingBaseline && existingBaseline.ports_known === false && !p.isPassive) {
+          renamedBaseline = { ...(renamedBaseline ?? existingBaseline), ports: p.ports, ports_known: true }
+        }
         await db.update(assets).set({
           ipAddress: p.ip,
           hostname: slowHostname,
@@ -1220,6 +1225,13 @@ Example:
       await c.env.ADVISORY_QUEUE.sendBatch(
         slice.map(assetId => ({ body: { type: 'drift_check', assetId, scanId: effectiveScanId, agentId: agent_id } })),
       )
+    }
+
+    // A device whose new-device alert was closed unreviewed (not seen for 14 days) is back.
+    try {
+      await reopenReturnedNewDevices(db, upsertedAssetIds)
+    } catch (err) {
+      console.error('scan ingest: reopening returned new devices failed:', err)
     }
 
     // The assets' addresses may be new or changed: match them against threat intel.

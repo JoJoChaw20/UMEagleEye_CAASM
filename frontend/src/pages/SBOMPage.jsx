@@ -12,6 +12,7 @@ import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import SbomRunNote, { sbomRunProblems } from '../components/common/SbomRunNote'
+import PackageSearch from '../components/common/PackageSearch'
 
 // ── Package-manager icon/label map ────────────────────────────
 const PM_META = {
@@ -548,6 +549,8 @@ export default function SBOMPage() {
           </div>
         </div>
       )}
+
+      <PackageSearch tenantId={tenantFilter} />
 
       {/* ── SBOM table ── */}
       <div className="glass-card overflow-hidden">

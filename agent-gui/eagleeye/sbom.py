@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
+from urllib.parse import quote
 
 log = logging.getLogger("eagleeye.sbom")
 
@@ -584,6 +586,9 @@ def build_sbom(syft: str, roots: list[str], runner: Runner = _run,
                     return
                 seconds = awake() - started
                 comps = [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("type") != "file"]
+                extra = yarn_lock_extras(comps, unit.path)
+                comps += extra
+                doc["components"] = list(doc.get("components") or []) + extra
                 docs[i] = doc
                 cache.folders[unit.path] = {"components": comps, "fingerprint": fp, "listed_at": now(),
                                             "seconds": round(seconds, 1), "limit": learned_limit(unit, seconds)}
@@ -628,7 +633,8 @@ def build_sbom(syft: str, roots: list[str], runner: Runner = _run,
         if o.status == "listed":
             parts.append(docs[i])
         elif o.status in ("unchanged", "kept"):
-            parts.append({"components": cache.folders[o.path]["components"]})
+            cached = cache.folders[o.path]["components"]
+            parts.append({"components": cached + yarn_lock_extras(cached, o.path)})
     skipped = left_out + [f"{o.path}: {o.reason}" for i, o in sorted(outcomes.items()) if o.status in ("kept", "missing")]
     if not parts:
         raise SbomError("Syft could not scan any folder. " + "; ".join(skipped)[:500])
@@ -653,6 +659,83 @@ def run_report(run: SbomRun) -> dict[str, Any]:
                  for o in run.folders if o.status == "kept"][:50],
         "missing": [{"folder": o.path, "reason": o.reason[:200]} for o in run.folders if o.status == "missing"][:50],
     }
+
+
+# ── yarn.lock: every version, not one per name ──
+# Syft keeps one version per package name from a Yarn lockfile and picks a different one
+# on each listing. pgAdmin 4's web/yarn.lock lists react 18.3.1 AND 19.2.4: two listings
+# of the unchanged folder gave 18.3.1 once and 19.2.4 the other time (28 Oct), so a CVE
+# of the version left out was missed. The lockfiles Syft read are re-read here and the
+# versions it dropped are added, in the same shape Syft writes.
+YARN_LOCK_MAX_BYTES = 20 * 1024 * 1024
+_YARN_LOCK_TYPE = "javascript-yarn-lock-entry"
+_YARN_NAME = re.compile(r'^((?:@[^@/\s"]+/)?[^@\s"]+)@')
+_YARN_VERSION = re.compile(r'^version:?\s+"?([^"\s]+)"?\s*$')
+
+
+def parse_yarn_lock(text: str) -> set[tuple[str, str]]:
+    """(name, version) of every entry of a yarn.lock, classic (v1) or Berry format.
+    Workspace entries (version 0.0.0-use.local) are left out."""
+    found: set[tuple[str, str]] = set()
+    names: Optional[set[str]] = None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            names = None
+            head = line.rstrip()
+            if head.endswith(":") and not head.startswith("__metadata"):
+                names = {m.group(1) for d in head[:-1].split(",")
+                         if (m := _YARN_NAME.match(d.strip().strip('"')))}
+            continue
+        if names and not line.startswith("    "):          # a top-level field of the entry
+            m = _YARN_VERSION.match(line.strip())
+            if m:
+                if "use.local" not in m.group(1):
+                    found.update((n, m.group(1)) for n in names)
+                names = None
+    return found
+
+
+def _location(comp: dict[str, Any]) -> Optional[str]:
+    props = {p.get("name"): p.get("value") for p in comp.get("properties") or [] if isinstance(p, dict)}
+    if props.get("syft:package:metadataType") != _YARN_LOCK_TYPE:
+        return None
+    return props.get("syft:location:0:path")
+
+
+def npm_purl(name: str, version: str) -> str:
+    return f"pkg:npm/{quote(name, safe='/')}@{quote(version, safe='')}"
+
+
+def yarn_lock_extras(components: list[dict[str, Any]], root: str) -> list[dict[str, Any]]:
+    """The versions in the yarn.lock files Syft read under `root` that it left out of
+    `components`, as CycloneDX components. A lockfile that cannot be read adds nothing."""
+    have = {(str(c.get("name")), str(c.get("version"))) for c in components}
+    added: list[dict[str, Any]] = []
+    for rel in sorted({loc for c in components if (loc := _location(c))}):
+        path = Path(root) / rel.lstrip("\\/")
+        try:
+            if path.stat().st_size > YARN_LOCK_MAX_BYTES:
+                continue
+            entries = parse_yarn_lock(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        for name, version in sorted(entries - have):
+            have.add((name, version))
+            purl = npm_purl(name, version)
+            added.append({
+                "bom-ref": f"{purl}?package-id=eagleeye-yarn", "type": "library",
+                "name": name, "version": version, "purl": purl,
+                "properties": [
+                    {"name": "syft:package:foundBy", "value": "eagleeye-yarn-lock"},
+                    {"name": "syft:package:language", "value": "javascript"},
+                    {"name": "syft:package:type", "value": "npm"},
+                    {"name": "syft:package:metadataType", "value": _YARN_LOCK_TYPE},
+                    {"name": "syft:location:0:path", "value": rel},
+                ],
+            })
+    return added
 
 
 def _component_key(comp: dict[str, Any]) -> tuple[str, ...]:

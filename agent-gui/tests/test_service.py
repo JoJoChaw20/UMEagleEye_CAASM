@@ -527,6 +527,36 @@ def test_failed_dashboard_inventory_marks_its_job_failed(monkeypatch):
     assert client.failed == [("i1", "server rejected the inventory (HTTP 400)")]
 
 
+def test_failed_inventory_is_retried_soon_with_backoff_and_reset_by_success(monkeypatch):
+    from eagleeye.pipeline import PipelineResult
+    from eagleeye.service import INVENTORY_RETRY_MAX, INVENTORY_RETRY_SECONDS
+    results = ["failed", "failed", "ok"]
+    monkeypatch.setattr("eagleeye.service.Pipeline.run",
+                        lambda self, ctx: PipelineResult(results.pop(0), error="could not reach the server"))
+    svc = service(FakeClient(), inventory=True, inventory_interval=86400)
+    now = time.time()
+    svc.run_inventory()                                # start-up run, before the network is up
+    assert now + INVENTORY_RETRY_SECONDS - 1 <= svc._inventory_retry_at <= time.time() + INVENTORY_RETRY_SECONDS
+    svc.run_inventory()
+    assert svc._inventory_retry_delay == min(INVENTORY_RETRY_SECONDS * 4, INVENTORY_RETRY_MAX)
+    svc.run_inventory()
+    assert svc._inventory_retry_at == 0.0 and svc._inventory_retry_delay == INVENTORY_RETRY_SECONDS
+
+
+def test_inventory_retry_runs_before_the_interval_is_up(monkeypatch):
+    calls = []
+    svc = service(FakeClient(), inventory=True, inventory_interval=86400)
+    monkeypatch.setattr(svc, "run_inventory", lambda trigger="auto", scan_id=None: calls.append(trigger))
+    svc._last_inventory = time.time()                  # interval not up
+    svc._inventory_retry_at = time.time() + 60         # retry not due yet
+    svc._maybe_inventory()
+    assert svc._inventory_future is None
+    svc._inventory_retry_at = time.time() - 1          # retry due
+    svc._maybe_inventory()
+    svc._inventory_future.result(timeout=5)
+    assert calls == ["auto"] and svc._inventory_retry_at == 0.0
+
+
 def test_inventory_request_is_ignored_when_inventory_is_off(monkeypatch):
     svc = service(FakeClient(), inventory=False)
     svc.request_inventory()

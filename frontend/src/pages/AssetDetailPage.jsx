@@ -550,7 +550,7 @@ export default function AssetDetailPage() {
                     <div className="text-sm text-white truncate">{alertLabel(e)}</div>
                     <div className="text-xs text-dark-400 truncate">{renderDetail(e)}</div>
                   </div>
-                  <StatusBadge status={e.status} />
+                  <StatusBadge status={e.status} note={e.resolution_note} />
                   <span className="text-xs text-dark-400 whitespace-nowrap">{timeAgo(e.last_seen)}</span>
                 </li>
               ))}

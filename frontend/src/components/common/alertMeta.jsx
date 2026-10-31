@@ -277,9 +277,21 @@ export const STATUS_META = {
   accepted_risk:  { label: 'Accepted risk',  cls: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
 }
 
-export function StatusBadge({ status }) {
-  const m = STATUS_META[status] ?? STATUS_META.open
-  return <span className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${m.cls}`}>{m.label}</span>
+// Closed by the system because the device was not seen, without anyone looking at it
+// (server services/alertHygiene.ts UNSEEN_NOTE; the alerts list filters them with
+// ?closed=unreviewed). Reopened automatically if the device comes back.
+export const isClosedUnreviewed = (e) =>
+  e?.status === 'resolved' && /^Auto-resolved: the device has not been seen/.test(e?.resolution_note ?? '')
+
+const UNREVIEWED = { label: 'Closed – not reviewed', cls: 'bg-amber-500/10 text-amber-300 border-amber-500/30' }
+
+/** An alert's status. Pass `note` (its resolution_note) to tell "Closed – not reviewed" apart. */
+export function StatusBadge({ status, note }) {
+  const m = isClosedUnreviewed({ status, resolution_note: note }) ? UNREVIEWED : (STATUS_META[status] ?? STATUS_META.open)
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${m.cls}`}
+      title={m === UNREVIEWED ? 'Closed because the device was not seen; nobody reviewed it' : undefined}>{m.label}</span>
+  )
 }
 
 export function SevBadge({ sev }) {

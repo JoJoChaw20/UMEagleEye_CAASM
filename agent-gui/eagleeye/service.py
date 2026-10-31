@@ -87,6 +87,10 @@ SCHEDULE_RETRY_SECONDS = 300
 # this computer to its asset, goes first; and start-up stays light).
 SBOM_FIRST_DELAY = 15 * 60
 SBOM_RETRY_SECONDS = 3600
+# A failed automatic inventory (typically at start-up, before Wi-Fi is up) is retried after
+# 5 min, doubling while it keeps failing, never later than the normal interval.
+INVENTORY_RETRY_SECONDS = 300
+INVENTORY_RETRY_MAX = 3600
 # Local schedules are switched off for now (decision pending: editing them crashed the
 # desktop app under PySide6 6.12). The code and tests stay so they can be re-enabled.
 SCHEDULES_ENABLED = False
@@ -133,6 +137,8 @@ class AgentService:
         self._inventory_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inventory")
         self._inventory_future: Optional[Future[PipelineResult]] = None
         self._last_inventory = 0.0           # 0 = collect on the first poll
+        self._inventory_retry_at = 0.0       # set after a failed run: retry then
+        self._inventory_retry_delay = INVENTORY_RETRY_SECONDS
         self._inventory_supported = True
         self._last_flush = time.time()
         self._passive_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="passive")
@@ -251,6 +257,13 @@ class AgentService:
         if result.status == "failed" and "not available on" in (result.error or ""):
             # Linux/macOS until their collectors exist: report it once, then stop trying.
             self._inventory_supported = False
+        elif result.status == "failed" and not self._stop.is_set():
+            self._inventory_retry_at = time.time() + self._inventory_retry_delay
+            log.info("Inventory will be tried again in %d min", self._inventory_retry_delay // 60)
+            self._inventory_retry_delay = min(self._inventory_retry_delay * 2, INVENTORY_RETRY_MAX)
+        elif result.ok:
+            self._inventory_retry_at = 0.0
+            self._inventory_retry_delay = INVENTORY_RETRY_SECONDS
         self._finish(scan_id, result)
         self._record("inventory", trigger, "this computer", result)
         return result
@@ -382,8 +395,11 @@ class AgentService:
             self._inventory_future = None
         if self._stop.is_set():
             return
-        if force or time.time() - self._last_inventory >= self.settings.inventory_interval:
-            self._last_inventory = time.time()
+        now = time.time()
+        retry_due = 0 < self._inventory_retry_at <= now
+        if force or retry_due or now - self._last_inventory >= self.settings.inventory_interval:
+            self._last_inventory = now
+            self._inventory_retry_at = 0.0
             try:
                 self._inventory_future = self._inventory_pool.submit(
                     self.run_inventory, trigger or ("manual" if force else "auto"), scan_id)

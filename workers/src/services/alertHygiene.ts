@@ -8,6 +8,10 @@ import type { DB } from '../db/client'
 // A device first found by a scan and not seen again for this long was transient
 // (a visitor's phone, a one-off scan of another network).
 export const NEW_DEVICE_UNSEEN_DAYS = 14
+// The note on an alert closed because its device was not seen: closed unreviewed. The
+// dashboard labels these "Closed – not reviewed" (events ?closed=unreviewed), and the
+// drift audit uses the same note for its alerts on such devices.
+export const UNSEEN_NOTE = `Auto-resolved: the device has not been seen for ${NEW_DEVICE_UNSEEN_DAYS} days`
 
 interface Scope { tenantId?: string | null; assetIds?: string[] }
 
@@ -41,22 +45,64 @@ export async function closeOrphanCveAlerts(db: DB, s: Scope = {}): Promise<numbe
  *  seen for NEW_DEVICE_UNSEEN_DAYS. Alerts someone is working on (in_progress) are left alone. */
 export async function closeReviewedNewDevices(db: DB, s: Scope = {}): Promise<number> {
   const res = await db.execute(sql`
-    UPDATE events e SET status = 'resolved', resolved_at = now(), updated_at = now(),
-      resolution_note = CASE
-        WHEN a.in_my_assets THEN 'Auto-resolved: the device was added to My Assets'
-        WHEN NULLIF(trim(a.owner), '') IS NOT NULL THEN 'Auto-resolved: the device was given an owner'
-        WHEN EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
-          THEN 'Auto-resolved: this computer runs an EagleEye agent'
-        ELSE ${`Auto-resolved: the device has not been seen for ${NEW_DEVICE_UNSEEN_DAYS} days`} END
-    FROM assets a
-    WHERE a.asset_id = e.asset_id AND ${scopeSql(s)}
-      AND e.event_type = 'new_device' AND e.status = 'open'
-      AND (a.in_my_assets OR NULLIF(trim(a.owner), '') IS NOT NULL
-           OR EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
-           OR COALESCE(a.last_scanned, a.created_at) < now() - make_interval(days => ${NEW_DEVICE_UNSEEN_DAYS}))
-    RETURNING 1
+    WITH closed AS (
+      UPDATE events e SET status = 'resolved', resolved_at = now(), updated_at = now(),
+        resolution_note = CASE
+          WHEN a.in_my_assets THEN 'Auto-resolved: the device was added to My Assets'
+          WHEN NULLIF(trim(a.owner), '') IS NOT NULL THEN 'Auto-resolved: the device was given an owner'
+          WHEN EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
+            THEN 'Auto-resolved: this computer runs an EagleEye agent'
+          ELSE ${UNSEEN_NOTE} END
+      FROM assets a
+      WHERE a.asset_id = e.asset_id AND ${scopeSql(s)}
+        AND e.event_type = 'new_device' AND e.status = 'open'
+        AND (a.in_my_assets OR NULLIF(trim(a.owner), '') IS NOT NULL
+             OR EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
+             OR COALESCE(a.last_scanned, a.created_at) < now() - make_interval(days => ${NEW_DEVICE_UNSEEN_DAYS}))
+      RETURNING e.event_id, a.tenant_id, e.resolution_note
+    ),
+    -- What hygiene did on its own goes in the alert's activity (user_id NULL = system).
+    log AS (
+      INSERT INTO audit_logs (user_id, tenant_id, action_type, target_entity, previous_state, new_state)
+      SELECT NULL, tenant_id, 'alert_auto', event_id::text, jsonb_build_object('status', 'open'),
+             jsonb_build_object('status', 'resolved', 'note', regexp_replace(resolution_note, '^Auto-resolved: ', ''))
+      FROM closed
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM closed
   `)
-  return res.rows.length
+  return Number((res.rows[0] as { n?: number } | undefined)?.n ?? 0)
+}
+
+/** New-device alerts closed unreviewed because the device was not seen (UNSEEN_NOTE) are
+ *  reopened when it is seen again and still nobody has dealt with it (not in My Assets,
+ *  no owner, no agent): nobody ever looked at it, so its return needs a look. Called by
+ *  scan ingest for the assets it just saw. Logged in the alert's activity as system. */
+export async function reopenReturnedNewDevices(db: DB, assetIds: string[]): Promise<number> {
+  if (assetIds.length === 0) return 0
+  const res = await db.execute(sql`
+    WITH reopened AS (
+      UPDATE events e SET status = 'open', resolved_at = NULL, resolved_by = NULL, updated_at = now(),
+        last_seen = now(), occurrences = e.occurrences + 1,
+        resolution_note = 'Reopened: the device was seen again after it was closed unreviewed'
+      FROM assets a
+      WHERE a.asset_id = e.asset_id AND a.asset_id IN ${assetIds}
+        AND e.event_type = 'new_device' AND e.status = 'resolved' AND e.resolution_note = ${UNSEEN_NOTE}
+        AND a.last_scanned > e.resolved_at
+        AND NOT a.in_my_assets AND NULLIF(trim(a.owner), '') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM agents g WHERE g.host_asset_id = a.asset_id)
+      RETURNING e.event_id, a.tenant_id
+    ),
+    log AS (
+      INSERT INTO audit_logs (user_id, tenant_id, action_type, target_entity, previous_state, new_state)
+      SELECT NULL, tenant_id, 'alert_auto', event_id::text, jsonb_build_object('status', 'resolved'),
+             jsonb_build_object('status', 'open', 'note', 'the device was seen again after it was closed unreviewed')
+      FROM reopened
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM reopened
+  `)
+  return Number((res.rows[0] as { n?: number } | undefined)?.n ?? 0)
 }
 
 export async function runAlertHygiene(db: DB, s: Scope = {}): Promise<{ cve: number; newDevices: number }> {

@@ -236,6 +236,51 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   }
 })
 
+// ── GET /packages/search ─────────────────────────────────────────
+// Which computers have a package: "which machines have authlib 1.6.6?" when a new CVE is
+// announced, before any vulnerability database knows it. Searches each asset's latest
+// SBOM. Query: q (package name; exact match ranks first, else contains), version
+// (optional exact version), tenant_id (superadmin). Defined BEFORE /:sbomId.
+app.get('/packages/search', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const q = (c.req.query('q') ?? '').trim()
+    const version = (c.req.query('version') ?? '').trim()
+    if (q.length < 2) return c.json({ detail: 'Type at least 2 characters of the package name' }, 400)
+    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') ?? null) : (user.tenantId ?? null)
+    if (user.role !== 'superadmin' && !tenantId) return c.json({ items: [], total: 0, assets: 0 })
+
+    const LIMIT = 500
+    const rows = await db.execute(sql`
+      SELECT d.name, d.version, d.package_manager, d.purl, a.asset_id, a.hostname, a.ip_address,
+             a.in_my_assets, s.generated_at
+      FROM dependencies d
+      JOIN sboms s ON s.sbom_id = d.sbom_id
+      JOIN assets a ON a.asset_id = d.asset_id
+      WHERE s.generated_at = (SELECT max(s2.generated_at) FROM sboms s2 WHERE s2.asset_id = d.asset_id)
+        AND ${tenantId ? sql`a.tenant_id = ${tenantId}` : sql`true`}
+        AND d.name ILIKE ${'%' + q.replace(/[\\%_]/g, m => '\\' + m) + '%'}
+        AND ${version ? sql`d.version = ${version}` : sql`true`}
+      ORDER BY (lower(d.name) = lower(${q})) DESC, d.name, d.version, a.hostname NULLS LAST
+      LIMIT ${LIMIT + 1}`)
+    const items = (rows.rows as Record<string, unknown>[]).slice(0, LIMIT).map(r => ({
+      name: r.name, version: r.version, package_manager: r.package_manager, purl: r.purl,
+      asset_id: r.asset_id, hostname: r.hostname, ip_address: r.ip_address,
+      in_my_assets: r.in_my_assets, sbom_generated_at: r.generated_at,
+    }))
+    return c.json({
+      items,
+      total: items.length,
+      truncated: rows.rows.length > LIMIT,
+      assets: new Set(items.map(i => i.asset_id)).size,
+    })
+  } catch (err) {
+    console.error('sboms GET /packages/search error:', err)
+    return c.json({ detail: 'Failed to search packages' }, 500)
+  }
+})
+
 // ── GET /:sbomId ─────────────────────────────────────────────────
 // Metadata only; the document itself comes from GET /:sbomId/download.
 app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {

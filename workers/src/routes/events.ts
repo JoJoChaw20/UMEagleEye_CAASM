@@ -26,6 +26,7 @@ import { cweList } from '../lib/cwe'
 import { fixTarget } from '../lib/fixTarget'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 import { loadMsrcMonth } from '../services/windowsPatch'
+import { UNSEEN_NOTE } from '../services/alertHygiene'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -98,7 +99,8 @@ function statusCondition(raw: string | undefined) {
 //        assigned_to (me|unassigned|<uuid>), internet_facing=true,
 //        device_type, q (host/IP/CVE/package), since (ISO), sort (priority|time),
 //        concern (see lib/concerns), age (lt1d|d1_3|d3_7|d7_30|gt30), overdue=true,
-//        package (exact CVE package name)
+//        package (exact CVE package name), closed=unreviewed (closed because the device
+//        was not seen, without anyone looking at it)
 /** The list filters (query string → WHERE), shared by GET / and GET /cve-groups.
  *  Requires `assets` joined on events.asset_id. */
 export function listConditions(user: User, q: (k: string) => string | undefined) {
@@ -123,6 +125,7 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
       isConcernId(concern) ? concernCondition(concern) : undefined,
       q('package') ? sql`${events.details}->>'package_name' = ${q('package')}` : undefined,
       ageCondition(q('age'), now),
+      q('closed') === 'unreviewed' ? eq(events.resolutionNote, UNSEEN_NOTE) : undefined,
       q('overdue') === 'true' ? and(isOpenEvent(), overdueCondition(now)) : undefined,
       assignedTo === 'me' ? eq(events.assignedTo, user.userId)
         : assignedTo === 'unassigned' ? isNull(events.assignedTo)

@@ -4,6 +4,8 @@ import { isNotNull, and, eq, inArray, sql } from 'drizzle-orm'
 import { OPEN_STATUSES } from '../lib/eventStatus'
 import { compareVersions, newPortSeverity } from '../lib/exposure'
 import { normalizeMac } from '../lib/mac'
+import { isGenericHostname } from '../lib/hostnames'
+import { NEW_DEVICE_UNSEEN_DAYS, UNSEEN_NOTE } from './alertHygiene'
 
 // ── Baseline shape stored in assets.baseline_state ────────────────
 export interface AssetBaseline {
@@ -24,7 +26,42 @@ export interface AssetBaseline {
   // packages as "new". Mirrors ports_known. See buildBaseline / detectDrift.
   packages_known?:    boolean
   captured_from?:     string               // 'manual' when seeded at hand/CSV creation
+  // Version of the detection rule each attribute was captured under (see RULE_VERSIONS).
+  // Absent = version 1.
+  rule_versions?:     Record<string, number>
 }
+
+// ── Detection-rule versions ───────────────────────────────────────
+// When the rule that computes an attribute changes, bump its version here. The next
+// drift audit then moves every baseline captured under an older rule to the asset's
+// current value (no alert: the device did not change, the rule did) and resolves the
+// alerts the old rule raised. Attributes not listed are never refreshed this way.
+//   internet_facing 2: exposure comes from the scanning agent's default gateway
+//     (lib/exposure.ts resolveInternetFacing), Oct 2026. Baselines from the older rule
+//     raised "internet-facing true -> false" on routers that never changed.
+export const RULE_VERSIONS: Record<string, number> = { internet_facing: 2 }
+
+/** The attributes of a baseline captured under an older detection rule. Pure. */
+export function outdatedRuleAttributes(baseline: AssetBaseline): string[] {
+  return Object.entries(RULE_VERSIONS)
+    .filter(([attr, version]) => (baseline.rule_versions?.[attr] ?? 1) < version)
+    .map(([attr]) => attr)
+}
+
+/** When an asset was last observed by a scan or its agent's inventory, or null. */
+export function lastObservedAt(asset: { lastScanned?: Date | string | null; inventoryCollectedAt?: Date | string | null }): Date | null {
+  const times = [asset.lastScanned, asset.inventoryCollectedAt]
+    .filter((t): t is Date | string => !!t).map(t => new Date(t).getTime()).filter(n => !Number.isNaN(n))
+  return times.length ? new Date(Math.max(...times)) : null
+}
+
+// A Discovered asset not observed for this long is gone (a visitor, a lab VM, a network
+// the agent left): its open drift alerts are closed unreviewed and no new ones are raised
+// for it. My Assets are exempt (runDriftAudit): their alerts stay open while they are away.
+// Same period as unreviewed new-device alerts (services/alertHygiene.ts).
+export const DRIFT_UNSEEN_DAYS = NEW_DEVICE_UNSEEN_DAYS
+export { UNSEEN_NOTE }
+const RULE_CHANGE_NOTE = 'Auto-resolved: the detection rule changed and the baseline was refreshed to the current value'
 
 type DriftSeverity = 'low' | 'medium' | 'high' | 'critical'
 type EventType     = typeof events.$inferInsert['eventType']
@@ -140,6 +177,7 @@ export function buildBaseline(params: {
     device_type:       params.deviceType,
     snmp_sysdescr:     extractSnmpDescr(params.osInfo),
     captured_at:       new Date().toISOString(),
+    rule_versions:     { ...RULE_VERSIONS },
     auto_set:          params.autoSet ?? false,
     ports_known:       params.portsKnown ?? true,
     packages_known:    hasPkgs,
@@ -167,6 +205,7 @@ export function buildManualBaseline(params: {
     device_type:        params.deviceType,
     is_internet_facing: params.isInternetFacing,
     captured_at:        new Date().toISOString(),
+    rule_versions:      { ...RULE_VERSIONS },
     auto_set:           true,
     ports_known:        false,
     packages_known:     false,
@@ -261,7 +300,11 @@ export function detectDrift(
   // ones that matter are covered by CVE alerts from the SBOM (routes/sbom.ts).
 
   // ── Hostname change ────────────────────────────────────────────
-  if (baseline.hostname && asset.hostname && baseline.hostname !== asset.hostname) {
+  // A platform default or a random id (Android, iPhone, a UUID) on either side is not a
+  // name anybody chose, so replacing it, or seeing one, is not a rename. runDriftAudit
+  // moves a baseline that holds such a name to the real one.
+  if (baseline.hostname && asset.hostname && baseline.hostname !== asset.hostname
+      && !isGenericHostname(baseline.hostname) && !isGenericHostname(asset.hostname)) {
     drifts.push({
       type:     'config_change',
       severity: 'medium',
@@ -291,7 +334,8 @@ export function detectDrift(
   if (
     baseline.is_internet_facing !== undefined &&
     baseline.is_internet_facing !== null &&
-    baseline.is_internet_facing !== asset.isInternetFacing
+    baseline.is_internet_facing !== asset.isInternetFacing &&
+    !outdatedRuleAttributes(baseline).includes('internet_facing')
   ) {
     drifts.push({
       type:     'config_change',
@@ -384,14 +428,61 @@ async function runBatched(db: DB, stmts: unknown[]): Promise<void> {
   }
 }
 
+// ── Audit decisions (pure) ────────────────────────────────────────
+/** Not observed for DRIFT_UNSEEN_DAYS (never observed: counted from when it was created). */
+export function isUnseen(observed: Date | null, createdAt: Date | string | null | undefined, now: Date): boolean {
+  const since = observed ?? (createdAt ? new Date(createdAt) : null)
+  return !!since && now.getTime() - since.getTime() >= DRIFT_UNSEEN_DAYS * 86_400_000
+}
+
+/** What the audit does with an open alert whose condition is still present. Re-checking
+ *  stored data is not a sighting: occurrences and last_seen only move when a scan or the
+ *  agent observed the device after the alert was last seen ('bump'); otherwise only a
+ *  changed severity or detail is written ('update'), or nothing. */
+export function openAlertAction(observed: Date | null, lastSeen: Date | string, changed: boolean): 'bump' | 'update' | 'none' {
+  if (observed && observed.getTime() > new Date(lastSeen).getTime()) return 'bump'
+  return changed ? 'update' : 'none'
+}
+
+/** A recently auto-resolved alert is reopened only when the device was observed after it
+ *  was resolved: the same stored data must not resolve and reopen it on alternate audits. */
+export function shouldReopen(observed: Date | null, resolvedAt: Date | string | null): boolean {
+  return !!observed && !!resolvedAt && observed.getTime() > new Date(resolvedAt).getTime()
+}
+
+/** Baseline moves that are not drift: an OS upgrade, a real name replacing a generic one,
+ *  and attributes captured under an older detection rule. Returns the jsonb patch (or
+ *  null) and the attributes refreshed because their rule changed. Pure. */
+export function baselineMoves(baseline: AssetBaseline, asset: typeof assets.$inferSelect, osUpgradeTo: string | null):
+    { patch: Partial<AssetBaseline> | null; ruleRefreshed: string[] } {
+  const patch: Partial<AssetBaseline> = {}
+  if (osUpgradeTo) patch.os_version = osUpgradeTo
+  if (baseline.hostname && asset.hostname && baseline.hostname !== asset.hostname
+      && isGenericHostname(baseline.hostname) && !isGenericHostname(asset.hostname)) {
+    patch.hostname = asset.hostname
+  }
+  const ruleRefreshed = outdatedRuleAttributes(baseline)
+  if (ruleRefreshed.length) {
+    if (ruleRefreshed.includes('internet_facing')) patch.is_internet_facing = asset.isInternetFacing
+    patch.rule_versions = { ...(baseline.rule_versions ?? {}), ...Object.fromEntries(ruleRefreshed.map(a => [a, RULE_VERSIONS[a]!])) }
+  }
+  return { patch: Object.keys(patch).length ? patch : null, ruleRefreshed }
+}
+
+// The drift alert an attribute refreshed by a rule change belongs to.
+const RULE_ATTRIBUTE_KEY: Record<string, { type: EventType; details: Record<string, unknown> }> = {
+  internet_facing: { type: 'config_change', details: { changed_attribute: 'internet_facing' } },
+}
+
 // ── Main audit runner ─────────────────────────────────────────────
-// Called by the every-15-min cron and by POST /scans/drift-audit.
+// Called by the 6-hourly cron, after each scan and inventory, and by POST /scans/drift-audit.
 // Optional tenantId scopes the audit to a single tenant.
 //
-// One alert per condition: a drift that is still present bumps last_seen and
-// occurrences on its open alert instead of raising a new one. An open drift
-// alert whose condition is gone (port closed again, hostname reverted) is
-// auto-resolved. A condition an analyst marked false positive stays quiet.
+// One alert per condition. A condition still present keeps its open alert; occurrences and
+// last_seen move only when the device was observed again since (openAlertAction). An open
+// drift alert whose condition is gone (port closed again, hostname reverted) is
+// auto-resolved; one on a Discovered device not observed for DRIFT_UNSEEN_DAYS is closed
+// unreviewed (UNSEEN_NOTE). A condition an analyst marked false positive stays quiet.
 // All reads are bulk prefetches and all writes go through db.batch, so the
 // subrequest count stays constant regardless of asset count.
 export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?: string[]): Promise<number> {
@@ -413,7 +504,8 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
     db.select({ assetId: assetIdentifiers.assetId, value: assetIdentifiers.value })
       .from(assetIdentifiers)
       .where(and(inArray(assetIdentifiers.assetId, ids), eq(assetIdentifiers.kind, 'mac'))),
-    db.select({ eventId: events.eventId, assetId: events.assetId, eventType: events.eventType, details: events.details, status: events.status })
+    db.select({ eventId: events.eventId, assetId: events.assetId, eventType: events.eventType, details: events.details,
+                status: events.status, severity: events.severity, lastSeen: events.lastSeen, resolvedAt: events.resolvedAt })
       .from(events)
       .where(and(
         inArray(events.assetId, ids),
@@ -431,36 +523,54 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
     agentMacs.get(r.assetId)!.add(mac)
   }
 
-  // 2) Detect all drifts in memory (detectDrift is pure). An OS upgrade moves the
-  //    baseline instead of alerting; a scan that saw no open port freezes port alerts.
+  // 2) Detect all drifts in memory (detectDrift is pure). Baseline moves that are not
+  //    drift are written instead of alerting; a scan that saw no open port freezes port
+  //    alerts; a device not observed for DRIFT_UNSEEN_DAYS raises nothing.
   const candidates: { assetId: string; type: EventType; severity: DriftEvent['severity']; details: Record<string, unknown> }[] = []
   const stmts: unknown[] = []   // every write, run in db.batch chunks (one subrequest each)
   const frozenPorts = new Set<string>()
+  const unseenAssets = new Set<string>()
+  const ruleRefreshedKeys = new Set<string>()
+  const observedByAsset = new Map<string, Date | null>()
   for (const asset of assetRows) {
     if (!asset.baselineState) continue
     const baseline = asset.baselineState as AssetBaseline
+    const observed = lastObservedAt(asset)
+    observedByAsset.set(asset.assetId, observed)
+    const drifts = detectDrift(baseline, asset, { agentMacs: agentMacs.get(asset.assetId) })
+    const upgrade = drifts.find(d => d.type === 'version_upgrade' && d.details.changed_attribute === 'os_version')
+    const { patch, ruleRefreshed } = baselineMoves(baseline, asset, upgrade ? String(upgrade.details.to) : null)
+    if (patch) {
+      stmts.push(db.update(assets)
+        .set({ baselineState: sql`${assets.baselineState} || ${JSON.stringify(patch)}::jsonb`, updatedAt: now })
+        .where(eq(assets.assetId, asset.assetId)))
+    }
+    for (const attr of ruleRefreshed) {
+      const k = RULE_ATTRIBUTE_KEY[attr]
+      if (k) ruleRefreshedKeys.add(driftKey(asset.assetId, k.type, k.details))
+    }
+    // My Assets are the devices someone said matter: an alert on one stays open while it is
+    // away (it only stops counting); Discovered devices that went quiet are closed unreviewed.
+    if (!asset.inMyAssets && isUnseen(observed, asset.createdAt, now)) { unseenAssets.add(asset.assetId); continue }
     if (portsUnreliable(baseline, asset.osInfo as Record<string, unknown> | null)) frozenPorts.add(asset.assetId)
-    for (const d of detectDrift(baseline, asset, { agentMacs: agentMacs.get(asset.assetId) })) {
-      if (d.type === 'version_upgrade' && d.details.changed_attribute === 'os_version') {
-        stmts.push(db.update(assets)
-          .set({ baselineState: sql`${assets.baselineState} || ${JSON.stringify({ os_version: d.details.to })}::jsonb`, updatedAt: now })
-          .where(eq(assets.assetId, asset.assetId)))
-        continue
-      }
+    for (const d of drifts) {
+      if (d === upgrade) continue
       candidates.push({ assetId: asset.assetId, type: d.type, severity: d.severity, details: d.details })
     }
   }
 
-  const openByKey  = new Map<string, { id: string; assetId: string; type: EventType }>()
-  const recentlyResolved = new Map<string, string>()
+  type Known = { id: string; assetId: string; type: EventType; status: string; severity: string; details: unknown; lastSeen: Date }
+  const openByKey  = new Map<string, Known>()
+  const recentlyResolved = new Map<string, { id: string; resolvedAt: Date | null }>()
   const suppressed = new Set<string>()
   const duplicates: string[] = []   // e.g. two copies after merging duplicate assets
   for (const e of existing) {
     const key = driftKey(e.assetId, e.eventType, (e.details ?? {}) as Record<string, unknown>)
     if (e.status === 'false_positive') suppressed.add(key)
-    else if (e.status === 'resolved') recentlyResolved.set(key, e.eventId)
+    else if (e.status === 'resolved') recentlyResolved.set(key, { id: e.eventId, resolvedAt: e.resolvedAt })
     else if (openByKey.has(key)) duplicates.push(e.eventId)
-    else openByKey.set(key, { id: e.eventId, assetId: e.assetId, type: e.eventType })
+    else openByKey.set(key, { id: e.eventId, assetId: e.assetId, type: e.eventType, status: e.status,
+                              severity: e.severity, details: e.details, lastSeen: e.lastSeen })
   }
 
   // 3) Decide per candidate: refresh its open alert, reopen a recent one, skip, or insert new.
@@ -471,31 +581,36 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
     if (currentKeys.has(key)) continue   // same condition twice in this run
     currentKeys.add(key)
     if (suppressed.has(key)) continue
+    const observed = observedByAsset.get(c.assetId) ?? null
 
-    const openId = openByKey.get(key)?.id
-    const reopenId = openId ? undefined : recentlyResolved.get(key)
-    if (reopenId) {
-      stmts.push(db.update(events)
-        .set({
-          status: 'open', resolvedAt: null, resolvedBy: null,
-          resolutionNote: 'Reopened: the change was detected again',
-          lastSeen: now, occurrences: sql`${events.occurrences} + 1`,
-          severity: c.severity, details: c.details, updatedAt: now,
-        })
-        .where(eq(events.eventId, reopenId)))
+    const open = openByKey.get(key)
+    if (open) {
+      const changed = open.severity !== c.severity || JSON.stringify(open.details) !== JSON.stringify(c.details)
+      const action = openAlertAction(observed, open.lastSeen, changed)
+      if (action === 'bump') {
+        stmts.push(db.update(events)
+          .set({ lastSeen: observed!, occurrences: sql`${events.occurrences} + 1`, severity: c.severity, details: c.details, updatedAt: now })
+          .where(eq(events.eventId, open.id)))
+      } else if (action === 'update') {
+        stmts.push(db.update(events)
+          .set({ severity: c.severity, details: c.details, updatedAt: now })
+          .where(eq(events.eventId, open.id)))
+      }
       continue
     }
-    if (openId) {
-      stmts.push(db.update(events)
-        .set({
-          lastSeen:    now,
-          occurrences: sql`${events.occurrences} + 1`,
-          severity:    c.severity,
-          details:     c.details,
-          updatedAt:   now,
-        })
-        .where(eq(events.eventId, openId)))
-      continue
+    const recent = recentlyResolved.get(key)
+    if (recent) {
+      if (shouldReopen(observed, recent.resolvedAt)) {
+        stmts.push(db.update(events)
+          .set({
+            status: 'open', resolvedAt: null, resolvedBy: null,
+            resolutionNote: 'Reopened: the change was detected again',
+            lastSeen: observed!, occurrences: sql`${events.occurrences} + 1`,
+            severity: c.severity, details: c.details, updatedAt: now,
+          })
+          .where(eq(events.eventId, recent.id)))
+      }
+      continue   // not observed since it was resolved: the same data must not reopen it
     }
 
     stmts.push(db.insert(events).values({
@@ -504,31 +619,41 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
       severity:  c.severity,
       details:   c.details,
       firstSeen: now,
-      lastSeen:  now,
+      lastSeen:  observed ?? now,
     }))
     driftCount++
   }
 
-  // 4) Collapse duplicates and auto-resolve alerts whose condition is gone.
+  // 4) Collapse duplicates, close alerts on devices not seen for DRIFT_UNSEEN_DAYS (open
+  //    ones only: someone working on an alert keeps it), and auto-resolve alerts whose
+  //    condition is gone, saying when a rule change rather than the device made it go.
   if (duplicates.length > 0) {
     stmts.push(db.update(events)
       .set({ status: 'resolved', resolvedAt: now, updatedAt: now,
              resolutionNote: 'Merged into an identical open alert on the same asset' })
       .where(inArray(events.eventId, duplicates)))
   }
-  // A port alert on an asset whose last scan saw no open port is left as it is (frozen).
-  const gone = [...openByKey.entries()]
-    .filter(([key, e]) => !currentKeys.has(key) && !(frozenPorts.has(e.assetId) && frozenOnUnreliablePorts(e.type)))
-    .map(([, e]) => e.id)
-  if (gone.length > 0) {
+  const unseen: string[] = [], ruleChanged: string[] = [], gone: string[] = []
+  for (const [key, e] of openByKey) {
+    if (unseenAssets.has(e.assetId)) {
+      if (e.status === 'open') unseen.push(e.id)
+      continue
+    }
+    if (currentKeys.has(key)) continue
+    if (frozenPorts.has(e.assetId) && frozenOnUnreliablePorts(e.type)) continue   // left as it is
+    if (ruleRefreshedKeys.has(key)) ruleChanged.push(e.id)
+    else gone.push(e.id)
+  }
+  const closes: [string[], string][] = [
+    [unseen, UNSEEN_NOTE],
+    [ruleChanged, RULE_CHANGE_NOTE],
+    [gone, 'Auto-resolved: condition no longer detected by drift audit'],
+  ]
+  for (const [closeIds, note] of closes) {
+    if (closeIds.length === 0) continue
     stmts.push(db.update(events)
-      .set({
-        status:         'resolved',
-        resolvedAt:     now,
-        resolutionNote: 'Auto-resolved: condition no longer detected by drift audit',
-        updatedAt:      now,
-      })
-      .where(inArray(events.eventId, gone)))
+      .set({ status: 'resolved', resolvedAt: now, resolutionNote: note, updatedAt: now })
+      .where(inArray(events.eventId, closeIds)))
   }
 
   await runBatched(db, stmts)
