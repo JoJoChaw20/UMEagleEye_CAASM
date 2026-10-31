@@ -4,7 +4,7 @@ import { getDb } from '../db/client'
 import { isOpenEvent } from '../lib/eventStatus'
 import { generateAdvisory } from '../services/advisory'
 import { savePostureSnapshot } from '../services/posture'
-import { ingestAllFeeds } from '../services/cti'
+import { CTI_INGEST_LOCK, runIngestStep, type CtiStep } from '../services/cti'
 import { runDriftAudit } from '../services/drift'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, or, sql } from 'drizzle-orm'
@@ -27,6 +27,8 @@ interface ReportJob {
 interface CtiIngestJob {
   type: 'cti_ingest'
   triggeredBy?: string
+  /** One feed per job (services/cti.ts runIngestStep); none = the first */
+  step?: CtiStep
 }
 
 interface DriftCheckJob {
@@ -233,10 +235,14 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         }
         message.ack()
       } else if (job.type === 'cti_ingest') {
-        await ingestAllFeeds(db, env.OTX_API_KEY, env.THREATFOX_API_KEY)
-        console.log(`[cti_ingest] Feeds ingested (triggered by: ${job.triggeredBy ?? 'system'})`)
-        // Release the lock so re-ingestion can be triggered again
-        await env.KV_CACHE.delete('cti_ingest_lock')
+        const next = await runIngestStep(db, env.KV_CACHE, { otx: env.OTX_API_KEY, threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')
+        if (next) {
+          await env.ADVISORY_QUEUE.send({ type: 'cti_ingest', step: next, triggeredBy: job.triggeredBy })
+        } else {
+          console.log(`[cti_ingest] Feeds ingested (triggered by: ${job.triggeredBy ?? 'system'})`)
+          // Release the lock so re-ingestion can be triggered again
+          await env.KV_CACHE.delete(CTI_INGEST_LOCK)
+        }
         message.ack()
       } else {
         message.ack()

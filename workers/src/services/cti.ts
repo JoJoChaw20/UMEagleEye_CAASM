@@ -1,3 +1,4 @@
+import type { KVNamespace } from '@cloudflare/workers-types'
 import type { DB } from '../db/client'
 import { ctiIndicators } from '../db/schema'
 import { sql } from 'drizzle-orm'
@@ -6,7 +7,12 @@ import { matchIocs } from './iocMatch'
 import { warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds } from '../lib/attack'
 
-const BATCH_SIZE = 100   // rows per INSERT statement
+// Rows per INSERT statement. Every statement is one HTTP request to Neon, and a Worker
+// on the free plan may make only 50 per run (cron or queue job): with 100 rows per
+// statement a 7-day ThreatFox pull (about 17k rows) ran out after 43 and OTX, the CVE
+// alert refresh and the asset matching all failed. 9 parameters per row: 4,000 rows is
+// 36k, under Postgres' 65,535 limit, so a nightly run needs about a dozen requests.
+export const BATCH_SIZE = 4000
 
 type CtiRow = typeof ctiIndicators.$inferInsert
 
@@ -56,26 +62,62 @@ function mapThreatFoxType(t: string): 'ip' | 'domain' | 'hash' | 'url' | null {
   return null
 }
 
-/** Upsert rows in chunks — each chunk = one INSERT … ON CONFLICT statement. */
+/** cti_indicators.value is varchar(512); a longer value fails its whole statement. */
+export const MAX_VALUE_LENGTH = 512
+
+/**
+ * PURE: the INSERT statements for a feed's rows. One row per value (the last one wins):
+ * ON CONFLICT DO UPDATE fails when one statement holds the same value twice, which OTX
+ * pulses sharing an indicator would cause. Values longer than the column are left out
+ * (ThreatFox lists URLs of 500+ characters; cut short they would be a different value).
+ * Exported for tests.
+ */
+export function planUpsertChunks<T extends { value: string }>(rows: T[], size = BATCH_SIZE): T[][] {
+  const byValue = new Map<string, T>()
+  for (const r of rows) if (r.value.length <= MAX_VALUE_LENGTH) byValue.set(r.value, r)
+  const unique = [...byValue.values()]
+  const chunks: T[][] = []
+  for (let i = 0; i < unique.length; i += size) chunks.push(unique.slice(i, i + size))
+  return chunks
+}
+
+/** PURE: a feed row as the JSON record batchUpsert sends (exported for tests). */
+export function feedRecord(r: CtiRow) {
+  return {
+    source: r.source, indicator_type: r.indicatorType, value: r.value, warning: r.warning ?? null,
+    confidence_score: r.confidenceScore ?? null, malware_family: r.malwareFamily ?? null,
+    attack_software: r.attackSoftware ?? null, attack_techniques: r.attackTechniques ?? null,
+    last_seen: r.lastSeen instanceof Date ? r.lastSeen.toISOString() : r.lastSeen ?? new Date().toISOString(),
+  }
+}
+
+/**
+ * Upsert rows in chunks — each chunk is one INSERT … ON CONFLICT statement whose rows go
+ * as ONE JSON parameter that Postgres unpacks (jsonb_to_recordset). Building the same
+ * statement with drizzle's query builder cost about 0.6 s of CPU for ThreatFox's 17k
+ * rows, which with the rest of the run went over the free plan's CPU limit.
+ */
 export async function batchUpsert(db: DB, rows: CtiRow[]): Promise<void> {
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const chunk = rows.slice(i, i + BATCH_SIZE)
-    await db
-      .insert(ctiIndicators)
-      .values(chunk)
-      .onConflictDoUpdate({
-        target: ctiIndicators.value,
-        targetWhere: FEED_ROW,     // the feed rows' partial unique index (idx_cti_feed_value)
-        set: {
-          lastSeen:        sql`excluded.last_seen`,
-          // a feed that names no family does not erase one another feed gave
-          malwareFamily:    sql`coalesce(excluded.malware_family, ${ctiIndicators.malwareFamily})`,
-          attackSoftware:   sql`CASE WHEN excluded.malware_family IS NULL THEN ${ctiIndicators.attackSoftware} ELSE excluded.attack_software END`,
-          attackTechniques: sql`coalesce(excluded.attack_techniques, ${ctiIndicators.attackTechniques})`,
-          confidenceScore: sql`excluded.confidence_score`,
-          warning:         sql`excluded.warning`,
-        },
-      })
+  const tooLong = rows.filter((r) => r.value.length > MAX_VALUE_LENGTH).length
+  if (tooLong) console.log(`[CTI] Skipped ${tooLong} indicator(s) longer than ${MAX_VALUE_LENGTH} characters`)
+  for (const chunk of planUpsertChunks(rows)) {
+    await db.execute(sql`
+      INSERT INTO cti_indicators AS c (source, indicator_type, value, warning, confidence_score,
+                                       malware_family, attack_software, attack_techniques, last_seen)
+      SELECT r.source, r.indicator_type::indicator_type, r.value, r.warning, r.confidence_score,
+             r.malware_family, r.attack_software, r.attack_techniques, r.last_seen
+      FROM jsonb_to_recordset(${JSON.stringify(chunk.map(feedRecord))}::jsonb) AS r(
+        source varchar, indicator_type text, value varchar, warning varchar, confidence_score numeric,
+        malware_family varchar, attack_software varchar, attack_techniques text[], last_seen timestamptz)
+      ON CONFLICT (value) WHERE ti_event_id IS NULL     -- the feed rows' partial unique index (idx_cti_feed_value)
+      DO UPDATE SET
+        last_seen         = excluded.last_seen,
+        -- a feed that names no family does not erase one another feed gave
+        malware_family    = coalesce(excluded.malware_family, c.malware_family),
+        attack_software   = CASE WHEN excluded.malware_family IS NULL THEN c.attack_software ELSE excluded.attack_software END,
+        attack_techniques = coalesce(excluded.attack_techniques, c.attack_techniques),
+        confidence_score  = excluded.confidence_score,
+        warning           = excluded.warning`)
   }
 }
 
@@ -241,41 +283,98 @@ export async function ingestKev(db: DB): Promise<number> {
 }
 
 // ── Combined ─────────────────────────────────────────────────────────
-export async function ingestAllFeeds(
-  db: DB,
-  otxKey: string,
-  threatFoxKey: string,
-): Promise<{ otx: number; threatfox: number; kev: number; kev_alerts: number }> {
-  const [otxResult, tfResult, kevResult] = await Promise.allSettled([
-    ingestOtx(db, otxKey),
-    ingestThreatFox(db, threatFoxKey),
-    ingestKev(db),
-  ])
+/**
+ * The text of a database error for the log. Workers Logs show a Neon error only as its
+ * stack, which leaves out the message, so failures read as blank.
+ */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const e = err as Error & { code?: string; detail?: string; hint?: string }
+  return [e.message || e.name, e.code && `code ${e.code}`, e.detail, e.hint].filter(Boolean).join(' | ')
+}
 
-  const otx       = otxResult.status === 'fulfilled' ? otxResult.value : 0
-  const threatfox = tfResult.status  === 'fulfilled' ? tfResult.value  : 0
-  const kev       = kevResult.status === 'fulfilled' ? kevResult.value : 0
+// ── Ingestion, one feed per queue job ────────────────────────────────
+// A Worker on the free plan has a small CPU and request allowance per run: all three
+// feeds in one run went over the CPU limit (2 s, killed and retried) once ThreatFox's
+// 17k rows were saved. So each feed is its own queue job, which queues the next one;
+// 'finish' refreshes the CVE alerts and the asset matches against the new data.
+export type CtiStep = 'kev' | 'threatfox' | 'otx' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'otx', 'finish']
+export const CTI_INGEST_LOCK = 'cti_ingest_lock'
 
-  if (otxResult.status === 'rejected') console.error('[OTX] Fatal:', otxResult.reason)
-  if (tfResult.status  === 'rejected') console.error('[ThreatFox] Fatal:', tfResult.reason)
-  if (kevResult.status === 'rejected') console.error('[KEV] Fatal:', kevResult.reason)
+/** The step after this one; null after 'finish' (exported for tests). */
+export function nextCtiStep(step: CtiStep): CtiStep | null {
+  return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
+}
 
-  // CVE alerts follow the refreshed feeds (KEV additions, entries that aged out).
-  let kevAlerts = 0
-  try {
-    kevAlerts = await refreshCveIntel(db, { all: true })
-  } catch (err) {
-    console.error('[KEV] Refreshing CVE alerts failed:', err)
+const FEED_OF: Record<Exclude<CtiStep, 'finish'>, { source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
+  kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
+  threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
+  otx:       { source: 'AlienVault OTX', run: (db, k) => ingestOtx(db, k.otx) },
+}
+
+export interface FeedKeys { otx: string; threatFox: string }
+
+/**
+ * Run one step and record it for the feed-health line. A feed that fails is recorded as
+ * failed and the chain goes on. Returns the next step, or null when the run is done.
+ */
+export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, step: CtiStep): Promise<CtiStep | null> {
+  if (step === 'finish') {
+    // CVE alerts follow the refreshed feeds (KEV additions, entries that aged out).
+    try {
+      const flagged = await refreshCveIntel(db, { all: true })
+      console.log(`[KEV] ${flagged} CVE alert(s) newly flagged`)
+    } catch (err) {
+      console.error('[KEV] Refreshing CVE alerts failed:', describeError(err))
+    }
+    // Assets against the refreshed feeds (R5/R6, services/iocMatch.ts).
+    try {
+      const m = await matchIocs(db, { all: true })
+      console.log(`[CTI] Matches: ${m.created} new, ${m.reopened} reopened, ${m.resolved} resolved`)
+    } catch (err) {
+      console.error('[CTI] Matching assets failed:', describeError(err))
+    }
+    return null
   }
-
-  // Assets against the refreshed feeds (R5/R6, services/iocMatch.ts).
+  const feed = FEED_OF[step]
+  let result: { ok: boolean; count: number }
   try {
-    const m = await matchIocs(db, { all: true })
-    console.log(`[CTI] Matches: ${m.created} new, ${m.reopened} reopened, ${m.resolved} resolved`)
+    result = { ok: true, count: await feed.run(db, keys) }
+    console.log(`[CTI] ${feed.source}: ${result.count} indicator(s)`)
   } catch (err) {
-    console.error('[CTI] Matching assets failed:', err)
+    result = { ok: false, count: 0 }
+    console.error(`[CTI] ${feed.source} failed:`, describeError(err))
   }
+  await recordFeedResult(kv, feed.source, result)
+  return nextCtiStep(step)
+}
 
-  console.log(`[CTI] Done — OTX: ${otx}, ThreatFox: ${threatfox}, KEV: ${kev} (${kevAlerts} alert(s) newly flagged)`)
-  return { otx, threatfox, kev, kev_alerts: kevAlerts }
+/** KV key holding the feeds' last results, shown as feed health on the Threat Intel page. */
+export const LAST_INGEST_KEY = 'cti_last_ingest'
+
+export interface LastIngest {
+  at: string
+  feeds: Record<string, { ok: boolean; count: number; last_ok_at: string | null }>
+}
+
+/** Remember one feed's result for the feed-health line (the other feeds' entries stay). */
+export async function recordFeedResult(kv: KVNamespace, source: string, result: { ok: boolean; count: number }, now = new Date()): Promise<void> {
+  const previous = await kv.get<LastIngest>(LAST_INGEST_KEY, 'json').catch(() => null)
+  await kv.put(LAST_INGEST_KEY, JSON.stringify(planIngestRecord(previous, { [source]: result }, now)))
+}
+
+/**
+ * PURE: the record after some feeds' results (exported for tests). A feed that failed
+ * keeps the time it last loaded, so the page can say "failed, last loaded 3 days ago".
+ */
+export function planIngestRecord(
+  previous: LastIngest | null, results: Record<string, { ok: boolean; count: number }>, now: Date,
+): LastIngest {
+  const at = now.toISOString()
+  const feeds: LastIngest['feeds'] = { ...(previous?.feeds ?? {}) }
+  for (const [source, f] of Object.entries(results)) {
+    feeds[source] = { ok: f.ok, count: f.count, last_ok_at: f.ok ? at : previous?.feeds?.[source]?.last_ok_at ?? null }
+  }
+  return { at, feeds }
 }

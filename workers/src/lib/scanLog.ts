@@ -79,3 +79,38 @@ export function planScanLogPurge(rows: ScanLogRow[], asset: { ips: string[]; mac
   }
   return out
 }
+
+export interface HostAssetCandidate {
+  assetId: string
+  hostname: string | null
+  inMyAssets: boolean
+  /** Every IP the asset has had, and the ones it holds now */
+  ips: string[]
+  currentIps: string[]
+  macs: (string | null)[]
+}
+
+/**
+ * The asset each Discovery host entry became (the same rule as planScanLogPurge: the IP
+ * is one the asset had, and the MAC is one of its MACs or absent). When several assets
+ * fit, one holding the IP now wins, then one with the entry's MAC. Null: no asset (it
+ * was deleted, or the entry predates identity tracking).
+ */
+export function resolveHostAssets(hosts: unknown, candidates: HostAssetCandidate[]): (HostAssetCandidate | null)[] {
+  const prepared = candidates.map(c => ({
+    c,
+    ips: new Set(c.ips),
+    current: new Set(c.currentIps),
+    macs: new Set(c.macs.map(m => normalizeMac(m)).filter((m): m is string => !!m)),
+  }))
+  return asEntries(hosts).map(h => {
+    const ip = entryIp(h)
+    if (!ip) return null
+    const mac = entryMac(h)
+    const fits = prepared.filter(p => p.ips.has(ip) && (mac === null || p.macs.has(mac)))
+    if (fits.length === 0) return null
+    const score = (p: typeof fits[number]) => (p.current.has(ip) ? 2 : 0) + (mac !== null && p.macs.has(mac) ? 1 : 0)
+    fits.sort((a, b) => score(b) - score(a))
+    return fits[0]!.c
+  })
+}

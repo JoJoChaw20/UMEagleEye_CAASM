@@ -15,6 +15,7 @@ import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } fr
 import { cveIntelFor, linkCveIndicators, type CveIntel } from '../services/threatIntel'
 import { matchIocs } from '../services/iocMatch'
 import { isStoredInR2, licenseNames, sbomObjectKey, sbomSummary } from '../lib/sbomStore'
+import { computerState, SBOM_STALE_HOURS } from '../lib/sbomCoverage'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -233,6 +234,101 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   } catch (err) {
     console.error('sbom list error:', err)
     return c.json({ detail: 'Failed to fetch SBOMs' }, 500)
+  }
+})
+
+// ── GET /computers ───────────────────────────────────────────────
+// The SBOM page's main list: one row per computer, i.e. every asset with an agent bound to
+// it plus any other asset that has an SBOM. Computers with an agent but no SBOM are
+// listed too (coverage). Each row carries its SBOM summary, its open CVE alerts and its
+// latest SBOM job. Query: tenant_id (superadmin). Defined BEFORE /:sbomId.
+app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') || null) : (user.tenantId ?? null)
+    if (user.role !== 'superadmin' && !tenantId) return c.json({ items: [], stale_hours: SBOM_STALE_HOURS })
+    const inTenant = tenantId ? sql`a.tenant_id = ${tenantId}` : sql`true`
+
+    const result = await db.execute(sql`
+      WITH comp AS (
+        SELECT g.host_asset_id AS asset_id FROM agents g JOIN assets a ON a.asset_id = g.host_asset_id
+          WHERE g.retired_at IS NULL AND ${inTenant}
+        UNION
+        SELECT s.asset_id FROM sboms s JOIN assets a ON a.asset_id = s.asset_id WHERE ${inTenant}
+      )
+      SELECT a.asset_id, a.hostname, a.ip_address, a.tenant_id,
+             ag.agent_id, ag.name AS agent_name, ag.status AS agent_status, ag.version AS agent_version,
+             ag.last_heartbeat,
+             s.sbom_id, s.generated_at, s.format, s.format_version, s.tool_used,
+             s.raw_data->'run' AS run, s.raw_data->'scope' AS scope, s.raw_data->>'generated_by' AS generated_by,
+             COALESCE((s.raw_data->>'component_count')::int,
+                      CASE WHEN jsonb_typeof(s.raw_data->'components') = 'array'
+                           THEN jsonb_array_length(s.raw_data->'components') END) AS component_count,
+             cve.open AS cve_open, cve.critical AS cve_critical, cve.high AS cve_high, cve.kev AS cve_kev,
+             job.scan_id AS job_id, job.status AS job_status, job.failure_reason AS job_failure,
+             job.started_at AS job_started_at, job.completed_at AS job_completed_at, job.mode AS job_mode
+      FROM comp JOIN assets a ON a.asset_id = comp.asset_id
+      LEFT JOIN LATERAL (
+        SELECT g.agent_id, g.name, g.status, g.version, g.last_heartbeat FROM agents g
+        WHERE g.host_asset_id = a.asset_id AND g.retired_at IS NULL
+        ORDER BY g.last_heartbeat DESC NULLS LAST LIMIT 1
+      ) ag ON true
+      LEFT JOIN LATERAL (
+        SELECT * FROM sboms s WHERE s.asset_id = a.asset_id ORDER BY s.generated_at DESC LIMIT 1
+      ) s ON true
+      LEFT JOIN LATERAL (
+        SELECT count(*)::int AS open,
+               count(*) FILTER (WHERE e.severity = 'critical')::int AS critical,
+               count(*) FILTER (WHERE e.severity = 'high')::int AS high,
+               count(*) FILTER (WHERE (e.details->>'has_cti_match')::boolean IS TRUE)::int AS kev
+        FROM events e
+        WHERE e.asset_id = a.asset_id AND e.event_type = 'cve_detected' AND e.status IN ('open', 'in_progress')
+      ) cve ON true
+      LEFT JOIN LATERAL (
+        SELECT r.scan_id, r.status, r.failure_reason, r.started_at, r.completed_at, r.network_info->>'sbom_mode' AS mode
+        FROM scan_results r
+        WHERE r.scan_type = 'sbom' AND r.subnet = a.asset_id::text
+        ORDER BY r.started_at DESC LIMIT 1
+      ) job ON true
+      ORDER BY lower(COALESCE(a.hostname, a.ip_address))
+      LIMIT 500`)
+
+    const now = new Date()
+    const items = (result.rows as Record<string, unknown>[]).map((r) => {
+      const job = r.job_id
+        ? {
+            scan_id: r.job_id, status: r.job_status, failure_reason: r.job_failure,
+            started_at: r.job_started_at, completed_at: r.job_completed_at, mode: r.job_mode,
+          }
+        : null
+      return {
+        asset_id: r.asset_id,
+        hostname: r.hostname,
+        ip_address: r.ip_address,
+        tenant_id: r.tenant_id,
+        agent: r.agent_id
+          ? { agent_id: r.agent_id, name: r.agent_name, status: r.agent_status, version: r.agent_version, last_heartbeat: r.last_heartbeat }
+          : null,
+        sbom: r.sbom_id
+          ? {
+              sbom_id: r.sbom_id, generated_at: r.generated_at, format: r.format, format_version: r.format_version,
+              tool_used: r.tool_used, generated_by: r.generated_by, component_count: r.component_count,
+              run: r.run ?? null, scope: Array.isArray(r.scope) ? r.scope : [],
+            }
+          : null,
+        cves: { open: r.cve_open ?? 0, critical: r.cve_critical ?? 0, high: r.cve_high ?? 0, kev: r.cve_kev ?? 0 },
+        job,
+        state: computerState({
+          generatedAt: (r.generated_at as string | null) ?? null,
+          job: job ? { status: String(job.status), startedAt: (job.started_at as string | null) ?? null } : null,
+        }, now),
+      }
+    })
+    return c.json({ items, stale_hours: SBOM_STALE_HOURS })
+  } catch (err) {
+    console.error('sboms GET /computers error:', err)
+    return c.json({ detail: 'Failed to fetch computers' }, 500)
   }
 })
 

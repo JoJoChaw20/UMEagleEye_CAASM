@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, sql, desc, inArray, notInArray, type SQL } from 'drizzle-orm'
+import { eq, and, or, sql, desc, gte, inArray, isNull, notInArray, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -17,7 +17,8 @@ import { buildBaseline, runDriftAudit } from '../services/drift'
 import { reopenReturnedNewDevices, runAlertHygiene } from '../services/alertHygiene'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
-import { PASSIVE_FOLD_MINUTES, mergePassiveHosts } from '../lib/scanLog'
+import { PASSIVE_FOLD_MINUTES, mergePassiveHosts, resolveHostAssets, type HostAssetCandidate } from '../lib/scanLog'
+import { buildNetworks, networkOf, passiveNetworkOf, scanKind, type ScanKind } from '../lib/discoveryNetworks'
 import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
 import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
 import { resolveNetworkScope } from '../lib/networkScope'
@@ -203,17 +204,189 @@ app.get('/', authMiddleware, async (c) => {
 
     await expireStaleActiveScans(db, tenantCondition)
 
-    const rows = await db
-      .select()
-      .from(scanResults)
-      .where(whereClause)
-      .orderBy(desc(scanResults.startedAt))
-      .limit(100)
+    // Paging and filters (Discovery page, Scan history). raw_results is left out: the
+    // hosts of one record come from GET /:scanId/hosts.
+    const page = Math.max(1, parseInt(c.req.query('page') ?? '1') || 1)
+    const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('page_size') ?? '25') || 25))
+    const filters: (SQL | undefined)[] = [whereClause]
+    const status = c.req.query('status')
+    if (status) filters.push(eq(scanResults.status, status))
+    const agentId = c.req.query('agent_id')
+    if (agentId) filters.push(eq(scanResults.agentId, agentId))
+    const kind = c.req.query('kind') as ScanKind | undefined
+    if (kind) filters.push(kindCondition(kind))
+    const network = c.req.query('network')
+    if (network) filters.push(networkCondition(network))
 
-    return c.json({ scans: rows, total: rows.length })
+    const where = and(...filters)
+    const [rows, countRows] = await Promise.all([
+      db
+        .select({
+          scanId: scanResults.scanId, agentId: scanResults.agentId, tenantId: scanResults.tenantId,
+          scanType: scanResults.scanType, subnet: scanResults.subnet, status: scanResults.status,
+          hostsDiscovered: scanResults.hostsDiscovered, networkInfo: scanResults.networkInfo,
+          failureReason: scanResults.failureReason, startedAt: scanResults.startedAt, completedAt: scanResults.completedAt,
+        })
+        .from(scanResults)
+        .where(where)
+        .orderBy(desc(scanResults.startedAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize),
+      db.select({ n: sql<number>`count(*)::int` }).from(scanResults).where(where),
+    ])
+
+    const scans = rows.map((r) => {
+      const net = networkOf(r)
+      const info = (r.networkInfo ?? {}) as Record<string, unknown>
+      return {
+        ...r,
+        kind: scanKind(r),
+        network: net?.subnet ?? null,
+        gateway: net?.gateway ?? null,
+        // a new-device check: its alert
+        event_id: typeof info['event_id'] === 'string' ? info['event_id'] : null,
+      }
+    })
+    return c.json({ scans, total: countRows[0]?.n ?? 0, page, page_size: pageSize })
   } catch (err) {
     console.error('scans GET / error:', err)
     return c.json({ detail: 'Failed to fetch scans' }, 500)
+  }
+})
+
+// SQL for lib/discoveryNetworks.ts scanKind (kept in step with it).
+const CIDR_RE = '^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$'
+function kindCondition(kind: ScanKind): SQL {
+  const investigation = sql`${scanResults.networkInfo}->>'trigger' = ${INVESTIGATE_TRIGGER}`
+  const notInvestigation = sql`${scanResults.networkInfo}->>'trigger' IS DISTINCT FROM ${INVESTIGATE_TRIGGER}`
+  const rangeTarget = sql`(${scanResults.subnet} ~ ${CIDR_RE} AND ${scanResults.subnet} NOT LIKE '%/32')`
+  switch (kind) {
+    case 'passive':       return eq(scanResults.scanType, 'passive')
+    case 'investigation': return and(eq(scanResults.scanType, 'active'), investigation)!
+    case 'network':       return and(eq(scanResults.scanType, 'active'), notInvestigation, rangeTarget)!
+    default:              return and(eq(scanResults.scanType, 'active'), notInvestigation, sql`NOT ${rangeTarget}`)!
+  }
+}
+// Records that belong to a network (lib/discoveryNetworks.ts networkOf).
+function networkCondition(subnet: string): SQL {
+  const lan = sql`${scanResults.networkInfo}->>'lan_subnet'`
+  return or(
+    and(eq(scanResults.scanType, 'passive'), sql`COALESCE(${lan}, ${scanResults.networkInfo}->>'subnet') = ${subnet}`),
+    and(eq(scanResults.scanType, 'active'), kindCondition('network'), eq(scanResults.subnet, subnet)),
+    and(eq(scanResults.scanType, 'active'), sql`NOT (${kindCondition('network')})`, sql`${lan} = ${subnet}`),
+  )!
+}
+
+// ── GET /networks ─── one summary per network the agents have been on (Discovery page) ──
+// From the last NETWORK_DAYS of Discovery records: the agents on it, when it was last
+// heard passively, the last full scan of it, hosts seen in 24 h, open new-device alerts.
+const NETWORK_DAYS = 30
+app.get('/networks', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const tenantId = user.role === 'superadmin' ? (c.req.query('tenant_id') || undefined) : (user.tenantId ?? undefined)
+    if (user.role !== 'superadmin' && !tenantId) return c.json({ networks: [], days: NETWORK_DAYS })
+    const inTenant = tenantId ? eq(scanResults.tenantId, tenantId) : undefined
+    const since = new Date(Date.now() - NETWORK_DAYS * 86400_000)
+    const dayAgo = new Date(Date.now() - 86400_000)
+
+    const [records, recentIps, newDevices] = await Promise.all([
+      db
+        .select({
+          scanId: scanResults.scanId, agentId: scanResults.agentId, scanType: scanResults.scanType,
+          subnet: scanResults.subnet, status: scanResults.status, hostsDiscovered: scanResults.hostsDiscovered,
+          networkInfo: scanResults.networkInfo, startedAt: scanResults.startedAt, completedAt: scanResults.completedAt,
+        })
+        .from(scanResults)
+        .where(and(notInArray(scanResults.scanType, ['sbom', 'inventory']), gte(scanResults.startedAt, since), inTenant))
+        .orderBy(desc(scanResults.startedAt))
+        .limit(5000),
+      db.execute(sql`
+        SELECT r.scan_id, array_agg(DISTINCT h->>'ip') AS ips
+        FROM scan_results r, jsonb_array_elements(CASE WHEN jsonb_typeof(r.raw_results) = 'array' THEN r.raw_results ELSE '[]'::jsonb END) h
+        WHERE r.scan_type NOT IN ('sbom', 'inventory') AND r.started_at >= ${dayAgo}
+          AND ${tenantId ? sql`r.tenant_id = ${tenantId}` : sql`true`}
+          AND h->>'ip' IS NOT NULL
+        GROUP BY r.scan_id`),
+      db
+        .select({ ip: sql<string | null>`${events.details}->>'ip'` })
+        .from(events)
+        .innerJoin(assets, eq(assets.assetId, events.assetId))
+        .where(and(
+          eq(events.eventType, 'new_device'),
+          inArray(events.status, ['open', 'in_progress']),
+          tenantId ? eq(assets.tenantId, tenantId) : undefined,
+        )),
+    ])
+
+    const ipsByScan = new Map<string, string[]>()
+    for (const row of recentIps.rows as { scan_id: string; ips: string[] }[]) ipsByScan.set(row.scan_id, row.ips ?? [])
+    const networks = buildNetworks(records, ipsByScan, newDevices.map((d) => d.ip).filter((ip): ip is string => !!ip))
+    return c.json({ networks, days: NETWORK_DAYS })
+  } catch (err) {
+    console.error('scans GET /networks error:', err)
+    return c.json({ detail: 'Failed to fetch networks' }, 500)
+  }
+})
+
+// ── GET /:scanId/hosts ─── one record's hosts, each with the asset it became ──
+app.get('/:scanId/hosts', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+    const scanId = c.req.param('scanId')
+    if (!/^[0-9a-f-]{36}$/i.test(scanId)) return c.json({ detail: 'Scan not found' }, 404)
+    const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scanId)).limit(1)
+    if (!scan || (user.role !== 'superadmin' && scan.tenantId !== user.tenantId)) return c.json({ detail: 'Scan not found' }, 404)
+
+    const hosts = Array.isArray(scan.rawResults) ? (scan.rawResults as Record<string, unknown>[]) : []
+    const ips = [...new Set(hosts.map((h) => h['ip']).filter((ip): ip is string => typeof ip === 'string' && !!ip))]
+    let candidates: HostAssetCandidate[] = []
+    if (ips.length > 0) {
+      const tenantCond = scan.tenantId ? eq(assets.tenantId, scan.tenantId) : isNull(assets.tenantId)
+      const rows = await db
+        .select({
+          assetId: assets.assetId, hostname: assets.hostname, inMyAssets: assets.inMyAssets,
+          assetIp: assets.ipAddress, assetMac: assets.macAddress,
+          addrIp: assetAddresses.ipAddress, addrMac: assetAddresses.macAddress, endedAt: assetAddresses.endedAt,
+        })
+        .from(assets)
+        .leftJoin(assetAddresses, eq(assetAddresses.assetId, assets.assetId))
+        .where(and(tenantCond, or(inArray(assets.ipAddress, ips), inArray(assetAddresses.ipAddress, ips))))
+      const byId = new Map<string, HostAssetCandidate>()
+      for (const r of rows) {
+        let cand = byId.get(r.assetId)
+        if (!cand) {
+          cand = { assetId: r.assetId, hostname: r.hostname, inMyAssets: r.inMyAssets, ips: [r.assetIp], currentIps: [r.assetIp], macs: [r.assetMac] }
+          byId.set(r.assetId, cand)
+        }
+        if (r.addrIp) {
+          cand.ips.push(r.addrIp)
+          if (!r.endedAt) cand.currentIps.push(r.addrIp)
+        }
+        if (r.addrMac) cand.macs.push(r.addrMac)
+      }
+      candidates = [...byId.values()]
+    }
+    const resolved = resolveHostAssets(hosts, candidates)
+    const net = networkOf(scan)
+    return c.json({
+      scan: {
+        scan_id: scan.scanId, agent_id: scan.agentId, tenant_id: scan.tenantId, scan_type: scan.scanType,
+        kind: scanKind(scan), subnet: scan.subnet, network: net?.subnet ?? null, gateway: net?.gateway ?? null,
+        status: scan.status, started_at: scan.startedAt, completed_at: scan.completedAt,
+      },
+      hosts: hosts.map((h, i) => ({
+        ...h,
+        asset: resolved[i]
+          ? { asset_id: resolved[i]!.assetId, hostname: resolved[i]!.hostname, in_my_assets: resolved[i]!.inMyAssets }
+          : null,
+      })),
+    })
+  } catch (err) {
+    console.error('scans GET /:scanId/hosts error:', err)
+    return c.json({ detail: 'Failed to fetch hosts' }, 500)
   }
 })
 
@@ -998,6 +1171,8 @@ Example:
           eq(scanResults.subnet, 'arp-discovery'),
           eq(scanResults.status, 'completed'),
           sql`${scanResults.startedAt} > now() - make_interval(mins => ${PASSIVE_FOLD_MINUTES})`,
+          // a laptop that moved to another network starts a new record (one network per record)
+          sql`COALESCE(${scanResults.networkInfo}->>'lan_subnet', ${scanResults.networkInfo}->>'subnet') IS NOT DISTINCT FROM ${passiveNetworkOf(network)}`,
         ))
         .orderBy(desc(scanResults.startedAt))
         .limit(1)

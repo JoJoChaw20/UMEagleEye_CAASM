@@ -1,29 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
-import {
-  Globe, RefreshCw, Shield, Search, X, AlertTriangle,
-  CheckCircle2, Clock, ExternalLink, Info, Filter,
-} from 'lucide-react'
-
-// ── Inline toast hook ─────────────────────────────────────────
-function useToast() {
-  const [toast, setToast] = useState(null)
-  const show = (msg, type = 'success') => {
-    setToast({ msg, type })
-    setTimeout(() => setToast(null), 4000)
-  }
-  return { toast, show }
-}
+import { Globe, RefreshCw, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import TiEventsPanel, { TiMatchesPanel } from '../components/threatintel/TiEventsPanel'
+import TiEventsPanel from '../components/threatintel/TiEventsPanel'
 import AttackMatrixPanel from '../components/threatintel/AttackMatrixPanel'
+import MatchesPanel from '../components/threatintel/MatchesPanel'
+import IndicatorPanel, { TypeLabel, TYPE_META } from '../components/threatintel/IndicatorPanel'
+import { Tabs, StatTile, Toast, useToast, Spinner, Pager, ago } from '../components/common/PageParts'
 
-// ── Constants ─────────────────────────────────────────────────
-const TYPE_ICONS = { ip: '🌐', domain: '🔗', url: '📎', hash: '🔐', email: '📧', cve: '🐞' }
+// Threat Intelligence: does any of it touch our assets? Matches first, then our own
+// threat-intel events, the global feeds (OTX, ThreatFox, CISA KEV) and the ATT&CK view.
 
-const PAGE_SIZE = 15
+const PAGE_SIZE = 20
+const STALE_HOURS = 36       // the feeds load nightly: older than this means a run was missed
 
-// ── Confidence bar ────────────────────────────────────────────
 function ConfBar({ score }) {
   const pct = ((score ?? 0) * 100).toFixed(0)
   const color = score >= 0.8 ? '#ff5252' : score >= 0.6 ? '#ff9800' : '#ffc400'
@@ -37,474 +27,276 @@ function ConfBar({ score }) {
   )
 }
 
+// One line per feed: count, when it last loaded, and a warning when it failed or is old.
+function FeedHealth({ stats, ingesting, onIngest }) {
+  const feeds = stats?.feeds ?? []
+  const hoursOld = (ts) => (ts ? (Date.now() - new Date(ts).getTime()) / 3600000 : Infinity)
+  return (
+    <div className="glass-card px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
+      <span className="text-dark-400 font-medium">Feeds</span>
+      {feeds.length === 0 && <span className="text-dark-400">No feed data loaded yet.</span>}
+      {feeds.map((f) => {
+        const failed = f.ok === false
+        const stale = !failed && f.last_ok_at && hoursOld(f.last_ok_at) > STALE_HOURS
+        return (
+          <span key={f.source} className="inline-flex items-center gap-1.5 text-dark-300"
+            title={failed ? 'The last run could not load this feed' : f.last_ok_at ? `Loaded ${new Date(f.last_ok_at).toLocaleString()}` : 'Not loaded since feed health was recorded'}>
+            {failed || stale
+              ? <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+              : <CheckCircle2 className={`w-3.5 h-3.5 ${f.last_ok_at ? 'text-accent-green' : 'text-dark-500'}`} />}
+            <span className="text-dark-100">{f.source}</span>
+            <span>{f.count.toLocaleString()}</span>
+            <span className={failed || stale ? 'text-amber-400' : 'text-dark-500'}>
+              {failed ? `failed${f.last_ok_at ? `, last loaded ${ago(f.last_ok_at)}` : ''}` : `updated ${ago(f.last_ok_at, 'unknown')}`}
+            </span>
+          </span>
+        )
+      })}
+      <span className="ml-auto flex items-center gap-3 text-dark-500">
+        {stats?.next_ingest_at && <span>Next update {new Date(stats.next_ingest_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+        {stats?.can_ingest && (
+          <button onClick={onIngest} disabled={ingesting} className="btn-secondary text-xs py-1 px-2.5 inline-flex items-center gap-1.5 disabled:opacity-60"
+            title="Load all feeds now, for every tenant (platform superadmin)">
+            <RefreshCw className={`w-3.5 h-3.5 ${ingesting ? 'animate-spin' : ''}`} />
+            {ingesting ? 'Updating…' : 'Update feeds now'}
+          </button>
+        )}
+      </span>
+    </div>
+  )
+}
+
 export default function ThreatIntelPage() {
   const { user } = useAuth()
-  const canIngest = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const { toast, show: showToast } = useToast()
+  const [stats, setStats] = useState(null)
+  const [tab, setTab] = useState(null)              // set once the stats say whether there are matches
+  const [ingesting, setIngesting] = useState(false)
+  const [lookupInput, setLookupInput] = useState('')
+  const [panelValue, setPanelValue] = useState(null)
+
+  // Indicators tab
   const [indicators, setIndicators] = useState([])
-  const [stats,      setStats]      = useState(null)
-  const [loading,    setLoading]    = useState(true)
-  const [ingesting,  setIngesting]  = useState(false)
-  const { toast, show: showToast }  = useToast()
-  const [tab,        setTab]        = useState('indicators') // indicators | matrix | lookup
-
-  // IoC Feed filters + server-side pagination
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [q, setQ] = useState('')
+  const [qDebounced, setQDebounced] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
-  const [typeFilter,   setTypeFilter]   = useState('')
-  // from the ATT&CK tab: { family } or { technique }, with a label
-  const [attackFilter, setAttackFilter] = useState(null)
-  const [page,         setPage]         = useState(1)
-  const [total,        setTotal]        = useState(0)
+  const [matchedOnly, setMatchedOnly] = useState(false)
+  const [attackFilter, setAttackFilter] = useState(null)   // from the ATT&CK tab: { family } | { technique }, with a label
 
-  // IOC Lookup
-  const [lookupValue,   setLookupValue]   = useState('')
-  const [lookupResult,  setLookupResult]  = useState(null)
-  const [lookupLoading, setLookupLoading] = useState(false)
-  const [lookupError,   setLookupError]   = useState('')
-
-  // Load stats once (not filter-dependent); the ATT&CK tab loads its own data
-  const loadStaticData = useCallback(async () => {
+  const loadStats = useCallback(async () => {
     try {
-      const statsRes = await client.get('/cti/stats')
-      setStats(statsRes.data)
-    } catch (err) { console.error(err) }
+      const res = await client.get('/cti/stats')
+      setStats(res.data)
+      setTab((cur) => cur ?? (res.data?.matches?.open > 0 ? 'matches' : 'events'))
+    } catch {
+      setTab((cur) => cur ?? 'events')
+    }
   }, [])
+  useEffect(() => { loadStats() }, [loadStats])
 
-  // Load indicators with server-side filters + pagination
+  useEffect(() => {
+    const t = setTimeout(() => { setQDebounced(q.trim()); setPage(1) }, 300)
+    return () => clearTimeout(t)
+  }, [q])
+
   const loadIndicators = useCallback(async () => {
     setLoading(true)
     try {
       const params = { page, limit: PAGE_SIZE }
+      if (qDebounced) params.q = qDebounced
+      if (typeFilter) params.indicator_type = typeFilter
       if (sourceFilter) params.source = sourceFilter
-      if (typeFilter)   params.indicator_type = typeFilter
-      if (attackFilter?.family)    params.family = attackFilter.family
+      if (matchedOnly) params.matched = 'true'
+      if (attackFilter?.family) params.family = attackFilter.family
       if (attackFilter?.technique) params.technique = attackFilter.technique
       const res = await client.get('/cti/indicators', { params })
       setIndicators(res.data.items || [])
       setTotal(res.data.total || 0)
-    } catch (err) { console.error(err) }
-    finally { setLoading(false) }
-  }, [page, sourceFilter, typeFilter, attackFilter])
+    } catch (err) {
+      showToast(err?.response?.data?.detail || 'Failed to load indicators', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }, [page, qDebounced, typeFilter, sourceFilter, matchedOnly, attackFilter, showToast])
+  useEffect(() => { if (tab === 'indicators') loadIndicators() }, [tab, loadIndicators])
 
-  useEffect(() => { loadStaticData() }, [loadStaticData])
-  useEffect(() => { loadIndicators() }, [loadIndicators])
-
-  const triggerIngestion = async () => {
+  const ingest = async () => {
     setIngesting(true)
     try {
       const res = await client.post('/cti/ingest')
-      const data = res.data
-      if (data?.queued === false) {
-        showToast('Ingestion already running — try again in a few minutes.', 'info')
+      if (res.data?.queued === false) {
+        showToast('An update is already running or ran in the last hour.', 'info')
         setIngesting(false)
       } else {
-        showToast('Feed ingestion queued! Refreshing in ~15 seconds…', 'success')
-        setTimeout(() => { loadStaticData(); loadIndicators(); setIngesting(false) }, 15000)
+        showToast('Feed update queued. Refreshing in about 15 seconds…', 'success')
+        setTimeout(() => { loadStats(); if (tab === 'indicators') loadIndicators(); setIngesting(false) }, 15000)
       }
     } catch (err) {
-      const msg = err?.response?.data?.detail ?? 'Failed to queue ingestion'
-      showToast(msg, 'error')
+      showToast(err?.response?.data?.detail ?? 'Failed to queue the feed update', 'error')
       setIngesting(false)
     }
   }
 
-  const doLookup = async () => {
-    if (!lookupValue.trim()) return
-    setLookupLoading(true)
-    setLookupResult(null)
-    setLookupError('')
-    try {
-      const res = await client.get('/cti/lookup', { params: { value: lookupValue.trim() } })
-      setLookupResult(res.data)
-    } catch (err) {
-      setLookupError(err.response?.data?.detail || 'Lookup failed.')
-    } finally {
-      setLookupLoading(false)
-    }
+  const lookup = (e) => {
+    e?.preventDefault()
+    const v = lookupInput.trim()
+    if (v) setPanelValue(v)
   }
 
-  // ── Derived values ────────────────────────────────────────────
-  // Source/type dropdown options from stats (full-table, no limit)
-  const uniqueSources = Object.keys(stats?.by_source ?? {})
-  const uniqueTypes   = Object.keys(stats?.by_type   ?? {})
+  const showAttackIndicators = (f) => {
+    setAttackFilter(f); setSourceFilter(''); setTypeFilter(''); setQ(''); setMatchedOnly(false); setPage(1); setTab('indicators')
+  }
+  const clearFilters = () => { setQ(''); setTypeFilter(''); setSourceFilter(''); setMatchedOnly(false); setAttackFilter(null); setPage(1) }
+  const hasFilters = q || typeFilter || sourceFilter || matchedOnly || attackFilter
 
-  // Pagination driven by server-returned total
-  const totalPages = Math.ceil(total / PAGE_SIZE)
+  const m = stats?.matches
+  const types = Object.entries(stats?.by_type ?? {})
+  const sources = (stats?.feeds ?? []).map((f) => f.source)
 
-  const clearFilters = () => { setSourceFilter(''); setTypeFilter(''); setAttackFilter(null); setPage(1) }
-
-  const showAttackIndicators = (f) => { setAttackFilter(f); setSourceFilter(''); setPage(1); setTab('indicators') }
-
-  // ── Render ───────────────────────────────────────────────────
   return (
     <div className="space-y-6">
+      <Toast toast={toast} />
 
-      {/* ── Toast ── */}
-      {toast && (
-        <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium
-          ${toast.type === 'success' ? 'bg-green-900/90 text-green-200 border border-green-700'
-          : toast.type === 'info'    ? 'bg-blue-900/90  text-blue-200  border border-blue-700'
-          :                            'bg-red-900/90   text-red-200   border border-red-700'}`}>
-          {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-          : toast.type === 'info'   ? <Info         className="w-4 h-4 flex-shrink-0" />
-          :                           <AlertTriangle className="w-4 h-4 flex-shrink-0" />}
-          {toast.msg}
-        </div>
-      )}
-
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between">
+      {/* Header + lookup */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">Threat Intelligence</h1>
-          <p className="text-dark-400 text-sm mt-1">
-            {stats?.total_indicators ?? 0} indicators ·{' '}
-            {Object.keys(stats?.by_source ?? {}).length} sources
-          </p>
+          <p className="text-dark-400 text-sm mt-1 max-w-2xl">Which of your assets threat intelligence names, your own threat-intel events, and the feeds behind them.</p>
         </div>
-        {canIngest && (
-          <button
-            onClick={triggerIngestion}
-            disabled={ingesting}
-            className="btn-primary flex items-center gap-2"
-          >
-            {ingesting
-              ? <RefreshCw className="w-4 h-4 animate-spin" />
-              : <Globe className="w-4 h-4" />}
-            {ingesting ? 'Ingesting…' : 'Ingest Feeds'}
-          </button>
-        )}
+        <form onSubmit={lookup} className="flex gap-2 w-full sm:w-auto" role="search">
+          <div className="relative flex-1 sm:w-80">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+            <input type="text" value={lookupInput} onChange={(e) => setLookupInput(e.target.value)}
+              placeholder="Look up an IP, domain, hash or CVE…" aria-label="Look up a value in threat intelligence"
+              className="input-field w-full pl-10 text-sm" />
+          </div>
+          <button type="submit" disabled={!lookupInput.trim()} className="btn-primary text-sm disabled:opacity-50">Look up</button>
+        </form>
       </div>
 
-      {/* ── Source & type stat cards ── */}
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {Object.entries(stats.by_source || {}).map(([source, count]) => (
-            <div key={source} className="stat-card">
-              <p className="text-dark-400 text-xs mb-1 truncate">{source}</p>
-              <p className="text-2xl font-bold text-white">{count}</p>
-            </div>
-          ))}
-          {Object.entries(stats.by_type || {}).map(([type, count]) => (
-            <div key={type} className="stat-card">
-              <p className="text-dark-400 text-xs mb-1">
-                {TYPE_ICONS[type] || '❓'} {type}
-              </p>
-              <p className="text-2xl font-bold text-white">{count}</p>
-            </div>
-          ))}
-        </div>
+      {/* Summary */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatTile label="Matches on our assets" icon={Crosshair}
+          value={m ? m.open : '—'} tone={m?.open > 0 ? 'danger' : 'good'}
+          sub={m ? (m.open > 0 ? `${m.high} critical or high` : 'nothing matched') : ' '}
+          onClick={() => setTab('matches')} />
+        <StatTile label="Assets affected" icon={Server}
+          value={m ? m.assets : '—'} tone={m?.assets > 0 ? 'warning' : 'muted'}
+          sub="with an open match" onClick={() => setTab('matches')} />
+        <StatTile label="Threat-intel events" icon={BookOpen}
+          value={stats?.ti_events?.total ?? '—'} sub={stats ? `${stats.ti_events.published} published` : ' '}
+          onClick={() => setTab('events')} />
+        <StatTile label="Feed indicators" icon={Database}
+          value={stats ? stats.total_indicators.toLocaleString() : '—'}
+          sub={stats ? `+${stats.recent_7d.toLocaleString()} in the last 7 days` : ' '}
+          onClick={() => { clearFilters(); setTab('indicators') }} />
+      </div>
+
+      <FeedHealth stats={stats} ingesting={ingesting} onIngest={ingest} />
+
+      {tab && (
+        <Tabs label="Threat intelligence views" active={tab} onChange={setTab} tabs={[
+          { id: 'matches', label: 'Matches', count: m?.open },
+          { id: 'events', label: 'Events', count: stats?.ti_events?.total },
+          { id: 'indicators', label: 'Indicators' },
+          { id: 'matrix', label: 'MITRE ATT&CK' },
+        ]} />
       )}
 
-      {/* ── Tabs ── */}
-      <div className="flex gap-1 bg-dark-800 rounded-lg p-1 w-fit">
-        {[
-          { id: 'indicators', label: 'IoC Feed' },
-          { id: 'matrix',     label: 'MITRE ATT&CK' },
-          { id: 'lookup',     label: '🔍 IOC Lookup' },
-          { id: 'events',     label: 'Threat-intel events' },
-          { id: 'matches',    label: 'Matches' },
-        ].map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              tab === t.id
-                ? 'bg-eagle-600 text-white'
-                : 'text-dark-400 hover:text-dark-100 hover:bg-dark-700/40'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Loading spinner ── */}
-      {tab === 'events' ? (
+      {!tab ? <Spinner /> : tab === 'matches' ? (
+        <MatchesPanel onLookup={setPanelValue} showToast={showToast} />
+      ) : tab === 'events' ? (
         <TiEventsPanel user={user} showToast={showToast} />
-      ) : tab === 'matches' ? (
-        <TiMatchesPanel showToast={showToast} />
       ) : tab === 'matrix' ? (
         <AttackMatrixPanel onShowIndicators={showAttackIndicators} />
-      ) : loading ? (
-        <div className="flex justify-center py-20">
-          <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
-        </div>
-      ) : tab === 'indicators' ? (
-
-        // ── IoC Feed tab ─────────────────────────────────────────
-        <>
+      ) : (
+        <div className="space-y-4">
           {/* Filters */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <select
-              value={sourceFilter}
-              onChange={e => { setSourceFilter(e.target.value); setPage(1) }}
-              className="input-field text-sm py-1.5 w-48"
-            >
-              <option value="">All Sources</option>
-              {uniqueSources.map(s => <option key={s} value={s}>{s}</option>)}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-400" />
+              <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search values…"
+                aria-label="Search indicator values" className="input-field text-sm py-1.5 pl-8 w-56" />
+            </div>
+            <div className="flex items-center gap-1 flex-wrap" role="group" aria-label="Indicator type">
+              <button onClick={() => { setTypeFilter(''); setPage(1) }}
+                className={`text-xs px-2.5 py-1 rounded-full border ${!typeFilter ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
+                All
+              </button>
+              {types.map(([t, n]) => {
+                const Icon = TYPE_META[t]?.icon ?? Globe
+                return (
+                  <button key={t} onClick={() => { setTypeFilter(t); setPage(1) }} aria-pressed={typeFilter === t}
+                    className={`text-xs px-2.5 py-1 rounded-full border inline-flex items-center gap-1 ${typeFilter === t ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
+                    <Icon className="w-3 h-3" />{TYPE_META[t]?.label ?? t}<span className="text-dark-500">{n.toLocaleString()}</span>
+                  </button>
+                )
+              })}
+            </div>
+            <select value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPage(1) }} className="input-field text-sm py-1.5 w-44" aria-label="Feed">
+              <option value="">All feeds</option>
+              {sources.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
-
-            <select
-              value={typeFilter}
-              onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
-              className="input-field text-sm py-1.5 w-36"
-            >
-              <option value="">All Types</option>
-              {uniqueTypes.map(t => (
-                <option key={t} value={t}>{TYPE_ICONS[t] || '❓'} {t}</option>
-              ))}
-            </select>
-
+            <label className="inline-flex items-center gap-2 text-xs text-dark-300 cursor-pointer">
+              <input type="checkbox" checked={matchedOnly} onChange={(e) => { setMatchedOnly(e.target.checked); setPage(1) }} className="accent-eagle-500" />
+              Matching our assets only
+            </label>
             {attackFilter && (
               <span className="flex items-center gap-1 text-xs bg-eagle-600/20 text-eagle-400 border border-eagle-600/40 rounded px-2 py-1">
                 ATT&CK {attackFilter.family ? 'family' : 'technique'}: {attackFilter.label}
                 <button onClick={() => { setAttackFilter(null); setPage(1) }} title="Remove filter"><X className="w-3 h-3" /></button>
               </span>
             )}
-
-            <button
-              onClick={clearFilters}
-              className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2"
-            >
-              Clear filters
-            </button>
-
-            <span className="text-dark-400 text-sm ml-auto">
-              {total} indicators
-            </span>
+            {hasFilters && <button onClick={clearFilters} className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2">Clear</button>}
+            <span className="text-dark-400 text-sm ml-auto">{total.toLocaleString()} indicators</span>
           </div>
 
           <div className="glass-card overflow-hidden">
-            {indicators.length > 0 ? (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Value</th>
-                    <th>Source</th>
-                    <th>Confidence</th>
-                    <th>Malware family</th>
-                    <th>ATT&CK</th>
-                    <th>Last Seen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {indicators.map(ind => (
-                    <tr key={ind.indicator_id}>
-                      <td>
-                        {TYPE_ICONS[ind.indicator_type] || '❓'}{' '}
-                        <span className="text-xs text-dark-400">{ind.indicator_type}</span>
-                      </td>
-                      <td className="font-mono text-xs text-accent-cyan max-w-xs truncate">
-                        {ind.value}
-                      </td>
-                      <td className="text-dark-300 text-xs">{ind.source}</td>
-                      <td><ConfBar score={ind.confidence_score} /></td>
-                      <td className="text-dark-300 text-xs max-w-[10rem] truncate" title={ind.malware_family || ''}>{ind.malware_family || '—'}</td>
-                      <td className="text-xs">
-                        {ind.technique_count > 0 ? (
-                          <span className="text-accent-purple" title={ind.attack_software ? `${ind.attack_software_name} (${ind.attack_software}) in MITRE ATT&CK` : 'Techniques named by the feed'}>
-                            {ind.attack_software ? <span className="font-mono">{ind.attack_software}</span> : 'Named'} · {ind.technique_count} techniques
-                          </span>
-                        ) : <span className="text-dark-500">—</span>}
-                      </td>
-                      <td className="text-dark-400 text-xs">
-                        {new Date(ind.last_seen).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {loading ? <Spinner className="py-20" /> : indicators.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr><th>Type</th><th>Value</th><th>Feed</th><th>Confidence</th><th>Malware family</th><th>ATT&CK</th><th>Last seen</th></tr>
+                  </thead>
+                  <tbody>
+                    {indicators.map((ind) => (
+                      <tr key={ind.indicator_id} className="cursor-pointer hover:bg-dark-700/30" onClick={() => setPanelValue(ind.value)}
+                        tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setPanelValue(ind.value) }}>
+                        <td><TypeLabel type={ind.indicator_type} /></td>
+                        <td className="font-mono text-xs text-accent-cyan max-w-xs truncate" title={ind.value}>{ind.value}</td>
+                        <td className="text-dark-300 text-xs">{ind.source}</td>
+                        <td><ConfBar score={ind.confidence_score} /></td>
+                        <td className="text-dark-300 text-xs max-w-[10rem] truncate" title={ind.malware_family || ''}>{ind.malware_family || '—'}</td>
+                        <td className="text-xs">
+                          {ind.technique_count > 0 ? (
+                            <span className="text-accent-purple" title={ind.attack_software ? `${ind.attack_software_name} (${ind.attack_software}) in MITRE ATT&CK` : 'Techniques named by the feed'}>
+                              {ind.attack_software ? <span className="font-mono">{ind.attack_software}</span> : 'Named'} · {ind.technique_count} techniques
+                            </span>
+                          ) : <span className="text-dark-500">—</span>}
+                        </td>
+                        <td className="text-dark-400 text-xs whitespace-nowrap">{new Date(ind.last_seen).toLocaleDateString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
-              <div className="text-center py-20 text-dark-400">
-                <Globe className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                <p>No threat indicators yet. Click <strong>Ingest Feeds</strong> to pull from OTX &amp; ThreatFox.</p>
+              <div className="text-center py-16 text-dark-400 px-4">
+                <Globe className="w-14 h-14 mx-auto mb-4 opacity-20" />
+                <p className="font-medium text-dark-200">{hasFilters ? 'No indicators match these filters' : 'No feed indicators yet'}</p>
+                {!hasFilters && <p className="text-sm mt-1">The feeds load every night.</p>}
               </div>
             )}
           </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-2">
-              <button
-                onClick={() => setPage(p => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
-              >
-                Previous
-              </button>
-              <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
-              <button
-                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                disabled={page === totalPages}
-                className="btn-secondary text-sm py-1 px-3 disabled:opacity-30"
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </>
-
-      ) : (
-
-        // ── IOC Lookup tab ───────────────────────────────────────
-        <div className="glass-card p-6 space-y-6">
-          <div>
-            <h3 className="text-sm font-semibold text-dark-200 mb-1">IOC Lookup</h3>
-            <p className="text-xs text-dark-500">
-              Check an IP address, domain, URL, or file hash against the threat intelligence database.
-            </p>
-          </div>
-
-          {/* Lookup input */}
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-              <input
-                type="text"
-                placeholder="e.g. 185.220.101.5 · malware.example.com · abc123hash…"
-                value={lookupValue}
-                onChange={e => { setLookupValue(e.target.value); setLookupResult(null); setLookupError('') }}
-                onKeyDown={e => e.key === 'Enter' && doLookup()}
-                className="input-field w-full pl-10"
-              />
-            </div>
-            <button
-              onClick={doLookup}
-              disabled={lookupLoading || !lookupValue.trim()}
-              className="btn-primary flex items-center gap-2 disabled:opacity-50"
-            >
-              {lookupLoading
-                ? <RefreshCw className="w-4 h-4 animate-spin" />
-                : <Search className="w-4 h-4" />}
-              Lookup
-            </button>
-            {(lookupResult || lookupError) && (
-              <button
-                onClick={() => { setLookupResult(null); setLookupError(''); setLookupValue('') }}
-                className="p-2 text-dark-400 hover:text-dark-200 transition-colors"
-                title="Clear"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          {/* Error */}
-          {lookupError && (
-            <div className="flex items-center gap-2 text-sm text-red-500 bg-red-500/10 border border-red-500/40 rounded-lg p-3">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-              {lookupError}
-            </div>
-          )}
-
-          {/* Lookup result */}
-          {lookupResult && (
-            <div className="space-y-4">
-              {/* Verdict banner */}
-              <div className={`flex items-center gap-3 p-4 rounded-lg border ${
-                lookupResult.found
-                  ? 'bg-red-500/10 border-red-500/40 text-red-500'
-                  : 'bg-green-500/10 border-green-500/40 text-green-600'
-              }`}>
-                {lookupResult.found
-                  ? <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-500" />
-                  : <CheckCircle2  className="w-5 h-5 flex-shrink-0 text-green-500" />}
-                <div>
-                  <p className="font-semibold text-sm">
-                    {lookupResult.found
-                      ? '⚠️ KNOWN THREAT INDICATOR — found in threat intelligence database'
-                      : '✅ Not found in threat intelligence database'}
-                  </p>
-                  {!lookupResult.found && (
-                    <p className="text-xs opacity-70 mt-0.5">
-                      This does not mean the indicator is safe — it may not yet be tracked.
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Indicator details */}
-              {lookupResult.found && lookupResult.indicator && (
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {[
-                    { label: 'Source',           value: lookupResult.indicator.source },
-                    ...(lookupResult.indicator.event_title ? [{ label: 'Threat-intel event', value: lookupResult.indicator.event_title }] : []),
-                    { label: 'Type',             value: `${TYPE_ICONS[lookupResult.indicator.indicator_type] || '❓'} ${lookupResult.indicator.indicator_type}` },
-                    { label: 'Confidence',       value: `${((lookupResult.indicator.confidence_score ?? 0) * 100).toFixed(0)}%` },
-                    { label: 'Malware family',   value: lookupResult.indicator.malware_family || '—' },
-                    { label: 'ATT&CK software',  value: lookupResult.indicator.attack_software ? `${lookupResult.indicator.attack_software_name} (${lookupResult.indicator.attack_software})` : '—' },
-                    { label: 'First Seen',       value: new Date(lookupResult.indicator.first_seen).toLocaleString() },
-                    { label: 'Last Seen',        value: new Date(lookupResult.indicator.last_seen).toLocaleString() },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="bg-dark-800/60 rounded-lg p-3">
-                      <p className="text-xs text-dark-400 mb-0.5">{label}</p>
-                      <p className="text-sm font-medium text-dark-100">{value}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {lookupResult.found && lookupResult.indicator?.techniques?.length > 0 && (
-                <div className="bg-dark-800/60 rounded-lg p-3">
-                  <p className="text-xs text-dark-400 mb-1.5">
-                    ATT&CK techniques ({lookupResult.indicator.techniques.length}){lookupResult.indicator.attack_software ? `, as MITRE documents for ${lookupResult.indicator.attack_software_name}` : ', named by the feed'}
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {lookupResult.indicator.techniques.map(t => (
-                      <a key={t.id} href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`} target="_blank" rel="noreferrer"
-                        className="text-[11px] px-1.5 py-0.5 rounded bg-dark-700/60 text-dark-200 hover:text-eagle-400" title={t.name}>
-                        <span className="font-mono">{t.id}</span> {t.name}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Internal asset match */}
-              {lookupResult.matched_internal_asset ? (
-                <div className="bg-red-500/10 border border-red-500/40 rounded-lg p-4">
-                  <p className="text-sm font-semibold text-red-500 mb-2 flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4" />
-                    ⚡ Matched Internal Asset — Immediate Triage Required
-                  </p>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                    {[
-                      { label: 'Hostname',       value: lookupResult.matched_internal_asset.hostname || '—' },
-                      { label: 'IP Address',     value: lookupResult.matched_internal_asset.ip_address },
-                      { label: 'Criticality',    value: `${lookupResult.matched_internal_asset.criticality_score}/10` },
-                      { label: 'Internet Facing',value: lookupResult.matched_internal_asset.is_internet_facing ? '⚠️ Yes' : 'No' },
-                    ].map(({ label, value }) => (
-                      <div key={label}>
-                        <p className="text-dark-400">{label}</p>
-                        <p className="text-dark-100 font-medium">{value}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-dark-800/40 border border-dark-700/40 rounded-lg p-3 text-xs text-dark-400">
-                  <CheckCircle2 className="w-4 h-4 inline mr-1.5 text-green-500" />
-                  No internal assets matched this indicator.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Quick reference */}
-          {!lookupResult && !lookupError && (
-            <div className="text-xs text-dark-500 space-y-1 border-t border-dark-700/40 pt-4">
-              <p className="font-medium text-dark-400">Example lookups:</p>
-              {[
-                '185.220.101.5  — Known Tor exit node / C2',
-                'malware.example.com  — Suspicious domain',
-                'CVE-2021-44228  — Log4Shell CVE (cross-referenced in CTI feed)',
-              ].map(ex => (
-                <p key={ex} className="font-mono">{ex}</p>
-              ))}
-            </div>
-          )}
+          <Pager page={page} totalPages={Math.ceil(total / PAGE_SIZE)} onChange={setPage} />
         </div>
       )}
+
+      {panelValue && <IndicatorPanel value={panelValue} onClose={() => setPanelValue(null)} />}
     </div>
   )
 }

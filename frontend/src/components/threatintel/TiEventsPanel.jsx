@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import client from '../../api/client'
 import { softwareFor, softwareUrl, techniqueUrl, useAttackCatalog } from './attackCatalog'
-import { alertLabel, renderDetail, SevBadge, timeAgo } from '../common/alertMeta'
+import { alertLabel, SevBadge } from '../common/alertMeta'
 
 const LEVELS = {
   high:   { label: 'High',   cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
@@ -509,54 +509,6 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
             load(); onChanged()
           }} />
       )}
-    </div>
-  )
-}
-
-// ── Matches: open threat-intel match alerts on this organisation's assets ──
-export function TiMatchesPanel({ showToast }) {
-  const [items, setItems] = useState(null)
-  useEffect(() => {
-    client.get('/events', { params: { event_type: 'cti_match', status: 'open', page_size: 200, sort: 'priority' } })
-      .then(r => setItems(r.data.items || []))
-      .catch(err => { showToast(errorText(err, 'Failed to load matches'), 'error'); setItems([]) })
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (items === null) {
-    return <div className="flex justify-center py-16"><div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" /></div>
-  }
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-dark-400">
-        Your assets that threat intelligence names: a public IP or hostname listed by a feed or event (possible compromise),
-        or software an event watches. Checked after every scan, inventory and SBOM, nightly against the feeds, and whenever an event changes.
-      </p>
-      <div className="glass-card overflow-hidden">
-        {items.length === 0 ? (
-          <div className="text-center py-16 text-dark-400">
-            <Crosshair className="w-12 h-12 mx-auto mb-3 opacity-20" />
-            <p className="font-medium">No matches</p>
-            <p className="text-sm mt-1">None of your assets' public IPs, hostnames or software appear in threat intel right now.</p>
-          </div>
-        ) : (
-          <table className="data-table">
-            <thead><tr><th>Severity</th><th>Match</th><th>Asset</th><th>Matched</th><th>Listed by</th><th>Since</th></tr></thead>
-            <tbody>
-              {items.map(e => (
-                <tr key={e.event_id}>
-                  <td><SevBadge sev={e.severity} /></td>
-                  <td className="text-sm text-dark-100">{alertLabel(e)}<p className="font-mono text-xs text-accent-cyan">{renderDetail(e)}</p></td>
-                  <td><Link to={`/inventory/${e.asset_id}`} className="text-sm text-eagle-400 hover:underline">{e.asset_hostname || e.asset_ip}</Link></td>
-                  <td className="font-mono text-xs text-dark-300">{e.details?.observed}</td>
-                  <td className="text-xs text-dark-300">{(e.details?.sources ?? []).join(', ')}</td>
-                  <td className="text-xs text-dark-400">{timeAgo(e.first_seen)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-      {items.length > 0 && <Link to="/alerts?view=threat_intel" className="text-sm text-eagle-400 hover:underline">Work them on the Alerts page →</Link>}
     </div>
   )
 }

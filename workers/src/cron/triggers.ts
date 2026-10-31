@@ -3,7 +3,7 @@ import { getDb } from '../db/client'
 import { runDriftAudit } from '../services/drift'
 import { savePostureSnapshot } from '../services/posture'
 import { purgeOldData } from '../services/retention'
-import { ingestAllFeeds } from '../services/cti'
+import { CTI_INGEST_LOCK } from '../services/cti'
 import { runAlertHygiene } from '../services/alertHygiene'
 
 // Maps cron expression to handler name for logging
@@ -30,8 +30,11 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
       }
 
       case 'cti-ingestion': {
-        await ingestAllFeeds(db, env.OTX_API_KEY, env.THREATFOX_API_KEY)
-        console.log('[cti-ingestion] CTI feeds ingested')
+        // Queued like "Update feeds now": one feed per queue job (services/cti.ts
+        // runIngestStep), since all of them in this run exceed the CPU limit.
+        await env.KV_CACHE.put(CTI_INGEST_LOCK, '1', { expirationTtl: 3600 })
+        await env.ADVISORY_QUEUE.send({ type: 'cti_ingest', triggeredBy: 'schedule' })
+        console.log('[cti-ingestion] CTI feed ingestion queued')
         break
       }
 

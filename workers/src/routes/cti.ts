@@ -8,6 +8,7 @@ import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } fro
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
+import { CTI_INGEST_LOCK, LAST_INGEST_KEY, type LastIngest } from '../services/cti'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
   ATTACK, buildMatrix, expandTechniques, type MatrixGroup, softwareName, softwareUsing, techniqueName, techniquesFor,
@@ -16,7 +17,21 @@ import {
 const app = new Hono<{ Bindings: Env }>()
 
 const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
-const INGEST_ROLES = ['tenant_superadmin', 'tenant_admin']
+// The feeds are shared by every tenant, so only the platform superadmin starts an early
+// run (staging has no crons, so this is how its feeds get loaded). Production loads them
+// nightly at INGEST_HOUR_UTC.
+const INGEST_ROLES = ['superadmin']
+const INGEST_HOUR_UTC = 22     // wrangler.toml "0 22 * * *" = 06:00 MYT
+
+/** The next nightly ingestion after `now` (exported for tests). */
+export function nextIngestAt(now: Date): Date {
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), INGEST_HOUR_UTC))
+  if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1)
+  return next
+}
+
+const OPEN = ['open', 'in_progress'] as const
+const NO_TENANT = '00000000-0000-0000-0000-000000000000'
 
 // The routes below are the global feeds (OTX, ThreatFox, CISA KEV). Attributes of
 // threat-intel events are served by routes/tiEvents.ts, scoped to who may see them.
@@ -59,6 +74,20 @@ function toSnake(row: typeof ctiIndicators.$inferSelect) {
   }
 }
 
+// Indicators linked to open match alerts on the user's assets (superadmins: any tenant).
+function matchedIndicatorIds(db: DB, user: { role: string; tenantId?: string | null }) {
+  return db
+    .select({ id: eventCtiIndicators.indicatorId })
+    .from(eventCtiIndicators)
+    .innerJoin(events, eq(events.eventId, eventCtiIndicators.eventId))
+    .innerJoin(assets, eq(assets.assetId, events.assetId))
+    .where(and(
+      eq(events.eventType, 'cti_match'),
+      inArray(events.status, [...OPEN]),
+      user.role === 'superadmin' ? undefined : eq(assets.tenantId, user.tenantId ?? NO_TENANT),
+    ))
+}
+
 // ── GET /indicators ──────────────────────────────────────────────
 app.get('/indicators', authMiddleware, async (c) => {
   try {
@@ -69,11 +98,14 @@ app.get('/indicators', authMiddleware, async (c) => {
     const offset   = (page - 1) * limit
     const type     = c.req.query('indicator_type') ?? c.req.query('type')
     const source   = c.req.query('source')
-    const search   = c.req.query('search')
+    const search   = (c.req.query('q') ?? c.req.query('search'))?.trim()
     const family   = c.req.query('family')?.trim()
     const technique = c.req.query('technique')?.trim().toUpperCase()
+    const matched  = c.req.query('matched') === 'true'
 
     const conditions = [FEED, ...attackConditions(family, technique)]
+    // Only indicators behind an open match alert on the user's own assets.
+    if (matched) conditions.push(inArray(ctiIndicators.indicatorId, matchedIndicatorIds(db, c.get('user'))))
     if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve' | 'software'))
     if (source) conditions.push(ilike(ctiIndicators.source, `%${source}%`))
     if (search) conditions.push(ilike(ctiIndicators.value, `%${search}%`))
@@ -101,9 +133,12 @@ app.get('/indicators', authMiddleware, async (c) => {
 app.get('/stats', authMiddleware, async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const isSuper = user.role === 'superadmin'
+    const ownTenant = user.tenantId ?? NO_TENANT
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
-    const [totalResult, bySource, byType, recent7d] = await Promise.all([
+    const [totalResult, bySource, byType, recent7d, matchRows, eventRows, lastIngest] = await Promise.all([
       db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(FEED),
       db
         .select({ source: ctiIndicators.source, count: sql<number>`count(*)::int` })
@@ -121,6 +156,32 @@ app.get('/stats', authMiddleware, async (c) => {
         .select({ count: sql<number>`count(*)::int` })
         .from(ctiIndicators)
         .where(and(FEED, gte(ctiIndicators.firstSeen, sevenDaysAgo))),
+      // Open threat-intel matches on the user's assets
+      db
+        .select({
+          open:   sql<number>`count(*)::int`,
+          high:   sql<number>`count(*) FILTER (WHERE ${events.severity} IN ('critical', 'high'))::int`,
+          assets: sql<number>`count(DISTINCT ${events.assetId})::int`,
+        })
+        .from(events)
+        .innerJoin(assets, eq(assets.assetId, events.assetId))
+        .where(and(
+          eq(events.eventType, 'cti_match'),
+          inArray(events.status, [...OPEN]),
+          isSuper ? undefined : eq(assets.tenantId, ownTenant),
+        )),
+      // Threat-intel events this user can see (own drafts and published shared ones)
+      db
+        .select({
+          total:     sql<number>`count(*)::int`,
+          published: sql<number>`count(*) FILTER (WHERE ${tiEvents.status} = 'published')::int`,
+        })
+        .from(tiEvents)
+        .where(isSuper ? undefined : or(
+          eq(tiEvents.tenantId, ownTenant),
+          and(eq(tiEvents.status, 'published'), inArray(tiEvents.distribution, ['all_tenants', 'platform'])),
+        )),
+      c.env.KV_CACHE.get<LastIngest>(LAST_INGEST_KEY, 'json').catch(() => null),
     ])
 
     const by_source: Record<string, number> = {}
@@ -134,6 +195,23 @@ app.get('/stats', authMiddleware, async (c) => {
       by_source,
       by_type,
       recent_7d: recent7d[0]?.count ?? 0,
+      matches: {
+        open:   matchRows[0]?.open ?? 0,
+        high:   matchRows[0]?.high ?? 0,
+        assets: matchRows[0]?.assets ?? 0,
+      },
+      ti_events: { total: eventRows[0]?.total ?? 0, published: eventRows[0]?.published ?? 0 },
+      // Feed health: each feed's count, and when it last loaded (null before the first
+      // recorded run). next_ingest_at is the nightly run (production; staging has no crons).
+      feeds: bySource.map((r) => ({
+        source:     r.source,
+        count:      r.count,
+        ok:         lastIngest?.feeds?.[r.source]?.ok ?? null,
+        last_ok_at: lastIngest?.feeds?.[r.source]?.last_ok_at ?? null,
+      })),
+      last_ingest_at: lastIngest?.at ?? null,
+      next_ingest_at: nextIngestAt(new Date()).toISOString(),
+      can_ingest: isSuper,
     })
   } catch (err) {
     console.error('cti GET /stats error:', err)
@@ -264,7 +342,10 @@ app.get('/lookup', authMiddleware, async (c) => {
     const indicator = hit?.indicator
 
     // Cross-reference against internal assets (IP match only)
-    let matched_internal_asset = null
+    let matched_internal_asset: {
+      asset_id: string; hostname: string | null; ip_address: string
+      criticality_score: number | null; is_internet_facing: boolean | null
+    } | null = null
     try {
       // IP is no longer unique across assets. Prefer the asset whose CURRENT
       // address row holds this IP, then the most recently scanned — deterministic.
@@ -305,6 +386,45 @@ app.get('/lookup', authMiddleware, async (c) => {
       // Non-IP values will not match asset IPs — expected
     }
 
+    // Every asset an open match alert ties to this value (IP, hostname, domain or watched
+    // software, as services/iocMatch.ts matched it), with the alert to open.
+    const matchRows = await db
+      .select({
+        assetId:          assets.assetId,
+        hostname:         assets.hostname,
+        ipAddress:        assets.ipAddress,
+        criticalityScore: assets.criticalityScore,
+        eventId:          events.eventId,
+        severity:         events.severity,
+        observed:         sql<string | null>`${events.details}->>'observed'`,
+        matchKind:        sql<string | null>`${events.details}->>'match_kind'`,
+      })
+      .from(events)
+      .innerJoin(assets, eq(assets.assetId, events.assetId))
+      .where(and(
+        eq(events.eventType, 'cti_match'),
+        inArray(events.status, [...OPEN]),
+        sql`lower(${events.details}->>'indicator_value') = lower(${value})`,
+        user.role === 'superadmin' ? undefined : eq(assets.tenantId, user.tenantId ?? NO_TENANT),
+      ))
+      .orderBy(desc(assets.criticalityScore))
+      .limit(50)
+    const matched_assets: Array<{
+      asset_id: string; hostname: string | null; ip_address: string; criticality_score: number | null
+      event_id: string | null; severity: string | null; observed: string | null; match_kind: string | null
+    }> = matchRows.map((r) => ({
+      asset_id: r.assetId, hostname: r.hostname, ip_address: r.ipAddress, criticality_score: r.criticalityScore,
+      event_id: r.eventId, severity: r.severity, observed: r.observed, match_kind: r.matchKind,
+    }))
+    // The asset using this IP when no alert names it (a private address, or not matched yet)
+    const byIp = matched_internal_asset
+    if (byIp && !matched_assets.some((m) => m.asset_id === byIp.asset_id)) {
+      matched_assets.push({
+        asset_id: byIp.asset_id, hostname: byIp.hostname, ip_address: byIp.ip_address,
+        criticality_score: byIp.criticality_score, event_id: null, severity: null, observed: value, match_kind: 'address',
+      })
+    }
+
     if (indicator) {
       return c.json({
         found: true,
@@ -315,10 +435,11 @@ app.get('/lookup', authMiddleware, async (c) => {
             .map((id) => ({ id, name: techniqueName(id) })),
         },
         matched_internal_asset,
+        matched_assets,
       })
     }
 
-    return c.json({ found: false, value, matched_internal_asset })
+    return c.json({ found: false, value, matched_internal_asset, matched_assets })
   } catch (err) {
     console.error('cti GET /lookup error:', err)
     return c.json({ detail: 'Lookup failed' }, 500)
@@ -389,7 +510,7 @@ app.get('/debug', authMiddleware, async (c) => {
 // ── POST /ingest ─────────────────────────────────────────────────
 app.post('/ingest', authMiddleware, requireRoles(...INGEST_ROLES), async (c) => {
   try {
-    const lockKey  = 'cti_ingest_lock'
+    const lockKey  = CTI_INGEST_LOCK
     const existing = await c.env.KV_CACHE.get(lockKey)
     if (existing) {
       return c.json({ message: 'CTI ingestion already running or recently completed', queued: false })
