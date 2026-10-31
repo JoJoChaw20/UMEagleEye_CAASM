@@ -350,7 +350,8 @@ def test_no_network_yet_waits_then_follows_wifi_when_it_connects():
     probe, clock = FakeProbe("127.0.0.1", ADAPTERS + [
         {"name": "Npcap Loopback Adapter", "description": "Adapter for loopback traffic capture", "ips": ["127.0.0.1"], "mac": None}]), Clock()
     chooser = InterfaceChooser(probe=probe, clock=clock)
-    assert chooser.refresh() is None and chooser.label == "waiting for a network connection"
+    assert chooser.refresh() is None
+    assert chooser.label == "waiting for a network connection (no route to the internet yet: the Wi-Fi or cable is not connected)"
     probe.route_ip = "192.168.100.71"
     clock.t = 31
     assert chooser.refresh() == "Wi-Fi"
@@ -697,7 +698,9 @@ def test_when_wifi_drops_it_waits_instead_of_listening_on_the_gns3_loopback():
     assert chooser.refresh() == "Wi-Fi"
     probe.route_ip = "142.19.0.1"
     clock.t = 31
-    assert chooser.refresh() is None and chooser.label == "waiting for a network connection"
+    assert chooser.refresh() is None
+    assert chooser.label == ("waiting for a network connection "
+                             "(Windows routes through the virtual adapter Ethernet 2 (142.19.0.1))")
     probe.route_ip = "192.168.100.71"
     clock.t = 62
     assert chooser.refresh() == "Wi-Fi"
@@ -749,3 +752,25 @@ def test_the_network_is_reread_only_when_the_address_changes_or_after_ten_minute
                                   "mac": "aa:bb:cc:dd:ee:02"}]
     chooser.refresh()
     assert reads[-1] == "10.179.37.235"
+
+
+# ── 2.3.1: why it waits; a VM's own card is its real network ──
+def test_waiting_says_when_npcap_has_no_adapter_for_the_route():
+    chooser = InterfaceChooser(probe=FakeProbe("10.8.0.5"))
+    assert chooser.refresh() is None
+    assert chooser.label == ("waiting for a network connection "
+                             "(the route goes through 10.8.0.5, which no adapter Npcap can listen on has)")
+
+
+def test_inside_a_hyper_v_vm_its_own_card_is_listened_on():
+    guest = [{"name": "Ethernet", "description": "Microsoft Hyper-V Network Adapter", "ips": ["172.20.1.15"],
+              "mac": "00:15:5d:01:02:03"}]
+    chooser = InterfaceChooser(probe=FakeProbe("172.20.1.15", guest))
+    assert chooser.refresh() == "Ethernet"
+
+
+def test_the_hosts_virtual_switches_are_still_skipped():
+    host = ADAPTERS + [{"name": "vEthernet (Default Switch)", "description": "Hyper-V Virtual Ethernet Adapter",
+                        "ips": ["172.31.48.1"], "mac": "00:15:5d:aa:bb:cc"}]
+    for route in ("172.31.48.1", "192.168.217.1"):           # Hyper-V switch, VMware VMnet8
+        assert InterfaceChooser(probe=FakeProbe(route, host)).refresh() is None

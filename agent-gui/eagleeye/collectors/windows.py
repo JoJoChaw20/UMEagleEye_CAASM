@@ -21,8 +21,11 @@ _LAPTOP = {8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32}
 _DESKTOP = {3, 4, 5, 6, 7, 13, 15, 16, 24, 35, 36}
 _SERVER = {17, 23, 28, 29}
 _VIRTUAL_MODEL = re.compile(r"virtual machine|vmware|virtualbox|kvm|qemu|hvm domu|parallels", re.I)
+# The host's adapters for VMs and tunnels. A Hyper-V *guest's* own card ("Microsoft Hyper-V
+# Network Adapter") is that VM's real network, so only the host's "Hyper-V Virtual
+# Ethernet Adapter" (behind "vEthernet (...)") counts.
 _VIRTUAL_NIC = re.compile(
-    r"hyper-v|vmware|virtualbox|vethernet|wsl|tap-|wireguard|wintun|loopback|npcap|tunnel|teredo|isatap|"
+    r"hyper-v virtual|vmware|virtualbox|vethernet|wsl|tap-|wireguard|wintun|loopback|npcap|tunnel|teredo|isatap|"
     r"zerotier|tailscale|docker|wan miniport|vpn|fortinet|cisco anyconnect",
     re.I,
 )

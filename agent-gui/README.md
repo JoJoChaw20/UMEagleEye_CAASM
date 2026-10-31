@@ -102,16 +102,32 @@ system tray when the window is closed (right-click the tray icon to quit).
 | Page | What it does |
 |---|---|
 | (first start) | Shows the data-collection notice with the choices below; the agent does not run until it is accepted. The acceptance date and notice version are saved (`consent_version`, `consent_at`); a new notice version is shown again |
-| Status | Connection, last heartbeat and where passive listening listens, what is running now, **Scan now** for a network, **Collect inventory now**, recent activity |
+| Status | Connection, last heartbeat, where passive listening listens (or why it is waiting), whether scans from this computer are allowed, what is running now, **Scan now** for a network, **Collect inventory now**, **Build SBOM now**, recent activity (with who started each run: dashboard, this computer, automatic, or "New device found") |
 | Settings | Server URL, agent ID, API key (with **Test connection**), timing, passive listening, SNMPv3. Saving restarts the agent; saving new server details starts it |
-| Privacy | Inventory on/off, interval, the two personal-data options, **Preview what would be sent** (collects and shows the inventory without sending it), the notice |
+| Privacy | Inventory on/off, interval, the two personal-data options, **Preview what would be sent** (collects and shows the inventory without sending it), SBOM on/off and extra folders, the notice |
 | Dependencies | Nmap, Npcap, Python modules and Administrator rights; download buttons for Nmap and Npcap; **Restart as Administrator** |
 | Log | Live log; also written to `%APPDATA%\EagleEye\logs\agent.log` (rotated, 5 x 1 MB) |
 
 **Scan now.** Scans started on the machine ask the server for a scan record first (`POST /scans/agent-start`), so they
 appear in the dashboard and upload exactly like dashboard scans. When the agent starts it calls `POST /scans/agent-reset`,
 and the server marks any of its active scans still "running" from an earlier run (app closed or crashed mid-scan) as failed,
-"Interrupted".
+"Interrupted". A tenant's admin can turn scans started on agent computers off (dashboard Agents page > Scan Policy; off
+by default for new tenants). Every heartbeat answer carries that policy (`policy.local_scans`): while it is off, **Scan
+now** is greyed out with the reason, the Status page says so, schedules pause (they are not marked as run), and the
+server refuses `agent-start` anyway for older agents. Scans the dashboard asks for always run. The buttons are
+unavailable while that kind of run is busy, so repeated clicks start one run.
+
+**What the dashboard can ask for.** The agent polls `GET /scans/pending` every poll interval and runs, one of each
+kind at a time:
+| Job | Started by | What the agent does |
+|---|---|---|
+| active scan | **New scan** on the dashboard | Nmap (or the built-in sweep) on the range, SNMPv3 if set, upload |
+| active scan of one IP | the server, when passive listening heard a device for the first time and the tenant turned on **Investigate new devices automatically** | the same scan on that address only, a few minutes later; the server puts the open ports and OS guess on the device's new-device alert; recent activity shows "New device found" |
+| inventory | **Collect inventory** on the asset page | collects and uploads this computer's inventory now; any inventory upload completes the job |
+| SBOM | **Run SBOM scan** on the asset or SBOM page | a full SBOM run |
+
+An automatic inventory that fails (typically at start-up, before Wi-Fi is up) is tried again after 5 minutes, then
+10, 20... up to an hour, until one succeeds.
 
 **Local schedules (switched off for now).** `schedule.py` can scan a network daily at a set time or every N hours, with
 missed runs collapsed into one. Editing schedules crashed the desktop app under PySide6 6.12, so `SCHEDULES_ENABLED` in
@@ -142,12 +158,17 @@ installed for all users of the machine.
 **Never collected:** files or documents, browsing history, passwords or credentials, keystrokes, screenshots, email
 or messages, location, and the contents of network traffic. For ports that only listen on the machine itself
 (`127.0.0.1` / `::1`), which program owns them is not sent. Passive mode reads only broadcast discovery packets
-(ARP, mDNS, NetBIOS, DHCP) to learn device names and addresses, and ignores the computer's own packets.
+(ARP, mDNS, NetBIOS, DHCP, SSDP/UPnP) to learn device names and addresses, and ignores the computer's own packets.
 
 **Which network passive mode listens on:** with the interface left empty ("automatic"), the adapter the operating
 system uses to reach the internet, re-checked every 30 seconds (so it follows Wi-Fi connecting after sign-in, a
 switch to a cable, or a VPN, and never sits on a virtual adapter such as a GNS3/VMware loopback). The Status page
-shows the choice, e.g. "Wi-Fi (192.168.1.20)". A name typed in Settings is used as it is.
+shows the choice, e.g. "Wi-Fi (192.168.1.20)", or why it is waiting: no route yet (Wi-Fi not connected), a route
+through an address no Npcap adapter has, or Windows routing through a virtual adapter. Virtual means the *host's*
+adapters for virtual machines and tunnels (KM-TEST loopback, VMware VMnet, Hyper-V vEthernet, VirtualBox host-only,
+WSL, Docker); inside a VM its own card (e.g. "Microsoft Hyper-V Network Adapter") is its real network. A name typed
+in Settings is used as it is. The same rule picks the computer's own address in the inventory (Windows and Linux):
+never one on a virtual adapter, which before Wi-Fi was up once moved a laptop to its GNS3 loopback address.
 
 **Notice and choice:** the desktop app shows this notice before the agent first runs, with the personal-data options
 off, and the choices can be changed at any time on the Privacy page.
@@ -238,7 +259,11 @@ they matched, so the Nmap parser tests in `tests/test_scan.py` now carry that gu
   (`sbom-cache-<instance>.json` for EAGLEEYE_CONFIG instances); another Syft version or SBOM setting starts it
   over. Requests never move the daily or weekly times; one made during a daily run starts a full run after it,
   one made during a full run is answered by that run. Uploads after waking are retried for a few minutes.
+- Syft keeps one version per package name from a Yarn lockfile and picks a different one each listing (pgAdmin 4's
+  `web/yarn.lock` lists react 18.3.1 and 19.2.4). The agent re-reads every `yarn.lock` Syft used and adds the
+  versions it left out (2.3.1; 141 on a test PC), so CVEs of either version are found and do not come and go.
 - Failed scans always carry a reason, including passive scans on an agent that is not in passive mode.
-- Uploads are retried (network errors and 5xx) before a scan is marked failed.
+- Uploads are retried (network errors and 5xx) before a scan is marked failed. When the server answered 5xx every
+  time, the reason says "server error (HTTP 500) after 3 tries", not "could not reach the server".
 - SNMP polling runs up to 8 hosts in parallel; sniffers can be stopped cleanly.
 - The default gateway lookup also works on macOS.

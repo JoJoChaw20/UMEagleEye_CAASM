@@ -4,7 +4,8 @@ notice is shown again."""
 
 from __future__ import annotations
 
-CONSENT_VERSION = 3     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive)
+CONSENT_VERSION = 4     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
+                        # 4: automatic scan of newly heard devices (tenant setting), dashboard inventory requests
 
 NOTICE_TITLE = "What this agent collects"
 
@@ -15,9 +16,13 @@ EagleEye server only, where your organisation's administrators can see it. Nothi
 sent to anyone else.</p>
 
 <h3>Network discovery</h3>
-<p>When an administrator starts a scan (or a schedule you set runs), the agent scans the
-network range you choose and records the devices it finds: IP and MAC addresses, device
-names, open ports, the services behind them, and an operating-system guess.</p>
+<p>When an administrator starts a scan from the dashboard, or you start one here (if your
+administrator allows scans started on this computer), the agent scans the chosen network
+range and records the devices it finds: IP and MAC addresses, device names, open ports, the
+services behind them, and an operating-system guess.</p>
+<p>If your organisation has turned it on, a device that passive listening hears for the
+first time is scanned the same way a few minutes later, on that device's own address only,
+so administrators can see what it is.</p>
 
 <h3>Passive listening (optional, off by default)</h3>
 <p>Reads only broadcast discovery messages (ARP, mDNS, NetBIOS, DHCP, SSDP/UPnP) to learn device
@@ -33,7 +38,8 @@ software one user installed only for themselves, and the names of the administra
 accounts.</p>
 
 <h3>Software packages (SBOM, on by default)</h3>
-<p>Once a day, and when an administrator asks, the agent lists the software packages
+<p>Every day (only the folders that changed), once a week in full, and when you or an
+administrator ask, the agent lists the software packages
 installed in the folders programs install to (on Windows: Program Files and ProgramData;
 on Linux: the system, not the home folders), plus any folder you add, and checks them
 for known vulnerabilities on this computer. It sends each package's name, version,
@@ -46,7 +52,8 @@ screenshots, email or messages, location, or the contents of network traffic.</p
 
 <h3>Your choices</h3>
 <p>You can change these choices at any time on the Privacy page, preview exactly what
-would be sent, or stop the agent. An administrator can delete this computer's inventory
+would be sent, or stop the agent. An administrator can ask for a fresh inventory from the
+dashboard, and can delete this computer's inventory
 from the server with <i>Clear inventory</i> on its asset page. Only the latest inventory
 is kept; each collection replaces the previous one.</p>
 """

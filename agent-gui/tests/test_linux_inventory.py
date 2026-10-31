@@ -273,3 +273,10 @@ def test_long_package_versions_are_trimmed_to_the_server_limit():
     sw = inv(commands={("dpkg-query", "-W", "-f", "${Package}\t${Version}\t${Maintainer}\t${Architecture}\t${db:Status-Status}\n"): dpkg,
                        ("snap", "list"): None})["software"]
     assert len(sw[0]["version"]) == 100
+
+
+def test_primary_ip_is_never_a_virtual_interface(monkeypatch):
+    # Same rule as Windows (2.3.1): routed through docker0 before the network is up.
+    assert inv()["network"]["primary_ip"] == "192.168.150.128"
+    monkeypatch.setattr(FakeSystem, "primary_ip", lambda self: "172.17.0.1")
+    assert inv()["network"]["primary_ip"] == "192.168.150.128"      # the first physical NIC instead

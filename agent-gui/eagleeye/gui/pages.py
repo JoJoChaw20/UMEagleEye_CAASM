@@ -124,10 +124,14 @@ class StatusPage(QWidget):
         for w in (self.server, self.agent):
             w.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.passive_on = QLabel()
+        self.passive_on.setWordWrap(True)
+        self.local_scans = QLabel()
+        self.local_scans.setWordWrap(True)
         form.addRow("Server", self.server)
         form.addRow("Agent ID", self.agent)
         form.addRow("Last heartbeat", self.heartbeat)
         form.addRow("Passive listening", self.passive_on)
+        form.addRow("Scans from here", self.local_scans)
 
         activity = QGroupBox("Now")
         a = QVBoxLayout(activity)
@@ -166,7 +170,8 @@ class StatusPage(QWidget):
         row2.addStretch(1)
         g.addLayout(row2)
         g.addWidget(_hint("Scans started here are recorded in the dashboard like the ones started there. "
-                          "The agent must be running."))
+                          "Your administrator can turn them off; the dashboard can still ask this agent to scan, "
+                          "to collect this computer's inventory or to build its SBOM. The agent must be running."))
 
         recent = QGroupBox("Recent activity")
         r = QVBoxLayout(recent)
@@ -207,14 +212,10 @@ class StatusPage(QWidget):
             self.stage.setText("Collecting this computer's inventory...")
 
     def _sbom_now(self) -> None:
+        # The button is unavailable while any SBOM runs (refresh), so this always starts one.
         svc = self.win.controller.service
         if svc is not None:
-            if svc.sbom_running and svc.sbom_mode == "full":
-                self.stage.setText("A full SBOM is already running; its result will appear when it finishes.")
-            elif svc.sbom_running:
-                self.stage.setText("Queued: a full SBOM starts when the current daily SBOM finishes.")
-            else:
-                self.stage.setText("Building this computer's full SBOM (this can take 10-30 minutes)...")
+            self.stage.setText("Building this computer's full SBOM (this can take 10-30 minutes)...")
             svc.request_sbom()
 
     def on_event(self, event: PipelineEvent) -> None:
@@ -266,6 +267,8 @@ class StatusPage(QWidget):
         self.current.setText(" | ".join(busy_bits) if busy_bits else ("Idle" if svc else "Stopped"))
         self.busy.setVisible(bool(busy_bits))
         local_ok = svc is None or svc.local_scans_allowed
+        self.local_scans.setText("-" if svc is None else "allowed" if local_ok else
+                                 "turned off by your administrator: scans are started from the dashboard")
         self.scan_btn.setEnabled(svc is not None and local_ok and not svc.active_running)
         self.scan_btn.setToolTip("" if local_ok else "Your administrator has turned off scans started on this "
                                  "computer. Active scans are started from the EagleEye dashboard.")
@@ -365,7 +368,8 @@ class SchedulesPage(QWidget):
         v = QVBoxLayout(box)
         v.addWidget(_hint("Active scans this agent runs by itself. Administrators can still start scans from the "
                           "dashboard. Only one active scan runs at a time; a schedule that comes due during another "
-                          "scan waits for it."))
+                          "scan waits for it. Schedules pause while your administrator has turned off scans started "
+                          "on this computer, and run again when they allow them."))
         self.table = _table(["Network", "When", "Next run", "Status"])
         self.table.setMinimumHeight(240)
         self.table.doubleClicked.connect(lambda _: self._edit())
@@ -657,7 +661,10 @@ class PrivacyPage(QWidget):
         row.addWidget(self.preview_btn)
         row.addWidget(self.result, 1)
         f.addRow(row)
-        f.addRow(_hint("The preview collects the inventory on this computer and shows it. Nothing is sent."))
+        f.addRow(_hint("Also collected when an administrator asks from the dashboard (Collect inventory). A "
+                       "collection that fails, for example before the network is up after start-up, is tried "
+                       "again a few minutes later. The preview collects the inventory on this computer and "
+                       "shows it. Nothing is sent."))
 
         sb = QGroupBox("Software packages (SBOM)")
         sf = QFormLayout(sb)
@@ -678,8 +685,10 @@ class PrivacyPage(QWidget):
         save_sbom.setProperty("role", "primary")
         save_sbom.clicked.connect(self._save)
         sf.addRow(save_sbom)
-        sf.addRow(_hint("Runs once a day and when an administrator asks from the dashboard. Uses Syft and Grype "
-                        "(see Dependencies). Only package names, versions and licences are sent; no files."))
+        sf.addRow(_hint("Every day the agent lists again only the folders that changed; once a week, and whenever "
+                        "you or an administrator ask (Build SBOM now, or Run SBOM scan on the dashboard), it lists "
+                        "every folder. Uses Syft and Grype (see Dependencies). Only package names, versions and "
+                        "licences are sent; no files or file paths."))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from .. import VERSION
 from ..netinfo import local_ip
-from .windows import _mac, _s, form_factor
+from .windows import _mac, _s, form_factor, primary_ip
 
 DMI = "/sys/class/dmi/id"
 _VIRTUAL_NIC = re.compile(r"^(lo|docker\d*|veth|br-|virbr|vmnet|vboxnet|tun|tap|wg|zt|tailscale|cni|flannel|vxlan|kube|lxc|lxd|podman|dummy|bond|team|sit|ip6tnl|gre)", re.I)
@@ -469,6 +469,7 @@ def build_inventory(sys_: System, user_software: bool = False, admin_names: bool
             unique.append(app)
     unique.sort(key=lambda a: (a["name"].lower(), a["version"] or ""))
 
+    interfaces = section("interfaces", lambda: _interfaces(sys_), [])
     return {
         "schema": 1,
         "platform": "linux",
@@ -493,8 +494,9 @@ def build_inventory(sys_: System, user_software: bool = False, admin_names: bool
             "local_admin_count": len(admins),
         },
         "network": {
-            "primary_ip": sys_.primary_ip(),
-            "interfaces": section("interfaces", lambda: _interfaces(sys_), []),
+            # Not an address on a virtual interface (docker0, virbr0, a tap): same rule as Windows.
+            "primary_ip": primary_ip(sys_.primary_ip(), interfaces),
+            "interfaces": interfaces,
             "listening": listening,
         },
         "software": unique,
