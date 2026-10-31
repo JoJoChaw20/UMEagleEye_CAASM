@@ -434,6 +434,8 @@ app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), as
     const { sbomId } = c.req.param()
     if (!await visibleSbom(db, c.get('user'), sbomId)) return c.json({ detail: 'SBOM not found' }, 404)
     const limit = Math.min(1000, Math.max(1, parseInt(c.req.query('limit') ?? '500')))
+    // Paging (the SBOM page's computer panel shows 50 at a time); page 1 when absent
+    const page = Math.max(1, parseInt(c.req.query('page') ?? '1') || 1)
     const search = c.req.query('search')
     const pm = c.req.query('package_manager')
 
@@ -443,7 +445,8 @@ app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), as
     if (search) conditions.push(ilike(dependencies.name, `%${search}%`))
 
     const [rows, cnt, pmRows] = await Promise.all([
-      db.select().from(dependencies).where(and(...conditions)).orderBy(dependencies.name).limit(limit),
+      db.select().from(dependencies).where(and(...conditions))
+        .orderBy(dependencies.name, dependencies.version, dependencies.dependencyId).limit(limit).offset((page - 1) * limit),
       db.select({ n: count() }).from(dependencies).where(and(...conditions)),
       // Every package manager in this SBOM (not just the loaded page), for the filter
       db.select({ pm: dependencies.packageManager, n: count() }).from(dependencies)

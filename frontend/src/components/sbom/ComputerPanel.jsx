@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { Search, Download, ExternalLink } from 'lucide-react'
 import client from '../../api/client'
 import SbomRunNote from '../common/SbomRunNote'
-import { SidePanel, Spinner } from '../common/PageParts'
+import { SidePanel, Spinner, Pager } from '../common/PageParts'
 
-const DEP_LIMIT = 1000   // the API's maximum per request
+const PAGE_SIZE = 50
 
 const PM_LABEL = {
   pip: 'pip (Python)', npm: 'npm (Node)', maven: 'Maven (Java)', apk: 'apk (Alpine)', deb: 'deb (Debian)',
@@ -22,6 +22,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
   const [counts, setCounts] = useState({ all: 0, matching: 0 })
   const [search, setSearch] = useState('')
   const [pm, setPm] = useState('')
+  const [page, setPage] = useState(1)
   const request = useRef(0)
   const sbomId = sbom?.sbom_id
 
@@ -31,7 +32,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
     const t = setTimeout(async () => {
       try {
         const res = await client.get(`/sboms/${sbomId}/dependencies`, {
-          params: { limit: DEP_LIMIT, ...(search ? { search } : {}), ...(pm ? { package_manager: pm } : {}) },
+          params: { limit: PAGE_SIZE, page, ...(search ? { search } : {}), ...(pm ? { package_manager: pm } : {}) },
         })
         if (id !== request.current) return       // a newer request was made meanwhile
         setDeps(res.data.items || [])
@@ -42,7 +43,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
       }
     }, search ? 300 : 0)
     return () => clearTimeout(t)
-  }, [sbomId, search, pm])
+  }, [sbomId, search, pm, page])
 
   const name = computer.hostname || computer.ip_address
   return (
@@ -91,15 +92,15 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
               <h3 className="text-sm font-semibold text-dark-200 mr-1">{counts.all.toLocaleString()} packages</h3>
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-dark-400" />
-                <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter packages…"
+                <input type="text" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Filter packages…"
                   aria-label="Filter packages" className="input-field text-xs pl-7 py-1 w-48" />
               </div>
             </div>
             {pms.length > 0 && (
               <div className="flex flex-wrap gap-1" role="group" aria-label="Package manager">
-                <button onClick={() => setPm('')} className={`text-xs px-2 py-0.5 rounded-full border ${!pm ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>All</button>
+                <button onClick={() => { setPm(''); setPage(1) }} className={`text-xs px-2 py-0.5 rounded-full border ${!pm ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>All</button>
                 {pms.map(({ package_manager: p, count }) => (
-                  <button key={p} onClick={() => setPm(p)} aria-pressed={pm === p}
+                  <button key={p} onClick={() => { setPm(p); setPage(1) }} aria-pressed={pm === p}
                     className={`text-xs px-2 py-0.5 rounded-full border ${pm === p ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
                     {pmLabel(p)} <span className="text-dark-500">{count}</span>
                   </button>
@@ -107,8 +108,9 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
               </div>
             )}
             <p className="text-xs text-dark-500">
-              Showing {deps?.length ?? 0} of {counts.matching.toLocaleString()}
-              {counts.matching > (deps?.length ?? 0) && ` (first ${DEP_LIMIT}; type to search all)`}
+              {counts.matching > 0
+                ? `${((page - 1) * PAGE_SIZE + 1).toLocaleString()}–${Math.min(page * PAGE_SIZE, counts.matching).toLocaleString()} of ${counts.matching.toLocaleString()}${search || pm ? ' matching' : ''}`
+                : 'No packages'}
             </p>
             {deps === null ? <Spinner className="py-8" /> : (
               <div className="rounded border border-dark-700/50 overflow-x-auto">
@@ -139,6 +141,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
                 </table>
               </div>
             )}
+            <Pager page={page} totalPages={Math.ceil(counts.matching / PAGE_SIZE)} onChange={setPage} />
           </div>
         </>
       )}
