@@ -793,7 +793,10 @@ def run_grype(grype: str, doc: dict[str, Any], runner: Optional[Callable[[list[s
         sbom_path = Path(tmp) / "sbom.json"
         out_path = Path(tmp) / "grype.json"
         sbom_path.write_text(json.dumps(doc), encoding="utf-8")
-        cmd = [grype, f"sbom:{sbom_path}", "-o", f"json={out_path}", "-q"]
+        # Not -q: it hides Grype's own error lines too, and a failure then said only "exited
+        # with code 1" (Ubuntu VM, 1 Nov: "database or disk is full" while unpacking its
+        # first database). Without a terminal Grype writes just its log lines to stderr.
+        cmd = [grype, f"sbom:{sbom_path}", "-o", f"json={out_path}"]
         if runner:
             return json.loads(runner(cmd, GRYPE_TIMEOUT))
         _run(cmd, GRYPE_TIMEOUT, cancelled)
