@@ -1,10 +1,8 @@
 # EagleEye agent as a Linux service (systemd): starts at boot, before anyone logs in,
 # restarts after a crash, logs to the journal (journalctl -u eagleeye).
 #
-# Install (README "Running as a service on Linux"): replace @AGENT_DIR@ with the folder
-# holding eagleeye/ and .venv/, e.g.
-#   sudo sed -e "s#@AGENT_DIR@#$PWD#g" -e "s/\r$//" packaging/eagleeye.service | sudo tee /etc/systemd/system/eagleeye.service
-#   sudo systemctl daemon-reload && sudo systemctl enable --now eagleeye
+# Install: see the agent README, "Running as a service on Linux". Its sed command puts
+# the agent's folder (the one holding eagleeye/ and .venv/) into the lines below.
 #
 # Settings come from the saved config (sudo ... -m eagleeye config init ...), not from
 # flags here: change them with config init, then systemctl restart eagleeye.
