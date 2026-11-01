@@ -242,5 +242,29 @@ console.log('\n=== batched plan: 100 hosts (in-memory, no DB) ===')
   check('HSRP: it has the real MAC once Nmap saw it', macs[macs.length - 1], 'c4:01:5b:8c:00:00')
 }
 
+// ── A computer with an agent keeps its inventory's address (laptop seen at 142.19.0.1, 1 Nov) ──
+{
+  const prefetch = (agentManaged: boolean) => ({
+    addresses: [
+      { addressId: 'a-home', assetId: 'LAPTOP', networkKey: '192.168.100.0/24', ipAddress: '192.168.100.71', macAddress: '14:13:33:c3:f6:03', deviceType: 'workstation', lastSeen: 2, assetCreatedAt: 1 },
+      { addressId: 'a-lab', assetId: 'LAPTOP', networkKey: '142.19.0.0/23', ipAddress: '142.19.0.1', macAddress: '02:00:4c:4f:4f:50', deviceType: 'workstation', lastSeen: 1, assetCreatedAt: 1 },
+    ],
+    assets: [{ assetId: 'LAPTOP', deviceType: 'workstation', hostKey: null, osInfo: {}, hostname: 'JoJochaw', owner: null,
+      hardwareVendor: null, macAddress: '14:13:33:c3:f6:03', source: 'agent', hasBaseline: false, agentManaged }],
+  })
+  const lab: PlanHost = { ip: '142.19.0.1', rawMac: '02:00:4c:4f:4f:50', hostname: null, hostKeyRaw: null, deviceType: 'unknown',
+    observedOsInfo: {}, ports: [], hardwareVendor: null, internetFacing: false, isPassive: false, tenantId: 't1' }
+  const setOf = (agentManaged: boolean) => {
+    const plan = planIngest([lab], prefetch(agentManaged) as never, { networkKeyFor: () => '142.19.0.0/23' })
+    const op = plan.perHost[0]!.ops.find(o => o.k === 'updateAsset') as Extract<IngestOp, { k: 'updateAsset' }> | undefined
+    return { assetId: plan.perHost[0]!.assetId, set: op?.set ?? {} }
+  }
+  const managed = setOf(true)
+  check('agent computer: the lab address is matched to it', managed.assetId, 'LAPTOP')
+  check('agent computer: its main IP and MAC are left alone', ['ipAddress' in managed.set, 'macAddress' in managed.set], [false, false])
+  const plain = setOf(false)
+  check('a device without an agent still moves to where it was seen', [plain.assetId, plain.set.ipAddress], ['LAPTOP', '142.19.0.1'])
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

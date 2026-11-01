@@ -50,6 +50,7 @@ export interface PrefetchAsset {
   baseline?: AssetBaseline | null            // to complete a passive-captured baseline
   internetFacingOverride?: boolean | null    // analyst-confirmed exposure wins over inference
   agentRole?: string | null                  // OS role the machine's agent reported (criticality v2)
+  agentManaged?: boolean                     // has an agent inventory: its main IP/MAC come from that
 }
 export interface IdentityPrefetch {
   addresses: PrefetchAddress[]
@@ -124,6 +125,7 @@ interface MutAsset {
   baseline?: AssetBaseline | null
   internetFacingOverride?: boolean | null
   agentRole?: string | null
+  agentManaged?: boolean
 }
 
 /**
@@ -276,9 +278,11 @@ export function planIngest(
       }, model)
 
       const set: Record<string, unknown> = {
-        ipAddress: host.ip,
+        // A computer with an agent keeps the address and MAC its inventory reports: a scan
+        // on another of its networks (the GNS3 loopback 142.19.0.1, a VMware adapter) is
+        // recorded as one of its addresses, but must not move the asset there (1 Nov).
+        ...(st.agentManaged ? {} : { ipAddress: host.ip, macAddress: newMac }),
         hostname: newHostname,
-        macAddress: newMac,
         hostKey: newHostKey,
         hardwareVendor: newVendor,
         osInfo: merged,

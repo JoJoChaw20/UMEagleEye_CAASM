@@ -414,6 +414,7 @@ export async function prefetchIdentity(
     internetFacingOverride: assets.internetFacingOverride,
     // Only the role is needed from the inventory blob (criticality v2).
     agentRole: sql<string | null>`${assets.endpointInventory}->'os'->>'role'`,
+    agentManaged: sql<boolean>`(${assets.inventoryCollectedAt} IS NOT NULL)`,
   }
   const toMs = (v: unknown): number => (v ? new Date(v as string | Date).getTime() : 0)
   const absorb = (r: Record<string, unknown>) => {
@@ -447,6 +448,7 @@ export async function prefetchIdentity(
         baseline: (r.baselineState as AssetBaseline | null) ?? null,
         internetFacingOverride: (r.internetFacingOverride as boolean | null) ?? null,
         agentRole: (r.agentRole as string | null) ?? null,
+        agentManaged: r.agentManaged === true,
       })
     }
   }

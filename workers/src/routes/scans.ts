@@ -1305,9 +1305,9 @@ Example:
           renamedBaseline = { ...(renamedBaseline ?? existingBaseline), ports: p.ports, ports_known: true }
         }
         await db.update(assets).set({
-          ipAddress: p.ip,
+          // A computer with an agent keeps the address and MAC its inventory reports.
+          ...(existing?.inventoryCollectedAt ? {} : { ipAddress: p.ip, macAddress: mac ?? existing?.macAddress ?? null }),
           hostname: slowHostname,
-          macAddress: mac ?? existing?.macAddress ?? null,
           hostKey: existing?.hostKey ?? resolution.hostKey ?? null,
           hardwareVendor: p.hardwareVendor ?? existing?.hardwareVendor ?? null,
           osInfo: merged,
