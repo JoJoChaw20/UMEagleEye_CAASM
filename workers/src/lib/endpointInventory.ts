@@ -5,7 +5,7 @@
  * which asset that machine is (binding), store the facts, and sync the installed
  * software list. Tested by scripts/endpoint-inventory-demo.ts.
  */
-import { classifyMac, sanitizeHostKey } from './identity'
+import { addressesToEnd, classifyMac, identityMac, sanitizeHostKey } from './identity'
 import { differentHardware, physicalMacs } from './machineIdentity'
 
 // ── Payload (validated by the route's zod schema) ────────────────
@@ -50,7 +50,7 @@ export function primaryMac(inv: InventoryPayload): string | null {
   const primary = inventoryIps(inv)[0]
   for (const nic of inv.network.interfaces ?? []) {
     if (primary && (nic.ipv4 ?? []).includes(primary)) {
-      const { mac } = classifyMac(nic.mac)
+      const { mac } = identityMac(nic.mac)      // a shared virtual MAC identifies no machine
       if (mac) return mac
     }
   }
@@ -228,15 +228,15 @@ export function planAgentAddress(
 ): AgentAddressOp[] {
   const mine = current.filter(r => r.assetId === assetId)
   const here = mine.find(r => r.ipAddress === ip && (r.networkKey === networkKey || r.networkKey === null))
-  if (here) return [{ k: 'refresh', addressId: here.addressId, macAddress: here.macAddress ?? mac, networkKey: here.networkKey ?? networkKey }]
-  const ops: AgentAddressOp[] = []
-  if (networkKey !== null) {
-    for (const r of mine) if (r.networkKey === networkKey) ops.push({ k: 'end', addressId: r.addressId })
-    for (const r of current) {
-      if (r.assetId !== assetId && r.networkKey === networkKey && r.ipAddress === ip) ops.push({ k: 'end', addressId: r.addressId })
-    }
-  }
-  ops.push({ k: 'insert', networkKey, ipAddress: ip, macAddress: mac })
+  // Another device on this network and IP, and this machine's same-MAC addresses on other
+  // networks (it moved): lib/identity.ts addressesToEnd. A new IP on this network also
+  // ends this machine's old one (DHCP).
+  const ends = new Set(addressesToEnd(current, { assetId, networkKey, ip, mac, keepAddressId: here?.addressId ?? null }))
+  if (!here && networkKey !== null) for (const r of mine) if (r.networkKey === networkKey) ends.add(r.addressId)
+  const ops: AgentAddressOp[] = [...ends].map(addressId => ({ k: 'end' as const, addressId }))
+  ops.push(here
+    ? { k: 'refresh', addressId: here.addressId, macAddress: here.macAddress ?? mac, networkKey: here.networkKey ?? networkKey }
+    : { k: 'insert', networkKey, ipAddress: ip, macAddress: mac })
   return ops
 }
 

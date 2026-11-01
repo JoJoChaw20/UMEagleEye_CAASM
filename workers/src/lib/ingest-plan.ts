@@ -15,7 +15,7 @@
  * Pure (no DB, no Hono). Tested by scripts/identity-demo.ts.
  */
 import {
-  identityMac, sanitizeHostKey, deriveNetworkKey, matchAsset,
+  identityMac, sanitizeHostKey, deriveNetworkKey, matchAsset, addressesToEnd,
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
@@ -57,6 +57,9 @@ export interface IdentityPrefetch {
   assets: PrefetchAsset[]
   /** MACs agents reported for their own machines (rule 1-agent), preferred first. */
   agentMacs?: { mac: string; assetId: string }[]
+  /** ENDED addresses with a MAC in the batch (rule 1-past). Never current: kept out of
+   *  `addresses`, and their assets are in `assets`. */
+  pastMacAddresses?: PrefetchAddress[]
 }
 
 export type DeviceTypeStr = 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown'
@@ -236,9 +239,17 @@ export function planIngest(
       ? [...new Set((prefetch.agentMacs ?? []).filter(m => m.mac === mac).map(m => m.assetId))].filter(id => assetState.has(id))
       : []
 
+    const pastMacAddresses = (macClass === 'global' && mac)
+      ? (prefetch.pastMacAddresses ?? [])
+          .filter(p => p.macAddress === mac && assetState.has(p.assetId))
+          .sort((x, y) => (y.lastSeen - x.lastSeen) || (x.assetCreatedAt - y.assetCreatedAt))
+          .map(p => ({ addressId: p.addressId, assetId: p.assetId, networkKey: p.networkKey, ipAddress: p.ipAddress,
+            macAddress: p.macAddress, assetDeviceType: assetState.get(p.assetId)?.deviceType ?? p.deviceType }))
+      : []
+
     const decision = matchAsset(
       { macClass, mac, ip: host.ip, hostKey, networkKey },
-      { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds },
+      { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds, pastMacAddresses },
     )
 
     let assetId: string
@@ -344,8 +355,23 @@ export function planIngest(
 
       // Address bookkeeping — same IP: refresh; IP changed: end + insert; none: insert.
       const matchedId = (decision.rule !== 3 && 'matchedAddressId' in decision) ? decision.matchedAddressId : null
-      let cur = matchedId ? workAddrs.find(w => !w.ended && w.addressId === matchedId) : undefined
-      if (!cur) cur = workAddrs.find(w => !w.ended && w.assetId === assetId && (w.networkKey === networkKey || w.networkKey === null))
+      // The address this sighting refreshes or replaces is the asset's one on THIS network
+      // (the same IP first). A MAC match may point at its address on another network (the
+      // laptop's lab address while it is at home): that one is ended below, not replaced,
+      // else a second current row for this network and IP would break idx_addr_current.
+      const onThisNet = (w: WorkAddr) => !w.ended && w.assetId === assetId && (w.networkKey === networkKey || w.networkKey === null)
+      let cur = matchedId ? workAddrs.find(w => w.addressId === matchedId && onThisNet(w)) : undefined
+      if (!cur) cur = workAddrs.find(w => onThisNet(w) && w.ipAddress === host.ip) ?? workAddrs.find(onThisNet)
+      // First end what this sighting replaces (lib/identity.ts addressesToEnd): another
+      // device's address on this network and IP, and this device's addresses on other
+      // networks with the same MAC. Ends go before the insert (idx_addr_current).
+      const keep = cur && cur.ipAddress === host.ip ? cur.addressId : null
+      for (const id of addressesToEnd(workAddrs.filter(w => !w.ended), { assetId, networkKey, ip: host.ip, mac, keepAddressId: keep })) {
+        if (id === cur?.addressId) continue
+        ops.push({ k: 'endAddress', addressId: id })
+        const w = workAddrs.find(x => x.addressId === id)
+        if (w) w.ended = true
+      }
       if (cur && cur.ipAddress === host.ip) {
         const filledMac = cur.macAddress ?? mac ?? null
         const filledNet = cur.networkKey ?? networkKey ?? null

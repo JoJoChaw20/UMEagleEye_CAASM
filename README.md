@@ -462,13 +462,17 @@ Each ingested host is resolved to an existing device or a new one, first match w
 | Rule | Match | Result |
 |---|---|---|
 | 1 | Global (burned-in) MAC on any network | same device (unless two `network`/`server` devices share it across different non-null networks → treated as a possible duplicate, not merged) |
+| 1-agent | Global MAC an agent reported for one of its machine's own NICs | that machine |
+| 1-past | Global MAC whose address was **ended** (no current address has it) | the device that last had it, with the same router/server exception as rule 1. Before this, a router whose address another device took (two sites on `192.168.0.0/24`) came back as a new asset |
 | 2 | Local/random MAC + same network (or unscoped row with same IP) | same device |
 | 3 | `host_key` (SMB computer name) + same network | same device |
 | 4 | No usable MAC, or the matched address has none | same device; fill in MAC/network |
 | 5 | Same network + IP but a different valid MAC | new device; end the old address |
 | 6 | otherwise | new device |
 
-Shared/virtual MACs (VMware, VRRP, HSRP, MS-NLB) and invalid/broadcast/multicast MACs never identify a device. Ingest **prefetches** candidates in 3 queries for the whole batch and writes in chunked `db.batch` calls, so Cloudflare subrequests stay roughly constant regardless of host count.
+Shared/virtual MACs (VMware, VRRP, HSRP, MS-NLB) and invalid/broadcast/multicast MACs never identify a device.
+
+**When an address stops being current** (`addressesToEnd` in `lib/identity.ts`, used by scan ingest and agent inventory): a device keeps one current address per network. Recording it at a network and IP ends (1) another device's current address on that network and IP (the IP was given to this one), and (2) this device's current addresses on **other** networks with the **same MAC**, because one network card is on one network at a time: a laptop seen at home is no longer at the lab. Different MACs (Wi-Fi and Ethernet, a VPN adapter) stay current together; hand-typed (unscoped) addresses are never ended this way. The address a sighting refreshes is always the device's own one on that network. Agents never report a shared virtual MAC as the machine's MAC, and migration `0020` ended the old rows that carried one (a laptop's GNS3 loopback, 142.19.0.1). Ingest **prefetches** candidates in 3 queries for the whole batch and writes in chunked `db.batch` calls, so Cloudflare subrequests stay roughly constant regardless of host count.
 
 ### Duplicate detection & merge (legacy cleanup)
 

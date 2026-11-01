@@ -11,7 +11,7 @@ import { ACTIVE_MODEL, agentRoleOf, scoreAsset } from '../lib/rescore'
 import { applyHint, deviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
-import { classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
+import { addressesToEnd, classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
 import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
 import { reopenReturnedNewDevices, runAlertHygiene } from '../services/alertHygiene'
@@ -103,33 +103,57 @@ async function recordMatchedAddress(
 ): Promise<void> {
   const seen = new Date()
   const { currentAddress } = p
+  // What this sighting replaces (lib/identity.ts addressesToEnd): another device's address
+  // on this network and IP, and this device's same-MAC addresses on other networks.
+  const tenantAddr = p.tenantId ? eq(assetAddresses.tenantId, p.tenantId) : isNull(assetAddresses.tenantId)
+  const nearby = p.networkKey
+    ? await db.select({
+        addressId: assetAddresses.addressId, assetId: assetAddresses.assetId, networkKey: assetAddresses.networkKey,
+        ipAddress: assetAddresses.ipAddress, macAddress: assetAddresses.macAddress,
+      }).from(assetAddresses).where(and(tenantAddr, isNull(assetAddresses.endedAt), or(
+        and(eq(assetAddresses.networkKey, p.networkKey), eq(assetAddresses.ipAddress, p.ip)),
+        p.mac ? and(eq(assetAddresses.assetId, p.assetId), eq(assetAddresses.macAddress, p.mac)) : undefined,
+      )))
+    : []
+  const keep = currentAddress?.ipAddress === p.ip ? currentAddress.addressId : null
+  const ends = addressesToEnd(nearby, { assetId: p.assetId, networkKey: p.networkKey, ip: p.ip, mac: p.mac, keepAddressId: keep })
+    .filter(id => id !== currentAddress?.addressId)
+    .map(id => db.update(assetAddresses).set({ endedAt: seen }).where(eq(assetAddresses.addressId, id)))
+
   if (currentAddress) {
     if (currentAddress.ipAddress === p.ip) {
-      await db.update(assetAddresses).set({
-        lastSeen: seen,
-        macAddress: currentAddress.macAddress ?? p.mac ?? null,       // fill, never clear
-        networkKey: currentAddress.networkKey ?? p.networkKey ?? null,
-      }).where(eq(assetAddresses.addressId, currentAddress.addressId))
+      await db.batch([
+        ...ends,
+        db.update(assetAddresses).set({
+          lastSeen: seen,
+          macAddress: currentAddress.macAddress ?? p.mac ?? null,       // fill, never clear
+          networkKey: currentAddress.networkKey ?? p.networkKey ?? null,
+        }).where(eq(assetAddresses.addressId, currentAddress.addressId)),
+      ] as unknown as Parameters<typeof db.batch>[0])
       return
     }
     // IP changed (DHCP) on this network — end the old row, open a new current one.
     try {
       await db.batch([
+        ...ends,
         db.update(assetAddresses).set({ endedAt: seen }).where(eq(assetAddresses.addressId, currentAddress.addressId)),
         db.insert(assetAddresses).values({
           assetId: p.assetId, tenantId: p.tenantId, networkKey: p.networkKey,
           ipAddress: p.ip, macAddress: p.mac, firstSeen: seen, lastSeen: seen,
         }),
-      ])
+      ] as unknown as Parameters<typeof db.batch>[0])
     } catch (e) { if (!isUniqueViolation(e)) throw e }  // lost race → another ingest recorded it
     return
   }
-  // No current address on this network (e.g. rule 1 matched by MAC elsewhere).
+  // No current address on this network (rule 1 matched by MAC elsewhere, 1-agent, 1-past).
   try {
-    await db.insert(assetAddresses).values({
-      assetId: p.assetId, tenantId: p.tenantId, networkKey: p.networkKey,
-      ipAddress: p.ip, macAddress: p.mac, firstSeen: seen, lastSeen: seen,
-    })
+    await db.batch([
+      ...ends,
+      db.insert(assetAddresses).values({
+        assetId: p.assetId, tenantId: p.tenantId, networkKey: p.networkKey,
+        ipAddress: p.ip, macAddress: p.mac, firstSeen: seen, lastSeen: seen,
+      }),
+    ] as unknown as Parameters<typeof db.batch>[0])
   } catch (e) { if (!isUniqueViolation(e)) throw e }
 }
 

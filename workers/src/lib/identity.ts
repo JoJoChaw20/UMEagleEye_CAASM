@@ -9,7 +9,7 @@
  *   2. DB wrapper (resolveAssetIdentity) — fetches candidate rows for the pure
  *      matcher and returns a decision the caller executes.
  */
-import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { assets, assetAddresses, assetIdentifiers } from '../db/schema'
 import { normalizeMac } from './mac'
@@ -113,7 +113,7 @@ export function deriveNetworkKey(input: { ip: string; isManualSource?: boolean }
 }
 
 // ── Pure matcher ─────────────────────────────────────────────────
-export type MatchRuleLabel = 1 | '1-agent' | 2 | 3 | 4 | 5 | 6 | '1-possible-duplicate'
+export type MatchRuleLabel = 1 | '1-agent' | '1-past' | 2 | 3 | 4 | 5 | 6 | '1-possible-duplicate'
 
 export interface MatcherInput {
   macClass: MacClass
@@ -142,11 +142,15 @@ export interface MatcherCandidates {
   /** Assets whose own agent reported input.mac as one of its physical NICs
    *  (asset_identifiers kind 'mac'), preferred asset first. */
   agentMacAssetIds?: string[]
+  /** ENDED addresses with input.mac (global only), the most recently seen first: the
+   *  device was here before and its address was ended since (rule 1-past). */
+  pastMacAddresses?: CandidateAddress[]
 }
 
 export type MatchDecision =
   | { rule: 1; assetId: string; matchedAddressId: string }
   | { rule: '1-agent'; assetId: string; matchedAddressId: null }
+  | { rule: '1-past'; assetId: string; matchedAddressId: null }
   | { rule: '1-possible-duplicate'; assetId: null; possibleDuplicateOf: string }
   | { rule: 2; assetId: string; matchedAddressId: string }
   | { rule: 3; assetId: string; matchedAddressId: null }
@@ -187,6 +191,19 @@ export function matchAsset(input: MatcherInput, cand: MatcherCandidates): MatchD
   // also lists its Ethernet MAC). The machine vouches for it, so any network matches.
   if (input.macClass === 'global' && cand.agentMacAssetIds?.length) {
     return { rule: '1-agent', assetId: cand.agentMacAssetIds[0]!, matchedAddressId: null }
+  }
+
+  // Rule 1-past — global MAC whose address was ENDED. A burned-in MAC is one device, so it
+  // is still that device: before this rule, a router whose address another device had
+  // taken (two sites on 192.168.0.0/24: the lab's router took .1 on 29 Oct) came back
+  // as a new asset (1 Nov). The router/server exception of rule 1 applies here too.
+  if (input.macClass === 'global' && cand.pastMacAddresses?.length) {
+    const hit = cand.pastMacAddresses[0]!
+    const crossNetwork = hit.networkKey !== null && input.networkKey !== null && hit.networkKey !== input.networkKey
+    if ((hit.assetDeviceType === 'network' || hit.assetDeviceType === 'server') && crossNetwork) {
+      return { rule: '1-possible-duplicate', assetId: null, possibleDuplicateOf: hit.assetId }
+    }
+    return { rule: '1-past', assetId: hit.assetId, matchedAddressId: null }
   }
 
   // Rule 2 — local MAC + same network. An unscoped address (network_key NULL) is
@@ -256,6 +273,40 @@ const tenantCond = (tenantId: string | null) =>
  * available for its address row. See scans.ts for the write sequencing + the
  * unique-violation retry that makes the check-then-insert race harmless.
  */
+/** A current address row, as addressesToEnd sees it. */
+export interface CurrentAddressRow {
+  addressId: string
+  assetId: string
+  networkKey: string | null
+  ipAddress: string
+  macAddress: string | null
+}
+
+/**
+ * PURE: the current addresses to end when `assetId` is recorded at (networkKey, ip) with
+ * `mac`, other than the row being kept (`keepAddressId`):
+ *  - another device's address on the same network and IP: the IP was given to this one
+ *    (one current holder per network and IP, idx_addr_current);
+ *  - this device's addresses on OTHER networks with the SAME MAC: one network card is on
+ *    one network at a time, so a laptop that moved from the lab to home is no longer at
+ *    the lab. Different MACs (Wi-Fi and Ethernet, a VPN adapter) can be current together.
+ * Unscoped rows (network_key NULL, typed in by hand) are left alone. Exported for tests.
+ */
+export function addressesToEnd(
+  rows: CurrentAddressRow[],
+  rec: { assetId: string; networkKey: string | null; ip: string; mac: string | null; keepAddressId?: string | null },
+): string[] {
+  if (rec.networkKey === null) return []
+  const out: string[] = []
+  for (const r of rows) {
+    if (r.addressId === rec.keepAddressId || r.networkKey === null) continue
+    const sameSpot = r.networkKey === rec.networkKey && r.ipAddress === rec.ip
+    if (r.assetId !== rec.assetId && sameSpot) out.push(r.addressId)
+    else if (r.assetId === rec.assetId && rec.mac && r.macAddress === rec.mac && r.networkKey !== rec.networkKey) out.push(r.addressId)
+  }
+  return out
+}
+
 export async function resolveAssetIdentity(db: DB, input: ResolveInput): Promise<ResolveResult> {
   const { mac, macClass } = identityMac(input.rawMac)
   const hostKey = sanitizeHostKey(input.hostKey)
@@ -336,9 +387,30 @@ export async function resolveAssetIdentity(db: DB, input: ResolveInput): Promise
     agentMacAssetIds = [...new Set(rows.map(r => r.assetId))]
   }
 
+  // Candidate set 5 — ended addresses with this global MAC (rule 1-past), only needed
+  // when no current address and no agent has it.
+  let pastMacAddresses: CandidateAddress[] = []
+  if (macClass === 'global' && mac && macAddresses.length === 0 && agentMacAssetIds.length === 0) {
+    const rows = await db
+      .select({
+        addressId: assetAddresses.addressId,
+        assetId: assetAddresses.assetId,
+        networkKey: assetAddresses.networkKey,
+        ipAddress: assetAddresses.ipAddress,
+        macAddress: assetAddresses.macAddress,
+        assetDeviceType: assets.deviceType,
+      })
+      .from(assetAddresses)
+      .innerJoin(assets, eq(assets.assetId, assetAddresses.assetId))
+      .where(and(tenantCond(input.tenantId), isNotNull(assetAddresses.endedAt), eq(assetAddresses.macAddress, mac)))
+      .orderBy(desc(assetAddresses.lastSeen), asc(assets.createdAt))
+      .limit(5)
+    pastMacAddresses = rows as CandidateAddress[]
+  }
+
   const decision = matchAsset(
     { macClass, mac, ip: input.ip, hostKey, networkKey },
-    { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds },
+    { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds, pastMacAddresses },
   )
 
   // For an UPDATE match, find the asset's current address on THIS network so the
@@ -347,11 +419,14 @@ export async function resolveAssetIdentity(db: DB, input: ResolveInput): Promise
   if (decision.assetId) {
     const matchById = (id: string) =>
       netIpAddresses.find(a => a.addressId === id) ?? macAddresses.find(a => a.addressId === id)
+    // Only an address on THIS network: a MAC match on another network is not "the address
+    // that changed" (recordMatchedAddress ends it as a same-MAC address elsewhere).
+    const sameNet = (a: CandidateAddress | undefined) => a && (a.networkKey === networkKey || a.networkKey === null) ? a : undefined
     const direct = 'matchedAddressId' in decision && decision.matchedAddressId
-      ? matchById(decision.matchedAddressId)
+      ? sameNet(matchById(decision.matchedAddressId))
       : undefined
-    const onThisNet = direct
-      ?? [...netIpAddresses, ...macAddresses].find(a => a.assetId === decision.assetId && a.networkKey === networkKey)
+    const mineHere = [...netIpAddresses, ...macAddresses].filter(a => a.assetId === decision.assetId && a.networkKey === networkKey)
+    const onThisNet = direct ?? mineHere.find(a => a.ipAddress === input.ip) ?? mineHere[0]
     if (onThisNet) {
       currentAddress = {
         addressId: onThisNet.addressId,
@@ -417,9 +492,9 @@ export async function prefetchIdentity(
     agentManaged: sql<boolean>`(${assets.inventoryCollectedAt} IS NOT NULL)`,
   }
   const toMs = (v: unknown): number => (v ? new Date(v as string | Date).getTime() : 0)
-  const absorb = (r: Record<string, unknown>) => {
+  const absorb = (r: Record<string, unknown>, asAddress = true) => {
     const addressId = r.addressId as string
-    if (!addrById.has(addressId)) {
+    if (asAddress && !addrById.has(addressId)) {
       addrById.set(addressId, {
         addressId,
         assetId: r.assetId as string,
@@ -491,5 +566,27 @@ export async function prefetchIdentity(
     }
   }
 
-  return { addresses: [...addrById.values()], assets: [...assetById.values()], agentMacs }
+  // ENDED addresses with a batch MAC (rule 1-past): the three most recent per MAC. Their
+  // assets join the asset state; the rows themselves never count as current.
+  const pastMacAddresses: IdentityPrefetch['addresses'] = []
+  if (macs.length > 0) {
+    const rows = await db.select(sel).from(assetAddresses)
+      .innerJoin(assets, eq(assets.assetId, assetAddresses.assetId))
+      .where(and(tCondAddr, isNotNull(assetAddresses.endedAt), inArray(assetAddresses.macAddress, macs)))
+      .orderBy(desc(assetAddresses.lastSeen))
+      .limit(macs.length * 3)
+    const perMac = new Map<string, number>()
+    for (const r of rows) {
+      const m = r.macAddress as string
+      if ((perMac.get(m) ?? 0) >= 3) continue
+      perMac.set(m, (perMac.get(m) ?? 0) + 1)
+      absorb(r as Record<string, unknown>, false)
+      pastMacAddresses.push({
+        addressId: r.addressId, assetId: r.assetId, networkKey: r.networkKey ?? null, ipAddress: r.ipAddress,
+        macAddress: r.macAddress ?? null, deviceType: r.deviceType, lastSeen: toMs(r.lastSeen), assetCreatedAt: toMs(r.assetCreatedAt),
+      })
+    }
+  }
+
+  return { addresses: [...addrById.values()], assets: [...assetById.values()], agentMacs, pastMacAddresses }
 }
