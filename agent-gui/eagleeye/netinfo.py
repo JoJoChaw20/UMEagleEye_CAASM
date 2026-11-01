@@ -201,6 +201,21 @@ def own_mac(ip: str) -> Optional[str]:
     return None
 
 
+def source_ip_for(target: Optional[str]) -> Optional[str]:
+    """This computer's address on the route to `target` (an IP or CIDR; its first host),
+    or None. No packet is sent: connecting a UDP socket only picks the route."""
+    if not target:
+        return None
+    try:
+        net = ipaddress.ip_network(target.strip(), strict=False)
+        dest = str(net.network_address if net.num_addresses == 1 else net.network_address + 1)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((dest, 9))
+            return s.getsockname()[0]
+    except (OSError, ValueError):
+        return None
+
+
 def build_network_info(subnet: Optional[str], hosts: list[HostRecord],
                        heard_on: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """The `network` block sent with each ingest: {subnet, lan_subnet, gateway_ip, gateway_mac}.
@@ -219,6 +234,13 @@ def build_network_info(subnet: Optional[str], hosts: list[HostRecord],
     time): hosts buffered before a move to another network are uploaded with the
     network they came from, not with the new one's gateway.
     """
+    if heard_on is None and subnet:
+        # An active scan: the LAN is the one the target is reached through. A VM with a
+        # NAT card (default route) and a GNS3 card labelled its GNS3 scans with the NAT
+        # network (1 Nov). Only when that is another card than the default route's.
+        via = source_ip_for(subnet)
+        if via and not via.startswith("127.") and via != local_ip():
+            heard_on = local_network(via)
     if heard_on is None:
         gateway_ip = default_gateway()
     else:

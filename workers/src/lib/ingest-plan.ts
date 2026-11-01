@@ -15,7 +15,7 @@
  * Pure (no DB, no Hono). Tested by scripts/identity-demo.ts.
  */
 import {
-  classifyMac, sanitizeHostKey, deriveNetworkKey, matchAsset,
+  identityMac, sanitizeHostKey, deriveNetworkKey, matchAsset,
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
@@ -199,7 +199,7 @@ export function planIngest(
 
   for (const host of hosts) {
     const ops: IngestOp[] = []
-    const { mac, macClass } = classifyMac(host.rawMac)
+    const { mac, macClass } = identityMac(host.rawMac)   // a shared virtual MAC (HSRP/VRRP) identifies nothing
     const hostKey = sanitizeHostKey(host.hostKeyRaw)
     const networkKey = opts?.networkKeyFor ? opts.networkKeyFor(host.ip) : deriveNetworkKey({ ip: host.ip, isManualSource: false })
     const usableMac = macClass === 'global' || macClass === 'local'

@@ -5,7 +5,7 @@
  * (see the report for captured output).
  */
 import {
-  classifyMac, sanitizeHostKey, deriveNetworkKey, matchAsset,
+  classifyMac, identityMac, isSharedVirtualMac, sanitizeHostKey, deriveNetworkKey, matchAsset,
   type CandidateAddress, type MatcherCandidates, type MatcherInput, type MatchDecision,
 } from '../src/lib/identity'
 import { planIngest, chunkPlan, type PlanHost, type IngestOp } from '../src/lib/ingest-plan'
@@ -216,6 +216,30 @@ console.log('\n=== batched plan: 100 hosts (in-memory, no DB) ===')
 
   // Subrequests are constant regardless of host count:
   console.log(`  subrequest formula (active): 2 agent + 1 scan + 3 prefetch + 1 LLM + <=16 vendor(OUI-capped) + ${chunks.length} write chunk(s) + 1 driftBatch + 1 completion`)
+}
+
+// ── Shared virtual MACs (HSRP v2) never identify a device (GNS3 lab, 1 Nov) ──
+{
+  check('HSRP v2 virtual MAC is shared', [isSharedVirtualMac('00:00:0c:9f:f0:67'), isSharedVirtualMac('00:00:0C:9F:FF:FF')], [true, true])
+  check('GLBP and IPv6 VRRP/HSRP virtual MACs are shared', [isSharedVirtualMac('00:07:b4:00:01:02'), isSharedVirtualMac('00:00:5e:00:02:0a'), isSharedVirtualMac('00:05:73:a0:00:01')], [true, true, true])
+  check('a real Cisco MAC is not', isSharedVirtualMac('00:00:0c:12:34:56'), false)
+  check('identityMac drops a shared MAC', identityMac('00:00:0c:9f:f0:67'), { mac: null, macClass: 'invalid' })
+  check('identityMac keeps a real one', identityMac('c4:01:5b:8c:00:00'), { mac: 'c4:01:5b:8c:00:00', macClass: 'global' })
+
+  // Passive hears the router's HSRP hello (its IP + the virtual MAC), Nmap sees its real
+  // MAC, passive again: one asset, never "another device took this IP" (rule 5).
+  const mk = (mac: string, isPassive: boolean): PlanHost => ({
+    ip: '142.19.0.11', rawMac: mac, hostname: 'r1', hostKeyRaw: null, deviceType: 'network',
+    observedOsInfo: {}, ports: [], hardwareVendor: null, internetFacing: false, isPassive, tenantId: 't1',
+  })
+  let n = 0
+  const plan = planIngest([mk('00:00:0c:9f:f0:67', true), mk('c4:01:5b:8c:00:00', false), mk('00:00:0c:9f:f0:67', true)],
+    { addresses: [], assets: [] }, { newId: () => `h-${n++}`, networkKeyFor: () => '142.19.0.0/23' })
+  check('HSRP: one asset for all three observations', new Set(plan.perHost.map(h => h.assetId)).size, 1)
+  check('HSRP: no rule 5 (nothing ended)', plan.perHost.flatMap(h => h.ops).filter(o => o.k === 'endAddress').length, 0)
+  const macs = plan.perHost.flatMap(h => h.ops).flatMap(o => o.k === 'updateAsset' ? [o.set.macAddress] : o.k === 'insertAsset' ? [o.values.macAddress] : [])
+  check('HSRP: the asset never takes the virtual MAC', macs.includes('00:00:0c:9f:f0:67'), false)
+  check('HSRP: it has the real MAC once Nmap saw it', macs[macs.length - 1], 'c4:01:5b:8c:00:00')
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

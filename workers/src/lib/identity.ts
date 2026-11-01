@@ -24,7 +24,11 @@ const SHARED_VIRTUAL_PATTERNS: RegExp[] = [
   /^02:00:4c:4f:4f:50$/,          // Microsoft KM-TEST loopback
   /^00:50:56:c0:00:0[0-9a-f]$/,   // VMware host-only / NAT adapters
   /^00:00:5e:00:01:[0-9a-f]{2}$/, // VRRP virtual router
-  /^00:00:0c:07:ac:[0-9a-f]{2}$/, // Cisco HSRP virtual
+  /^00:00:5e:00:02:[0-9a-f]{2}$/, // VRRP for IPv6
+  /^00:00:0c:07:ac:[0-9a-f]{2}$/, // Cisco HSRP version 1 virtual
+  /^00:00:0c:9f:f[0-9a-f]:[0-9a-f]{2}$/, // Cisco HSRP version 2 virtual (GNS3 lab, 1 Nov: 00:00:0c:9f:f0:67)
+  /^00:05:73:a0:0[0-9a-f]:[0-9a-f]{2}$/, // Cisco HSRP for IPv6
+  /^00:07:b4:0[0-3]:[0-9a-f]{2}:[0-9a-f]{2}$/, // Cisco GLBP virtual
   /^02:bf:/,                      // Microsoft NLB
 ]
 
@@ -56,6 +60,21 @@ export function isSharedVirtualMac(mac: string | null | undefined): boolean {
   if (!mac) return false
   const n = normalizeMac(mac)
   return n != null && SHARED_VIRTUAL_PATTERNS.some(re => re.test(n))
+}
+
+/**
+ * The MAC a scan observation identifies its device by: classifyMac, except that a
+ * shared/virtual MAC counts as no MAC. Several routers answer for an HSRP/VRRP/GLBP
+ * address with the same virtual MAC, and an active router's HSRP hellos carry its own
+ * interface IP with the virtual MAC, so passive listening paired 142.19.0.11 with
+ * 00:00:0c:9f:f0:67 while Nmap saw the router's real c4:01:5b:8c:00:00. Matched as a
+ * device MAC, each alternation looked like "another device took this IP" (rule 5) and
+ * made a new asset (three for one router in 30 min). Without it the observation matches
+ * by IP (rule 4) and the asset keeps its real MAC.
+ */
+export function identityMac(raw: unknown): { mac: string | null; macClass: MacClass } {
+  const c = classifyMac(raw)
+  return c.mac && isSharedVirtualMac(c.mac) ? { mac: null, macClass: 'invalid' } : c
 }
 
 // ── Host key sanitisation ────────────────────────────────────────
@@ -238,7 +257,7 @@ const tenantCond = (tenantId: string | null) =>
  * unique-violation retry that makes the check-then-insert race harmless.
  */
 export async function resolveAssetIdentity(db: DB, input: ResolveInput): Promise<ResolveResult> {
-  const { mac, macClass } = classifyMac(input.rawMac)
+  const { mac, macClass } = identityMac(input.rawMac)
   const hostKey = sanitizeHostKey(input.hostKey)
   const networkKey = input.networkKey !== undefined && !input.isManualSource
     ? input.networkKey

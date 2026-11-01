@@ -103,8 +103,31 @@ def test_an_active_scan_reports_the_lan_apart_from_the_range_it_scanned(monkeypa
     monkeypatch.setattr(netinfo, "default_gateway", lambda: "10.20.0.1")
     monkeypatch.setattr(netinfo, "local_network",
                         lambda ip=None: {"local_ip": "10.20.1.15", "subnet": "10.20.0.0/22", "gateway_ip": "10.20.0.1"})
+    monkeypatch.setattr(netinfo, "local_ip", lambda: "10.20.1.15")
+    monkeypatch.setattr(netinfo, "source_ip_for", lambda target: "10.20.1.15")     # same card as the default route
     info = netinfo.build_network_info("10.20.2.0/24", [])
     assert (info["subnet"], info["lan_subnet"]) == ("10.20.2.0/24", "10.20.0.0/22")
+
+
+def test_an_active_scan_through_another_card_reports_that_cards_network(monkeypatch):
+    # Ubuntu VM, 1 Nov: default route on ens37 (VMware NAT), the GNS3 lab on ens33. A scan
+    # of a GNS3 router was labelled 192.168.217.0/24 with the NAT gateway.
+    nets = {"192.168.217.135": {"local_ip": "192.168.217.135", "subnet": "192.168.217.0/24", "gateway_ip": "192.168.217.2"},
+            "142.19.0.135": {"local_ip": "142.19.0.135", "subnet": "142.19.0.0/23", "gateway_ip": None}}
+    monkeypatch.setattr(netinfo, "local_ip", lambda: "192.168.217.135")
+    monkeypatch.setattr(netinfo, "local_network", lambda ip=None: nets[ip or "192.168.217.135"])
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: "192.168.217.2")
+    monkeypatch.setattr(netinfo, "source_ip_for", lambda target: "142.19.0.135")
+    info = netinfo.build_network_info("142.19.0.11", [])
+    assert info == {"subnet": "142.19.0.11", "lan_subnet": "142.19.0.0/23", "gateway_ip": None, "gateway_mac": None}
+    # …and a scan through the default route is unchanged
+    monkeypatch.setattr(netinfo, "source_ip_for", lambda target: "192.168.217.135")
+    assert netinfo.build_network_info("192.168.217.0/24", [])["lan_subnet"] == "192.168.217.0/24"
+
+
+def test_source_ip_for_reads_the_route_without_sending():
+    assert netinfo.source_ip_for(None) is None and netinfo.source_ip_for("not an ip") is None
+    assert netinfo.source_ip_for("127.0.0.1") == "127.0.0.1"
 
 
 # ── 2.2.5: scapy read the Windows route table after freeing it ──
