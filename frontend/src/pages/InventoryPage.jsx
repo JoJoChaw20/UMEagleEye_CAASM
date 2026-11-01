@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Server, Search, Plus, Upload, Zap, Filter, X, Pencil, RefreshCw,
-  Bookmark, MinusCircle, CheckCircle, Trash2, Link2, Layers,
+  Bookmark, MinusCircle, CheckCircle, Trash2, Link2, Layers, ChevronDown, MoreHorizontal,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -18,6 +18,7 @@ import DuplicatesPanel from '../components/common/DuplicatesPanel'
 import { RISKY_PORTS } from '../components/common/alertMeta'
 import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
+import { Tabs, Toast, useToast } from '../components/common/PageParts'
 
 const PAGE_SIZE = 25
 
@@ -55,8 +56,43 @@ function readLinkFilter(sp) {
 function readScope(sp) {
   const s = sp.get('scope')
   if (s === 'mine' || s === 'discovered' || s === 'any') return s
-  // Both scopes only through a link (there is no "All" tab).
+  // Both scopes only through a link: a dashboard panel, the alert drawer or a search.
   return readLinkFilter(sp) ? 'any' : 'mine'
+}
+
+// A small menu button (header "Add asset" and "⋯"). items: [{ label, icon, onClick, hint? }]
+function MenuButton({ label, icon: Icon, items, primary = false, title }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', esc)
+    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', esc) }
+  }, [open])
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} title={title}
+        className={`${primary ? 'btn-primary' : 'btn-secondary'} flex items-center gap-2 text-sm`}>
+        {Icon && <Icon className="w-4 h-4" />}
+        {label}
+        {label && <ChevronDown className="w-3.5 h-3.5 opacity-70" />}
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 z-30 mt-1 w-56 rounded-lg border border-dark-700 bg-dark-850 shadow-xl py-1">
+          {items.map((it) => (
+            <button key={it.label} role="menuitem" onClick={() => { setOpen(false); it.onClick() }} disabled={it.disabled}
+              className="w-full text-left px-3 py-2 text-sm flex items-start gap-2 text-dark-200 hover:bg-dark-700/50 disabled:opacity-40">
+              <it.icon className="w-4 h-4 mt-0.5 shrink-0" />
+              <span>{it.label}{it.hint && <span className="block text-xs text-dark-500">{it.hint}</span>}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ── Main page ─────────────────────────────────────────────────────
@@ -70,6 +106,9 @@ export default function InventoryPage() {
 
   const [searchParams, setSearchParams] = useSearchParams()
   const [scope, setScope] = useState(() => readScope(searchParams))
+  // "All known" is a tab only once a link or a search opened the combined view, so the
+  // way back to it stays after switching tabs; normally the page has the two lists.
+  const [showAllTab, setShowAllTab] = useState(() => readScope(searchParams) === 'any')
   const [linkFilter, setLinkFilter] = useState(() => readLinkFilter(searchParams))
   const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '')
@@ -82,7 +121,8 @@ export default function InventoryPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [notice, setNotice] = useState(null)
+  const { toast, show: showToast } = useToast()
+  const setNotice = useCallback((n) => { if (n?.text) showToast(n.text, 'success') }, [showToast])
   const [scopeCounts, setScopeCounts] = useState({ mine: null, discovered: null })
   const [dupGroups, setDupGroups] = useState([])
 
@@ -101,18 +141,13 @@ export default function InventoryPage() {
     const next = readLinkFilter(searchParams)
     setLinkFilter((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
     setScope(readScope(searchParams))
+    if (readScope(searchParams) === 'any') setShowAllTab(true)
     setSearch(searchParams.get('q') ?? '')
     setDeviceTypeFilter(searchParams.get('device_type') ?? '')
     setSourceFilter(searchParams.get('source') ?? '')
     setTenantFilter(searchParams.get('tenant_id') ?? '')
     setPage(1)
   }, [searchParams])
-
-  useEffect(() => {
-    if (!notice) return
-    const t = setTimeout(() => setNotice(null), 6000)
-    return () => clearTimeout(t)
-  }, [notice])
 
   const changeScope = (next) => {
     setActiveTab('inventory')
@@ -274,10 +309,10 @@ export default function InventoryPage() {
     }
   }
 
-  const handleRescoreAll = async () => {
+  const handleRescoreAll = async (which) => {
     setRescoring(true)
     try {
-      const qs = new URLSearchParams({ scope: scope === 'discovered' ? 'discovered' : 'my_assets' })
+      const qs = new URLSearchParams({ scope: which === 'discovered' ? 'discovered' : 'my_assets' })
       if (tenantFilter) qs.set('tenant_id', tenantFilter)
       const res = await client.post(`/assets/rescore?${qs.toString()}`)
       setNotice({ text: res.data.message })
@@ -319,16 +354,41 @@ export default function InventoryPage() {
       : scope === 'discovered' ? 'Found by scans and not yet adopted. Review them and adopt the ones you manage.'
         : 'Linked results from both My Assets and Discovered'
 
+  const selectTab = (id) => {
+    if (id === 'graph') { setActiveTab('graph'); return }
+    changeScope(id)
+  }
+  const currentTab = activeTab === 'graph' ? 'graph' : scope
+  const tabs = [
+    { id: 'mine', label: SCOPES.mine.label, count: scopeCounts.mine },
+    { id: 'discovered', label: SCOPES.discovered.label, count: scopeCounts.discovered },
+    ...(showAllTab || scope === 'any' ? [{
+      id: 'any', label: 'All known',
+      count: scopeCounts.mine != null && scopeCounts.discovered != null ? scopeCounts.mine + scopeCounts.discovered : null,
+    }] : []),
+    { id: 'graph', label: 'Relationship graph' },
+  ]
+
   return (
     <div className="space-y-6">
-      {/* Header */}
+      <Toast toast={toast} />
+
+      {/* Header: the same controls on every tab */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white">Asset Inventory</h1>
           <p className="text-dark-400 text-sm mt-1">{subtitle}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {!isBusinessOwner && activeTab === 'inventory' && (
+          {/* platform superadmin only; everyone else sees their own tenant */}
+          <TenantSelector value={tenantFilter} onChange={(id) => {
+            setTenantFilter(id); setPage(1)
+            const next = new URLSearchParams(searchParams)
+            if (id) next.set('tenant_id', id)
+            else next.delete('tenant_id')
+            setSearchParams(next, { replace: true })
+          }} />
+          {!isBusinessOwner && (
             <button
               onClick={() => setShowDuplicates(true)}
               title="Assets that look like the same device: merge them, or mark them as not duplicates"
@@ -338,79 +398,25 @@ export default function InventoryPage() {
               Duplicates{dupGroups.length > 0 && <span className="text-dark-300">({dupGroups.length})</span>}
             </button>
           )}
-          {scope !== 'any' && activeTab === 'inventory' && !isReadOnly && (
-            <button
-              onClick={handleRescoreAll}
-              disabled={rescoring}
-              title={`Re-score criticality for all assets in ${SCOPES[scope].label}`}
-              className="btn-secondary flex items-center gap-2 text-sm"
-            >
-              {rescoring
-                ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                : <Zap className="w-4 h-4 text-yellow-400" />}
-              Rescore All
-            </button>
+          {!isReadOnly && (
+            <MenuButton primary label="Add asset" icon={Plus} items={[
+              { label: 'Add manually', icon: Plus, hint: 'Goes to My Assets', onClick: () => setShowAdd(true) },
+              { label: 'Import CSV', icon: Upload, hint: 'Goes to My Assets', onClick: () => setShowImport(true) },
+            ]} />
           )}
-          {scope === 'mine' && activeTab === 'inventory' && !isReadOnly && (
-            <>
-              <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-2 text-sm">
-                <Upload className="w-4 h-4" /> Import CSV
-              </button>
-              <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-2 text-sm">
-                <Plus className="w-4 h-4" /> Add Asset
-              </button>
-            </>
+          {!isReadOnly && (
+            <MenuButton icon={rescoring ? RefreshCw : MoreHorizontal} title="More actions" items={[
+              { label: 'Rescore My Assets', icon: Zap, hint: 'Recalculate criticality', disabled: rescoring, onClick: () => handleRescoreAll('mine') },
+              { label: 'Rescore Discovered', icon: Zap, hint: 'Recalculate criticality', disabled: rescoring, onClick: () => handleRescoreAll('discovered') },
+            ]} />
           )}
         </div>
       </div>
 
-      {/* Scope + view toggles */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50" role="tablist" aria-label="Asset scope">
-          {['mine', 'discovered', 'any'].map((s) => (
-            <button
-              key={s}
-              role="tab"
-              aria-selected={scope === s}
-              onClick={() => changeScope(s)}
-              className={`tab-toggle ${scope === s ? 'active' : ''}`}
-            >
-              {SCOPES[s]?.label ?? 'All known'}
-              {scopeCounts[s] != null && <span className="text-xs text-dark-400 ml-0.5">{scopeCounts[s]}</span>}
-            </button>
-          ))}
-        </div>
-        {scope === 'mine' && (
-          <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit border border-dark-700/50">
-            <button onClick={() => setActiveTab('inventory')} className={`tab-toggle ${activeTab === 'inventory' ? 'active' : ''}`}>
-              List
-            </button>
-            <button onClick={() => setActiveTab('graph')} className={`tab-toggle ${activeTab === 'graph' ? 'active' : ''}`}>
-              Relationship Graph
-            </button>
-          </div>
-        )}
-      </div>
+      <Tabs label="Inventory views" active={currentTab} onChange={selectTab} tabs={tabs} />
 
-      {notice && (
-        <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-green-500/30" role="status">
-          <CheckCircle className="w-4 h-4 text-green-400" />
-          <span className="text-dark-100">{notice.text}</span>
-          <button onClick={() => setNotice(null)} aria-label="Dismiss" className="ml-auto text-dark-400 hover:text-dark-100"><X className="w-3.5 h-3.5" /></button>
-        </div>
-      )}
-
-      {scope === 'discovered' && matchedDiscoveredCount > 0 && activeTab === 'inventory' && (
-        <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-yellow-500/30">
-          <Link2 className="w-4 h-4 text-yellow-400" />
-          <span className="text-dark-200">
-            {matchedDiscoveredCount} discovered {matchedDiscoveredCount === 1 ? 'asset looks' : 'assets look'} like {matchedDiscoveredCount === 1 ? 'one' : 'ones'} already in My Assets.
-            Open {matchedDiscoveredCount === 1 ? 'it' : 'one'} to review the match.
-          </span>
-        </div>
-      )}
-
-      {linkFilter && (
+      {/* One notice at most: the filter a link opened, else the "looks like My Assets" hint */}
+      {activeTab === 'inventory' && linkFilter ? (
         <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-eagle-500/40">
           <Filter className="w-4 h-4 text-eagle-400" />
           <span className="text-dark-400">Showing</span>
@@ -420,10 +426,18 @@ export default function InventoryPage() {
             <X className="w-3.5 h-3.5" /> Clear
           </button>
         </div>
-      )}
+      ) : activeTab === 'inventory' && scope === 'discovered' && matchedDiscoveredCount > 0 ? (
+        <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-yellow-500/30">
+          <Link2 className="w-4 h-4 text-yellow-400" />
+          <span className="text-dark-200">
+            {matchedDiscoveredCount} discovered {matchedDiscoveredCount === 1 ? 'asset looks' : 'assets look'} like {matchedDiscoveredCount === 1 ? 'one' : 'ones'} already in My Assets.
+            Open {matchedDiscoveredCount === 1 ? 'it' : 'one'} to review the match.
+          </span>
+        </div>
+      ) : null}
 
       {/* Graph */}
-      {activeTab === 'graph' && scope === 'mine' && (
+      {activeTab === 'graph' && (
         <div className="glass-card p-5">
           <AssetGraph
             onSelectAsset={(id) => setGraphBlastId((prev) => (prev === id ? null : id))}
@@ -437,13 +451,6 @@ export default function InventoryPage() {
         <>
           {/* Filters */}
           <div className="flex items-center gap-3 flex-wrap">
-            <TenantSelector value={tenantFilter} onChange={(id) => {
-              setTenantFilter(id); setPage(1)
-              const next = new URLSearchParams(searchParams)
-              if (id) next.set('tenant_id', id)
-              else next.delete('tenant_id')
-              setSearchParams(next, { replace: true })
-            }} />
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
               <input
