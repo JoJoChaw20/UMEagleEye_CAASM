@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, or } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { users, tenants } from '../db/schema'
 import {
@@ -26,7 +26,9 @@ const registerSchema = z.object({
   role: z.enum(['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']).optional(),
 })
 
-app.post('/register', zValidator('json', registerSchema), async (c) => {
+// Platform superadmin only: it can create an account with any role, superadmin included.
+// (It was open to anyone; tenant users are created from the Users and Tenants pages.)
+app.post('/register', authMiddleware, requireRoles('superadmin'), zValidator('json', registerSchema), async (c) => {
   try {
     const { username, email, password, role } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)

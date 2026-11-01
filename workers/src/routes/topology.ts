@@ -247,7 +247,8 @@ router.get('/', authMiddleware, requireRoles('superadmin', 'tenant_superadmin', 
 
   // Single-tenant view (regular user or superadmin with filter)
   if (user.role !== 'superadmin' || tenantIdFilter) {
-    const scopedId = tenantIdFilter ?? user.tenantId!
+    // tenant_id is the platform superadmin's filter; everyone else gets their own tenant
+    const scopedId = user.role === 'superadmin' ? tenantIdFilter! : user.tenantId!
     const rows = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, scopedId))
     return c.json({ tree: buildTree(rows) })
   }

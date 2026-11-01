@@ -27,6 +27,15 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
     tenantId: payload.tenant_id,
   })
 
+  // Every role but the platform superadmin sees one tenant. An account with no tenant
+  // (made by Google sign-in for an unknown email, or left over when its tenant was
+  // deleted) would otherwise pass routes that filter by tenant only when one is set, and
+  // read every tenant's data. It may use its own account endpoints (/auth/...) and
+  // nothing else until an admin adds it to a tenant.
+  if (payload.role !== 'superadmin' && !payload.tenant_id && !/\/auth\//.test(c.req.path)) {
+    return c.json({ detail: 'Your account is not part of an organisation yet. Ask your administrator to add you.' }, 403)
+  }
+
   await next()
 })
 
