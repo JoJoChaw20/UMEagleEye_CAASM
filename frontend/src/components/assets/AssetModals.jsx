@@ -19,7 +19,6 @@ export function AddAssetModal({ onClose, onSave }) {
     mac_address: '',
     owner: '',
     device_type: 'unknown',
-    criticality_score: 5,
     is_internet_facing: false,
   })
   const [saving, setSaving] = useState(false)
@@ -105,24 +104,6 @@ export function AddAssetModal({ onClose, onSave }) {
             <select value={form.device_type} onChange={set('device_type')} className="input-field w-full text-sm">
               <DeviceTypeOptions />
             </select>
-          </div>
-
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">
-              Criticality Score: <span className="text-white font-medium">{form.criticality_score}</span>
-            </label>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={form.criticality_score}
-              onChange={(e) => setForm(f => ({ ...f, criticality_score: Number(e.target.value) }))}
-              className="w-full accent-eagle-500"
-            />
-            <div className="flex justify-between text-xs text-dark-500 mt-0.5">
-              <span>1 Low</span>
-              <span>10 Critical</span>
-            </div>
           </div>
 
           <div className="flex items-center justify-between py-2">
@@ -254,14 +235,14 @@ export function EditAssetModal({ asset, onClose, onSave }) {
             </button>
           </div>
 
-          {/* Read-only — criticality is changed only via Rescore, not inline here. */}
+          {/* Read-only: criticality is always computed, never set by hand. */}
           <div className="rounded-lg border border-dark-700/70 bg-dark-900/40 px-3 py-2.5">
             <div className="flex items-center justify-between">
               <span className="text-xs text-dark-400">Criticality <span className="text-dark-400">(read-only)</span></span>
               <span className="text-sm font-semibold text-dark-100">{asset.criticalityScore}/10</span>
             </div>
             <p className="mt-1 text-[11px] leading-relaxed text-dark-300">
-              Computed from device type, exposure and topology. Use <span className="text-dark-200">Rescore this asset</span> to refresh.
+              Computed from the asset's device type, role, exposure and owner; it updates when you save.
             </p>
           </div>
 
@@ -293,16 +274,16 @@ export function EditAssetModal({ asset, onClose, onSave }) {
 // ── CSV Import Modal ──────────────────────────────────────────────
 const TEMPLATE_HEADERS = [
   'ip_address', 'hostname', 'mac_address', 'owner',
-  'device_type', 'criticality_score', 'criticality_status', 'is_internet_facing',
+  'device_type', 'is_internet_facing',
   'hardware_vendor', 'os_name', 'os_version', 'open_ports',
 ]
 const TEMPLATE_SAMPLE = [
   ['192.168.1.1', 'router-01', 'AA:BB:CC:11:22:33', 'Network Team / netops@corp.com',
-   'network', '9', 'Critical', 'true', 'Cisco', 'IOS XE', '16.9', '22/tcp 23/tcp 443/tcp'],
+   'network', 'true', 'Cisco', 'IOS XE', '16.9', '22/tcp 23/tcp 443/tcp'],
   ['192.168.1.10', 'server-01', 'AA:BB:CC:44:55:66', 'IT Dept / admin@corp.com',
-   'server', '8', 'High', 'false', 'Dell', 'Ubuntu', '22.04', '22/tcp 80/tcp 443/tcp 3306/tcp'],
+   'server', 'false', 'Dell', 'Ubuntu', '22.04', '22/tcp 80/tcp 443/tcp 3306/tcp'],
   ['192.168.1.50', 'workstation-01', '', 'HR Dept / alice@corp.com',
-   'workstation', '4', 'Medium', 'false', 'HP', 'Windows', '11', '3389/tcp'],
+   'workstation', 'false', 'HP', 'Windows', '11', '3389/tcp'],
 ]
 
 function parseCSVLine(line) {
@@ -382,7 +363,7 @@ export function ImportModal({ onClose, onImport, tenantId }) {
     }
   }
 
-  const DISPLAY_COLS = ['ip_address', 'hostname', 'device_type', 'criticality_score', 'criticality_status', 'owner', 'os_name', 'open_ports']
+  const DISPLAY_COLS = ['ip_address', 'hostname', 'device_type', 'owner', 'os_name', 'open_ports']
   const visibleHeaders = headers.filter(h => DISPLAY_COLS.includes(h))
 
   return (

@@ -721,7 +721,6 @@ const createAssetSchema = z.object({
   device_type: z.enum(['server', 'workstation', 'network', 'iot', 'mobile', 'unknown']).optional(),
   hardware_vendor: z.string().max(255).optional(),
   os_info: z.record(z.unknown()).optional(),
-  criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
   source: z.enum(['manual', 'scan_active', 'scan_passive']).optional(),
   tenant_id: z.string().uuid().optional(),
@@ -865,7 +864,6 @@ const updateAssetSchema = z.object({
   device_type_source: z.literal('auto').optional(),
   hardware_vendor: z.string().max(255).optional(),
   os_info: z.record(z.unknown()).optional(),
-  criticality_score: z.number().int().min(1).max(10).optional(),
   is_internet_facing: z.boolean().optional(),
   // null = stop overriding and let scans infer exposure again
   internet_facing_override: z.boolean().nullable().optional(),
@@ -940,12 +938,9 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
     if (body.source !== undefined) updateData.source = body.source
     if (body.in_my_assets !== undefined) updateData.inMyAssets = body.in_my_assets
 
-    // Recompute criticality unless the caller sets it explicitly. Routed through the
-    // SAME single-asset scorer as bulk/per-asset rescore, so PATCH and Rescore agree.
-    // Scored from the asset's own facts only (no topology).
-    if (body.criticality_score !== undefined) {
-      updateData.criticalityScore = body.criticality_score
-    } else {
+    // Criticality is always computed, never set by hand: the SAME single-asset scorer as
+    // the nightly rescore, from the asset's own facts only (no topology).
+    {
       const mergedOsInfo = (body.os_info ?? existing.osInfo ?? {}) as Record<string, unknown>
       const model = ACTIVE_MODEL
       updateData.criticalityScore = scoreAsset({

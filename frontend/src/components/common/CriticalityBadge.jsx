@@ -9,11 +9,11 @@ import client from '../../api/client'
 //
 // footer:
 //   'slider'   → a view with a manual criticality slider: "…Drag slider to override."
-//   'computed' → no slider (Inventory, asset page):      "…Use Rescore Criticality to refresh."
+//   'computed' → no slider (Inventory, asset page):      "…It updates on every scan."
 
 const FOOTERS = {
   slider:   'Hover score = computed value. Drag slider to override.',
-  computed: "Computed from the asset's own data. Use Rescore Criticality to refresh.",
+  computed: "Computed from the asset's own data; it updates on every scan, inventory and edit.",
 }
 
 function meta(s) {
@@ -103,7 +103,7 @@ export default function CriticalityBadge({ score, assetId, footer = 'slider' }) 
             {loading && <p className="text-dark-300">Loading…</p>}
             {mismatch && (
               <p className="text-dark-300 leading-relaxed">
-                Stored score {s}/10, computed {computed}/10: use <span className="text-dark-100">Rescore Criticality</span> to apply.
+                Stored score {s}/10, computed {computed}/10: the new score applies on the next scan or inventory, or overnight.
               </p>
             )}
             {tip && !mismatch && (

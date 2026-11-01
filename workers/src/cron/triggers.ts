@@ -5,6 +5,8 @@ import { savePostureSnapshot } from '../services/posture'
 import { purgeOldData } from '../services/retention'
 import { CTI_INGEST_LOCK } from '../services/cti'
 import { runAlertHygiene } from '../services/alertHygiene'
+import { rescoreAssets } from '../lib/rescore'
+import { tenants } from '../db/schema'
 
 // Maps cron expression to handler name for logging
 function getCronName(cron: string): string {
@@ -45,6 +47,18 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
         console.log(`[retention] Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events`)
         const closed = await runAlertHygiene(db)
         console.log(`[alert-hygiene] Closed ${closed.cve} CVE alerts without an SBOM, ${closed.newDevices} reviewed or stale new-device alerts`)
+        // Criticality is recomputed on every scan, inventory and edit; this applies a
+        // scoring-rule change to assets nothing has touched since (manual ones, say).
+        // One read per tenant, writes only for scores that moved.
+        try {
+          let changed = 0
+          for (const t of await db.select({ tenantId: tenants.tenantId }).from(tenants)) {
+            changed += (await rescoreAssets(db, t.tenantId)).scoresChanged
+          }
+          console.log(`[rescore] ${changed} criticality score(s) changed`)
+        } catch (err) {
+          console.error('[rescore] Nightly rescore failed:', err)
+        }
         break
       }
 

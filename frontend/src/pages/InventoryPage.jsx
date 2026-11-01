@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Server, Search, Plus, Upload, Zap, Filter, X, Pencil, RefreshCw,
-  Bookmark, MinusCircle, CheckCircle, Trash2, Link2, Layers, ChevronDown, MoreHorizontal,
+  Server, Search, Plus, Upload, Filter, X, Pencil,
+  Bookmark, MinusCircle, CheckCircle, Trash2, Link2, Layers, ChevronDown,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -131,8 +131,6 @@ export default function InventoryPage() {
   const [showImport, setShowImport] = useState(false)
   const [editingAsset, setEditingAsset] = useState(null)
   const [adoptTarget, setAdoptTarget] = useState(null)   // { asset, matches, reasons }
-  const [rescoring, setRescoring] = useState(false)
-  const [rescoringId, setRescoringId] = useState(null)
   const [graphBlastId, setGraphBlastId] = useState(null)
   const [showDuplicates, setShowDuplicates] = useState(false)
 
@@ -295,35 +293,6 @@ export default function InventoryPage() {
     }
   }
 
-  const handleRescoreOne = async (asset) => {
-    setRescoringId(asset.assetId)
-    try {
-      const res = await client.post(`/assets/${asset.assetId}/rescore`)
-      const { changed, previous, current } = res.data
-      setNotice({ text: changed ? `${assetName(asset)}: criticality ${previous}/10 → ${current}/10.` : `${assetName(asset)}: criticality already up to date.` })
-      if (changed) await loadAssets()
-    } catch (err) {
-      alert(err?.response?.data?.detail || 'Rescore failed')
-    } finally {
-      setRescoringId(null)
-    }
-  }
-
-  const handleRescoreAll = async (which) => {
-    setRescoring(true)
-    try {
-      const qs = new URLSearchParams({ scope: which === 'discovered' ? 'discovered' : 'my_assets' })
-      if (tenantFilter) qs.set('tenant_id', tenantFilter)
-      const res = await client.post(`/assets/rescore?${qs.toString()}`)
-      setNotice({ text: res.data.message })
-      await loadAssets()
-    } catch (err) {
-      alert(err?.response?.data?.detail || 'Rescore failed')
-    } finally {
-      setRescoring(false)
-    }
-  }
-
   const clearFilters = () => {
     setSearch(''); setDeviceTypeFilter(''); setSourceFilter(''); setPage(1)
     if (linkFilter) clearLinkFilter()
@@ -402,12 +371,6 @@ export default function InventoryPage() {
             <MenuButton primary label="Add asset" icon={Plus} items={[
               { label: 'Add manually', icon: Plus, hint: 'Goes to My Assets', onClick: () => setShowAdd(true) },
               { label: 'Import CSV', icon: Upload, hint: 'Goes to My Assets', onClick: () => setShowImport(true) },
-            ]} />
-          )}
-          {!isReadOnly && (
-            <MenuButton icon={rescoring ? RefreshCw : MoreHorizontal} title="More actions" items={[
-              { label: 'Rescore My Assets', icon: Zap, hint: 'Recalculate criticality', disabled: rescoring, onClick: () => handleRescoreAll('mine') },
-              { label: 'Rescore Discovered', icon: Zap, hint: 'Recalculate criticality', disabled: rescoring, onClick: () => handleRescoreAll('discovered') },
             ]} />
           )}
         </div>
@@ -580,9 +543,6 @@ export default function InventoryPage() {
                                   <>
                                     <button onClick={stop(() => setEditingAsset(a))} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="Edit asset" aria-label="Edit asset">
                                       <Pencil className="w-4 h-4" />
-                                    </button>
-                                    <button onClick={stop(() => handleRescoreOne(a))} disabled={rescoringId === a.assetId} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="Rescore this asset's criticality" aria-label="Rescore this asset's criticality">
-                                      <RefreshCw className={`w-4 h-4 ${rescoringId === a.assetId ? 'animate-spin' : ''}`} />
                                     </button>
                                     <button onClick={stop(() => handleBaseline(a))} className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`} title="Set baseline to the asset's current state" aria-label="Set baseline to the asset's current state">
                                       <Bookmark className="w-4 h-4" />

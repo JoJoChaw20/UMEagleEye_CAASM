@@ -99,7 +99,7 @@ export function SecuritySection({ inv, checks, score }) {
   if (!Array.isArray(checks)) {
     return (
       <Section icon={ShieldCheck} title="Security posture">
-        <Empty>Not assessed yet. It is computed when the agent next reports, or when criticality is rescored.</Empty>
+        <Empty>Not assessed yet. It is computed when the agent next reports.</Empty>
       </Section>
     )
   }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, Pencil, RefreshCw, Bookmark, MinusCircle, CheckCircle, Trash2, Zap,
+  ArrowLeft, Pencil, Bookmark, MinusCircle, CheckCircle, Trash2, Zap,
   Server, Cpu, Network, Bell, GitBranch, History, Link2, ShieldAlert, Eraser, Package, ClipboardList,
 } from 'lucide-react'
 import client from '../api/client'
@@ -61,7 +61,6 @@ export default function AssetDetailPage() {
   const [notice, setNotice] = useState(null)
 
   const [editing, setEditing] = useState(false)
-  const [rescoring, setRescoring] = useState(false)
   const [showBlast, setShowBlast] = useState(false)
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [adoptTarget, setAdoptTarget] = useState(null)
@@ -192,20 +191,6 @@ export default function AssetDetailPage() {
       '• You can adopt it again at any time.'
     )) return
     try { await setMembership(false) } catch (err) { alert(err?.response?.data?.detail || 'Failed to remove asset from My Assets') }
-  }
-
-  const handleRescore = async () => {
-    setRescoring(true)
-    try {
-      const res = await client.post(`/assets/${assetId}/rescore`)
-      const { changed, previous, current } = res.data
-      setNotice(changed ? `Criticality ${previous}/10 → ${current}/10.` : 'Criticality already up to date.')
-      if (changed) await refresh()
-    } catch (err) {
-      alert(err?.response?.data?.detail || 'Rescore failed')
-    } finally {
-      setRescoring(false)
-    }
   }
 
   // Confirming a suggested type sets it by hand (PATCH marks it manual), so scans and
@@ -364,9 +349,6 @@ export default function AssetDetailPage() {
             {!isReadOnly && asset.inMyAssets && (
               <>
                 <button onClick={() => setEditing(true)} className="btn-secondary text-sm flex items-center gap-2"><Pencil className="w-4 h-4" /> Edit</button>
-                <button onClick={handleRescore} disabled={rescoring} className="btn-secondary text-sm flex items-center gap-2">
-                  <RefreshCw className={`w-4 h-4 ${rescoring ? 'animate-spin' : ''}`} /> Rescore
-                </button>
                 <button onClick={handleBaseline} className="btn-secondary text-sm flex items-center gap-2"><Bookmark className="w-4 h-4" /> Set baseline</button>
                 <button onClick={handleRemove} className="btn-secondary text-sm flex items-center gap-2"><MinusCircle className="w-4 h-4" /> Move to Discovered</button>
               </>
@@ -697,7 +679,7 @@ function CriticalityExplain({ score, stored }) {
       <FactorList result={score} />
       {score.unknowns?.length > 0 && <p className="mt-2 text-xs text-dark-400">Not known yet: {score.unknowns.join(', ')}.</p>}
       {(score.score !== stored || (score.stored_model != null && score.stored_model !== score.model)) && (
-        <p className="mt-3 text-xs text-amber-400">The stored score ({stored}) is not from the current formula ({score.score}). Rescore to update it.</p>
+        <p className="mt-3 text-xs text-amber-400">The stored score ({stored}) is not from the current formula ({score.score}). It updates on the next scan or inventory, or overnight.</p>
       )}
     </>
   )

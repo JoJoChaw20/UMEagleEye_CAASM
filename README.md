@@ -15,7 +15,7 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 
 ### Asset Management
 - **Asset Inventory (My Assets)** — Manual asset registry with criticality scoring, baseline snapshots, and drift detection
-- **CSV Bulk Import** — Import assets from CSV with OS, port, and criticality data; identity-resolved on import so re-importing the same file does not create duplicates
+- **CSV Bulk Import** — Import assets from CSV with OS and port data (criticality is computed, not imported); identity-resolved on import so re-importing the same file does not create duplicates
 - **All Assets** — Combined view of all discovered and manually added assets across the tenant
 - **Duplicate Detection & Merge** — Legacy IP-keyed duplicates are grouped (`SAFE` auto-mergeable vs `REVIEW`) and merged into one survivor from the Asset Inventory "Duplicates" panel; merge moves addresses/events/SBOMs/relationships/topology, merges fields, and writes an audit log — all in one atomic batch ([Asset Identity & Deduplication](#asset-identity--deduplication))
 
@@ -310,6 +310,8 @@ Runs per tenant; clears existing relationships before reinferring.
 
 Criticality scores (1–10) are derived **only from the asset's own facts** — never from topology (layers, nodes or relationships). The relationship graph is a downstream view that may read this score; the score never reads the graph.
 
+The score is always computed, never set by hand: it is recalculated on every scan upload, agent inventory, manual add, edit and CSV import, and every night (the midnight cron rescores each tenant and writes only scores that moved), so a change to the scoring rules reaches assets nothing has touched since. There is no Rescore button; `POST /assets/rescore` and `POST /assets/:id/rescore` remain for scripts.
+
 | Factor | Effect |
 |--------|--------|
 | Device type: `server` | Higher base score |
@@ -527,7 +529,6 @@ Tenants can bulk-import assets via **My Assets → Import CSV**.
 | `mac_address` | No | MAC address (AA:BB:CC:DD:EE:FF) |
 | `owner` | No | Owner name / email |
 | `device_type` | No | `server`, `workstation`, `network`, `iot`, `unknown` |
-| `criticality_score` | No | Integer 1–10 (default: 5) |
 | `is_internet_facing` | No | `true` or `false` |
 | `hardware_vendor` | No | Hardware manufacturer |
 | `os_name` | No | OS name (e.g. `Ubuntu`, `Windows Server`) |
