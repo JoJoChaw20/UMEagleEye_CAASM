@@ -184,6 +184,43 @@ inventory is kept: each run replaces the previous one, and software that is unin
 the asset. To stop collection on a machine, run the agent with `--no-inventory` or stop it; otherwise it sends a
 new inventory at its next run.
 
+## Running as a service on Linux
+On Linux the agent runs from its folder (the `eagleeye` code next to a `.venv`); there is no
+installer. As a **systemd service** (`packaging/eagleeye.service`) it starts when the
+computer or VM boots, before anyone logs in, restarts after a crash, and logs to the journal.
+A desktop app is not needed: the dashboard runs the agent's scans, inventory and SBOMs.
+
+1. Install the tools: `sudo apt install nmap libpcap0.8`, and Syft + Grype for SBOMs:
+   ```bash
+   curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+   curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
+   ```
+   Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
+2. Save the settings once, as root (the service reads root's config,
+   `/root/.config/eagleeye/config.json`). The service takes no flags, so everything goes here:
+   ```bash
+   cd ~/agent-gui
+   sudo .venv/bin/python -m eagleeye config init --connection-code '<code from the Agents page>'      --passive [--passive-interface ens33] [--snmp-user ... --snmp-auth-key ... --snmp-priv-key ...]
+   sudo .venv/bin/python -m eagleeye check-deps
+   ```
+3. Install and start the service (`$PWD` is the agent's folder):
+   ```bash
+   sudo sed -e "s#@AGENT_DIR@#$PWD#g" -e "s/\r$//" packaging/eagleeye.service | sudo tee /etc/systemd/system/eagleeye.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now eagleeye
+   ```
+
+| Task | Command |
+|---|---|
+| Is it running? | `sudo systemctl status eagleeye` |
+| Live log | `journalctl -u eagleeye -f` (from boot: `journalctl -u eagleeye -b`) |
+| Change settings | `sudo .venv/bin/python -m eagleeye config init ...`, then `sudo systemctl restart eagleeye` |
+| Update the agent | replace the `eagleeye` folder, then `sudo systemctl restart eagleeye` |
+| Stop / do not start at boot | `sudo systemctl stop eagleeye` / `sudo systemctl disable eagleeye` |
+
+The service stops the agent with SIGINT, as Ctrl+C does, so running work ends cleanly. It
+does not start a second copy: stop it before running `eagleeye run` by hand.
+
 ## Testing against the staging environment
 Use a fresh test tenant, never production.
 
@@ -221,7 +258,7 @@ eagleeye/
   stages/     scan_nmap (Nmap + built-in fallback), snmp_poll, passive, inventory, upload
   collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser; linux.py
   passive/    ARP, mDNS/NetBIOS and DHCP sniffers
-packaging/    PyInstaller spec, Inno Setup script, build.ps1, third-party notices
+packaging/    PyInstaller spec, Inno Setup script, build.ps1, third-party notices, eagleeye.service (systemd)
 tests/        pytest suite (recorded Nmap XML, packets built with scapy, fake systems for the collectors)
 ```
 

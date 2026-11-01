@@ -1,0 +1,34 @@
+# EagleEye agent as a Linux service (systemd): starts at boot, before anyone logs in,
+# restarts after a crash, logs to the journal (journalctl -u eagleeye).
+#
+# Install (README "Running as a service on Linux"): replace @AGENT_DIR@ with the folder
+# holding eagleeye/ and .venv/, e.g.
+#   sudo sed -e "s#@AGENT_DIR@#$PWD#g" -e "s/\r$//" packaging/eagleeye.service | sudo tee /etc/systemd/system/eagleeye.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now eagleeye
+#
+# Settings come from the saved config (sudo ... -m eagleeye config init ...), not from
+# flags here: change them with config init, then systemctl restart eagleeye.
+
+[Unit]
+Description=EagleEye agent (network discovery, inventory, SBOM)
+Documentation=file:@AGENT_DIR@/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Root: passive listening (libpcap) and Nmap's OS detection need it. HOME makes the agent
+# use the same config as `sudo ... config init` (/root/.config/eagleeye/config.json).
+User=root
+Environment=HOME=/root
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=@AGENT_DIR@
+ExecStart=@AGENT_DIR@/.venv/bin/python -m eagleeye run
+# Ctrl+C (SIGINT) is how the agent stops cleanly: running scans end, sniffers stop.
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
