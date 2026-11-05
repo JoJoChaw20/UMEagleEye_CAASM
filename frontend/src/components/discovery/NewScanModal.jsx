@@ -60,11 +60,11 @@ export default function NewScanModal({ agents, networks, initial, onClose, onSub
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4" onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-labelledby="new-scan-title" className="glass-card w-full max-w-md p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h2 id="new-scan-title" className="text-lg font-semibold text-white">New full scan</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-white" title="Close"><X className="w-5 h-5" /></button>
+          <h2 id="new-scan-title" className="text-lg font-semibold text-dark-50">New full scan</h2>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50" title="Close"><X className="w-5 h-5" /></button>
         </div>
 
         {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}

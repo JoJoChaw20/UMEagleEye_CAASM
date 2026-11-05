@@ -1,10 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import {
-  Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter, RefreshCw, CheckCircle2,
-  Server, ExternalLink, Search, X, Globe, Clock, User, ChevronLeft, ChevronRight,
-  Timer, Lightbulb, History, Link2, Crosshair,
-} from 'lucide-react'
+import { Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter, RefreshCw, CheckCircle2, Server, ExternalLink, Search, X, Globe, Clock, User, ChevronLeft, ChevronRight, Timer, Lightbulb, History, Link2, Crosshair, ArrowRight, ArrowLeft } from 'lucide-react'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
@@ -15,13 +11,14 @@ import WhyAlert from '../components/common/WhyAlert'
 import WindowsCveList from '../components/common/WindowsCveList'
 import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
 import {
-  SEVERITY_COLORS, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
+  SEVERITY_COLORS, cvssColor, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
   affectedVersions, versionList, fixFor,
 } from '../components/common/alertMeta'
 import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
 } from '../components/common/triageViz'
+import AdvisoryBody from '../components/common/AdvisoryBody'
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
@@ -294,7 +291,7 @@ export default function AlertsPage() {
   return (
     <div className="space-y-8 alerts-page">
       {toast && (
-        <div className={`fixed top-4 right-4 z-[60] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium
+        <div className={`fixed top-4 right-4 z-[60] flex items-center gap-2 px-4 py-3 rounded-lg shadow-float text-sm font-medium
           ${toast.type === 'success'
             ? 'bg-green-900/90 text-green-200 border border-green-700'
             : 'bg-red-900/90 text-red-200 border border-red-700'}`}>
@@ -306,7 +303,7 @@ export default function AlertsPage() {
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight text-dark-50">Alerts</h1>
+          <h1 className="page-title">Alerts</h1>
           <p className="text-dark-400 text-sm mt-2">Review and prioritize open security findings.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -322,19 +319,17 @@ export default function AlertsPage() {
 
       {/* ── Open alert summary ── */}
       <section aria-label="Open alert summary" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="glass-card p-5 xl:p-6 border-l-4 border-l-eagle-500/80">
-          <p className="text-xs uppercase tracking-wide text-dark-400 font-semibold">Open alerts</p>
-          <p className="text-5xl font-semibold tracking-tight tabular-nums text-dark-50 mt-3">{stats ? fmtNum(stats.open_total) : '—'}</p>
-          <p className="text-sm text-dark-400 mt-2">Current active queue</p>
-        </div>
+        {/* One tile anatomy; a count takes its severity colour only when it is above 0 */}
         {[
-          { label: 'Critical', value: stats?.by_severity?.critical, tone: 'text-red-400' },
-          { label: 'High', value: stats?.by_severity?.high, tone: 'text-orange-400' },
-          { label: 'Past SLA', value: stats?.sla_breaches, tone: (stats?.sla_breaches ?? 0) > 0 ? 'text-red-400' : 'text-dark-50' },
+          { label: 'Open alerts', value: stats?.open_total, tone: '', sub: 'Current active queue' },
+          { label: 'Critical', value: stats?.by_severity?.critical, tone: 'text-red-400', sub: 'Open, critical severity' },
+          { label: 'High', value: stats?.by_severity?.high, tone: 'text-orange-400', sub: 'Open, high severity' },
+          { label: 'Past SLA', value: stats?.sla_breaches, tone: 'text-red-400', sub: 'Older than the response target' },
         ].map(metric => (
-          <div key={metric.label} className="glass-card p-5 xl:p-6 flex flex-col justify-center">
-            <p className="text-xs uppercase tracking-wide text-dark-400 font-semibold">{metric.label}</p>
-            <p className={`text-4xl font-semibold tracking-tight tabular-nums mt-3 ${metric.tone}`}>{stats ? fmtNum(metric.value) : '—'}</p>
+          <div key={metric.label} className="glass-card p-5 xl:p-6">
+            <p className="flex items-center gap-2.5 text-sm font-medium text-dark-200"><span aria-hidden="true" className="trace-node" />{metric.label}</p>
+            <p className={`mt-3 font-display text-[40px] font-semibold leading-none tabular-nums ${(metric.value ?? 0) > 0 && metric.tone ? metric.tone : 'text-dark-50'}`}>{stats ? fmtNum(metric.value) : '—'}</p>
+            <p className="mt-2 text-xs text-dark-400">{metric.sub}</p>
           </div>
         ))}
       </section>
@@ -351,7 +346,7 @@ export default function AlertsPage() {
           </h3>
           <p className="text-sm text-dark-400 mt-2 mb-5">
             Older critical and high alerts are past their response target.
-            {stats?.sla_breaches > 0 && <> <button onClick={() => pickView('overdue')} className="text-red-400 hover:underline">{fmtNum(stats.sla_breaches)} past SLA →</button></>}
+            {stats?.sla_breaches > 0 && <> <button onClick={() => pickView('overdue')} className="text-red-400 hover:underline">{fmtNum(stats.sla_breaches)} past SLA<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></button></>}
           </p>
           <AgingHeatmap aging={stats?.aging} onCell={pickCell} />
         </div>
@@ -383,8 +378,8 @@ export default function AlertsPage() {
                       <YAxis allowDecimals={false} tick={{ fill: 'rgb(var(--dark-400))', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: 'rgb(var(--dark-700) / 0.3)' }} />
                       <Legend wrapperStyle={{ fontSize: 11 }} iconType="square" iconSize={9} />
-                      <Bar name="New" dataKey="new" fill="#ff9800" radius={[4, 4, 0, 0]} maxBarSize={14} />
-                      <Bar name="Closed" dataKey="resolved" fill="#00e676" radius={[4, 4, 0, 0]} maxBarSize={14} />
+                      <Bar name="New" dataKey="new" fill="rgb(var(--sev-high))" radius={[4, 4, 0, 0]} maxBarSize={14} />
+                      <Bar name="Closed" dataKey="resolved" fill="rgb(var(--sev-low))" radius={[4, 4, 0, 0]} maxBarSize={14} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -403,7 +398,7 @@ export default function AlertsPage() {
               : 'border-transparent text-dark-400 hover:text-dark-200'}`}>
             {v.label}
             {v.id === 'overdue' && (stats?.sla_breaches ?? 0) > 0 && (
-              <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300">{fmtNum(stats.sla_breaches)}</span>
+              <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded-md bg-red-500/20 text-red-300">{fmtNum(stats.sla_breaches)}</span>
             )}
           </button>
         ))}
@@ -430,19 +425,19 @@ export default function AlertsPage() {
           <option value="low">Low</option>
         </select>
         {assetFilter && (
-          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-md border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
             <Server className="w-3 h-3" />Asset: {assetLabel}
             <button onClick={() => resetPage(setAssetFilter)(null)} aria-label="Remove asset filter"><X className="w-3 h-3" /></button>
           </span>
         )}
         {pkgFilter && (
-          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-md border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
             Package: <span className="font-mono">{pkgFilter}</span>
             <button onClick={() => resetPage(setPkgFilter)('')} aria-label="Remove package filter"><X className="w-3 h-3" /></button>
           </span>
         )}
         {age && (
-          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
+          <span className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-md border border-eagle-500/40 text-eagle-300 bg-eagle-500/10">
             {AGE_LABELS[age]}
             <button onClick={() => resetPage(setAge)('')} aria-label="Remove age filter"><X className="w-3 h-3" /></button>
           </span>
@@ -484,7 +479,7 @@ export default function AlertsPage() {
           )}
           {view === 'cve' && (
             pkgFilter && grouped
-              ? <button onClick={backToFixes} className="text-xs text-eagle-400 hover:underline">← Back to fixes</button>
+              ? <button onClick={backToFixes} className="text-xs text-eagle-400 hover:underline"><ArrowLeft aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-3px]" />Back to fixes</button>
               : (
                 <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer" title="One row per vulnerable package: upgrade it to fix its CVEs">
                   <input type="checkbox" checked={grouped} onChange={e => setGrouped(e.target.checked)} /> Group by fix
@@ -559,11 +554,11 @@ export default function AlertsPage() {
                 <tr key={e.event_id} onClick={() => setDetailId(e.event_id)}
                   className={`cursor-pointer ${detailId === e.event_id ? 'bg-eagle-500/5' : ''}`}>
                   {canManage && (
-                    <td onClick={ev => ev.stopPropagation()} style={{ boxShadow: `inset 3px 0 0 ${SEVERITY_COLORS[e.severity]}` }}>
+                    <td onClick={ev => ev.stopPropagation()}>
                       <input type="checkbox" checked={selected.has(e.event_id)} onChange={() => toggleOne(e.event_id)} aria-label="Select alert" />
                     </td>
                   )}
-                  <td style={canManage ? undefined : { boxShadow: `inset 3px 0 0 ${SEVERITY_COLORS[e.severity]}` }}>
+                  <td>
                     <div className="flex flex-col items-start gap-1">
                       <PriorityTier score={e.priority_score} />
                       <SevBadge sev={e.severity} />
@@ -572,11 +567,11 @@ export default function AlertsPage() {
                   <td className="text-dark-200 text-xs min-w-[300px]">
                     <div className="flex items-center gap-1.5 text-sm text-dark-100 font-medium">
                       {isCtiHit(e) && <Crosshair className="w-3.5 h-3.5 text-accent-red" title="Threat-intel match" />}
-                      {e.details?.kev && <span className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="On CISA's Known Exploited Vulnerabilities list">KEV</span>}
+                      {e.details?.kev && <span className="text-[11px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="On CISA's Known Exploited Vulnerabilities list">KEV</span>}
                       {alertLabel(e)}
                     </div>
                     <div className="mt-1"><ReasonChips reasons={riskReasons(e)} max={4} /></div>
-                    {e.has_advisory && <span className="text-[10px] text-accent-green">● advisory ready</span>}
+                    {e.has_advisory && <span className="inline-flex items-center gap-1.5 text-[11px] text-accent-green"><span className="h-1.5 w-1.5 rounded-full bg-accent-green" />advisory ready</span>}
                   </td>
                   <td className="font-mono text-xs text-accent-cyan max-w-[220px] truncate">
                     {e.details?.cve_id ? (
@@ -613,7 +608,7 @@ export default function AlertsPage() {
                   </td>
                   <td className="font-mono text-xs whitespace-nowrap">
                     {e.details?.cvss_base_score != null
-                      ? <span style={{ color: e.details.cvss_base_score >= 9 ? '#ff5252' : e.details.cvss_base_score >= 7 ? '#ff9800' : e.details.cvss_base_score >= 4 ? '#ffc400' : '#00e676' }}>{e.details.cvss_base_score}</span>
+                      ? <span style={{ color: cvssColor(e.details.cvss_base_score) }}>{e.details.cvss_base_score}</span>
                       : '—'}
                     <span className="text-dark-500"> / </span>
                     {e.details?.epss_score != null ? `${(e.details.epss_score * 100).toFixed(1)}%` : '—'}
@@ -705,9 +700,9 @@ function CloseDialog({ count, status, onCancel, onConfirm }) {
     accepted_risk:  'Who approved it and why? e.g. "RDP required for vendor support, approved by IT lead, firewall-restricted"',
   }
   return (
-    <div role="dialog" aria-modal="true" className="fixed inset-0 z-[55] bg-black/60 flex items-center justify-center p-4" onClick={onCancel}>
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-[55] bg-dark-950/70 flex items-center justify-center p-4" onClick={onCancel}>
       <div className="glass-card p-5 w-full max-w-md bg-dark-800" onClick={e => e.stopPropagation()}>
-        <h3 className="text-white font-semibold mb-1">{ACTION_LABELS[status]}{count > 1 ? ` — ${count} alerts` : ''}</h3>
+        <h3 className="text-dark-50 font-semibold mb-1">{ACTION_LABELS[status]}{count > 1 ? ` — ${count} alerts` : ''}</h3>
         <p className="text-xs text-dark-400 mb-3">
           {status === 'accepted_risk'
             ? 'The current state becomes the approved baseline for drift alerts. This is recorded in the audit log.'
@@ -761,10 +756,10 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/40" />
-      <aside className="relative w-full max-w-xl h-full overflow-y-auto bg-dark-900 border-l border-dark-700 shadow-2xl"
+      <div className="absolute inset-0 bg-dark-950/70" />
+      <aside className="relative w-full max-w-xl h-full overflow-y-auto bg-dark-900 border-l border-dark-700 shadow-float"
         onClick={ev => ev.stopPropagation()}>
-        <div className="sticky top-0 z-10 bg-dark-900/95 backdrop-blur border-b border-dark-700 px-5 py-3 flex items-center gap-2">
+        <div className="sticky top-0 z-10 bg-dark-900/95 border-b border-dark-700 px-5 py-3 flex items-center gap-2">
           <button onClick={() => onNavigate(-1)} className="p-1 rounded hover:bg-dark-700 text-dark-400" title="Previous (k)"><ChevronLeft className="w-4 h-4" /></button>
           <button onClick={() => onNavigate(1)} className="p-1 rounded hover:bg-dark-700 text-dark-400" title="Next (j)"><ChevronRight className="w-4 h-4" /></button>
           <span className="text-xs text-dark-500 ml-1">j / k to move · Esc to close</span>
@@ -786,12 +781,12 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 <SevBadge sev={e.severity} />
                 <StatusBadge status={e.status} note={e.resolution_note} />
                 {e.asset?.is_internet_facing && (
-                  <span className="text-xs px-2 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400 inline-flex items-center gap-1">
+                  <span className="text-xs px-2 py-0.5 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-400 inline-flex items-center gap-1">
                     <Globe className="w-3 h-3" />internet-facing{e.asset.internet_facing_confirmed ? '' : ' (inferred)'}
                   </span>
                 )}
               </div>
-              <h2 className="text-lg font-semibold text-white">{alertLabel(e)} — <span className="font-mono text-accent-cyan">{renderDetail(e)}</span></h2>
+              <h2 className="text-lg font-semibold text-dark-50">{alertLabel(e)} — <span className="font-mono text-accent-cyan">{renderDetail(e)}</span></h2>
               <p className="text-xs text-dark-400 mt-1">
                 First seen {new Date(e.first_seen).toLocaleString()} · last seen {timeAgo(e.last_seen)}
                 {e.occurrences > 1 ? ` · detected ${e.occurrences}×` : ''}
@@ -884,7 +879,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
               {e.event_type === 'os_patch_missing' && d.cves > 0 && <WindowsCveList eventId={e.event_id} />}
               {d.package_name && (
                 <button onClick={() => onPackageAlerts(d.package_name)} className="text-xs text-eagle-400 hover:underline mt-2">
-                  All open alerts for {d.package_name} →
+                  All open alerts for {d.package_name}<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" />
                 </button>
               )}
             </Section>
@@ -907,8 +902,8 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                   ['Last scanned', e.asset.last_scanned ? `${timeAgo(e.asset.last_scanned)} (${e.asset.source?.replace('scan_', '')})` : 'never'],
                 ]} />
                 <div className="flex items-center gap-4 mt-2">
-                  <Link to={assetHref(e.asset.asset_id)} className="text-xs text-eagle-400 hover:underline">Open asset →</Link>
-                  <button onClick={() => onAssetAlerts(e.asset)} className="text-xs text-eagle-400 hover:underline">All alerts on this asset →</button>
+                  <Link to={assetHref(e.asset.asset_id)} className="text-xs text-eagle-400 hover:underline">Open asset<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></Link>
+                  <button onClick={() => onAssetAlerts(e.asset)} className="text-xs text-eagle-400 hover:underline">All alerts on this asset<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></button>
                 </div>
               </Section>
             )}
@@ -919,7 +914,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 ? <p className="text-xs text-dark-500">No mapped relationships. Check the topology view if this host is shared infrastructure.</p>
                 : <ul className="space-y-1">{e.related_assets.map((r, i) => (
                     <li key={i} className="text-xs text-dark-300 flex items-center gap-2">
-                      <span className="text-dark-500 w-16">{r.direction === 'outbound' ? '→' : '←'} {r.relationship.replace(/_/g, ' ')}</span>
+                      <span className="text-dark-500 w-16">{r.direction === 'outbound' ? <ArrowRight aria-label="outbound" className="mr-1 inline h-3 w-3 align-[-2px]" /> : <ArrowLeft aria-label="inbound" className="mr-1 inline h-3 w-3 align-[-2px]" />}{r.relationship.replace(/_/g, ' ')}</span>
                       {r.asset_id
                         ? <Link to={assetHref(r.asset_id)} className="text-eagle-300 hover:underline">{r.hostname ?? r.ip}</Link>
                         : <span>{r.hostname ?? r.ip}</span>}
@@ -946,8 +941,8 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
               {e.advisory ? (
                 <div className="space-y-2">
                   <p className="text-sm text-dark-200">{e.advisory.summary}</p>
-                  <p className="text-xs text-dark-300 whitespace-pre-line">{e.advisory.recommended_action}</p>
-                  <Link to="/advisories" state={{ openAdvisoryId: e.advisory.advisory_id }} className="text-xs text-eagle-400 hover:underline">Open this advisory →</Link>
+                  <AdvisoryBody text={e.advisory.recommended_action} compact />
+                  <Link to="/advisories" state={{ openAdvisoryId: e.advisory.advisory_id }} className="text-xs text-eagle-400 hover:underline">Open this advisory<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></Link>
                 </div>
               ) : canManage ? (
                 <button onClick={onAdvisory} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Generate advisory</button>

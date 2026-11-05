@@ -21,7 +21,7 @@ function formatPorts(ports) {
 
 const STATUS = {
   mine:       { label: 'In My Assets', cls: 'bg-green-500/15 text-green-500 border-green-500/40' },
-  discovered: { label: 'Discovered',   cls: 'bg-blue-500/15 text-blue-400 border-blue-500/40' },
+  discovered: { label: 'Discovered',   cls: 'bg-eagle-500/15 text-eagle-400 border-eagle-500/40' },
   gone:       { label: 'Not in assets', cls: 'bg-dark-600/40 text-dark-400 border-dark-500/30' },
 }
 
@@ -105,7 +105,7 @@ export default function HostsPanel({ scanId, agentName, canAdopt, onClose }) {
                         {a ? (
                           <Link to={`/inventory/${a.asset_id}`} className="font-mono text-sm text-accent-cyan hover:underline">{h.ip}</Link>
                         ) : <span className="font-mono text-sm text-accent-cyan">{h.ip}</span>}
-                        <span className={`text-[11px] px-1.5 py-0.5 border rounded-full ${status.cls}`}>{status.label}</span>
+                        <span className={`text-[11px] px-1.5 py-0.5 border rounded-md ${status.cls}`}>{status.label}</span>
                       </div>
                       {(h.hostname || a?.hostname) && <p className="text-xs text-dark-200">{h.hostname || a.hostname}</p>}
                       {h.mac && <p className="text-xs text-dark-400 font-mono">{h.mac}{h.vendor ? ` · ${h.vendor}` : ''}</p>}

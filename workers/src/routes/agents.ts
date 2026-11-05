@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm'
+import type { R2Bucket } from '@cloudflare/workers-types'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES } from '../lib/permissions'
@@ -118,6 +119,54 @@ router.post(
     }, 201)
   }
 )
+
+// ── The Windows installer ─────────────────────────────────────────
+// Uploaded to R2 as agent-installer/EagleEyeAgent-Setup-<version>.exe (see AGENT_SETUP_GUIDE.md);
+// the newest version is offered. Any signed-in user may download it: it holds no secrets, the
+// connection code is what ties an agent to a tenant. Declared before /:agentId.
+const INSTALLER_PREFIX = 'agent-installer/'
+const INSTALLER_NAME = /^agent-installer\/(EagleEyeAgent-Setup-(\d+(?:\.\d+){1,3})\.exe)$/
+
+function compareVersions(a: string, b: string): number {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0)
+    if (d) return d
+  }
+  return 0
+}
+
+async function latestInstaller(bucket: R2Bucket) {
+  const listed = await bucket.list({ prefix: INSTALLER_PREFIX })
+  let best: { key: string; filename: string; version: string; size: number; uploaded: Date } | null = null
+  for (const o of listed.objects) {
+    const m = INSTALLER_NAME.exec(o.key)
+    const filename = m?.[1], version = m?.[2]
+    if (filename && version && (!best || compareVersions(version, best.version) > 0)) {
+      best = { key: o.key, filename, version, size: o.size, uploaded: o.uploaded }
+    }
+  }
+  return best
+}
+
+router.get('/installer', authMiddleware, async (c) => {
+  const inst = await latestInstaller(c.env.REPORTS_BUCKET)
+  if (!inst) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
+  return c.json({ filename: inst.filename, version: inst.version, size: inst.size, uploaded_at: inst.uploaded })
+})
+
+router.get('/installer/download', authMiddleware, async (c) => {
+  const inst = await latestInstaller(c.env.REPORTS_BUCKET)
+  const obj = inst ? await c.env.REPORTS_BUCKET.get(inst.key) : null
+  if (!inst || !obj) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
+  // Streamed: the installer is tens of MB, more than a Worker should hold in memory.
+  return c.body(obj.body as unknown as ReadableStream, 200, {
+    'Content-Type': 'application/vnd.microsoft.portable-executable',
+    'Content-Disposition': `attachment; filename="${inst.filename}"`,
+    'Content-Length': String(obj.size),
+    'Cache-Control': 'private, max-age=300',
+  })
+})
 
 // ── GET /:agentId — Single agent detail ───────────────────────────
 router.get('/:agentId', authMiddleware, async (c) => {

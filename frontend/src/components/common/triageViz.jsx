@@ -1,7 +1,7 @@
 // Visual building blocks shared by the Dashboard and Alerts pages. Every color
 // here carries a meaning (severity or urgency) and is always paired with a text
 // label, so nothing is readable by color alone.
-import { ChevronRight, Clock, CheckCircle2 } from 'lucide-react'
+import { ChevronRight, Clock, CheckCircle2, ArrowRight } from 'lucide-react'
 import { SEVERITY_COLORS, TONE, CONCERNS, priorityTier, dueInfo } from './alertMeta'
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low']
@@ -46,19 +46,19 @@ export function ConcernCard({ meta, count, loading, onOpen }) {
   const clear = !loading && count === 0
   const t = clear ? TONE.good : TONE[meta.tone]
   return (
-    <div className={`glass-card w-full p-5 border-l-4 transition-colors flex flex-col min-h-[190px]
-        ${clear ? 'border-l-emerald-500/50 opacity-80' : t.bg}
-        hover:border-eagle-500/40`}
-      style={!clear ? { borderLeftColor: t.bar } : undefined}>
+    <div className={`glass-card flex min-h-[190px] w-full flex-col p-5 transition-[border-color,transform] duration-200 ease-out
+        ${clear ? 'opacity-80' : 'hover:-translate-y-px hover:border-eagle-500/50'}`}>
       {/* Header area opens the whole category */}
       <button type="button" onClick={onOpen} disabled={clear || loading || !onOpen} className="text-left group"
         title={onOpen && !clear ? `Open all ${fmtNum(count)} alerts in this category` : undefined}>
         <div className="flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${clear ? 'text-emerald-400' : t.text}`} />
-          <span className="text-sm font-semibold text-dark-100 group-hover:text-eagle-300">{meta.title}</span>
+          <span className={`flex h-7 w-7 items-center justify-center rounded-md border ${clear ? 'border-emerald-500/30 bg-emerald-500/10' : `${t.border} ${t.bg}`}`}>
+            <Icon className={`h-3.5 w-3.5 ${clear ? 'text-emerald-400' : t.text}`} />
+          </span>
+          <span className="text-sm font-semibold text-dark-100 group-hover:text-eagle-400">{meta.title}</span>
         </div>
         <div className="flex items-baseline gap-2 mt-4">
-          <span className={`text-5xl font-semibold leading-none tracking-tight tabular-nums ${clear ? 'text-dark-400' : 'text-dark-50'}`}>{loading ? '…' : fmtNum(count)}</span>
+          <span className={`font-display text-5xl font-semibold leading-none tabular-nums ${clear ? 'text-dark-400' : 'text-dark-50'}`}>{loading ? '…' : fmtNum(count)}</span>
           {clear
             ? <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" />All clear</span>
             : !loading && <span className={`text-xs font-semibold ${t.text}`}>{meta.action}</span>}
@@ -66,7 +66,7 @@ export function ConcernCard({ meta, count, loading, onOpen }) {
         <p className="text-sm text-dark-400 mt-3 leading-relaxed line-clamp-2">{meta.why}</p>
       </button>
       {!clear && !loading && onOpen && (
-        <button type="button" onClick={onOpen} className="mt-auto pt-4 text-sm text-eagle-400 hover:underline inline-flex items-center gap-0.5 self-start">
+        <button type="button" onClick={onOpen} className="mt-auto inline-flex items-center gap-0.5 self-start pt-4 text-sm font-medium text-eagle-400 hover:text-eagle-300">
           Review {count === 1 ? 'it' : `all ${fmtNum(count)}`} <ChevronRight className="w-3.5 h-3.5" />
         </button>
       )}
@@ -119,7 +119,7 @@ export function AgingHeatmap({ aging, onCell }) {
       <table className="w-full text-sm border-separate" style={{ borderSpacing: 3 }}>
         <thead>
           <tr>
-            <th className="text-left text-dark-500 font-medium pb-1 pr-2">Open for →</th>
+            <th className="text-left text-dark-500 font-medium pb-1 pr-2">Open for<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></th>
             {buckets.map(b => <th key={b} className="text-dark-400 font-medium pb-1 whitespace-nowrap">{BUCKET_LABELS[b]}</th>)}
             <th className="text-dark-400 font-medium pb-1 pl-2 text-right">Total</th>
           </tr>
@@ -144,7 +144,7 @@ export function AgingHeatmap({ aging, onCell }) {
                         className={`w-full h-11 rounded-lg text-center tabular-nums transition-colors
                           ${n ? 'text-dark-50 font-semibold hover:ring-2 hover:ring-eagle-400/60 cursor-pointer' : 'text-dark-600 cursor-default'}
                           ${late ? 'ring-1 ring-inset ring-red-500/70' : ''}`}
-                        style={{ background: n ? `rgba(51,147,255,${shade(n)})` : 'rgb(var(--dark-700) / 0.25)' }}>
+                        style={{ background: n ? `rgb(var(--eagle-500) / ${shade(n)})` : 'rgb(var(--dark-700) / 0.25)' }}>
                         <span className="inline-flex items-center gap-1">
                           {late && <Clock className="w-3 h-3 text-red-400" />}{n ? fmtNum(n) : '·'}
                         </span>
@@ -181,7 +181,7 @@ export function ReasonChips({ reasons, max = 4 }) {
   return (
     <span className="inline-flex flex-wrap gap-1">
       {reasons.slice(0, max).map(r => (
-        <span key={r.label} className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${toneCls[r.tone] ?? toneCls.serious}`}>{r.label}</span>
+        <span key={r.label} className={`text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap ${toneCls[r.tone] ?? toneCls.serious}`}>{r.label}</span>
       ))}
     </span>
   )

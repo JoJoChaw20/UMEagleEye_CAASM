@@ -1,17 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bell, Search, Sun, Moon, Monitor, PanelLeft, Settings, LogOut, ChevronDown, X } from 'lucide-react'
+import { Bell, Search, Sun, Moon, Monitor, PanelLeft, Settings, LogOut, ChevronDown, ArrowRight } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useTheme } from '../../context/ThemeContext'
 import client from '../../api/client'
+import BrandLogo from '../ui/BrandLogo'
 
 const THEME_OPTIONS = [
   { value: 'dark',   label: 'Dark',   Icon: Moon },
   { value: 'light',  label: 'Light',  Icon: Sun },
   { value: 'system', label: 'System', Icon: Monitor },
 ]
-
-const DEVICE_ICONS = { server: '🖥️', workstation: '💻', network: '🌐', iot: '📡', mobile: '📱' }
 
 function formatRelTime(ts) {
   const diff = (Date.now() - new Date(ts).getTime()) / 1000
@@ -22,32 +21,23 @@ function formatRelTime(ts) {
 }
 
 function severityDot(s) {
-  if (s === 'critical') return 'bg-red-500'
-  if (s === 'warning')  return 'bg-amber-400'
-  return 'bg-blue-400'
+  if (s === 'critical') return 'bg-accent-red'
+  if (s === 'warning')  return 'bg-accent-amber'
+  return 'bg-eagle-400'
 }
 function severityText(s) {
   if (s === 'critical') return 'text-red-400'
   if (s === 'warning')  return 'text-amber-400'
-  return 'text-blue-400'
+  return 'text-dark-400'
 }
 
-export default function Header({ onToggleSidebar }) {
+export default function Header({ onToggleSidebar, onOpenPalette }) {
   const { user, logout } = useAuth()
   const { theme, setTheme } = useTheme()
   const navigate = useNavigate()
 
   // ── Theme ─────────────────────────────────────────────────────────
-  const [themeOpen, setThemeOpen] = useState(false)
-  const themeRef = useRef(null)
-  const CurrentIcon = THEME_OPTIONS.find(o => o.value === theme)?.Icon ?? Moon
-
-  // ── Search ────────────────────────────────────────────────────────
-  const [query, setQuery]         = useState('')
-  const [results, setResults]     = useState([])
-  const [searchOpen, setSearchOpen] = useState(false)
-  const searchRef   = useRef(null)
-  const searchTimer = useRef(null)
+  // (a three-way switch, always visible)
 
   // ── Notifications ─────────────────────────────────────────────────
   const [notifs, setNotifs]       = useState([])
@@ -155,36 +145,12 @@ export default function Header({ onToggleSidebar }) {
   // ── Close all dropdowns on outside click ──────────────────────────
   useEffect(() => {
     const close = (e) => {
-      if (themeRef.current   && !themeRef.current.contains(e.target))   setThemeOpen(false)
       if (notifRef.current   && !notifRef.current.contains(e.target))   setNotifOpen(false)
       if (profileRef.current && !profileRef.current.contains(e.target)) setProfileOpen(false)
-      if (searchRef.current  && !searchRef.current.contains(e.target))  setSearchOpen(false)
     }
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
-
-  // ── Search with 300ms debounce ────────────────────────────────────
-  const handleQueryChange = (e) => {
-    const q = e.target.value
-    setQuery(q)
-    clearTimeout(searchTimer.current)
-    if (!q.trim()) { setResults([]); setSearchOpen(false); return }
-    searchTimer.current = setTimeout(async () => {
-      try {
-        const res = await client.get('/assets', { params: { search: q, limit: 6 } })
-        setResults(res.data.items || [])
-        setSearchOpen(true)
-      } catch { setResults([]) }
-    }, 300)
-  }
-
-  const clearSearch = () => { setQuery(''); setResults([]); setSearchOpen(false) }
-
-  const handleResultClick = (assetId) => {
-    clearSearch()
-    navigate(`/inventory/${encodeURIComponent(assetId)}`)
-  }
 
   // ── Map notification type → route + state ────────────────────────
   const handleNotifClick = (n) => {
@@ -217,128 +183,68 @@ export default function Header({ onToggleSidebar }) {
     })
   }
 
-  return (
-    <header className="h-14 bg-dark-900/80 backdrop-blur-lg border-b border-dark-700/50 flex items-center justify-between px-4 sticky top-0 z-40">
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+  const iconBtn = 'relative flex h-9 w-9 items-center justify-center rounded-md text-dark-400 transition-colors duration-150 hover:bg-dark-700/40 hover:text-dark-50'
 
-      {/* Left: sidebar toggle + search */}
-      <div className="flex items-center gap-3 flex-1 max-w-xl">
-        <button
-          onClick={onToggleSidebar}
-          className="p-2 text-dark-400 hover:text-dark-100 hover:bg-dark-800 rounded-lg transition-all flex-shrink-0"
-          title="Toggle sidebar"
-        >
-          <PanelLeft className="w-4 h-4" />
+  return (
+    <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-4 border-b border-dark-700/80 bg-dark-900 px-4 lg:px-6">
+
+      {/* Left: sidebar toggle + command palette trigger */}
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <button type="button" onClick={onToggleSidebar} className={iconBtn} title="Toggle sidebar" aria-label="Toggle sidebar">
+          <PanelLeft className="h-4 w-4" />
         </button>
 
-        {/* Global search */}
-        <div className="relative flex-1" ref={searchRef}>
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400 pointer-events-none" />
-          <input
-            id="global-search"
-            type="text"
-            value={query}
-            onChange={handleQueryChange}
-            onFocus={() => results.length > 0 && setSearchOpen(true)}
-            onKeyDown={(e) => { if (e.key === 'Escape') clearSearch() }}
-            placeholder="Search assets, CVEs, alerts..."
-            className="input-field w-full pl-10 pr-8 py-2 text-sm bg-dark-850"
-          />
-          {query && (
-            <button onClick={clearSearch} className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+        {/* The rail is a drawer below 1024px, so the mark keeps the logo in view */}
+        <Link to="/" title="UMEagleEye · Dashboard" className="flex-shrink-0 lg:hidden">
+          <BrandLogo variant="mark" className="h-9 w-9" />
+        </Link>
 
-          {/* Search dropdown */}
-          {searchOpen && (
-            <div className="absolute top-full left-0 right-0 mt-1.5 bg-dark-800 border border-dark-700 rounded-xl shadow-2xl z-50 overflow-hidden">
-              {results.length === 0 ? (
-                <div className="px-4 py-3 text-sm text-dark-400">No assets found for "{query}"</div>
-              ) : (
-                <>
-                  <div className="px-4 py-2 border-b border-dark-700/50">
-                    <span className="text-[10px] text-dark-500 uppercase tracking-wider">Assets</span>
-                  </div>
-                  {results.map(a => (
-                    <button
-                      key={a.assetId}
-                      onClick={() => handleResultClick(a.assetId)}
-                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-dark-700 w-full text-left transition-colors"
-                    >
-                      <span className="text-base flex-shrink-0">{DEVICE_ICONS[a.deviceType] || '❓'}</span>
-                      <div className="min-w-0">
-                        <p className="text-sm text-white truncate">{a.hostname || '—'}</p>
-                        <p className="text-xs text-dark-400 font-mono">{a.ipAddress}</p>
-                      </div>
-                      <span className="ml-auto text-xs text-dark-500 capitalize flex-shrink-0">{a.deviceType}</span>
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => { navigate(`/inventory?${new URLSearchParams({ scope: 'any', q: query.trim() })}`); clearSearch() }}
-                    className="w-full px-4 py-2.5 text-xs text-eagle-400 hover:text-eagle-300 hover:bg-dark-700/50 border-t border-dark-700/50 text-center transition-colors"
-                  >
-                    View all in Asset Inventory →
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-        </div>
+        <button type="button" id="global-search" onClick={onOpenPalette} aria-haspopup="dialog" aria-label="Search assets or jump to a page"
+          className="group flex h-9 w-9 flex-shrink-0 items-center justify-center gap-2.5 rounded-md border border-dark-700 bg-dark-800 text-left text-sm text-dark-400 transition-[border-color,box-shadow] duration-150 hover:border-dark-600 focus-visible:border-eagle-500 sm:w-full sm:max-w-md sm:flex-shrink sm:justify-start sm:px-3">
+          <Search className="h-4 w-4 flex-shrink-0 text-dark-400 transition-colors group-hover:text-eagle-400" />
+          <span className="hidden min-w-0 flex-1 truncate sm:block">Search assets or jump to a page…</span>
+          <span className="hidden items-center gap-1 sm:flex">
+            <span className="kbd">{isMac ? 'Cmd' : 'Ctrl'}</span><span className="kbd">K</span>
+          </span>
+        </button>
       </div>
 
       {/* Right */}
-      <div className="flex items-center gap-1">
+      <div className="flex flex-shrink-0 items-center gap-1.5">
 
-        {/* Theme picker */}
-        <div className="relative" ref={themeRef}>
-          <button
-            onClick={() => setThemeOpen(o => !o)}
-            className="p-2 text-dark-400 hover:text-dark-100 hover:bg-dark-800 rounded-lg transition-all"
-            title="Change theme"
-          >
-            <CurrentIcon className="w-4 h-4" />
-          </button>
-          {themeOpen && (
-            <div className="absolute right-0 top-full mt-1.5 bg-dark-800 border border-dark-700 rounded-xl shadow-xl z-50 py-1 w-36 overflow-hidden">
-              {THEME_OPTIONS.map(({ value, label, Icon }) => (
-                <button
-                  key={value}
-                  onClick={() => { setTheme(value); setThemeOpen(false) }}
-                  className={`flex items-center gap-2.5 px-3 py-2 text-sm w-full hover:bg-dark-700 transition-colors ${theme === value ? 'text-eagle-400' : 'text-dark-300'}`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {label}
-                  {theme === value && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-eagle-400" />}
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Theme: dark / light / system, one click each */}
+        <div role="group" aria-label="Theme" className="hidden items-center rounded-md border border-dark-700 bg-dark-800 p-0.5 sm:flex">
+          {THEME_OPTIONS.map(({ value, label, Icon }) => (
+            <button key={value} type="button" onClick={() => setTheme(value)} aria-pressed={theme === value} title={`${label} theme`}
+              className={`flex h-7 w-8 items-center justify-center rounded transition-colors duration-150 ${theme === value
+                ? 'bg-eagle-500/15 text-eagle-400 shadow-[inset_0_0_0_1px_rgb(var(--eagle-500)/0.35)]'
+                : 'text-dark-400 hover:text-dark-100'}`}>
+              <Icon className="h-3.5 w-3.5" />
+              <span className="sr-only">{label}</span>
+            </button>
+          ))}
         </div>
 
         {/* Notifications bell */}
         <div className="relative" ref={notifRef}>
-          <button
-            onClick={openNotifications}
-            className="relative p-2 text-dark-400 hover:text-dark-100 hover:bg-dark-800 rounded-lg transition-all"
-            title="Notifications"
-            id="notifications-btn"
-          >
-            <Bell className="w-4 h-4" />
+          <button type="button" onClick={openNotifications} className={iconBtn} title="Notifications" id="notifications-btn"
+            aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'} aria-expanded={notifOpen}>
+            <Bell className="h-4 w-4" />
             {unreadCount > 0 && (
-              <span className="absolute top-1 right-1 min-w-[16px] h-4 bg-accent-red rounded-full flex items-center justify-center text-[9px] text-white font-bold px-0.5 leading-none">
+              <span className="absolute right-0.5 top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-accent-red px-1 text-[10px] font-semibold leading-none text-on-brand ring-2 ring-dark-900">
                 {unreadCount > 99 ? '99+' : unreadCount}
               </span>
             )}
           </button>
 
           {notifOpen && (
-            <div className="absolute right-0 top-full mt-1.5 w-96 max-h-[480px] bg-dark-800 border border-dark-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden">
-              {/* Header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700/50 flex-shrink-0">
-                <span className="text-sm font-semibold text-white">Notifications</span>
+            <div className="absolute right-0 top-full z-50 mt-2 flex max-h-[480px] w-96 flex-col overflow-hidden rounded-xl border border-dark-700 bg-dark-800 shadow-float animate-[palette-rise_200ms_cubic-bezier(0.16,1,0.3,1)]">
+              <div className="flex flex-shrink-0 items-center justify-between border-b border-dark-700 px-4 py-3">
+                <span className="font-display text-sm font-semibold text-dark-50">Notifications</span>
                 <div className="flex items-center gap-2">
                   {unreadCount > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-eagle-500/20 text-eagle-400 text-[10px] font-bold">
+                    <span className="rounded-md bg-eagle-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-eagle-400">
                       {unreadCount} new
                     </span>
                   )}
@@ -346,46 +252,36 @@ export default function Header({ onToggleSidebar }) {
                 </div>
               </div>
 
-              {/* List */}
-              <div className="overflow-y-auto flex-1">
+              <div className="flex-1 overflow-y-auto">
                 {notifs.length === 0 ? (
-                  <div className="py-10 text-center text-dark-400 text-sm">
-                    <Bell className="w-8 h-8 mx-auto mb-2 opacity-20" />
-                    No notifications
+                  <div className="py-10 text-center text-sm text-dark-400">
+                    <Bell className="mx-auto mb-2 h-7 w-7 text-dark-600" />
+                    All quiet. New advisories, SLA breaches and agent outages appear here.
                   </div>
                 ) : notifs.slice(0, 30).map(n => {
                   const isUnread = !seenIds.has(n.id)
                   return (
-                    <button
-                      key={n.id}
-                      onClick={() => handleNotifClick(n)}
-                      className={`w-full text-left px-4 py-3 border-b border-dark-800/60 hover:bg-dark-700/40 transition-colors cursor-pointer ${isUnread ? 'bg-eagle-500/5' : ''}`}
-                    >
+                    <button key={n.id} type="button" onClick={() => handleNotifClick(n)}
+                      className={`w-full border-b border-dark-700/60 px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-eagle-500/[0.06] ${isUnread ? 'bg-eagle-500/[0.04]' : ''}`}>
                       <div className="flex items-start gap-2.5">
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${isUnread ? 'bg-eagle-400' : severityDot(n.severity)}`} />
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-sm font-medium leading-tight ${isUnread ? 'text-white' : 'text-dark-100'}`}>{n.title}</p>
-                          <p className="text-xs text-dark-400 mt-0.5 line-clamp-2">{n.message}</p>
+                        <span className={`mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full ${isUnread ? 'bg-eagle-400' : severityDot(n.severity)}`} />
+                        <div className="min-w-0 flex-1">
+                          <p className={`text-sm leading-tight ${isUnread ? 'font-semibold text-dark-50' : 'font-medium text-dark-100'}`}>{n.title}</p>
+                          <p className="mt-0.5 line-clamp-2 text-xs text-dark-400">{n.message}</p>
                         </div>
-                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                          {isUnread && <span className="w-1.5 h-1.5 rounded-full bg-eagle-400" />}
-                          <span className={`text-[10px] ${severityText(n.severity)}`}>
-                            {formatRelTime(n.timestamp)}
-                          </span>
-                        </div>
+                        <span className={`flex-shrink-0 text-[11px] ${severityText(n.severity)}`}>
+                          {formatRelTime(n.timestamp)}
+                        </span>
                       </div>
                     </button>
                   )
                 })}
               </div>
 
-              {/* Footer */}
-              <div className="border-t border-dark-700/50 px-4 py-2.5 flex-shrink-0">
-                <button
-                  onClick={() => { navigate('/advisories'); setNotifOpen(false) }}
-                  className="text-xs text-eagle-400 hover:text-eagle-300 transition-colors"
-                >
-                  View all advisories →
+              <div className="flex-shrink-0 border-t border-dark-700 px-4 py-2.5">
+                <button type="button" onClick={() => { navigate('/advisories'); setNotifOpen(false) }}
+                  className="text-xs font-medium text-eagle-400 transition-colors hover:text-eagle-300">
+                  View all advisories<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" />
                 </button>
               </div>
             </div>
@@ -394,56 +290,52 @@ export default function Header({ onToggleSidebar }) {
 
         {/* Profile dropdown */}
         <div className="relative" ref={profileRef}>
-          <button
-            onClick={() => setProfileOpen(o => !o)}
-            className="flex items-center gap-2 pl-2 ml-1 border-l border-dark-700/50 pr-1.5 py-1 rounded-lg hover:bg-dark-800 transition-all"
-            title="Account"
-          >
-            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-eagle-500 to-accent-cyan flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          <button type="button" onClick={() => setProfileOpen(o => !o)} title="Account" aria-expanded={profileOpen}
+            className="ml-1 flex items-center gap-2 rounded-md py-1 pl-1.5 pr-1.5 transition-colors hover:bg-dark-700/40">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-eagle-600 font-display text-xs font-semibold text-on-brand">
               {user?.username?.[0]?.toUpperCase() || 'U'}
-            </div>
-            <span className="text-sm text-dark-200 font-medium hidden md:inline truncate max-w-28">
+            </span>
+            <span className="hidden max-w-28 truncate text-sm font-medium text-dark-200 md:inline">
               {user?.username}
             </span>
-            <ChevronDown className={`w-3 h-3 text-dark-400 transition-transform hidden md:block ${profileOpen ? 'rotate-180' : ''}`} />
+            <ChevronDown className={`hidden h-3 w-3 text-dark-400 transition-transform md:block ${profileOpen ? 'rotate-180' : ''}`} />
           </button>
 
           {profileOpen && (
-            <div className="absolute right-0 top-full mt-1.5 w-56 bg-dark-800 border border-dark-700 rounded-xl shadow-2xl z-50 py-1 overflow-hidden">
-              {/* Identity block */}
-              <div className="px-4 py-3 border-b border-dark-700/50">
-                <div className="flex items-center gap-2.5 mb-1">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-eagle-500 to-accent-cyan flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+            <div className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-xl border border-dark-700 bg-dark-800 py-1 shadow-float animate-[palette-rise_200ms_cubic-bezier(0.16,1,0.3,1)]">
+              <div className="border-b border-dark-700 px-4 py-3">
+                <div className="mb-1 flex items-center gap-2.5">
+                  <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-eagle-600 font-display text-xs font-semibold text-on-brand">
                     {user?.username?.[0]?.toUpperCase() || 'U'}
-                  </div>
+                  </span>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-white truncate">{user?.username}</p>
-                    <p className="text-[10px] text-dark-400 capitalize">{user?.role?.replace(/_/g, ' ')}</p>
+                    <p className="truncate text-sm font-semibold text-dark-50">{user?.username}</p>
+                    <p className="text-[11px] capitalize text-dark-400">{user?.role?.replace(/_/g, ' ')}</p>
                   </div>
                 </div>
-                {user?.tenantName && (
-                  <p className="text-[10px] text-dark-500 mt-1 truncate">{user.tenantName}</p>
-                )}
-                {user?.email && (
-                  <p className="text-[10px] text-dark-500 truncate">{user.email}</p>
-                )}
+                {user?.tenantName && <p className="mt-1 truncate text-[11px] text-dark-400">{user.tenantName}</p>}
+                {user?.email && <p className="truncate text-[11px] text-dark-500">{user.email}</p>}
               </div>
 
-              {/* Actions */}
-              <Link
-                to="/settings"
-                onClick={() => setProfileOpen(false)}
-                className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-dark-300 hover:bg-dark-700 hover:text-white transition-colors"
-              >
-                <Settings className="w-4 h-4" />
+              {/* Theme for narrow screens, where the header switch is hidden */}
+              <div className="flex items-center gap-1 border-b border-dark-700 px-3 py-2 sm:hidden">
+                {THEME_OPTIONS.map(({ value, label, Icon }) => (
+                  <button key={value} type="button" onClick={() => setTheme(value)} aria-pressed={theme === value}
+                    className={`flex flex-1 items-center justify-center gap-1.5 rounded py-1.5 text-xs ${theme === value ? 'bg-eagle-500/15 text-eagle-400' : 'text-dark-400'}`}>
+                    <Icon className="h-3.5 w-3.5" />{label}
+                  </button>
+                ))}
+              </div>
+
+              <Link to="/settings" onClick={() => setProfileOpen(false)}
+                className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-dark-300 transition-colors hover:bg-dark-700/40 hover:text-dark-50">
+                <Settings className="h-4 w-4" />
                 Profile &amp; Settings
               </Link>
-              <button
-                onClick={() => { setProfileOpen(false); logout() }}
-                className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-dark-300 hover:bg-dark-700 hover:text-red-400 transition-colors w-full text-left"
-              >
-                <LogOut className="w-4 h-4" />
-                Logout
+              <button type="button" onClick={() => { setProfileOpen(false); logout() }}
+                className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-dark-300 transition-colors hover:bg-dark-700/40 hover:text-red-400">
+                <LogOut className="h-4 w-4" />
+                Log out
               </button>
             </div>
           )}

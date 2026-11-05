@@ -275,7 +275,7 @@ export default function AssetDetailPage() {
     return (
       <div className="glass-card p-10 text-center space-y-3">
         <Server className="w-12 h-12 mx-auto opacity-20" />
-        <p className="text-white font-medium">{status === 'notfound' ? 'Asset not found' : 'Could not load this asset'}</p>
+        <p className="text-dark-50 font-medium">{status === 'notfound' ? 'Asset not found' : 'Could not load this asset'}</p>
         <p className="text-sm text-dark-400">
           {status === 'notfound' ? 'It may have been deleted or merged into another asset.' : 'Check your connection and try again.'}
         </p>
@@ -316,7 +316,7 @@ export default function AssetDetailPage() {
           <div className="flex items-start gap-3">
             <span className="text-3xl leading-none mt-1" aria-hidden="true">{deviceMeta.icon}</span>
             <div>
-              <h1 className="text-2xl font-bold text-white break-all">{assetName(asset)}</h1>
+              <h1 className="page-title break-all">{assetName(asset)}</h1>
               <div className="font-mono text-sm text-accent-cyan mt-0.5">{asset.ipAddress}</div>
               <div className="flex items-center gap-1.5 flex-wrap mt-2">
                 <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${asset.inMyAssets
@@ -324,13 +324,13 @@ export default function AssetDetailPage() {
                   : 'bg-dark-600/40 text-dark-300 border-dark-500/30'}`}>
                   {asset.inMyAssets ? 'My Assets' : 'Discovered'}
                 </span>
-                <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-dark-700/40 text-dark-200 border-dark-600/40">{deviceMeta.label}</span>
-                <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>{srcMeta.label}</span>
+                <span className="text-xs px-2 py-0.5 rounded-md border font-medium bg-dark-700/40 text-dark-200 border-dark-600/40">{deviceMeta.label}</span>
+                <span className={`text-xs px-2 py-0.5 rounded-md border font-medium ${srcMeta.cls}`}>{srcMeta.label}</span>
                 {asset.isInternetFacing && (
-                  <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-yellow-500/10 text-yellow-400 border-yellow-500/30">Internet-facing</span>
+                  <span className="text-xs px-2 py-0.5 rounded-md border font-medium bg-yellow-500/10 text-yellow-400 border-yellow-500/30">Internet-facing</span>
                 )}
                 {inv && (
-                  <span className="text-xs px-2 py-0.5 rounded-full border font-medium bg-eagle-500/10 text-eagle-400 border-eagle-500/30"
+                  <span className="text-xs px-2 py-0.5 rounded-md border font-medium bg-eagle-500/10 text-eagle-400 border-eagle-500/30"
                     title={`Inventory reported by the EagleEye agent on ${fmtDateTime(asset.inventoryCollectedAt)}`}>
                     Agent installed
                   </span>
@@ -529,7 +529,7 @@ export default function AssetDetailPage() {
                 <li key={e.event_id} className="py-2 flex items-center gap-3">
                   <SevBadge sev={e.severity} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm text-white truncate">{alertLabel(e)}</div>
+                    <div className="text-sm text-dark-50 truncate">{alertLabel(e)}</div>
                     <div className="text-xs text-dark-400 truncate">{renderDetail(e)}</div>
                   </div>
                   <StatusBadge status={e.status} note={e.resolution_note} />
@@ -563,7 +563,7 @@ export default function AssetDetailPage() {
                   <li key={n.asset_id} className="py-2 flex items-center gap-3">
                     <span aria-hidden="true">{(DEVICE_TYPE_META[n.device_type] ?? DEVICE_TYPE_META.unknown).icon}</span>
                     <div className="min-w-0 flex-1">
-                      <Link to={`/inventory/${n.asset_id}`} className="text-sm text-white hover:text-eagle-400">{n.hostname || n.ip_address}</Link>
+                      <Link to={`/inventory/${n.asset_id}`} className="text-sm text-dark-50 hover:text-eagle-400">{n.hostname || n.ip_address}</Link>
                       <div className="font-mono text-xs text-accent-cyan">{n.ip_address}</div>
                     </div>
                     <span className="text-xs text-dark-300">
@@ -653,7 +653,7 @@ function FactorList({ result }) {
           <li key={d.label} className="text-sm text-dark-100 flex items-start gap-2">
             <span className={`mt-0.5 w-7 flex-shrink-0 text-right tabular-nums ${d.points < 0 ? 'text-green-400' : 'text-eagle-400'}`}>{d.points > 0 ? `+${d.points}` : d.points}</span>
             <span className="flex-1">{d.label}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded border border-dark-600 text-dark-400 whitespace-nowrap">{SOURCE_TAG[d.source] ?? d.source}</span>
+            <span className="text-[11px] px-1.5 py-0.5 rounded border border-dark-600 text-dark-400 whitespace-nowrap">{SOURCE_TAG[d.source] ?? d.source}</span>
           </li>
         ))}
       </ul>

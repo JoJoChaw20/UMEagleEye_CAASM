@@ -2,7 +2,7 @@
 // counts; the list is loaded on demand from Microsoft's data (GET /events/:id/windows-cves),
 // exploited first, then by severity.
 import { useEffect, useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { Search, ArrowRight } from 'lucide-react'
 import client from '../../api/client'
 
 const SEV_CLS = {
@@ -68,7 +68,7 @@ export default function WindowsCveList({ eventId }) {
       {rows.length === 0 && <p className="text-xs text-dark-500">No CVE matches "{query}".</p>}
       {rows.length > shown && (
         <button onClick={() => setShown(s => s + PAGE)} className="text-xs text-eagle-400 hover:underline mt-2">
-          Show {Math.min(PAGE, rows.length - shown)} more of {(rows.length - shown).toLocaleString()} →
+          Show {Math.min(PAGE, rows.length - shown)} more of {(rows.length - shown).toLocaleString()}<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" />
         </button>
       )}
     </div>

@@ -7,12 +7,12 @@ import { X, CheckCircle2, Info, AlertTriangle } from 'lucide-react'
 // tabs: [{ id, label, count? }]
 export function Tabs({ tabs, active, onChange, label }) {
   return (
-    <div className="flex items-center gap-1 p-1 bg-dark-800/60 rounded-xl w-fit max-w-full overflow-x-auto border border-dark-700/50" role="tablist" aria-label={label}>
+    <div className="flex w-fit max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-dark-700 bg-dark-900 p-1" role="tablist" aria-label={label}>
       {tabs.map((t) => (
         <button key={t.id} role="tab" aria-selected={active === t.id} onClick={() => onChange(t.id)}
           className={`tab-toggle whitespace-nowrap ${active === t.id ? 'active' : ''}`}>
           {t.label}
-          {t.count != null && <span className="text-xs text-dark-400 ml-1">{t.count}</span>}
+          {t.count != null && <span className={`ml-1 rounded px-1.5 text-[11px] tabular-nums ${active === t.id ? 'bg-eagle-500/15 text-eagle-400' : 'bg-dark-700/60 text-dark-400'}`}>{t.count}</span>}
         </button>
       ))}
     </div>
@@ -21,7 +21,7 @@ export function Tabs({ tabs, active, onChange, label }) {
 
 // ── Summary tile; clickable when onClick is given ─────────────────
 const TONES = {
-  default: 'text-white',
+  default: 'text-dark-50',
   danger:  'text-red-400',
   warning: 'text-amber-400',
   good:    'text-accent-green',
@@ -31,16 +31,16 @@ const TONES = {
 export function StatTile({ label, value, sub, tone = 'default', icon: Icon, onClick, title }) {
   const body = (
     <>
-      <div className="flex items-center justify-between mb-2 gap-2">
-        <span className="text-dark-400 text-xs">{label}</span>
-        {Icon && <Icon className={`w-4 h-4 ${tone === 'default' ? 'text-eagle-400' : TONES[tone]}`} />}
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-dark-400">{label}</span>
+        {Icon && <span className="flex h-7 w-7 items-center justify-center rounded-md border border-dark-700 bg-dark-900"><Icon className={`h-3.5 w-3.5 ${tone === 'default' ? 'text-eagle-400' : TONES[tone]}`} /></span>}
       </div>
-      <p className={`text-2xl font-bold ${TONES[tone] ?? TONES.default}`}>{value}</p>
-      {sub && <p className="text-xs text-dark-500 mt-1">{sub}</p>}
+      <p className={`font-display text-[26px] font-semibold leading-none tabular-nums ${TONES[tone] ?? TONES.default}`}>{value}</p>
+      {sub && <p className="mt-2 text-xs text-dark-400">{sub}</p>}
     </>
   )
   return onClick
-    ? <button type="button" onClick={onClick} title={title} className="stat-card text-left w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-eagle-500">{body}</button>
+    ? <button type="button" onClick={onClick} title={title} className="stat-card w-full text-left">{body}</button>
     : <div className="stat-card" title={title}>{body}</div>
 }
 
@@ -52,20 +52,20 @@ export function SidePanel({ title, subtitle, onClose, children, width = 'sm:w-[5
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-dark-950/70 animate-[palette-fade_160ms_ease-out]" onClick={onClose}>
       <aside role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined}
-        className={`w-full ${width} h-full flex flex-col bg-dark-900 border-l border-dark-700 shadow-2xl`}
+        className={`flex h-full w-full flex-col border-l border-dark-700 bg-dark-900 shadow-float animate-[panel-slide_260ms_cubic-bezier(0.16,1,0.3,1)] ${width}`}
         onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between gap-3 p-4 border-b border-dark-700">
+        <div className="flex items-start justify-between gap-3 border-b border-dark-700 bg-dark-800 px-5 py-4">
           <div className="min-w-0">
-            <h2 className="font-semibold text-dark-100 break-words">{title}</h2>
+            <h2 className="break-words text-base font-semibold text-dark-50">{title}</h2>
             {subtitle && <div className="text-xs text-dark-400 mt-0.5">{subtitle}</div>}
           </div>
-          <button onClick={onClose} className="text-dark-400 hover:text-dark-100 transition-colors shrink-0" title="Close">
-            <X className="w-5 h-5" />
+          <button type="button" onClick={onClose} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-dark-400 transition-colors hover:bg-dark-700/40 hover:text-dark-50" title="Close" aria-label="Close">
+            <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">{children}</div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-5">{children}</div>
       </aside>
     </div>
   )
@@ -85,13 +85,13 @@ export function useToast() {
 
 export function Toast({ toast }) {
   if (!toast) return null
-  const style = toast.type === 'success' ? 'bg-green-900/90 text-green-200 border-green-700'
-    : toast.type === 'info' ? 'bg-blue-900/90 text-blue-200 border-blue-700'
-    : 'bg-red-900/90 text-red-200 border-red-700'
+  const style = toast.type === 'success' ? 'text-emerald-400'
+    : toast.type === 'info' ? 'text-eagle-400'
+    : 'text-red-400'
   const Icon = toast.type === 'success' ? CheckCircle2 : toast.type === 'info' ? Info : AlertTriangle
   return (
-    <div role="status" className={`fixed top-4 right-4 z-[60] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium border max-w-md ${style}`}>
-      <Icon className="w-4 h-4 flex-shrink-0" />
+    <div role="status" className="fixed right-4 top-4 z-[60] flex max-w-md items-start gap-2.5 rounded-lg border border-dark-700 bg-dark-800 px-4 py-3 text-sm font-medium text-dark-100 shadow-float animate-[palette-rise_220ms_cubic-bezier(0.16,1,0.3,1)]">
+      <Icon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${style}`} />
       {toast.msg}
     </div>
   )
@@ -99,8 +99,8 @@ export function Toast({ toast }) {
 
 export function Spinner({ className = 'py-16' }) {
   return (
-    <div className={`flex justify-center ${className}`}>
-      <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+    <div className={`flex justify-center ${className}`} role="status" aria-label="Loading">
+      <span className="trace-loader" />
     </div>
   )
 }
@@ -109,9 +109,9 @@ export function Pager({ page, totalPages, onChange }) {
   if (totalPages <= 1) return null
   return (
     <div className="flex items-center justify-center gap-2">
-      <button onClick={() => onChange(Math.max(1, page - 1))} disabled={page === 1} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Previous</button>
-      <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
-      <button onClick={() => onChange(Math.min(totalPages, page + 1))} disabled={page === totalPages} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Next</button>
+      <button onClick={() => onChange(Math.max(1, page - 1))} disabled={page === 1} className="btn-secondary px-3 py-1.5">Previous</button>
+      <span className="text-sm tabular-nums text-dark-400">Page {page} of {totalPages}</span>
+      <button onClick={() => onChange(Math.min(totalPages, page + 1))} disabled={page === totalPages} className="btn-secondary px-3 py-1.5">Next</button>
     </div>
   )
 }

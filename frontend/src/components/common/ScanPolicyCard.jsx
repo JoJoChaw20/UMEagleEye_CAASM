@@ -48,7 +48,7 @@ export default function ScanPolicyCard({ tenantId, canEdit }) {
   return (
     <div className="glass-card p-6 space-y-4">
       <div>
-        <h2 className="font-semibold text-white flex items-center gap-2 text-base">
+        <h2 className="font-semibold text-dark-50 flex items-center gap-2 text-base">
           <Radar className="w-4 h-4 text-accent-cyan" />
           Scan Policy
         </h2>
@@ -67,7 +67,7 @@ export default function ScanPolicyCard({ tenantId, canEdit }) {
         return (
           <div key={key} className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-sm text-white">{label}</p>
+              <p className="text-sm text-dark-50">{label}</p>
               <p className="text-xs text-dark-400 mt-0.5">{help}</p>
             </div>
             <button

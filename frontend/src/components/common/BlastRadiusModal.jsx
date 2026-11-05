@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { X, AlertTriangle, Shield, ChevronRight } from 'lucide-react'
+import { X, AlertTriangle, Shield, ChevronRight, Server, Monitor, Network, Cpu, Smartphone, HelpCircle } from 'lucide-react'
 import client from '../../api/client'
 
-const DEPTH_COLORS = ['#ff5252', '#ff9800', '#ffc400', '#00e676']
+const DEVICE_ICON = { server: Server, workstation: Monitor, network: Network, iot: Cpu, mobile: Smartphone }
+const DEPTH_COLORS = ['rgb(var(--sev-critical))', 'rgb(var(--sev-high))', 'rgb(var(--sev-medium))', 'rgb(var(--sev-low))']
 
 const DIRECTIONS = [
   { key: 'downstream', label: 'Downstream', hint: 'What this asset impacts if it fails' },
@@ -52,10 +53,10 @@ export default function BlastRadiusModal({ assetId, onClose }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center" id="blast-radius-modal">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-dark-950/70" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative w-full max-w-2xl mx-4 bg-dark-900 border border-dark-700 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-2xl mx-4 bg-dark-900 border border-dark-700 rounded-2xl shadow-float overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-dark-700">
           <div className="flex items-center gap-3">
@@ -63,7 +64,7 @@ export default function BlastRadiusModal({ assetId, onClose }) {
               <AlertTriangle className="w-5 h-5 text-red-400" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Blast Radius Analysis</h2>
+              <h2 className="text-lg font-bold text-dark-50">Blast Radius Analysis</h2>
               {assetInfo && (
                 <p className="text-sm text-dark-400">
                   Origin: <span className="text-accent-cyan font-mono">{assetInfo.hostname || assetInfo.ipAddress}</span>
@@ -135,7 +136,7 @@ export default function BlastRadiusModal({ assetId, onClose }) {
                   <p className="text-xs text-dark-400 mt-1">Max Depth</p>
                 </div>
                 <div className="glass-card p-4 text-center">
-                  <p className="text-2xl font-bold text-white">{Object.keys(byDepth).length}</p>
+                  <p className="text-2xl font-bold text-dark-50">{Object.keys(byDepth).length}</p>
                   <p className="text-xs text-dark-400 mt-1">Hop Levels</p>
                 </div>
               </div>
@@ -163,18 +164,18 @@ export default function BlastRadiusModal({ assetId, onClose }) {
                         className="flex items-center justify-between py-2 px-3 rounded-lg bg-dark-800/50 border border-dark-700/30 hover:border-dark-600 transition-colors"
                       >
                         <div className="flex items-center gap-3">
-                          <span className="text-lg">
-                            {a.device_type === 'server' ? '🖥️' : a.device_type === 'workstation' ? '💻' : a.device_type === 'network' ? '🌐' : '❓'}
-                          </span>
+                          {(() => { const DIcon = DEVICE_ICON[a.device_type] ?? HelpCircle; return (
+                            <span className="flex h-8 w-8 items-center justify-center rounded-md border border-dark-700 bg-dark-900 text-dark-300"><DIcon className="h-4 w-4" /></span>
+                          ) })()}
                           <div>
-                            <p className="text-sm font-medium text-white">{a.hostname || '—'}</p>
+                            <p className="text-sm font-medium text-dark-50">{a.hostname || '—'}</p>
                             <p className="text-xs font-mono text-accent-cyan">{a.ip_address}</p>
                           </div>
                         </div>
                         <div className="flex items-center gap-3">
                           {a.hub && (
                             <span
-                              className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-dark-700 text-dark-300 border border-dark-600"
+                              className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-dark-700 text-dark-300 border border-dark-600"
                               title="Infrastructure hub — included but not expanded further"
                             >
                               Hub · not expanded
@@ -183,7 +184,7 @@ export default function BlastRadiusModal({ assetId, onClose }) {
                           {a.criticality_score >= 8 && (
                             <span className="badge-critical">Critical</span>
                           )}
-                          <div className="flex items-center gap-0.5 text-dark-500 text-[10px]">
+                          <div className="flex items-center gap-0.5 text-dark-500 text-[11px]">
                             {a.path?.slice(-3).map((p, pi) => (
                               <span key={pi} className="flex items-center">
                                 {pi > 0 && <ChevronRight className="w-3 h-3" />}

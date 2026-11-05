@@ -73,3 +73,6 @@ Claude outputs/
 # VSCode workspace file
 UMEagleEye2.0.code-workspace
 frontend/.env.staging
+
+# Design review captures (screenshots, PDFs and JSON built from real tenant data)
+.impeccable/review/

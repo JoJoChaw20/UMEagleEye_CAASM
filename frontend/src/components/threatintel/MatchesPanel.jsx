@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Crosshair, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
+import { Crosshair, ChevronDown, ChevronRight, ExternalLink, ArrowRight } from 'lucide-react'
 import client from '../../api/client'
 import { SevBadge, timeAgo } from '../common/alertMeta'
 import { Spinner } from '../common/PageParts'
@@ -108,14 +108,14 @@ export default function MatchesPanel({ onLookup, showToast }) {
                       </tbody>
                     </table>
                     <div className="px-4 py-2 border-t border-dark-700/50 text-xs">
-                      <Link to={`/inventory/${g.asset_id}`} className="text-eagle-400 hover:underline">Open asset →</Link>
+                      <Link to={`/inventory/${g.asset_id}`} className="text-eagle-400 hover:underline">Open asset<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></Link>
                     </div>
                   </div>
                 )}
               </div>
             )
           })}
-          <Link to="/alerts?view=threat_intel" className="text-sm text-eagle-400 hover:underline inline-block">Work them on the Alerts page →</Link>
+          <Link to="/alerts?view=threat_intel" className="text-sm text-eagle-400 hover:underline inline-block">Work them on the Alerts page<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></Link>
         </div>
       )}
     </div>

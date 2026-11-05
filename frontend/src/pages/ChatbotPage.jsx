@@ -3,13 +3,23 @@ import {
   Bot, Send, User, Loader2, RotateCcw,
   Activity, Server, Bell, Shield, BarChart2, HelpCircle,
   CheckCircle2, ChevronDown, ChevronUp, Sparkles,
-  Trash2, Plus, PanelLeft,
+  Trash2, Plus, PanelLeft, MessageCircle, FileSearch, Wrench, XCircle,
 } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { parseAdvisory } from '../utils/advisoryText'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useChatbot, makeWelcome, MAX_MSG } from '../context/ChatbotContext'
 import { useTheme } from '../context/ThemeContext'
+
+// Sessions keep their stored emoji for compatibility, but the page draws icons:
+// a speech bubble for chats, the Advisories icon for advisory debug sessions.
+function SessionIcon({ session, className = 'h-4 w-4' }) {
+  if (session?.name === 'Loading…') return <Loader2 className={`${className} animate-spin text-dark-400`} />
+  if (session?.advisoryId) return <FileSearch className={`${className} text-eagle-400`} />
+  return <MessageCircle className={`${className} text-dark-400`} />
+}
+
 
 // ── Message bubble ────────────────────────────────────────────────
 function Bubble({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI }) {
@@ -27,7 +37,7 @@ function Bubble({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI
         }`}>
           <BotContent msg={msg} onSend={onSend} onOpenAdvisorySession={onOpenAdvisorySession} onSelectTenant={onSelectTenant} canDebugAI={canDebugAI} />
         </div>
-        <p className="text-[10px] text-dark-500 mt-1 px-1">
+        <p className="text-[11px] text-dark-500 mt-1 px-1">
           {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </p>
       </div>
@@ -45,7 +55,7 @@ function parseInline(text, keyPrefix, isLight) {
   return segments.map((seg, i) => {
     if (seg.startsWith('**') && seg.endsWith('**')) {
       return (
-        <strong key={`${keyPrefix}-b${i}`} className="text-white font-semibold">
+        <strong key={`${keyPrefix}-b${i}`} className="text-dark-50 font-semibold">
           {seg.slice(2, -2)}
         </strong>
       )
@@ -61,48 +71,190 @@ function parseInline(text, keyPrefix, isLight) {
   }).filter(Boolean)
 }
 
-// Renders a full markdown text block: paragraphs, bullet lists, plain lines
+// Renders the assistant's Markdown as chat-friendly blocks, without dangerouslySetInnerHTML:
+// section titles, tables, numbered steps (numbers kept from the text, so a command box
+// between steps does not restart them), bullet lists, command boxes with Copy, and notes.
+// Horizontal rules are dropped. Tolerates blank lines between table rows and an unclosed fence.
+function parseBlocks(text) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const blocks = []
+  const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l)
+  const isTableSep = (l) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l)
+  const nextNonBlank = (j) => { while (j < lines.length && !lines[j].trim()) j++; return j }
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const t = line.trim()
+    if (!t) { i++; continue }
+
+    const fence = t.match(/^(`{3,}|~{3,})\s*([\w+-]*)/)
+    if (fence) {
+      const body = []
+      i++
+      // ends at the closing fence, or at a stray line of backticks (an unclosed fence)
+      while (i < lines.length && !/^`+$/.test(lines[i].trim()) && !lines[i].trim().startsWith(fence[1].slice(0, 3))) { body.push(lines[i]); i++ }
+      i++
+      const code = body.filter(l => l.trim()).join('\n')
+      if (code) blocks.push({ kind: 'code', lang: fence[2] || '', code })
+      continue
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { i++; continue }
+
+    const heading = t.match(/^(#{1,6})\s+(.*)$/)
+    if (heading) { blocks.push({ kind: 'heading', level: heading[1].length, text: heading[2].replace(/#+\s*$/, '') }); i++; continue }
+
+    if (isTableRow(line)) {
+      const rows = []
+      while (i < lines.length) {
+        if (isTableRow(lines[i])) {
+          if (!isTableSep(lines[i])) rows.push(lines[i].trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()))
+          i++
+        } else if (!lines[i].trim() && isTableRow(lines[nextNonBlank(i)] ?? '')) {
+          i = nextNonBlank(i)
+        } else break
+      }
+      if (rows.length) blocks.push({ kind: 'table', head: rows[0], rows: rows.slice(1) })
+      continue
+    }
+
+    if (t.startsWith('>')) {
+      const body = []
+      while (i < lines.length && lines[i].trim().startsWith('>')) { body.push(lines[i].trim().replace(/^>\s?/, '')); i++ }
+      blocks.push({ kind: 'note', text: body.join(' ') })
+      continue
+    }
+
+    const num = t.match(/^(\d+)[.)]\s+(.*)$/)
+    if (num) {
+      const items = []
+      while (i < lines.length) {
+        const m = lines[i].trim().match(/^(\d+)[.)]\s+(.*)$/)
+        if (m && !/^\s{2,}/.test(lines[i])) { items.push({ n: m[1], text: m[2], sub: [] }); i++; continue }
+        const sub = lines[i].match(/^\s+[-*]\s+(.*)$/)
+        if (sub && items.length) { items[items.length - 1].sub.push(sub[1]); i++; continue }
+        break
+      }
+      blocks.push({ kind: 'steps', items })
+      continue
+    }
+
+    if (/^[-*•]\s+/.test(t)) {
+      const items = []
+      while (i < lines.length && /^\s*[-*•]\s+/.test(lines[i])) {
+        items.push({ text: lines[i].replace(/^\s*[-*•]\s+/, ''), indent: /^\s{2,}/.test(lines[i]) })
+        i++
+      }
+      blocks.push({ kind: 'bullets', items })
+      continue
+    }
+
+    const para = []
+    while (i < lines.length && lines[i].trim() && !/^\s*(#{1,6}\s|[-*•]\s|\d+[.)]\s|>|\||`{3}|~{3})/.test(lines[i])) {
+      para.push(lines[i].trim()); i++
+    }
+    if (para.length) blocks.push({ kind: 'para', text: para.join(' ') })
+    else i++
+  }
+  return blocks
+}
+
+function CodeBox({ lang, code }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard?.writeText(code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {})
+  }
+  return (
+    <div className="rounded-lg border border-dark-700/70 bg-dark-950/70 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1 border-b border-dark-700/60 text-[11px] text-dark-400">
+        <span>{lang ? lang.replace(/^(ps1|pwsh)$/, 'powershell') : 'command'}</span>
+        <button type="button" onClick={copy} className="hover:text-dark-100 transition-colors">{copied ? 'Copied' : 'Copy'}</button>
+      </div>
+      <pre className="px-3 py-2 text-xs font-mono text-dark-100 overflow-x-auto whitespace-pre"><code>{code}</code></pre>
+    </div>
+  )
+}
+
 function MarkdownBody({ text }) {
   const { theme } = useTheme()
   const isLight = theme === 'light' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: dark)').matches)
   if (!text) return null
-
-  const paragraphs = text.split(/\n{2,}/)
+  const inline = (s, k) => parseInline(s, k, isLight)
+  const blocks = parseBlocks(text)
 
   return (
-    <div className="space-y-2 text-dark-100 leading-relaxed">
-      {paragraphs.map((para, pi) => {
-        const lines = para.split('\n').filter(l => l !== undefined)
-
-        const isList = lines.every(l => /^\s*[-*]\s/.test(l) || l.trim() === '')
-        if (isList) {
-          return (
-            <ul key={pi} className="space-y-1 pl-1">
-              {lines.filter(l => l.trim()).map((l, li) => (
-                <li key={li} className="flex gap-2 items-start">
-                  <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-eagle-400/60 flex-shrink-0" />
-                  <span>{parseInline(l.replace(/^\s*[-*]\s+/, ''), `${pi}-${li}`, isLight)}</span>
-                </li>
-              ))}
-            </ul>
-          )
+    <div className="space-y-3 text-dark-100 leading-relaxed">
+      {blocks.map((b, bi) => {
+        switch (b.kind) {
+          case 'heading':
+            return b.level <= 2
+              ? <p key={bi} className="font-display text-[15px] font-semibold text-dark-50 pt-1">{inline(b.text.replace(/\*\*/g, ''), `h${bi}`)}</p>
+              : <p key={bi} className="font-semibold text-dark-50 pt-0.5">{inline(b.text.replace(/\*\*/g, ''), `h${bi}`)}</p>
+          case 'table':
+            return (
+              <div key={bi} className="overflow-x-auto rounded-lg border border-dark-700/70">
+                <table className="w-full text-xs">
+                  <thead className="bg-dark-900/80">
+                    <tr>{b.head.map((h, hi) => (
+                      <th key={hi} className="text-left font-medium text-dark-400 px-3 py-1.5 whitespace-nowrap">{inline(h.replace(/\*\*/g, ''), `th${bi}-${hi}`)}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {b.rows.map((r, ri) => (
+                      <tr key={ri} className="border-t border-dark-700/50 align-top">
+                        {b.head.map((_, ci) => (
+                          <td key={ci} className={`px-3 py-1.5 ${ci === 0 ? 'text-dark-300 whitespace-nowrap' : 'text-dark-100'}`}>{inline(r[ci] ?? '', `td${bi}-${ri}-${ci}`)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          case 'code':
+            return <CodeBox key={bi} lang={b.lang} code={b.code} />
+          case 'note':
+            return (
+              <div key={bi} className="rounded-lg border border-accent-amber/30 bg-accent-amber/10 px-3 py-2 text-dark-100">
+                {inline(b.text.replace(/^⚠️\s*/, ''), `n${bi}`)}
+              </div>
+            )
+          case 'steps':
+            return (
+              <ol key={bi} className="space-y-2">
+                {b.items.map((it, ii) => (
+                  <li key={ii} className="flex gap-2.5 items-start">
+                    <span className="mt-0.5 flex h-5 min-w-5 px-1 items-center justify-center rounded-md bg-eagle-500/15 text-eagle-400 text-[11px] font-semibold">{it.n}</span>
+                    <div className="flex-1 space-y-1">
+                      <p>{inline(it.text, `s${bi}-${ii}`)}</p>
+                      {it.sub.length > 0 && (
+                        <ul className="space-y-0.5 pl-1">
+                          {it.sub.map((s, si) => (
+                            <li key={si} className="flex gap-2 items-start text-dark-200">
+                              <span className="mt-2 w-1 h-1 rounded-full bg-dark-400 flex-shrink-0" />
+                              <span>{inline(s, `s${bi}-${ii}-${si}`)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )
+          case 'bullets':
+            return (
+              <ul key={bi} className="space-y-1 pl-1">
+                {b.items.map((it, ii) => (
+                  <li key={ii} className={`flex gap-2 items-start ${it.indent ? 'pl-5 text-dark-200' : ''}`}>
+                    <span className="mt-2 w-1.5 h-1.5 rounded-full bg-eagle-400/60 flex-shrink-0" />
+                    <span>{inline(it.text, `b${bi}-${ii}`)}</span>
+                  </li>
+                ))}
+              </ul>
+            )
+          default:
+            return <p key={bi}>{inline(b.text, `p${bi}`)}</p>
         }
-
-        if (lines.length === 1) {
-          return (
-            <p key={pi}>
-              {parseInline(lines[0], String(pi), isLight)}
-            </p>
-          )
-        }
-
-        return (
-          <div key={pi} className="space-y-0.5">
-            {lines.map((line, li) => (
-              <p key={li}>{parseInline(line, `${pi}-${li}`, isLight)}</p>
-            ))}
-          </div>
-        )
       })}
     </div>
   )
@@ -120,7 +272,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => onSelectTenant?.(null, 'All Tenants', msg.command)}
-            className="px-3 py-1.5 text-xs rounded-lg bg-dark-700 border border-dark-600 text-dark-300 hover:text-white hover:border-dark-400 transition-colors"
+            className="px-3 py-1.5 text-xs rounded-lg bg-dark-700 border border-dark-600 text-dark-300 hover:text-dark-50 hover:border-dark-400 transition-colors"
           >
             🌐 All Tenants
           </button>
@@ -143,12 +295,12 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
   if (type === 'stats' && items) {
     return (
       <div>
-        <p className="font-semibold text-white mb-2">{content}</p>
+        <p className="font-semibold text-dark-50 mb-2">{content}</p>
         <div className="grid grid-cols-2 gap-2">
           {items.map(({ label, value }) => (
             <div key={label} className="bg-dark-900/60 rounded-lg p-2 text-center">
               <p className="text-lg font-bold text-eagle-400">{value}</p>
-              <p className="text-[10px] text-dark-300 mt-0.5">{label}</p>
+              <p className="text-[11px] text-dark-300 mt-0.5">{label}</p>
             </div>
           ))}
         </div>
@@ -160,14 +312,14 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
     const color = data.score >= 70 ? 'text-green-400' : data.score >= 40 ? 'text-yellow-400' : 'text-red-400'
     return (
       <div>
-        <p className="font-semibold text-white mb-2">{content}</p>
+        <p className="font-semibold text-dark-50 mb-2">{content}</p>
         <div className="flex items-center gap-4 bg-dark-900/60 rounded-lg p-3">
           <div className="text-center">
             <p className={`text-3xl font-bold ${color}`}>{data.score}</p>
-            <p className="text-[10px] text-dark-400">/ 100</p>
+            <p className="text-[11px] text-dark-400">/ 100</p>
           </div>
           <div className="space-y-1 text-xs text-dark-300">
-            <p>Total assets: <span className="text-white font-medium">{data.total}</span></p>
+            <p>Total assets: <span className="text-dark-50 font-medium">{data.total}</span></p>
             <p>Critical assets: <span className="text-red-400 font-medium">{data.critical}</span></p>
             <p>Open critical events: <span className="text-yellow-400 font-medium">{data.openCrit}</span></p>
           </div>
@@ -180,7 +332,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
     const critColor = (s) => (s ?? 0) >= 8 ? 'text-red-400 bg-red-500/10 border-red-500/30' : (s ?? 0) >= 5 ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30' : 'text-green-400 bg-green-500/10 border-green-500/30'
     return (
       <div>
-        <p className="font-semibold text-white mb-2">{content}</p>
+        <p className="font-semibold text-dark-50 mb-2">{content}</p>
         <div className="space-y-1">
           {items.length === 0 && <p className="text-dark-400 text-xs">No assets found.</p>}
           {items.map((a, i) => (
@@ -191,7 +343,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
                 {a.hostname && <p className="text-dark-500 font-mono">{a.ipAddress}</p>}
               </div>
               <span className="text-dark-400 capitalize flex-shrink-0">{a.deviceType}</span>
-              <span className={`flex-shrink-0 font-bold px-1.5 py-0.5 rounded border text-[10px] ${critColor(a.criticalityScore)}`}>
+              <span className={`flex-shrink-0 font-bold px-1.5 py-0.5 rounded border text-[11px] ${critColor(a.criticalityScore)}`}>
                 {a.criticalityScore ?? '—'}/10
               </span>
             </div>
@@ -210,7 +362,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
     const isCve = (detail) => /^CVE-\d{4}-\d+$/i.test(detail)
     return (
       <div>
-        <p className="font-semibold text-white mb-2">{content}</p>
+        <p className="font-semibold text-dark-50 mb-2">{content}</p>
         <div className="space-y-1">
           {items.length === 0 && <p className="text-dark-400 text-xs">No critical/high alerts.</p>}
           {items.map((e, i) => {
@@ -223,7 +375,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
               >
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-dark-100 font-medium capitalize">{e.eventType?.replace(/_/g, ' ')}</span>
-                  <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold capitalize ${sevCls[e.severity] ?? 'text-dark-400'}`}>{e.severity}</span>
+                  <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold capitalize ${sevCls[e.severity] ?? 'text-dark-400'}`}>{e.severity}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   {isCve(detail) ? (
@@ -246,7 +398,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
             )
           })}
         </div>
-        <p className="text-dark-500 text-[10px] mt-2 text-center">Click any alert to view details in Alerts page →</p>
+        <p className="text-dark-500 text-[11px] mt-2 text-center">Click any alert to view its details on the Alerts page.</p>
       </div>
     )
   }
@@ -255,17 +407,12 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
     const statusCls = {
       open:         'text-red-400 bg-red-500/10 border-red-500/30',
       acknowledged: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
-      in_progress:  'text-blue-400 bg-blue-500/10 border-blue-500/30',
+      in_progress:  'text-eagle-400 bg-eagle-500/10 border-eagle-500/30',
     }
-    const parseSteps = (raw = '') => {
-      raw = raw.trim()
-      if (raw.startsWith('{') && raw.endsWith('}'))
-        return raw.slice(1, -1).split(/",\s*"/).map(s => s.replace(/^"+|"+$/g, '').trim()).filter(Boolean).map(s => s.replace(/^\d+\.\s*/, ''))
-      return raw.split(/\n/).map(s => s.trim()).filter(Boolean).map(s => s.replace(/^\d+\.\s*/, ''))
-    }
+    const parseSteps = (raw = '') => parseAdvisory(raw).steps
     return (
       <div>
-        <p className="font-semibold text-white mb-2">{content}</p>
+        <p className="font-semibold text-dark-50 mb-2">{content}</p>
         <div className="space-y-2">
           {items.length === 0 && <p className="text-dark-400 text-xs">No open advisories.</p>}
           {items.map((a) => {
@@ -280,11 +427,11 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold capitalize flex-shrink-0 ${statusCls[a.status] ?? 'text-dark-400 border-dark-600'}`}>
+                      <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold capitalize flex-shrink-0 ${statusCls[a.status] ?? 'text-dark-400 border-dark-600'}`}>
                         {a.status?.replace('_', ' ')}
                       </span>
-                      <span className="text-dark-500 font-mono text-[10px] truncate">{shortId}...</span>
-                      <span className="text-dark-600 text-[10px] flex-shrink-0 ml-auto">{new Date(a.createdAt).toLocaleDateString()}</span>
+                      <span className="text-dark-500 font-mono text-[11px] truncate">{shortId}...</span>
+                      <span className="text-dark-600 text-[11px] flex-shrink-0 ml-auto">{new Date(a.createdAt).toLocaleDateString()}</span>
                     </div>
                     <p className="text-dark-300 leading-snug line-clamp-2">{a.summary}</p>
                   </div>
@@ -294,19 +441,19 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
                 {isExpanded && (
                   <div className="px-3 pb-3 border-t border-dark-700/50 pt-2 space-y-3">
                     <div>
-                      <p className="text-dark-500 uppercase text-[10px] tracking-wider mb-1">Advisory ID</p>
+                      <p className="text-dark-500 uppercase text-[11px] tracking-wider mb-1">Advisory ID</p>
                       <p className="text-dark-200 font-mono break-all leading-relaxed select-all">{a.advisoryId}</p>
                     </div>
                     <div>
-                      <p className="text-dark-500 uppercase text-[10px] tracking-wider mb-1">Description</p>
+                      <p className="text-dark-500 uppercase text-[11px] tracking-wider mb-1">Description</p>
                       <p className="text-dark-200 leading-relaxed whitespace-pre-wrap">{a.summary}</p>
                     </div>
                     <div>
-                      <p className="text-dark-500 uppercase text-[10px] tracking-wider mb-1">Recommended Actions</p>
+                      <p className="text-dark-500 uppercase text-[11px] tracking-wider mb-1">Recommended Actions</p>
                       <div className="space-y-1.5">
                         {steps.length > 1 ? steps.map((step, i) => (
                           <div key={i} className="flex gap-2 items-start">
-                            <span className="flex-shrink-0 w-4 h-4 rounded-full bg-eagle-500/20 text-eagle-400 text-[9px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                            <span className="flex-shrink-0 w-4 h-4 rounded-full bg-eagle-500/20 text-eagle-400 text-[11px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
                             <p className="text-dark-200 leading-relaxed">{step}</p>
                           </div>
                         )) : <p className="text-dark-200 leading-relaxed whitespace-pre-wrap">{a.recommendedAction}</p>}
@@ -339,7 +486,7 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
           <p className="font-semibold text-green-400">Advisory Resolved</p>
         </div>
         <div className="bg-dark-900/60 rounded-lg px-3 py-2 text-xs space-y-1">
-          <p className="text-dark-400 font-mono text-[10px]">{data.advisoryId?.slice(0, 8)}...</p>
+          <p className="text-dark-400 font-mono text-[11px]">{data.advisoryId?.slice(0, 8)}...</p>
           <p className="text-dark-100">{data.summary}</p>
         </div>
       </div>
@@ -347,8 +494,59 @@ function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDeb
   }
 
 
-  // AI / text — markdown renderer (no dangerouslySetInnerHTML)
-  return <MarkdownBody text={content ?? ''} />
+  // AI / text — markdown renderer (no dangerouslySetInnerHTML), with the lookups the
+  // assistant made and any change it proposes (the person confirms; it never acts alone)
+  return (
+    <div className="space-y-2">
+      {msg.tools?.length > 0 && <ToolSteps tools={msg.tools} />}
+      <MarkdownBody text={content ?? ''} />
+      {(msg.proposals ?? []).map((p) => (
+        <ProposalCard key={p.advisory_id} proposal={p} onSend={onSend} canConfirm={canDebugAI} />
+      ))}
+    </div>
+  )
+}
+
+// The tools the assistant called for this answer (mcp/tools.ts on the API)
+function ToolSteps({ tools }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-dark-400" aria-label="Data the assistant looked up">
+      <Wrench className="w-3.5 h-3.5" aria-hidden="true" />
+      {tools.map((t, i) => (
+        <span key={`${t.name}-${i}`} className="inline-flex items-center gap-1 rounded-md border border-dark-700/60 bg-dark-900/50 px-1.5 py-0.5">
+          {t.status === 'running'
+            ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+            : t.ok === false
+              ? <XCircle className="w-3 h-3 text-accent-red" aria-hidden="true" />
+              : <CheckCircle2 className="w-3 h-3 text-accent-green" aria-hidden="true" />}
+          {t.title}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// A change the assistant proposed. Only the Confirm click makes it, through the same
+// tenant-checked, audited `fix` command a person can type.
+function ProposalCard({ proposal, onSend, canConfirm }) {
+  const [done, setDone] = useState(false)
+  if (proposal.type !== 'resolve_advisory') return null
+  return (
+    <div className="rounded-lg border border-eagle-500/30 bg-eagle-500/5 px-3 py-2.5 text-xs space-y-2">
+      <p className="text-dark-100 font-medium">Resolve advisory <code className="font-mono">{proposal.advisory_id.slice(0, 8)}</code>?</p>
+      {proposal.summary && <p className="text-dark-300">{proposal.summary}</p>}
+      {proposal.reason && <p className="text-dark-400">Assistant's reason (not verified): {proposal.reason}</p>}
+      {canConfirm ? (
+        <button type="button" disabled={done}
+          onClick={() => { setDone(true); onSend(`fix ${proposal.advisory_id}`) }}
+          className="btn-primary !py-1 !px-3 text-xs">
+          {done ? 'Sent' : 'Confirm'}
+        </button>
+      ) : (
+        <p className="text-dark-400">Only tenant admins can resolve advisories.</p>
+      )}
+    </div>
+  )
 }
 
 // Commands that require tenant selection for superadmin before querying
@@ -371,10 +569,8 @@ function Typing() {
       <div className="w-8 h-8 rounded-full bg-eagle-500/20 flex items-center justify-center flex-shrink-0">
         <Bot className="w-4 h-4 text-eagle-400" />
       </div>
-      <div className="bg-dark-800 border border-dark-700/50 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
-        {[0, 1, 2].map(i => (
-          <span key={i} className="w-1.5 h-1.5 bg-dark-400 rounded-full animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
-        ))}
+      <div className="bg-dark-800 border border-dark-700/50 rounded-2xl rounded-tl-sm px-4 py-3.5 flex items-center" role="status" aria-label="Assistant is typing">
+        <span className="trace-loader w-12" />
       </div>
     </div>
   )
@@ -391,7 +587,7 @@ function SessionSidebar({ sessions, activeId, onSelect, onDelete, onNew }) {
   return (
     <div className="w-56 flex-shrink-0 flex flex-col gap-1 pr-3 border-r border-dark-700/50 overflow-y-auto">
       <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
-        <p className="text-[9px] font-semibold text-dark-500 tracking-widest uppercase">Sessions</p>
+        <p className="text-[11px] font-semibold text-dark-500 tracking-widest uppercase">Sessions</p>
         <button
           onClick={onNew}
           className="p-0.5 text-dark-500 hover:text-eagle-400 transition-colors"
@@ -406,15 +602,15 @@ function SessionSidebar({ sessions, activeId, onSelect, onDelete, onNew }) {
             onClick={() => onSelect(s.id)}
             className={`w-full text-left flex items-start gap-2 px-2 py-2 rounded-lg transition-all text-xs ${
               activeId === s.id
-                ? 'bg-eagle-500/15 border border-eagle-500/30 text-white'
+                ? 'bg-eagle-500/15 border border-eagle-500/30 text-dark-50'
                 : 'text-dark-400 hover:bg-dark-800/60 hover:text-dark-100 border border-transparent'
             }`}
           >
-            <span className="text-base leading-none flex-shrink-0 mt-0.5">{s.emoji}</span>
+            <span className="mt-0.5 flex-shrink-0"><SessionIcon session={s} className="h-3.5 w-3.5" /></span>
             <div className="min-w-0 flex-1">
               <p className="font-medium truncate leading-tight">{s.name}</p>
-              {s.category && <p className="text-dark-500 text-[10px] truncate mt-0.5">{s.category}</p>}
-              <p className="text-dark-600 text-[10px] mt-0.5">{s.messages.length} msg{s.messages.length !== 1 ? 's' : ''}</p>
+              {s.category && <p className="text-dark-500 text-[11px] truncate mt-0.5">{s.category}</p>}
+              <p className="text-dark-600 text-[11px] mt-0.5">{s.messages.length} msg{s.messages.length !== 1 ? 's' : ''}</p>
             </div>
           </button>
           {s.id !== 'general' && (
@@ -491,7 +687,7 @@ export default function ChatbotPage() {
         .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: (m.content ?? '').slice(0, 6000) }))
 
       // Detect AI-intent messages and stream the response token-by-token
-      const NON_AI = /^(status|posture|assets?|alerts?|advisori|help|debug\s|fix[\s$])/i
+      const NON_AI = /^(status|posture|assets?|alerts?|advisori|help|mcp$|debug\s|fix[\s$])/i
       const isAI = !NON_AI.test(trimmed.trim())
 
       if (isAI) {
@@ -514,6 +710,8 @@ export default function ChatbotPage() {
         const decoder = new TextDecoder()
         let buf = ''
         let full = ''
+        const tools = []
+        const proposals = []
         try {
           while (true) {
             const { done, value } = await reader.read()
@@ -525,20 +723,25 @@ export default function ChatbotPage() {
               if (!line.startsWith('data: ')) continue
               const chunk = line.slice(6).trim()
               if (chunk === '[DONE]') break
-              try {
-                const parsed = JSON.parse(chunk)
-                if (parsed.error) throw new Error(parsed.error)
-                if (parsed.token) {
-                  full += parsed.token
-                  // updateSession is from context — works even when ChatbotPage is unmounted
-                  updateSession(sessionIdAtSend, s => {
-                    const msgs = [...s.messages]
-                    const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
-                    if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full }
-                    return { messages: msgs }
-                  })
-                }
-              } catch { /* skip malformed chunk */ }
+              let parsed
+              try { parsed = JSON.parse(chunk) } catch { continue /* skip malformed chunk */ }
+              if (parsed.error) full += `${full ? '\n\n' : ''}${parsed.error}`
+              if (parsed.token) full += parsed.token
+              if (parsed.tool) {
+                // one chip per call: "running" is replaced by its "done"
+                const last = tools.findLastIndex(t => t.name === parsed.tool.name && t.status === 'running')
+                if (parsed.tool.status === 'done' && last !== -1) tools[last] = parsed.tool
+                else tools.push(parsed.tool)
+              }
+              if (parsed.proposal) proposals.push(parsed.proposal)
+              if (!(parsed.error || parsed.token || parsed.tool || parsed.proposal)) continue
+              // updateSession is from context — works even when ChatbotPage is unmounted
+              updateSession(sessionIdAtSend, s => {
+                const msgs = [...s.messages]
+                const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
+                if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full, tools: [...tools], proposals: [...proposals] }
+                return { messages: msgs }
+              })
             }
           }
         } finally {
@@ -651,6 +854,8 @@ export default function ChatbotPage() {
       const decoder = new TextDecoder()
       let buf = ''
       let full = ''
+      const tools = []
+      const proposals = []
       try {
         while (true) {
           const { done, value } = await reader.read()
@@ -662,21 +867,26 @@ export default function ChatbotPage() {
             if (!line.startsWith('data: ')) continue
             const chunk = line.slice(6).trim()
             if (chunk === '[DONE]') break
-            try {
-              const parsed = JSON.parse(chunk)
-              if (parsed.token) {
-                full += parsed.token
-                // setSessions from context — continues working after navigation
-                setSessions(prev => {
-                  const s = prev[sessionId]
-                  if (!s) return prev
-                  const msgs = [...s.messages]
-                  const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
-                  if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full }
-                  return { ...prev, [sessionId]: { ...s, messages: msgs, updatedAt: Date.now() } }
-                })
-              }
-            } catch { /* skip malformed chunk */ }
+            let parsed
+            try { parsed = JSON.parse(chunk) } catch { continue /* skip malformed chunk */ }
+            if (parsed.error) full += `${full ? '\n\n' : ''}${parsed.error}`
+            if (parsed.token) full += parsed.token
+            if (parsed.tool) {
+              const last = tools.findLastIndex(t => t.name === parsed.tool.name && t.status === 'running')
+              if (parsed.tool.status === 'done' && last !== -1) tools[last] = parsed.tool
+              else tools.push(parsed.tool)
+            }
+            if (parsed.proposal) proposals.push(parsed.proposal)
+            if (!(parsed.error || parsed.token || parsed.tool || parsed.proposal)) continue
+            // setSessions from context — continues working after navigation
+            setSessions(prev => {
+              const s = prev[sessionId]
+              if (!s) return prev
+              const msgs = [...s.messages]
+              const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
+              if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full, tools: [...tools], proposals: [...proposals] }
+              return { ...prev, [sessionId]: { ...s, messages: msgs, updatedAt: Date.now() } }
+            })
           }
         }
       } finally {
@@ -747,7 +957,7 @@ export default function ChatbotPage() {
   const messages = activeSession.messages ?? []
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] gap-0">
+    <div className="flex h-[calc(100dvh-6rem)] gap-0 lg:h-[calc(100dvh-7rem)]">
 
       {/* ── Session sidebar ───────────────────────────── */}
       {sidebarOpen && (
@@ -773,11 +983,11 @@ export default function ChatbotPage() {
             >
               <PanelLeft className="w-4 h-4" />
             </button>
-            <span className="text-xl">{activeSession.emoji}</span>
+            <span className="flex h-8 w-8 items-center justify-center rounded-md border border-dark-700 bg-dark-900"><SessionIcon session={activeSession} /></span>
             <div>
-              <h1 className="text-base font-bold text-white leading-tight">{activeSession.name}</h1>
+              <h1 className="text-base font-bold text-dark-50 leading-tight">{activeSession.name}</h1>
               {activeSession.category && (
-                <p className="text-[10px] text-dark-400">{activeSession.category}</p>
+                <p className="text-[11px] text-dark-400">{activeSession.category}</p>
               )}
             </div>
           </div>
@@ -800,7 +1010,7 @@ export default function ChatbotPage() {
                 key={cmd}
                 onClick={() => send(cmd)}
                 disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-800/60 border border-dark-700/40 text-dark-300 hover:text-white hover:border-eagle-500/40 hover:bg-eagle-500/5 transition-all disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-800/60 border border-dark-700/40 text-dark-300 hover:text-dark-50 hover:border-eagle-500/40 hover:bg-eagle-500/5 transition-all disabled:opacity-50"
               >
                 <Icon className="w-3.5 h-3.5" />
                 {label}
@@ -840,12 +1050,12 @@ export default function ChatbotPage() {
             <button
               onClick={() => send()}
               disabled={loading || !input.trim()}
-              className="p-2 bg-eagle-600 hover:bg-eagle-500 disabled:bg-dark-700 disabled:text-dark-500 text-white rounded-lg transition-colors flex-shrink-0"
+              className="p-2 bg-eagle-600 hover:bg-eagle-500 disabled:bg-dark-700 disabled:text-dark-500 text-on-brand rounded-lg transition-colors flex-shrink-0"
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </button>
           </div>
-          <p className="text-[10px] text-dark-600 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
+          <p className="text-[11px] text-dark-600 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
         </div>
       </div>
     </div>

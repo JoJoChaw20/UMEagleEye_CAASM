@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw } from 'lucide-react'
+import { AlertTriangle, RefreshCw, ScanLine, ArrowRight } from 'lucide-react'
+import SectionHeader from '../components/ui/SectionHeader'
 import client from '../api/client'
 import TenantSelector from '../components/common/TenantSelector'
 import SecurityOverview from '../components/dashboard/SecurityOverview'
@@ -68,42 +69,49 @@ export default function DashboardPage() {
   const openAgents = () => navigate(dashboardHref('/agents', {}, tenantFilter))
   const openAdvisories = () => navigate(dashboardHref('/advisories', {}, tenantFilter))
 
+  const updatedAt = summary?.generated_at ? new Date(summary.generated_at) : null
+  const fresh = updatedAt && Date.now() - updatedAt.getTime() < 5 * 60 * 1000
+
   return (
     <div className="dashboard-page mx-auto w-full max-w-[1800px] space-y-8 pb-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-eagle-400">UMEagleEye · CAASM</p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight text-dark-50">Security overview</h1>
-          <p className="mt-2 max-w-2xl text-sm text-dark-400">From asset visibility to prioritized remediation, in one operational view.</p>
-        </div>
-        <div className="flex items-center gap-3">
+      <SectionHeader as="h1" title="Security overview"
+        description="From asset visibility to prioritised remediation, in one operational view."
+        actions={<>
+          <span className="inline-flex items-center gap-2 text-xs text-dark-400" aria-live="polite">
+            {loading || refreshing
+              ? <><span className="trace-loader scale-75" />Refreshing…</>
+              : updatedAt
+                ? <><span className={fresh ? 'live-dot bg-accent-cyan' : 'inline-block h-2 w-2 rounded-full bg-dark-500'} />Updated {updatedAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</>
+                : 'Update time unavailable'}
+          </span>
           <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
-          <button type="button" onClick={() => loadDashboard(true)} disabled={loading || refreshing}
-            className="inline-flex items-center gap-2 rounded-lg border border-dark-700 bg-dark-800/60 px-3 py-2 text-sm text-dark-200 transition-colors hover:border-eagle-500/50 disabled:opacity-50">
+          <button type="button" onClick={() => loadDashboard(true)} disabled={loading || refreshing} className="btn-secondary">
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />Refresh
           </button>
-        </div>
-      </header>
+        </>} />
 
       {Object.values(errors).some(Boolean) && (
-        <div role="status" className="glass-card border-amber-500/30 px-4 py-3 text-sm text-amber-300">
+        <div role="status" className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
           Some dashboard data could not be loaded. Affected sections are marked unavailable; other data remains visible.
         </div>
       )}
 
       {summary?.collection?.recent_failures?.length > 0 && (
-        <div role="status" className="glass-card flex items-start gap-3 border-red-500/30 px-4 py-3 text-sm">
+        <div role="status" className="flex flex-wrap items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/[0.07] px-4 py-3 text-sm">
+          <ScanLine className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-400" />
           <span className="font-semibold text-red-400">Recent scan failure</span>
           <span className="text-dark-300">{summary.collection.recent_failures[0].scan_type} scan{summary.collection.recent_failures[0].subnet ? ` of ${summary.collection.recent_failures[0].subnet}` : ''} failed. Network inventory may be stale.</span>
-          <button onClick={() => navigate('/discovery')} className="ml-auto whitespace-nowrap text-eagle-400 hover:underline">Review discovery →</button>
+          <button type="button" onClick={() => navigate('/discovery')} className="ml-auto whitespace-nowrap font-medium text-eagle-400 hover:text-eagle-300">Review discovery<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></button>
         </div>
       )}
 
       <SecurityOverview summary={summary} posture={posture} history={history} loading={loading} onAssets={() => openInventory({ scope: 'any' })} onAlerts={() => openAlerts({ sort: 'priority' })} onAgents={openAgents} onPosture={openPostureTrend} />
       <PriorityActionCentre actions={priorityActions} loading={loading} available={!errors.summary} tenantId={tenantFilter} />
-      <AssetVisibility summary={summary} loading={loading} onInventory={openInventory} onAgents={openAgents} />
       <ExposureAndChanges overview={summary?.overview} surface={summary?.attack_surface} recentChanges={recentChanges} changesLoading={loading} changesError={errors.changes} tenantId={tenantFilter} />
+      <AssetVisibility summary={summary} loading={loading} onInventory={openInventory} onAgents={openAgents} />
       <RemediationAndTrend remediation={summary?.remediation} posture={posture} history={history} loading={loading} onManage={openAdvisories} tenantId={tenantFilter} />
+      <p className="text-right text-[11px] text-dark-500">Windows: new assets 7 days · security changes 24 hours · posture trend 30 days</p>
     </div>
   )
 }

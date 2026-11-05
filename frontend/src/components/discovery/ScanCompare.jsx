@@ -1,14 +1,15 @@
 // Active vs passive comparison (Discovery page, Compare tab): devices found by both a
 // full scan and passive listening, and what each method captured. Server: GET /scans/compare.
 import { useState, useEffect } from 'react'
+import { Check, EqualNot } from 'lucide-react'
 import client from '../../api/client'
 
 // ── Scan Compare Panel ────────────────────────────────────────────
 // A passive-scan value next to its active counterpart: ✓ same, ≠ different,
 // + only the passive scan saw it (the active scan captured nothing to compare).
 function PassiveValue({ value, activeValue, match }) {
-  if (!activeValue) return <p className="text-cyan-500" title="Only seen by the passive scan">+ {value}</p>
-  return <p className={match ? 'text-green-500' : 'text-amber-500'}>{match ? '✓ ' : '≠ '}{value}</p>
+  if (!activeValue) return <p className="text-accent-cyan" title="Only seen by the passive scan">+ {value}</p>
+  return <p className={`inline-flex items-center gap-1 ${match ? 'text-green-500' : 'text-amber-500'}`}>{match ? <Check className="h-3 w-3 flex-shrink-0" aria-label="same" /> : <EqualNot className="h-3 w-3 flex-shrink-0" aria-label="different" />}{value}</p>
 }
 
 export default function ScanCompare() {
@@ -54,8 +55,8 @@ export default function ScanCompare() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
                 { label: 'Both Scans',   value: data.total_overlap,     color: 'text-eagle-500' },
-                { label: 'Active Total', value: data.total_active_ips,  color: 'text-blue-500'  },
-                { label: 'Passive Total',value: data.total_passive_ips, color: 'text-cyan-500'  },
+                { label: 'Active Total', value: data.total_active_ips,  color: 'text-eagle-500'  },
+                { label: 'Passive Total',value: data.total_passive_ips, color: 'text-accent-cyan'  },
                 { label: 'Active Only',  value: data.active_only_count, color: 'text-amber-500' },
               ].map(s => (
                 <div key={s.label} className="bg-dark-850 rounded-xl border border-dark-700 p-3 text-center">
@@ -67,11 +68,11 @@ export default function ScanCompare() {
 
             {/* Legend */}
             <div className="flex flex-wrap gap-4 text-xs text-dark-300 border border-dark-700 rounded-lg p-3 bg-dark-850">
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" /> Active scan data</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-cyan-500 inline-block" /> Passive scan data</span>
-              <span className="flex items-center gap-1.5"><span className="text-green-500 font-bold">✓</span> Match between scans</span>
-              <span className="flex items-center gap-1.5"><span className="text-amber-500 font-bold">≠</span> Mismatch between scans</span>
-              <span className="flex items-center gap-1.5"><span className="text-cyan-500 font-bold">+</span> Only seen by the passive scan</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-eagle-500 inline-block" /> Active scan data</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-accent-cyan inline-block" /> Passive scan data</span>
+              <span className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-green-500" /> Match between scans</span>
+              <span className="flex items-center gap-1.5"><EqualNot className="h-3.5 w-3.5 text-amber-500" /> Mismatch between scans</span>
+              <span className="flex items-center gap-1.5"><span className="text-accent-cyan font-bold">+</span> Only seen by the passive scan</span>
               <span className="flex items-center gap-1.5"><span className="text-dark-400">—</span> Not captured</span>
             </div>
 
@@ -83,7 +84,7 @@ export default function ScanCompare() {
             ) : (
               <div className="space-y-2">
                 {/* Column headers */}
-                <div className="grid grid-cols-12 gap-2 text-[10px] text-dark-400 uppercase tracking-wide px-3">
+                <div className="grid grid-cols-12 gap-2 text-[11px] text-dark-400 uppercase tracking-wide px-3">
                   <div className="col-span-2">IP Address</div>
                   <div className="col-span-2">Hostname</div>
                   <div className="col-span-2">MAC Address</div>
@@ -116,7 +117,7 @@ export default function ScanCompare() {
                         {/* Hostname */}
                         <div className="col-span-2 text-xs space-y-0.5">
                           {row.active.hostname
-                            ? <p className="text-blue-500">{row.active.hostname}</p>
+                            ? <p className="text-eagle-500">{row.active.hostname}</p>
                             : <p className="text-dark-400">—</p>}
                           {row.passive.hostname
                             ? <PassiveValue value={row.passive.hostname} activeValue={row.active.hostname} match={row.delta.hostname_match} />
@@ -126,7 +127,7 @@ export default function ScanCompare() {
                         {/* MAC */}
                         <div className="col-span-2 text-xs space-y-0.5 font-mono">
                           {row.active.mac
-                            ? <p className="text-blue-500">{row.active.mac}</p>
+                            ? <p className="text-eagle-500">{row.active.mac}</p>
                             : <p className="text-dark-400">—</p>}
                           {row.passive.mac
                             ? <PassiveValue value={row.passive.mac} activeValue={row.active.mac} match={row.delta.mac_match} />
@@ -136,17 +137,17 @@ export default function ScanCompare() {
                         {/* Ports */}
                         <div className="col-span-2 text-xs font-mono">
                           {portStr
-                            ? <span className="text-blue-500">{portStr}</span>
+                            ? <span className="text-eagle-500">{portStr}</span>
                             : <span className="text-dark-400">none detected</span>}
-                          <span className="block text-dark-400 text-[10px]">— passive</span>
+                          <span className="block text-dark-400 text-[11px]">— passive</span>
                         </div>
 
                         {/* OS */}
                         <div className="col-span-2 text-xs">
                           {osName
-                            ? <span className="text-blue-500">{String(osName).slice(0, 30)}</span>
+                            ? <span className="text-eagle-500">{String(osName).slice(0, 30)}</span>
                             : <span className="text-dark-400">not identified</span>}
-                          <span className="block text-dark-400 text-[10px]">— passive</span>
+                          <span className="block text-dark-400 text-[11px]">— passive</span>
                         </div>
 
                         {/* Active richness */}
@@ -161,9 +162,9 @@ export default function ScanCompare() {
                         <div className="grid grid-cols-2 gap-4 px-4 py-4 border-t border-dark-700 bg-dark-900 text-xs">
                           {/* Active detail */}
                           <div className="space-y-2">
-                            <p className="text-blue-500 font-semibold uppercase tracking-wide text-[10px]">Active Scan Detail</p>
+                            <p className="text-eagle-500 font-semibold uppercase tracking-wide text-[11px]">Active Scan Detail</p>
                             <div className="space-y-1 text-dark-200">
-                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] break-all">{row.active.scan_id}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[11px] break-all">{row.active.scan_id}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Subnet</span><span>{row.active.subnet || '—'}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scanned</span><span>{new Date(row.active.scanned_at).toLocaleString()}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Hostname</span><span>{row.active.hostname || '—'}</span></div>
@@ -174,7 +175,7 @@ export default function ScanCompare() {
                                   <span className="text-dark-400">Ports</span>
                                   <div className="flex flex-wrap gap-1 mt-1">
                                     {row.active.ports.map((p, i) => (
-                                      <span key={i} className="bg-blue-500/15 text-blue-500 border border-blue-500/40 px-1.5 py-0.5 rounded font-mono text-[10px]">
+                                      <span key={i} className="bg-eagle-500/15 text-eagle-500 border border-eagle-500/40 px-1.5 py-0.5 rounded font-mono text-[11px]">
                                         {p.port}/{p.protocol}{p.service ? ` (${p.service})` : ''}
                                       </span>
                                     ))}
@@ -192,9 +193,9 @@ export default function ScanCompare() {
 
                           {/* Passive detail */}
                           <div className="space-y-2">
-                            <p className="text-cyan-500 font-semibold uppercase tracking-wide text-[10px]">Passive Scan Detail</p>
+                            <p className="text-accent-cyan font-semibold uppercase tracking-wide text-[11px]">Passive Scan Detail</p>
                             <div className="space-y-1 text-dark-200">
-                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[10px] break-all">{row.passive.scan_id}</span></div>
+                              <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Scan ID</span><span className="font-mono text-[11px] break-all">{row.passive.scan_id}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Source</span><span>{row.passive.subnet || 'ARP Discovery'}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Seen at</span><span>{new Date(row.passive.scanned_at).toLocaleString()}</span></div>
                               <div className="flex gap-2"><span className="text-dark-400 w-20 shrink-0">Hostname</span><span>{row.passive.hostname || '—'}</span></div>

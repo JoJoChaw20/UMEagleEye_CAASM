@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Plus, Trash2, Copy, Check, X, RefreshCw, Radio, AlertCircle, KeyRound, Pencil, ChevronDown, ChevronRight, Monitor,
+  Download,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -14,7 +15,63 @@ import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
 // the computer's own inventory and security settings. The 1.x agents (eagleeye_agent.py)
 // are retired: their keys are revoked and they are listed apart, with their history.
 
-const INSTALLER_NAME = 'EagleEyeAgent-Setup-2.1.0.exe'
+// The Windows installer is served by the API from R2 (GET /agents/installer, /installer/download);
+// any signed-in user can download it. It carries no secrets: the connection code does.
+function useInstaller() {
+  const [installer, setInstaller] = useState(undefined)      // undefined = loading, null = none uploaded
+  useEffect(() => {
+    let live = true
+    client.get('/agents/installer')
+      .then((r) => live && setInstaller(r.data))
+      .catch(() => live && setInstaller(null))
+    return () => { live = false }
+  }, [])
+  return installer
+}
+
+function formatMB(bytes) {
+  return `${(bytes / 2 ** 20).toFixed(0)} MB`
+}
+
+function DownloadInstallerButton({ installer, className = 'btn-secondary', label }) {
+  const [state, setState] = useState(null)                   // null | 'downloading' | error text
+  if (installer === undefined) return null
+  if (installer === null) {
+    return (
+      <span className="text-xs text-dark-400" title="Ask the platform administrator to upload the installer">
+        Installer not available yet
+      </span>
+    )
+  }
+  const download = async () => {
+    setState('downloading')
+    try {
+      const res = await client.get('/agents/installer/download', { responseType: 'blob', timeout: 0 })
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = installer.filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      setState(null)
+    } catch {
+      setState('Download failed. Try again.')
+    }
+  }
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button type="button" onClick={download} disabled={state === 'downloading'}
+        title={`${installer.filename}, ${formatMB(installer.size)}`}
+        className={`${className} inline-flex items-center gap-2 text-sm`}>
+        <Download className={`w-4 h-4 ${state === 'downloading' ? 'animate-pulse' : ''}`} />
+        {state === 'downloading' ? 'Downloading...' : (label ?? `Download agent ${installer.version}`)}
+      </button>
+      {state && state !== 'downloading' && <span className="text-xs text-red-400">{state}</span>}
+    </span>
+  )
+}
 
 // ── Small parts ───────────────────────────────────────────────────
 const STATUS_META = {
@@ -28,7 +85,7 @@ function StatusBadge({ status }) {
   const m = STATUS_META[status] ?? STATUS_META.offline
   return (
     <span
-      className={`text-xs px-2 py-0.5 rounded-full border font-medium inline-flex items-center gap-1.5 ${m.cls}`}
+      className={`text-xs px-2 py-0.5 rounded-md border font-medium inline-flex items-center gap-1.5 ${m.cls}`}
       title={status === 'degraded' ? 'No heartbeat for 2 to 10 minutes' : undefined}
     >
       <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
@@ -61,11 +118,11 @@ function Modal({ title, onClose, children, wide = false }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={title}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={title}>
       <div className={`glass-card w-full ${wide ? 'max-w-xl' : 'max-w-md'} p-6 space-y-4 my-auto`}>
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-white">{title}</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-white" aria-label="Close"><X className="w-5 h-5" /></button>
+          <h2 className="text-lg font-semibold text-dark-50">{title}</h2>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50" aria-label="Close"><X className="w-5 h-5" /></button>
         </div>
         {children}
       </div>
@@ -124,7 +181,7 @@ function RegisterModal({ onClose, onSubmit }) {
 }
 
 // ── Connection details (after Register or Rotate key) ─────────────
-function ConnectionModal({ agentName, agentId, apiKey, rotated, onClose }) {
+function ConnectionModal({ agentName, agentId, apiKey, rotated, installer, onClose }) {
   const apiUrl = agentApiUrl(client.defaults.baseURL)
   const code = makeConnectionCode({ apiUrl, agentId, apiKey })
   const [showValues, setShowValues] = useState(false)
@@ -143,7 +200,18 @@ function ConnectionModal({ agentName, agentId, apiKey, rotated, onClose }) {
       <div className="rounded-xl bg-dark-800/60 border border-dark-700/40 p-4 space-y-2 text-sm text-dark-200">
         <p className="text-xs font-medium text-dark-400 uppercase tracking-wider">On that computer</p>
         <ol className="list-decimal pl-5 space-y-1">
-          {!rotated && <li>Install the agent with <code className="font-mono text-xs">{INSTALLER_NAME}</code>.</li>}
+          {!rotated && (
+            <li>
+              Install the agent with{' '}
+              <code className="font-mono text-xs">{installer?.filename ?? 'EagleEyeAgent-Setup-<version>.exe'}</code>
+              {installer && (
+                <span className="ml-2 align-middle">
+                  <DownloadInstallerButton installer={installer} className="btn-secondary !py-1 !px-2" label="Download" />
+                </span>
+              )}
+              . It needs administrator rights on that computer.
+            </li>
+          )}
           <li>Open <strong>Settings</strong> in the agent, paste the code into <strong>Connection code</strong> and choose <strong>Use code</strong>.</li>
           <li>Choose <strong>Test connection</strong>, then <strong>Save</strong>.</li>
         </ol>
@@ -203,7 +271,7 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
   return (
     <tr className={retired ? 'opacity-70' : ''}>
       <td>
-        <p className="font-medium text-white">{a.name}</p>
+        <p className="font-medium text-dark-50">{a.name}</p>
         <div className="flex items-center gap-1 mt-0.5">
           <p className="text-[11px] text-dark-500 font-mono truncate max-w-[16rem]" title={a.agent_id}>{a.agent_id}</p>
           <CopyButton text={a.agent_id} label="Copy agent ID" />
@@ -238,7 +306,7 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
           <div className="flex items-center gap-1">
             {!retired && (
               <>
-                <button onClick={() => onRename(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-white transition-colors" title="Rename" aria-label={`Rename ${a.name}`}>
+                <button onClick={() => onRename(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Rename" aria-label={`Rename ${a.name}`}>
                   <Pencil className="w-4 h-4" />
                 </button>
                 <button onClick={() => onRotate(a)} disabled={busy === a.agent_id} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="New connection code (rotate the API key)" aria-label={`Rotate the key of ${a.name}`}>
@@ -274,6 +342,7 @@ export default function AgentsPage() {
 
   const isSuperadmin = user?.role === 'superadmin'
   const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const installer = useInstaller()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -380,7 +449,7 @@ export default function AgentsPage() {
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Agents</h1>
+          <h1 className="page-title">Agents</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">
             One EagleEye Agent per computer. It scans that computer's network and reports the computer's security settings.
           </p>
@@ -396,6 +465,7 @@ export default function AgentsPage() {
           <button onClick={load} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
+          <DownloadInstallerButton installer={installer} />
           {canManage && (
             <button onClick={() => setShowRegister(true)} className="btn-primary flex items-center gap-2 text-sm">
               <Plus className="w-4 h-4" /> Register agent
@@ -458,7 +528,7 @@ export default function AgentsPage() {
       )}
 
       {showRegister && <RegisterModal onClose={() => setShowRegister(false)} onSubmit={register} />}
-      {connection && <ConnectionModal {...connection} onClose={() => setConnection(null)} />}
+      {connection && <ConnectionModal {...connection} installer={installer} onClose={() => setConnection(null)} />}
       {renaming && <RenameModal agent={renaming} onClose={() => setRenaming(null)} onSave={rename} />}
     </div>
   )

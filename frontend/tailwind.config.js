@@ -1,4 +1,10 @@
 /** @type {import('tailwindcss').Config} */
+
+// Every colour is a CSS variable (an "R G B" triplet) set per theme in src/index.css,
+// so dark, light and system modes switch without touching component code.
+const v = (name) => `rgb(var(--${name}) / <alpha-value>)`
+const scale = (prefix, steps) => Object.fromEntries(steps.map((s) => [s, v(`${prefix}-${s}`)]))
+
 export default {
   content: [
     "./index.html",
@@ -8,55 +14,59 @@ export default {
   theme: {
     extend: {
       colors: {
-        // UMEagleEye brand palette
-        eagle: {
-          50: '#eef7ff',
-          100: '#d9edff',
-          200: '#bce0ff',
-          300: '#8eceff',
-          400: '#59b3ff',
-          500: '#3393ff',
-          600: '#1b75f5',
-          700: '#145ee1',
-          800: '#174db6',
-          900: '#19438f',
-          950: '#142a57',
-        },
-        dark: {
-          50:  'rgb(var(--dark-50)  / <alpha-value>)',
-          100: 'rgb(var(--dark-100) / <alpha-value>)',
-          200: 'rgb(var(--dark-200) / <alpha-value>)',
-          300: 'rgb(var(--dark-300) / <alpha-value>)',
-          400: 'rgb(var(--dark-400) / <alpha-value>)',
-          500: 'rgb(var(--dark-500) / <alpha-value>)',
-          600: 'rgb(var(--dark-600) / <alpha-value>)',
-          700: 'rgb(var(--dark-700) / <alpha-value>)',
-          800: 'rgb(var(--dark-800) / <alpha-value>)',
-          850: 'rgb(var(--dark-850) / <alpha-value>)',
-          900: 'rgb(var(--dark-900) / <alpha-value>)',
-          950: 'rgb(var(--dark-950) / <alpha-value>)',
-        },
+        // Brand blue, sampled from the EagleEye logo (bright "Eye" top → deep base)
+        eagle: scale('eagle', [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]),
+        // Navy-tinted neutrals. Named "dark" for history: 50 is the strongest text,
+        // 950 the page ground, in both themes.
+        dark: scale('dark', [50, 100, 200, 300, 400, 500, 600, 700, 800, 850, 900, 950]),
         accent: {
-          cyan: '#00e5ff',
-          green: '#00e676',
-          amber: '#ffc400',
-          red: '#ff5252',
-          purple: '#b388ff',
+          cyan: v('accent-cyan'),
+          green: v('accent-green'),
+          amber: v('accent-amber'),
+          red: v('accent-red'),
+          purple: v('accent-purple'),
+        },
+        // The navy rail is the same in every theme: it carries the logo's world.
+        rail: {
+          DEFAULT: v('rail'),
+          raised: v('rail-raised'),
+          line: v('rail-line'),
+          text: v('rail-text'),
+          muted: v('rail-muted'),
+        },
+        // Categorical data series (device types, chart series), logo-derived first
+        series: scale('series', [1, 2, 3, 4, 5, 6]),
+        sev: {
+          critical: v('sev-critical'),
+          high: v('sev-high'),
+          medium: v('sev-medium'),
+          low: v('sev-low'),
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+        sans: ['"Geist Variable"', 'Geist', 'system-ui', '-apple-system', '"Segoe UI"', 'sans-serif'],
+        display: ['"Chakra Petch"', '"Geist Variable"', 'system-ui', 'sans-serif'],
+        mono: ['"Geist Mono Variable"', '"Geist Mono"', 'ui-monospace', '"Cascadia Code"', 'Consolas', 'monospace'],
+      },
+      // Tighter corners than Tailwind's defaults: the logo is angular.
+      borderRadius: {
+        sm: '3px',
+        DEFAULT: '4px',
+        md: '6px',
+        lg: '8px',
+        xl: '10px',
+        '2xl': '12px',
+        '3xl': '16px',
+      },
+      boxShadow: {
+        panel: '0 1px 2px rgb(var(--shadow) / 0.06), 0 2px 8px -2px rgb(var(--shadow) / 0.10)',
+        float: '0 12px 32px -8px rgb(var(--shadow) / 0.35), 0 2px 6px rgb(var(--shadow) / 0.12)',
+      },
+      transitionTimingFunction: {
+        out: 'cubic-bezier(0.16, 1, 0.3, 1)',
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'glow': 'glow 2s ease-in-out infinite alternate',
-      },
-      keyframes: {
-        glow: {
-          '0%': { boxShadow: '0 0 5px rgba(51, 147, 255, 0.3)' },
-          '100%': { boxShadow: '0 0 20px rgba(51, 147, 255, 0.6)' },
-        },
       },
     },
   },

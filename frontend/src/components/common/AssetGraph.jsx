@@ -3,28 +3,58 @@ import { RefreshCw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import client from '../../api/client'
 import { layoutGraph } from '../../utils/graphLayout'
 
-const TYPE_COLORS = {
-  server:      '#3393ff',
-  workstation: '#00e5ff',
-  network:     '#ffc400',
-  iot:         '#ff9800',
-  mobile:      '#ec4899',
-  unknown:     '#7b7f87',
+// Colours are theme tokens (src/index.css). The DOM filter pills use them as CSS;
+// the canvas resolves them to concrete values with readPalette() and redraws when the
+// theme changes.
+const TYPE_VARS = {
+  server:      'series-3',
+  workstation: 'series-1',
+  network:     'series-2',
+  iot:         'series-5',
+  mobile:      'series-6',
+  unknown:     'series-4',
 }
-const EDGE_GRAPH_COLORS = {
-  same_subnet:      '#ffffff',
-  connects_to:      '#3393ff',
-  depends_on:       '#00e676',
-  authenticates_to: '#ffc400',
-  exposes_service:  '#ff5252',
+const EDGE_VARS = {
+  same_subnet:      'dark-400',
+  connects_to:      'eagle-500',
+  depends_on:       'sev-low',
+  authenticates_to: 'sev-medium',
+  exposes_service:  'sev-critical',
 }
-const EDGE_FILTER_COLORS = {
-  same_subnet:      '#9aa0a6',
-  connects_to:      '#3393ff',
-  depends_on:       '#00e676',
-  authenticates_to: '#ffc400',
-  exposes_service:  '#ff5252',
+const cssVar = (v) => `rgb(var(--${v}))`
+const TYPE_COLORS = Object.fromEntries(Object.entries(TYPE_VARS).map(([k, v]) => [k, cssVar(v)]))
+const EDGE_FILTER_COLORS = Object.fromEntries(Object.entries(EDGE_VARS).map(([k, v]) => [k, cssVar(v)]))
+const EDGE_GRAPH_COLORS = EDGE_FILTER_COLORS
+
+function readPalette() {
+  const cs = getComputedStyle(document.documentElement)
+  const rgb = (v, a = 1) => {
+    const parts = cs.getPropertyValue(`--${v}`).trim().split(/\s+/).join(',')
+    return a === 1 ? `rgb(${parts})` : `rgba(${parts},${a})`
+  }
+  return {
+    rgb,
+    bg: rgb('dark-950'),
+    grid: rgb('dark-700', 0.45),
+    type: Object.fromEntries(Object.entries(TYPE_VARS).map(([k, v]) => [k, rgb(v)])),
+    edge: Object.fromEntries(Object.entries(EDGE_VARS).map(([k, v]) => [k, rgb(v)])),
+    edgeDefault: rgb('dark-600'),
+    edgeLabel: rgb('dark-400'),
+    critical: rgb('sev-critical'),
+    criticalSoft: rgb('sev-critical', 0.75),
+    criticalGlow: rgb('sev-critical', 0.32),
+    brandGlow: rgb('eagle-500', 0.2),
+    nodeRing: rgb('dark-900'),
+    hoverRing: rgb('dark-50'),
+    label: rgb('dark-100'),
+    subLabel: rgb('dark-400'),
+    legendBg: rgb('dark-900', 0.92),
+    legendLine: rgb('dark-700'),
+    legendTitle: rgb('dark-400'),
+    legendText: rgb('dark-300'),
+  }
 }
+const FONT = '"Geist Variable", system-ui, sans-serif'
 const EDGE_LABELS = {
   same_subnet:      'Subnet',
   connects_to:      'Connects',
@@ -171,12 +201,13 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
       const activeRels   = activeRelTypesRef.current
       const { zoom, offsetX, offsetY } = stateRef.current
 
+      const P = readPalette()
       ctx.clearRect(0, 0, W, H)
-      ctx.fillStyle = '#0d0e13'
+      ctx.fillStyle = P.bg
       ctx.fillRect(0, 0, W, H)
 
       // Grid
-      ctx.strokeStyle = '#14161d'; ctx.lineWidth = 0.5
+      ctx.strokeStyle = P.grid; ctx.lineWidth = 0.5
       const gs = 40 * zoom
       const sx = (offsetX % gs) - gs, sy = (offsetY % gs) - gs
       for (let x = sx; x < W; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke() }
@@ -204,7 +235,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
         const isBlast = blastSet.size > 0 && blastSet.has(e.source) && blastSet.has(e.target)
         ctx.beginPath()
-        ctx.strokeStyle = isBlast ? '#ff5252' : (EDGE_GRAPH_COLORS[e.relationship_type] || '#3e4047')
+        ctx.strokeStyle = isBlast ? P.critical : (P.edge[e.relationship_type] || P.edgeDefault)
         ctx.lineWidth   = isBlast ? 2.5 : 1.2
         ctx.globalAlpha = isBlast ? 1 : (blastSet.size > 0 ? 0.15 : 0.6)
         if (e.relationship_type === 'same_subnet') ctx.setLineDash([4, 4])
@@ -214,8 +245,8 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
         if (zoom > 0.6) {
           const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
-          ctx.font = `${9 / zoom}px Inter,sans-serif`
-          ctx.fillStyle = isBlast ? '#ff8a80' : '#60646d'
+          ctx.font = `${9 / zoom}px ${FONT}`
+          ctx.fillStyle = isBlast ? P.criticalSoft : P.edgeLabel
           ctx.globalAlpha = isBlast ? 0.9 : 0.5
           ctx.textAlign = 'center'
           ctx.fillText(EDGE_LABELS[e.relationship_type] || e.relationship_type, mx, my - 4)
@@ -231,12 +262,12 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
         const isOrigin = blast?.origin_asset_id === n.asset_id
         const isHover  = hovered === n.asset_id
         const dimmed   = blastSet.size > 0 && !isBlast
-        const color    = TYPE_COLORS[n.device_type] || TYPE_COLORS.unknown
+        const color    = P.type[n.device_type] || P.type.unknown
         const radius   = Math.max(10, 6 + (n.edge_count ?? 0) * 2)
 
         if ((n.is_internet_facing || isOrigin) && !dimmed) {
           const glow = ctx.createRadialGradient(n.x, n.y, radius, n.x, n.y, radius * 3)
-          glow.addColorStop(0, isOrigin ? 'rgba(255,82,82,0.35)' : 'rgba(51,147,255,0.2)')
+          glow.addColorStop(0, isOrigin ? P.criticalGlow : P.brandGlow)
           glow.addColorStop(1, 'rgba(0,0,0,0)')
           ctx.fillStyle = glow
           ctx.beginPath(); ctx.arc(n.x, n.y, radius * 3, 0, Math.PI * 2); ctx.fill()
@@ -244,14 +275,14 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
         ctx.beginPath(); ctx.arc(n.x, n.y, radius, 0, Math.PI * 2)
         ctx.globalAlpha = dimmed ? 0.15 : 1
-        ctx.fillStyle   = isOrigin ? '#ff5252' : color; ctx.fill()
-        ctx.strokeStyle = isHover ? '#ffffff' : (isBlast ? '#ff8a80' : '#1e2028')
+        ctx.fillStyle   = isOrigin ? P.critical : color; ctx.fill()
+        ctx.strokeStyle = isHover ? P.hoverRing : (isBlast ? P.criticalSoft : P.nodeRing)
         ctx.lineWidth   = isHover ? 2.5 : 1.5; ctx.stroke()
         ctx.globalAlpha = 1
 
         if (n.criticality_score >= 8 && !dimmed) {
           ctx.beginPath(); ctx.arc(n.x, n.y, radius + 4, 0, Math.PI * 2)
-          ctx.strokeStyle = '#ff5252'; ctx.lineWidth = 1.5
+          ctx.strokeStyle = P.critical; ctx.lineWidth = 1.5
           ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([])
         }
 
@@ -260,12 +291,12 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
           // the hover tooltip.
           const raw = n.hostname || n.ip_address || ''
           const label = raw.length > 22 ? raw.slice(0, 21) + '…' : raw
-          ctx.font = `bold ${10 / zoom}px Inter,sans-serif`
-          ctx.fillStyle = isOrigin ? '#ff8a80' : '#e2e3e5'
+          ctx.font = `600 ${10 / zoom}px ${FONT}`
+          ctx.fillStyle = isOrigin ? P.criticalSoft : P.label
           ctx.textAlign = 'center'
           ctx.fillText(label, n.x, n.y + radius + 14)
           if (n.hostname) {
-            ctx.font = `${8 / zoom}px Inter,sans-serif`; ctx.fillStyle = '#7b7f87'
+            ctx.font = `${8 / zoom}px ${FONT}`; ctx.fillStyle = P.subLabel
             ctx.fillText(n.ip_address, n.x, n.y + radius + 24)
           }
         }
@@ -273,8 +304,8 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
       // Faint label over the bottom band of isolated nodes (matches the notice below).
       if (layoutMeta.hasIsolated) {
-        ctx.font = `${11 / zoom}px Inter,sans-serif`
-        ctx.fillStyle = '#7b7f87'; ctx.globalAlpha = 0.85; ctx.textAlign = 'left'
+        ctx.font = `${11 / zoom}px ${FONT}`
+        ctx.fillStyle = P.subLabel; ctx.globalAlpha = 0.85; ctx.textAlign = 'left'
         ctx.fillText('No known relationships', 40, layoutMeta.isolatedBandY - 18)
         ctx.globalAlpha = 1
       }
@@ -283,16 +314,16 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
 
       // Legend
       const lx = 16, ly = H - 120
-      ctx.fillStyle = 'rgba(13,14,19,0.85)'; ctx.fillRect(lx, ly, 150, 110)
-      ctx.strokeStyle = '#1e2028'; ctx.strokeRect(lx, ly, 150, 110)
-      ctx.font = '10px Inter,sans-serif'; ctx.fillStyle = '#7b7f87'; ctx.textAlign = 'left'
+      ctx.fillStyle = P.legendBg; ctx.fillRect(lx, ly, 150, 110)
+      ctx.strokeStyle = P.legendLine; ctx.strokeRect(lx, ly, 150, 110)
+      ctx.font = `600 10px ${FONT}`; ctx.fillStyle = P.legendTitle; ctx.textAlign = 'left'
       ctx.fillText('RELATIONSHIP TYPES', lx + 8, ly + 14)
       let ly2 = ly + 28
-      Object.entries(EDGE_GRAPH_COLORS).forEach(([type, color]) => {
+      Object.entries(P.edge).forEach(([type, color]) => {
         const active = activeRelTypesRef.current.has(type)
         ctx.globalAlpha = active ? 1 : 0.25
         ctx.fillStyle = color; ctx.fillRect(lx + 8, ly2 - 4, 12, 3)
-        ctx.fillStyle = '#a0a3a8'; ctx.font = '9px Inter,sans-serif'
+        ctx.fillStyle = P.legendText; ctx.font = `10px ${FONT}`
         ctx.fillText(EDGE_LABELS[type] || type, lx + 26, ly2)
         ctx.globalAlpha = 1
         ly2 += 16
@@ -307,6 +338,9 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null
     if (ro && canvas.parentElement) ro.observe(canvas.parentElement)
     window.addEventListener('resize', onResize)
+    // Repaint in the new colours when the theme (html.light) changes
+    const themeObserver = new MutationObserver(() => draw())
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 
     /* ── Event handlers ──────────────────────────────────────────── */
     const getNodeAt = (mx, my) => {
@@ -385,6 +419,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
     return () => {
       ro?.disconnect()
       window.removeEventListener('resize', onResize)
+      themeObserver.disconnect()
       canvas.removeEventListener('mousemove',  handleMouseMove)
       canvas.removeEventListener('mousedown',  handleMouseDown)
       canvas.removeEventListener('mouseup',    handleMouseUp)
@@ -501,7 +536,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
             >
               <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
               <span className="capitalize">{type}</span>
-              {count > 0 && <span className="text-[10px] opacity-70">({count})</span>}
+              {count > 0 && <span className="text-[11px] opacity-70">({count})</span>}
             </button>
           )
         })}
@@ -525,7 +560,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
             >
               <span className="inline-block w-3 h-0.5 flex-shrink-0 rounded" style={{ background: color }} />
               {EDGE_LABELS[type]}
-              {count > 0 && <span className="text-[10px] opacity-70">({count})</span>}
+              {count > 0 && <span className="text-[11px] opacity-70">({count})</span>}
             </button>
           )
         })}
@@ -557,10 +592,10 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
         {/* Tooltip */}
         {tooltip && (
           <div className="absolute pointer-events-none z-50" style={{ left: tooltip.x, top: tooltip.y }}>
-            <div className="bg-dark-800 border border-dark-600 rounded-lg p-3 shadow-xl text-xs min-w-[180px]">
+            <div className="bg-dark-800 border border-dark-600 rounded-lg p-3 shadow-float text-xs min-w-[180px]">
               <div className="flex items-center gap-2 mb-2">
                 <span className="w-2.5 h-2.5 rounded-full" style={{ background: TYPE_COLORS[tooltip.node.device_type] || TYPE_COLORS.unknown }} />
-                <span className="font-semibold text-white text-sm">{tooltip.node.hostname || tooltip.node.ip_address}</span>
+                <span className="font-semibold text-dark-50 text-sm">{tooltip.node.hostname || tooltip.node.ip_address}</span>
               </div>
               <div className="space-y-1 text-dark-300">
                 <div className="flex justify-between"><span>IP</span><span className="font-mono text-accent-cyan">{tooltip.node.ip_address}</span></div>
@@ -572,7 +607,7 @@ export default function AssetGraph({ onSelectAsset, blastRadiusId, tenantFilter 
                 <div className="flex justify-between"><span>Connections</span><span>{tooltip.node.edge_count ?? 0}</span></div>
                 {tooltip.node.is_internet_facing && <div className="text-accent-amber mt-1">Internet Facing</div>}
               </div>
-              <div className="text-dark-500 mt-2 text-[10px]">Click for blast radius</div>
+              <div className="text-dark-500 mt-2 text-[11px]">Click for blast radius</div>
             </div>
           </div>
         )}

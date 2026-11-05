@@ -1,4 +1,4 @@
-"""Writes build/eagleeye.ico from the icon the app draws in code."""
+"""Writes build/eagleeye.ico from the app icon (the EagleEye emblem, eagleeye/gui/assets/mark.png)."""
 
 import os
 import sys

@@ -115,20 +115,20 @@ export default function DuplicatesPanel({ tenantId, canMerge, canDismiss = canMe
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto">
-      <div className={`w-full max-w-4xl bg-dark-900 border border-dark-700 rounded-xl shadow-xl ${centered ? 'my-auto' : 'my-8'}`}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-dark-950/70 p-4 overflow-y-auto">
+      <div className={`w-full max-w-4xl bg-dark-900 border border-dark-700 rounded-xl shadow-float ${centered ? 'my-auto' : 'my-8'}`}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-dark-700">
           <div className="flex items-center gap-2">
             <Layers className="w-5 h-5 text-accent-cyan" />
-            <h2 className="text-lg font-semibold text-white">Duplicate Assets</h2>
+            <h2 className="text-lg font-semibold text-dark-50">Duplicate Assets</h2>
             <span className="text-xs text-dark-400">{groups.length} group(s), {safeGroups.length} safe</span>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={load} className="btn-secondary text-xs flex items-center gap-1.5" disabled={loading || !!busy}>
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
             </button>
-            <button onClick={onClose} className="text-dark-400 hover:text-white"><X className="w-5 h-5" /></button>
+            <button onClick={onClose} className="text-dark-400 hover:text-dark-50"><X className="w-5 h-5" /></button>
           </div>
         </div>
 
@@ -157,10 +157,10 @@ export default function DuplicatesPanel({ tenantId, canMerge, canDismiss = canMe
                 <div className="flex items-center justify-between px-4 py-2.5 bg-dark-850 border-b border-dark-700">
                   <div className="flex items-center gap-2">
                     {g.confidence === 'safe'
-                      ? <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-500 border border-green-500/40 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Safe</span>
-                      : <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Review</span>}
+                      ? <span className="text-xs px-2 py-0.5 rounded-md bg-green-500/20 text-green-500 border border-green-500/40 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Safe</span>
+                      : <span className="text-xs px-2 py-0.5 rounded-md bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Review</span>}
                     {g.reraised && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/40" title="Marked as not duplicates before; new strong evidence links them now">
+                      <span className="text-xs px-2 py-0.5 rounded-md bg-orange-500/20 text-orange-400 border border-orange-500/40" title="Marked as not duplicates before; new strong evidence links them now">
                         Back: new evidence
                       </span>
                     )}

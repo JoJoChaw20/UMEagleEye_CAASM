@@ -6,7 +6,12 @@ import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { isOpenEvent } from '../lib/eventStatus'
-import { assets, events, advisories, postureMetrics, ctiIndicators } from '../db/schema'
+import { assets, events, advisories, auditLogs, postureMetrics, ctiIndicators } from '../db/schema'
+import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix, advisoryIdStartsWith, advisoryInTenant } from '../lib/advisoryScope'
+import { agentReply, agentStream } from '../mcp/agent'
+
+// Who may change an advisory's status (routes/advisories.ts STATUS_ROLES).
+const ADVISORY_STATUS_ROLES = ['tenant_superadmin', 'tenant_admin'] as const
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -15,6 +20,7 @@ function detectIntent(raw: string): { intent: string; query: string } {
   const m = raw.toLowerCase().trim()
 
   if (/^\/?(help)$/.test(m)) return { intent: 'help', query: '' }
+  if (/^\/?mcp$/.test(m)) return { intent: 'mcp', query: '' }
   if (/^\/?status$/.test(m) || /\b(status|health|how are|overview)\b/.test(m))
     return { intent: 'status', query: '' }
   if (/^\/?(assets?)$/.test(m) || /\bassets?\b/.test(m) || /\b(device|server|host|workstation)\b/.test(m))
@@ -54,6 +60,7 @@ function helpText(role: string): string {
       '`advisories` — Open advisories',
       '`ask <question>` — AI security assistant',
       '`fix <advisory_id>` — Mark advisory as resolved',
+      '`mcp` — Connect Claude Code, Claude Desktop or another MCP client to this data',
     )
   }
   lines.push('', 'You can also type naturally — I\'ll understand!')
@@ -69,7 +76,7 @@ async function queryStatus(db: ReturnType<typeof getDb>, tenantId?: string) {
     db.select({ count: sql<number>`count(*)::int` }).from(assets)
       .where(af ? and(af, eq(assets.inMyAssets, true)) : eq(assets.inMyAssets, true)),
     db.select({ count: sql<number>`count(*)::int` }).from(advisories)
-      .where(or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress'))),
+      .where(and(inArray(advisories.status, [...ACTIVE_ADVISORY_STATUSES]), tenantId ? advisoryInTenant(db, tenantId) : undefined)),
     db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(sql`${ctiIndicators.tiEventId} IS NULL`),  // global feeds
   ])
 
@@ -163,24 +170,41 @@ async function queryAdvisories(db: ReturnType<typeof getDb>, tenantId?: string) 
     status:            advisories.status,
     createdAt:         advisories.createdAt,
   }
-  const statusFilter = or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress'))
-
-  if (!tenantId) {
-    return db.select(selectCols).from(advisories).where(statusFilter)
-      .orderBy(desc(advisories.createdAt)).limit(10)
-  }
-
-  const assetIds = (await db.select({ assetId: assets.assetId }).from(assets)
-    .where(eq(assets.tenantId, tenantId))).map(a => a.assetId)
-  if (assetIds.length === 0) return []
-
-  const eventIds = (await db.select({ eventId: events.eventId }).from(events)
-    .where(inArray(events.assetId, assetIds))).map(e => e.eventId)
-  if (eventIds.length === 0) return []
-
   return db.select(selectCols).from(advisories)
-    .where(and(inArray(advisories.eventId, eventIds), statusFilter))
+    .where(and(inArray(advisories.status, [...ACTIVE_ADVISORY_STATUSES]), tenantId ? advisoryInTenant(db, tenantId) : undefined))
     .orderBy(desc(advisories.createdAt)).limit(10)
+}
+
+const CHAT_PER_MINUTE = 12
+
+/** True when the user has used up this minute's AI questions. Fails open if KV is down. */
+async function overChatLimit(env: Env, userId: string): Promise<boolean> {
+  const key = `rl:chat:${userId}:${Math.floor(Date.now() / 60_000)}`
+  try {
+    const used = Number((await env.KV_CACHE.get(key)) ?? 0)
+    if (used >= CHAT_PER_MINUTE) return true
+    await env.KV_CACHE.put(key, String(used + 1), { expirationTtl: 120 })
+  } catch { /* a cache problem never blocks the chat */ }
+  return false
+}
+
+/** The one advisory a typed id (or its start) names, in the user's tenant. A prefix that
+ *  fits several is refused, so a short id never acts on the wrong advisory. */
+async function findAdvisory(
+  db: ReturnType<typeof getDb>, rawId: string, tenantId: string | undefined, activeOnly: boolean,
+): Promise<{ advisory?: typeof advisories.$inferSelect; error?: string }> {
+  const prefix = advisoryIdPrefix(rawId)
+  if (!prefix) return { error: `\`${rawId.slice(0, 40)}\` is not an advisory ID. Use the ID shown by the \`advisories\` command.` }
+  const rows = await db.select().from(advisories)
+    .where(and(
+      advisoryIdStartsWith(prefix),
+      activeOnly ? inArray(advisories.status, [...ACTIVE_ADVISORY_STATUSES]) : undefined,
+      tenantId ? advisoryInTenant(db, tenantId) : undefined,
+    ))
+    .limit(2)
+  if (rows.length === 0) return { error: `Advisory \`${prefix}\` not found${activeOnly ? ' or already resolved' : ''}.` }
+  if (rows.length > 1) return { error: `More than one advisory starts with \`${prefix}\`. Type more of the ID.` }
+  return { advisory: rows[0] }
 }
 
 async function queryPosture(db: ReturnType<typeof getDb>, tenantId?: string) {
@@ -405,6 +429,22 @@ app.post(
         case 'help':
           return c.json({ type: 'text', content: helpText(user.role) })
 
+        case 'mcp': {
+          const endpoint = `${new URL(c.req.url).origin}/api/v1/mcp`
+          return c.json({ type: 'text', content: [
+            '**UMEagleEye MCP server**',
+            '',
+            `Endpoint: \`${endpoint}\` (Streamable HTTP). It shows an MCP client what you can see, read-only.`,
+            '',
+            'Sign in with your dashboard access token (it expires with your session):',
+            '',
+            `- Claude Code: \`claude mcp add --transport http umeagleeye ${endpoint} --header "Authorization: Bearer <token>"\``,
+            `- Claude Desktop (via mcp-remote): \`npx mcp-remote ${endpoint} --header "Authorization:Bearer <token>"\``,
+            '',
+            'Tools: security overview, CVE-check coverage, assets, alerts, alert explanations and advisories.',
+          ].join('\n') })
+        }
+
         case 'status': {
           const items = await queryStatus(db, tenantId)
           return c.json({ type: 'stats', content: 'System Status', items })
@@ -437,42 +477,48 @@ app.post(
           if (!query) {
             return c.json({ type: 'text', content: 'Please provide an advisory ID:\n`debug <advisory_id>`' })
           }
-          const advRows = await db.select().from(advisories)
-            .where(sql`${advisories.advisoryId}::text LIKE ${query + '%'}`)
-            .limit(1)
-          const adv = advRows[0]
-          if (!adv) {
-            return c.json({ type: 'text', content: `Advisory \`${query}\` not found.` })
-          }
+          if (!tenantId) return c.json({ type: 'text', content: 'Your account is not in a tenant.' })
+          const found = await findAdvisory(db, query, tenantId, false)
+          const adv = found.advisory
+          if (!adv) return c.json({ type: 'text', content: found.error ?? 'Advisory not found.' })
           if (!c.env.DEEPSEEK_API_KEY && !c.env.OPENROUTER_API_KEY) {
             return c.json({ type: 'text', content: 'AI assistant is not configured on this instance.' })
           }
-          const prompt = `You are a cybersecurity expert. A security advisory has these recommended actions:\n\n${adv.recommendedAction}\n\nSummary: ${adv.summary}\n\nExplain these recommended actions in detail, step by step, in plain language that a system administrator can follow. Be specific and practical.`
-          if (wantStream) return streamAIResponse(c.env, prompt, history)
-          const answer = await askAI(c.env, prompt, history)
-          return c.json({ type: 'ai', content: answer })
+          // Grounded in the advisory, its alert and its asset (the tools fetch them), so the
+          // guide names the real host, OS, port or package instead of generic examples.
+          const prompt = [
+            `Walk me through advisory ${adv.advisoryId}, for the asset it is about.`,
+            `First call get_advisory with advisory_id "${adv.advisoryId}", then explain_alert with its event_id, and get_asset with the asset_id if you need its services or OS.`,
+            'Then write, for that asset only:',
+            '1. What was found and why it matters on this asset (exposure, criticality, what the port/package/CVE is).',
+            '2. Numbered steps to investigate and fix it, with the exact commands for its operating system, using the real port, service, package and versions.',
+            '3. How to verify the fix in UMEagleEye (Discovery > New scan for a port or service; Run SBOM scan for a package or CVE) and on the host.',
+            '4. What to do if the change was authorised (Accept change on the Alerts page) or turns out to be malicious (isolate, preserve evidence).',
+            'Where a value is unknown, say so and how to find it. Keep it complete but tight: no generic background.',
+          ].join('\n')
+          const debugCtx = { db, env: c.env, tenantId, user: { userId: user.userId, role: user.role, tenantId: user.tenantId } }
+          if (wantStream) return agentStream(debugCtx, prompt, history)
+          return c.json(await agentReply(debugCtx, prompt, history))
         }
 
         case 'fix': {
-          if (restricted) {
+          // Same rule as PATCH /advisories/:id/status: tenant admins, in their own tenant.
+          if (!(ADVISORY_STATUS_ROLES as readonly string[]).includes(user.role) || !tenantId) {
             return c.json({ type: 'text', content: 'Your role does not have permission to resolve advisories.' })
           }
           if (!query) {
             return c.json({ type: 'text', content: 'Please provide an advisory ID:\n`fix <advisory_id>`\n\nUse the `advisories` command to see open advisory IDs.' })
           }
-          const openRows = await db.select().from(advisories)
-            .where(and(
-              or(eq(advisories.status, 'open'), eq(advisories.status, 'acknowledged'), eq(advisories.status, 'in_progress')),
-              sql`${advisories.advisoryId}::text LIKE ${query + '%'}`,
-            ))
-            .limit(1)
-          const target = openRows[0]
-          if (!target) {
-            return c.json({ type: 'text', content: `Advisory \`${query}\` not found or already resolved.` })
-          }
+          const found = await findAdvisory(db, query, tenantId, true)
+          const target = found.advisory
+          if (!target) return c.json({ type: 'text', content: found.error ?? 'Advisory not found.' })
           await db.update(advisories)
             .set({ status: 'resolved', resolvedAt: new Date() })
             .where(eq(advisories.advisoryId, target.advisoryId))
+          await db.insert(auditLogs).values({
+            userId: user.userId, tenantId, actionType: 'advisory_status_update', targetEntity: target.advisoryId,
+            previousState: { status: target.status }, newState: { status: 'resolved', via: 'chatbot' },
+          })
           return c.json({
             type: 'fix',
             content: `Advisory \`${target.advisoryId.slice(0, 8)}\` marked as **resolved**.`,
@@ -485,30 +531,27 @@ app.post(
           if (!c.env.DEEPSEEK_API_KEY && !c.env.OPENROUTER_API_KEY) {
             return c.json({ type: 'text', content: 'AI assistant is not configured on this instance.' })
           }
-          // Inject live security context so the AI answers about this environment
-          const [postureData, critAlerts, openAdvisories] = await Promise.all([
-            queryPosture(db, tenantId),
-            queryAlerts(db, tenantId).then(a => a.slice(0, 3)),
-            queryAdvisories(db, tenantId).then(a => a.slice(0, 5)),
-          ])
-          const contextLines = [
-            `Current security posture score: ${postureData.score}/100`,
-            `Total assets: ${postureData.total}, Critical assets: ${postureData.critical}`,
-            `Open critical events: ${postureData.openCrit}`,
-          ]
-          if (critAlerts.length > 0) {
-            contextLines.push(`Recent critical/high alerts: ${critAlerts.map(e => `${e.eventType} on ${e.hostname || e.ipAddress}`).join('; ')}`)
+          // The model looks facts up itself with the UMEagleEye tools (mcp/tools.ts), scoped
+          // to this user's tenant, instead of getting a fixed summary pasted into the prompt.
+          const toolCtx = {
+            db, env: c.env, tenantId,
+            user: { userId: user.userId, role: user.role, tenantId: user.tenantId },
           }
-          if (openAdvisories.length > 0) {
-            contextLines.push(`Open advisories (${openAdvisories.length}):`)
-            openAdvisories.forEach((adv, i) => {
-              contextLines.push(`  ${i + 1}. [${adv.advisoryId.slice(0, 8)}] ${adv.summary}. Fix: ${adv.recommendedAction?.slice(0, 500) ?? 'N/A'}`)
-            })
+          const question = query || message
+          // Each question can cost several model calls: a per-user limit per minute.
+          const limited = await overChatLimit(c.env, user.userId)
+          if (limited) {
+            const text = 'You have asked a lot of questions in the last minute. Wait a moment, then try again.'
+            if (!wantStream) return c.json({ type: 'text', content: text }, 429)
+            return new Response(`data: ${JSON.stringify({ error: text })}
+
+data: [DONE]
+
+`,
+              { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } })
           }
-          const contextPrompt = `${query || message}\n\n[Live environment context:\n${contextLines.join('\n')}]`
-          if (wantStream) return streamAIResponse(c.env, contextPrompt, history)
-          const answer = await askAI(c.env, contextPrompt, history)
-          return c.json({ type: 'ai', content: answer })
+          if (wantStream) return agentStream(toolCtx, question, history)
+          return c.json(await agentReply(toolCtx, question, history))
         }
 
         default:

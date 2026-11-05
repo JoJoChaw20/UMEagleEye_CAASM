@@ -112,7 +112,7 @@ export default function DeviceTypePicker({ asset, onChanged, compact = false }) 
         <span className={compact ? 'text-base leading-none' : 'text-lg leading-none'} aria-hidden="true">{meta.icon}</span>
         <span className="text-left leading-tight">
           <span className={`block ${compact ? 'text-xs' : 'text-sm'} text-dark-100`}>{meta.label}</span>
-          {compact && <span className={`block text-[10px] ${src.cls}`}>{src.tag}</span>}
+          {compact && <span className={`block text-[11px] ${src.cls}`}>{src.tag}</span>}
         </span>
         {saving
           ? <Loader2 className="w-3.5 h-3.5 text-dark-400 animate-spin" />
@@ -130,7 +130,7 @@ export default function DeviceTypePicker({ asset, onChanged, compact = false }) 
           onKeyDown={onMenuKey}
           onClick={stop}
           style={{ position: 'fixed', left: pos.left, top: pos.top, width: MENU_W, transform: pos.below ? 'none' : 'translateY(-100%)', zIndex: 1000 }}
-          className="bg-dark-900 border border-dark-600 rounded-xl shadow-2xl p-1.5 text-sm outline-none"
+          className="bg-dark-900 border border-dark-600 rounded-xl shadow-float p-1.5 text-sm outline-none"
         >
           <p className="px-2.5 pt-1 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-dark-400">Device type</p>
           {rows.map((row, i) => {

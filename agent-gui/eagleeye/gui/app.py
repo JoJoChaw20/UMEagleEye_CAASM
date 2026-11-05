@@ -6,17 +6,18 @@ import argparse
 import logging
 import logging.handlers
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QLockFile, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QIcon, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QLockFile, Qt, QTimer
+from PySide6.QtGui import QAction, QCloseEvent, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMenu, QMessageBox, QPushButton, QStackedWidget,
-    QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QStackedWidget, QSystemTrayIcon,
+    QVBoxLayout, QWidget,
 )
 
 from .. import VERSION, deps
@@ -25,50 +26,24 @@ from ..keychain import Keychain
 from ..service import SCHEDULES_ENABLED
 from .consent import ConsentDialog, needs_consent
 from .controller import AgentController, QtLogHandler, start_pump, stop_pump
-from .pages import DependenciesPage, LogPage, PrivacyPage, SchedulesPage, SettingsPage, StatusPage
+from . import theme
+from .pages import DependenciesPage, LogPage, PrivacyPage, SchedulesPage, SettingsPage, StatusPage, all_pages
+from .widgets import PAGE_ROLE, ElidedLabel, LiveDot, RailNav, ThemeSwitch, button, refresh_icons
 
 log = logging.getLogger("eagleeye.gui")
 APP_NAME = "EagleEye Agent"
 CREATE_NO_WINDOW = 0x08000000
 
-STYLE = """
-QLabel[role="hint"] { color: palette(placeholder-text); }
-QLabel[role="error"] { color: #b42318; }
-QLabel[role="banner"] { background: #fff4e5; color: #7a4100; border: 1px solid #f5c48a; border-radius: 6px; padding: 8px 10px; }
-QLabel#state[state="running"] { color: #067647; font-weight: 600; }
-QLabel#state[state="stopped"] { color: #b42318; font-weight: 600; }
-QListWidget#nav { border: none; background: palette(window); font-size: 14px; }
-QListWidget#nav::item { padding: 8px 14px; border-radius: 6px; margin: 1px 6px; }
-QListWidget#nav::item:selected { background: palette(highlight); color: palette(highlighted-text); }
-QGroupBox { font-weight: 600; }
-QPushButton[role="primary"] { font-weight: 600; }
-"""
+RAIL_WIDTH = 240
 
 
 def app_icon() -> QIcon:
-    """The app icon, drawn in code so there are no image files to ship."""
+    """The EagleEye emblem (assets/mark.png) at the sizes Windows asks for."""
     icon = QIcon()
+    mark = theme.brand_pixmap("mark")
     for size in (16, 24, 32, 48, 64, 128, 256):
-        pm = QPixmap(size, size)
-        pm.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        s = float(size)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor("#1d4ed8")))
-        p.drawRoundedRect(QRectF(0, 0, s, s), s * 0.22, s * 0.22)
-        eye = QPainterPath()
-        eye.moveTo(s * 0.10, s * 0.50)
-        eye.quadTo(s * 0.50, s * 0.12, s * 0.90, s * 0.50)
-        eye.quadTo(s * 0.50, s * 0.88, s * 0.10, s * 0.50)
-        p.setBrush(QBrush(QColor("white")))
-        p.drawPath(eye)
-        p.setBrush(QBrush(QColor("#1d4ed8")))
-        p.drawEllipse(QPointF(s * 0.5, s * 0.5), s * 0.17, s * 0.17)
-        p.setBrush(QBrush(QColor("white")))
-        p.drawEllipse(QPointF(s * 0.56, s * 0.44), s * 0.05, s * 0.05)
-        p.end()
-        icon.addPixmap(pm)
+        icon.addPixmap(mark.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation))
     return icon
 
 
@@ -98,30 +73,8 @@ class MainWindow(QMainWindow):
         inst = instance_name()
         self.setWindowTitle(f"{APP_NAME} {VERSION}" + (f" ({inst})" if inst else ""))
         self.setWindowIcon(app_icon())
-        self.resize(980, 720)
-
-        # header: state + start/stop
-        self.state = QLabel()
-        self.state.setObjectName("state")
-        self.admin = QLabel()
-        self.admin.setProperty("role", "hint")
-        self.toggle_btn = QPushButton()
-        self.toggle_btn.setProperty("role", "primary")
-        self.toggle_btn.clicked.connect(self.toggle)
-        header = QHBoxLayout()
-        header.setContentsMargins(20, 12, 20, 4)
-        title = QLabel(f"<b style='font-size:16px'>{APP_NAME}</b>")
-        header.addWidget(title)
-        header.addSpacing(16)
-        header.addWidget(self.state)
-        header.addStretch(1)
-        header.addWidget(self.admin)
-        header.addSpacing(12)
-        header.addWidget(self.toggle_btn)
-        quit_btn = QPushButton("Quit")
-        quit_btn.setToolTip("Stop the agent and close the app (closing the window keeps it running in the tray)")
-        quit_btn.clicked.connect(self.quit)
-        header.addWidget(quit_btn)
+        self.resize(1120, 780)
+        self.setMinimumSize(900, 600)
 
         self.status_page = StatusPage(self)
         self.schedules_page = SchedulesPage(self) if SCHEDULES_ENABLED else None
@@ -129,31 +82,125 @@ class MainWindow(QMainWindow):
         self.privacy_page = PrivacyPage(self)
         self.deps_page = DependenciesPage(self)
         self.log_page = LogPage(self, log_dir)
-        pages = [("Status", self.status_page)]
-        if self.schedules_page is not None:
-            pages.append(("Schedules", self.schedules_page))
-        pages += [("Settings", self.settings_page), ("Privacy", self.privacy_page),
-                  ("Dependencies", self.deps_page), ("Log", self.log_page)]
-        self.nav = QListWidget()
-        self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(170)
         self.stack = QStackedWidget()
-        for name, page in pages:
-            self.nav.addItem(name)
-            self.stack.addWidget(page)
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.nav.setCurrentRow(0)
+        # Two groups on the rail: what the agent does, and how it is set up.
+        doing: list[tuple[str, str, QWidget]] = [("Status", "activity", self.status_page)]
+        if self.schedules_page is not None:
+            doing.append(("Schedules", "calendar-clock", self.schedules_page))
+        doing.append(("Log", "scroll-text", self.log_page))
+        setup = [("Settings", "settings", self.settings_page), ("Privacy", "shield-check", self.privacy_page),
+                 ("Dependencies", "package", self.deps_page)]
+        self.nav = RailNav()
+        for group, pages in (("Agent", doing), ("Setup", setup)):
+            self.nav.add_group(group)
+            for name, icon_name, page in pages:
+                self.nav.add_page(name, icon_name, self.stack.addWidget(page))
+        self.nav.currentRowChanged.connect(self._nav_changed)
 
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.addWidget(self.nav)
-        body.addWidget(self.stack, 1)
+        # the navy rail: logo, navigation, this computer
+        rail = QWidget()
+        rail.setObjectName("rail")
+        rail.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        rail.setFixedWidth(RAIL_WIDTH)
+        rv = QVBoxLayout(rail)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        brand = QWidget()
+        brand.setObjectName("railBrand")
+        brand.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        brand.setFixedHeight(64)
+        bh = QHBoxLayout(brand)
+        bh.setContentsMargins(16, 0, 12, 0)
+        logo = QLabel()
+        logo.setAccessibleName("UMEagleEye")
+        logo.setToolTip(f"UMEagleEye · {APP_NAME} {VERSION}")
+        lockup = theme.brand_pixmap("lockup-on-dark")
+        if not lockup.isNull():
+            ratio = 2.0
+            scaled = lockup.scaledToHeight(int(54 * ratio), Qt.TransformationMode.SmoothTransformation)
+            scaled.setDevicePixelRatio(ratio)
+            logo.setPixmap(scaled)
+        bh.addWidget(logo)
+        bh.addStretch(1)
+        rv.addWidget(brand)
+        rv.addSpacing(10)
+        rv.addWidget(self.nav, 1)
+        foot = QWidget()
+        foot.setObjectName("railFoot")
+        foot.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        fh = QHBoxLayout(foot)
+        fh.setContentsMargins(14, 12, 14, 12)
+        fh.setSpacing(10)
+        host = socket.gethostname() or "This computer"
+        tile = QLabel(host[:1].upper())
+        tile.setObjectName("railTile")
+        tile.setFixedSize(32, 32)
+        tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        fh.addWidget(tile)
+        who = QVBoxLayout()
+        who.setSpacing(1)
+        name = QLabel(host)
+        name.setObjectName("railName")
+        name.setToolTip("The computer this agent runs on")
+        self.admin = QLabel()
+        self.admin.setObjectName("railSub")
+        who.addWidget(name)
+        who.addWidget(self.admin)
+        fh.addLayout(who, 1)
+        rv.addWidget(foot)
+
+        # header: state, theme, start/stop, quit
+        top = QWidget()
+        top.setObjectName("topbar")
+        top.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        top.setFixedHeight(64)
+        th = QHBoxLayout(top)
+        th.setContentsMargins(20, 0, 16, 0)
+        th.setSpacing(10)
+        self.dot = LiveDot()
+        self.state = QLabel()
+        self.state.setObjectName("state")
+        self.state_detail = ElidedLabel()
+        self.state_detail.setObjectName("stateDetail")
+        th.addWidget(self.dot)
+        th.addWidget(self.state)
+        th.addSpacing(2)
+        th.addWidget(self.state_detail, 1)
+        self.theme_switch = ThemeSwitch()
+        th.addWidget(self.theme_switch)
+        sep = QFrame()
+        sep.setObjectName("vsep")
+        sep.setFixedSize(1, 24)
+        th.addSpacing(4)
+        th.addWidget(sep)
+        th.addSpacing(4)
+        self.toggle_btn = button("Start", "primary", "play", self.toggle)
+        self.toggle_btn.setMinimumWidth(92)
+        th.addWidget(self.toggle_btn)
+        quit_btn = button("Quit", "ghost", "power", self.quit)
+        quit_btn.setToolTip("Stop the agent and close the app. Closing the window only hides it in the tray. "
+                            "Open EagleEyeAgent.exe to start it again.")
+        th.addWidget(quit_btn)
+
+        workspace = QWidget()
+        workspace.setObjectName("workspace")
+        wv = QVBoxLayout(workspace)
+        wv.setContentsMargins(0, 0, 0, 0)
+        wv.setSpacing(0)
+        wv.addWidget(top)
+        wv.addWidget(self.stack, 1)
+
         root = QWidget()
-        v = QVBoxLayout(root)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.addLayout(header)
-        v.addLayout(body, 1)
+        h = QHBoxLayout(root)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        h.addWidget(rail)
+        h.addWidget(workspace, 1)
         self.setCentralWidget(root)
+        self.nav.setCurrentRow(self.nav.row_for_page(0))
+        mgr = theme.manager()
+        if mgr is not None:
+            mgr.changed.connect(lambda _name: self.restyle())
 
         self.controller.event.connect(self.status_page.on_event)
         self.controller.log_line.connect(self.log_page.append)
@@ -174,7 +221,24 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def show_page(self, page: QWidget) -> None:
-        self.nav.setCurrentRow(self.stack.indexOf(page))
+        self.nav.setCurrentRow(self.nav.row_for_page(self.stack.indexOf(page)))
+
+    def _nav_changed(self, row: int) -> None:
+        item = self.nav.item(row) if row >= 0 else None
+        index = item.data(PAGE_ROLE) if item is not None else None
+        if index is not None:
+            self.stack.setCurrentIndex(int(index))
+
+    def restyle(self) -> None:
+        """After a theme change: re-colour the icons and the colours set from code."""
+        refresh_icons(self)
+        self.theme_switch.restyle()
+        for page in all_pages(self):
+            restyle = getattr(page, "restyle", None)
+            if restyle is not None:
+                restyle()
+        self.nav.viewport().update()
+        self.refresh()
 
     # ── tray ──
     def _make_tray(self) -> None:
@@ -247,8 +311,9 @@ class MainWindow(QMainWindow):
             return
         reason = self.controller.start(s)
         if reason:
+            # Said where it is fixed, not in a box: the Settings page, next to Test connection.
             self.show_page(self.settings_page)
-            QMessageBox.information(self, APP_NAME, f"The agent cannot start yet: {reason}.")
+            self.settings_page.show_problem(f"The agent cannot start yet: {reason}.")
             return
         log.info("EagleEye Agent v%s started (server %s, agent %s)", VERSION, s.api_url, s.agent_id)
         if s.passive and not deps.is_admin():
@@ -277,21 +342,49 @@ class MainWindow(QMainWindow):
 
     def refresh(self) -> None:
         running = self.controller.running
-        self.state.setText("● Running" if running else "● Stopped")
-        self.state.setProperty("state", "running" if running else "stopped")
-        self.state.style().unpolish(self.state)
-        self.state.style().polish(self.state)
-        self.toggle_btn.setText("Stop" if running else "Start")
-        self.admin.setText("Administrator" if deps.is_admin() else "Standard user")
+        # Start is the primary action only once it can work; until then Open Settings leads.
+        role = "secondary" if running or self.store.settings.problems() else "primary"
+        text = "Stop" if running else "Start"
+        if self.toggle_btn.text() != text or self.toggle_btn.property("role") != role:
+            self.toggle_btn.setText(text)
+            self.toggle_btn.setToolTip("Stop the agent: it stops scanning and reporting; the app stays open (Quit closes it)"
+                                       if running else "Start the agent: it connects to the dashboard and reports")
+            self.toggle_btn.setProperty("role", role)
+            self.toggle_btn.setProperty("iconName", "square" if running else "play")
+            self.toggle_btn.style().unpolish(self.toggle_btn)
+            self.toggle_btn.style().polish(self.toggle_btn)
+            refresh_icons(self.toggle_btn.parentWidget())
+        inst = instance_name()
+        self.admin.setText(("Administrator" if deps.is_admin() else "Standard user")
+                           + f" · v{VERSION}" + (f" · {inst}" if inst else ""))
+        self._refresh_state()
         if self.tray is not None:
             self.tray_toggle.setText("Stop agent" if running else "Start agent")
             self.tray_inventory.setEnabled(running and self.store.settings.inventory)
             self.tray.setToolTip(f"{APP_NAME}: {'running' if running else 'stopped'}")
         self.status_page.refresh()
 
+    def _refresh_state(self) -> None:
+        """The header's live dot and one line on what the agent is doing."""
+        svc = self.controller.service if self.controller.running else None
+        if self.store.settings.problems():
+            tone, state, detail = "off", "Not set up", "Paste the connection code in Settings"
+        elif svc is None:
+            tone, state, detail = "down", "Stopped", "Press Start to connect to the server"
+        elif svc.last_heartbeat_at is None:
+            tone, state, detail = "warn", "Running", "Connecting to the server..."
+        elif svc.last_heartbeat_ok:
+            tone, state, detail = "live", "Running", f"Heartbeat OK at {svc.last_heartbeat_at:%H:%M:%S}"
+        else:
+            tone, state, detail = "warn", "Running", f"Last heartbeat failed at {svc.last_heartbeat_at:%H:%M:%S} (see Log)"
+        self.dot.set_tone(tone)
+        self.state.setText(state)
+        self.state_detail.setText(detail)
+
     def _on_timer(self) -> None:
         self._tick += 1
         self.status_page.refresh()
+        self._refresh_state()
         if self._tick % 10 == 0:
             if self.schedules_page is not None:
                 self.schedules_page.refresh()
@@ -354,6 +447,9 @@ class SingleInstance:
     def listen(self, on_activate) -> None:  # type: ignore[no-untyped-def]
         QLocalServer.removeServer(self.server_name)
         self.server = QLocalServer()
+        # The sign-in task starts the agent as Administrator; without this a copy you open
+        # normally could not reach it to bring its window forward (Windows denies the pipe).
+        self.server.setSocketOptions(QLocalServer.SocketOption.WorldAccessOption)
         self.server.newConnection.connect(lambda: (self.server and self.server.nextPendingConnection(), on_activate()))
         self.server.listen(self.server_name)
 
@@ -363,6 +459,33 @@ class SingleInstance:
         ok = sock.waitForConnected(500)
         sock.disconnectFromServer()
         return ok
+
+
+TASK_NAME = "EagleEye Agent"      # the sign-in task the installer creates (packaging/installer.iss)
+
+
+def start_via_task(guard: SingleInstance, wait_seconds: float = 10.0) -> bool:
+    """Opening EagleEyeAgent.exe normally starts the agent through the installer's sign-in
+    task, so it runs with the Administrator rights it needs (passive listening, the full
+    inventory) without a UAC prompt, then brings its window up. True when that worked;
+    False (start here instead) without the task, when it is disabled, or in a dev run."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False) or deps.is_admin() or instance_name():
+        return False
+    try:
+        if subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True, timeout=10).returncode != 0:
+            return False
+        if subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], capture_output=True, timeout=10).returncode != 0:
+            return False
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # The task's copy starts in the tray; once it listens, ask it to show its window.
+    import time
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if guard.signal_running():
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _setup_logging(log_dir: Path) -> logging.Handler:
@@ -420,6 +543,7 @@ def _hide_child_consoles() -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="EagleEyeAgent")
     parser.add_argument("--minimized", action="store_true", help="start in the system tray")
+    parser.add_argument("--no-task", action="store_true", help="start here, not through the sign-in task")
     args, _ = parser.parse_known_args(argv)
 
     for stream in ("stdout", "stderr"):          # windowed builds have no console
@@ -433,11 +557,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
+    theme.setup(app)
     app.setWindowIcon(app_icon())
-    app.setStyleSheet(STYLE)
     app.setQuitOnLastWindowClosed(False)
 
     guard = SingleInstance("EagleEyeAgent")
+    # Already running (perhaps as Administrator from the sign-in task): show that window.
+    if guard.signal_running():
+        return 0
+    if not args.no_task and start_via_task(guard):
+        return 0
     if not guard.acquire():
         if not guard.signal_running():
             which = f" ({inst})" if inst else ""

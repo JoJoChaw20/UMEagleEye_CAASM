@@ -7,7 +7,6 @@ import TenantSelector from '../components/common/TenantSelector'
 import { Tabs, Toast, useToast, Spinner, Pager, ago } from '../components/common/PageParts'
 import HostsPanel from '../components/discovery/HostsPanel'
 import NewScanModal from '../components/discovery/NewScanModal'
-import ScanCompare from '../components/discovery/ScanCompare'
 import { KIND_LABEL, KIND_HINT } from '../components/discovery/discoveryMeta'
 
 // Asset Discovery: the networks the agents have been on (and whether each has been
@@ -19,13 +18,13 @@ const QUIET_MINUTES = 15       // passive records arrive about every 5 min while
 
 const STATUS_CLS = {
   pending:   'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-  running:   'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  running:   'bg-eagle-500/15 text-eagle-400 border-eagle-500/30',
   completed: 'bg-green-500/20 text-green-400 border-green-500/30',
   failed:    'bg-red-500/20 text-red-400 border-red-500/30',
   cancelled: 'bg-dark-600/40 text-dark-400 border-dark-500/30',
 }
 function StatusBadge({ status }) {
-  return <span className={`text-xs px-2 py-0.5 rounded-full border font-medium capitalize ${STATUS_CLS[status] ?? STATUS_CLS.cancelled}`}>{status}</span>
+  return <span className={`text-xs px-2 py-0.5 rounded-md border font-medium capitalize ${STATUS_CLS[status] ?? STATUS_CLS.cancelled}`}>{status}</span>
 }
 
 function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
@@ -169,7 +168,7 @@ export default function DiscoveryPage() {
 
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Asset Discovery</h1>
+          <h1 className="page-title">Asset Discovery</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">
             The networks your agents are on: agents listen to them all the time, and a full scan finds what listening misses.
           </p>
@@ -190,7 +189,6 @@ export default function DiscoveryPage() {
       <Tabs label="Discovery views" active={tab} onChange={setTab} tabs={[
         { id: 'networks', label: 'Networks', count: networks?.length },
         { id: 'history', label: 'Scan history' },
-        { id: 'compare', label: 'Compare' },
       ]} />
 
       {tab === 'networks' && (
@@ -293,7 +291,6 @@ export default function DiscoveryPage() {
         </div>
       )}
 
-      {tab === 'compare' && <ScanCompare />}
 
       {hostsOf && (
         <HostsPanel scanId={hostsOf.scanId} agentName={hostsOf.agentName} canAdopt={!isSuperadmin && user?.role !== 'business_owner'}

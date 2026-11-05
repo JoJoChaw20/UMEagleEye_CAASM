@@ -5,6 +5,7 @@ import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { advisories, agents } from '../db/schema'
+import { advisoryScope } from '../lib/advisoryScope'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -46,6 +47,7 @@ app.get('/', authMiddleware, async (c) => {
         resolvedAt: advisories.resolvedAt,
       })
       .from(advisories)
+      .where(advisoryScope(db, user))
       .orderBy(desc(advisories.createdAt))
       .limit(20)
 
@@ -79,7 +81,7 @@ app.get('/', authMiddleware, async (c) => {
     const [breachRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(advisories)
-      .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff)))
+      .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff), advisoryScope(db, user)))
 
     const breachCount = breachRow?.count ?? 0
     if (breachCount > 0) {
@@ -139,15 +141,16 @@ app.get('/', authMiddleware, async (c) => {
 // ── GET /count — lightweight unread count for header polling ──────
 app.get('/count', authMiddleware, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
+  const scope = advisoryScope(db, c.get('user'))
   try {
     const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000)
     const [recent, breach] = await Promise.all([
       db.select({ count: sql<number>`count(*)::int` })
         .from(advisories)
-        .where(sql`${advisories.createdAt} > now() - interval '7 days'`),
+        .where(and(sql`${advisories.createdAt} > now() - interval '7 days'`, scope)),
       db.select({ count: sql<number>`count(*)::int` })
         .from(advisories)
-        .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff))),
+        .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff), scope)),
     ])
     return c.json({
       recent_advisories: recent[0]?.count ?? 0,

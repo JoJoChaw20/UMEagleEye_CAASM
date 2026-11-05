@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QGroupBox, QLabel, QTextBrowser, QVBoxLayout,
-)
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
 
 from ..config import Settings
 from ..privacy import CONSENT_VERSION, NOTICE_HTML, NOTICE_TITLE
+from . import theme
+from .widgets import Panel, Trace, label
 
 
 class ConsentDialog(QDialog):
@@ -17,13 +18,14 @@ class ConsentDialog(QDialog):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle(f"EagleEye Agent: {NOTICE_TITLE.lower()}")
-        self.resize(640, 680)
+        self.resize(680, 760)
 
         text = QTextBrowser()
         text.setOpenExternalLinks(True)
+        text.document().setDefaultStyleSheet(theme.document_css(theme.current()))
         text.setHtml(NOTICE_HTML)
 
-        box = QGroupBox("Your choices (you can change them later on the Privacy page)")
+        box = Panel("Your choices")
         self.inventory = QCheckBox("Collect this computer's inventory")
         self.inventory.setChecked(settings.inventory)
         self.user_software = QCheckBox("Include software installed only for individual users (personal data)")
@@ -37,24 +39,44 @@ class ConsentDialog(QDialog):
         self.user_software.setEnabled(settings.inventory)
         self.admin_names.setEnabled(settings.inventory)
 
-        inner = QVBoxLayout(box)
+        box.add(label("You can change them later on the Privacy page.", "hint"))
         for w in (self.inventory, self.user_software, self.admin_names, self.passive):
-            inner.addWidget(w)
+            box.add(w)
         for w in (self.user_software, self.admin_names):
-            w.setStyleSheet("margin-left: 20px")
+            w.setContentsMargins(26, 0, 0, 0)
 
         buttons = QDialogButtonBox()
         accept = buttons.addButton("Accept and continue", QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.addButton("Quit", QDialogButtonBox.ButtonRole.RejectRole)
+        accept.setProperty("role", "primary")
+        quit_btn = buttons.addButton("Quit", QDialogButtonBox.ButtonRole.RejectRole)
+        quit_btn.setProperty("role", "ghost")
         accept.setDefault(True)
+        accept.setFocus()
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
+        mark = QLabel()
+        pm = theme.brand_pixmap("mark")
+        if not pm.isNull():
+            scaled = pm.scaledToHeight(88, Qt.TransformationMode.SmoothTransformation)
+            scaled.setDevicePixelRatio(2.0)
+            mark.setPixmap(scaled)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(mark)
+        head.addWidget(label(NOTICE_TITLE, "display"))
+        head.addWidget(Trace(44, "ground"), 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+        layout.addLayout(head)
+        layout.addWidget(label("The agent does not start until you accept. Read what it collects, then choose.",
+                               "description", wrap=True))
         layout.addWidget(text, 1)
         layout.addWidget(box)
-        note = QLabel("By continuing you confirm you have read this notice.")
-        note.setWordWrap(True)
+        note = label("By continuing you confirm you have read this notice.", "hint", wrap=True)
         layout.addWidget(note)
         layout.addWidget(buttons)
 

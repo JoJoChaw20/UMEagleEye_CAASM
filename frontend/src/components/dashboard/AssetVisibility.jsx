@@ -1,27 +1,23 @@
 import { useNavigate } from 'react-router-dom'
-import { ArrowUpRight, CircleCheck, HardDrive, ShieldAlert } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, CircleCheck } from 'lucide-react'
+import SectionHeader from '../ui/SectionHeader'
+import PanelHeading from '../ui/PanelHeading'
 
 const TYPE_META = {
-  workstation: { label: 'Workstations', color: 'bg-blue-500' },
-  server: { label: 'Servers', color: 'bg-indigo-400' },
-  network: { label: 'Network', color: 'bg-cyan-400' },
-  iot: { label: 'IoT', color: 'bg-amber-400' },
-  mobile: { label: 'Mobile', color: 'bg-purple-400' },
-  unknown: { label: 'Unknown', color: 'bg-dark-400' },
+  workstation: { label: 'Workstations', color: 'bg-series-1' },
+  server: { label: 'Servers', color: 'bg-series-3' },
+  network: { label: 'Network', color: 'bg-series-2' },
+  iot: { label: 'IoT', color: 'bg-series-5' },
+  mobile: { label: 'Mobile', color: 'bg-series-6' },
+  unknown: { label: 'Unknown', color: 'bg-series-4' },
 }
 const fmt = value => Number(value ?? 0).toLocaleString()
 
-function PanelTitle({ icon: Icon, title, detail }) {
-  return <div className="mb-5 flex items-start gap-3">
-    <span className="rounded-lg border border-dark-700/70 bg-dark-900/40 p-2 text-dark-300"><Icon className="h-4 w-4" /></span>
-    <div><h3 className="font-semibold text-dark-100">{title}</h3><p className="mt-1 text-xs text-dark-400">{detail}</p></div>
-  </div>
-}
 
 function GapRow({ label, definition, count, onClick, warning = false }) {
-  return <button type="button" onClick={onClick} className="group flex w-full items-center justify-between gap-3 rounded-lg px-2 py-3 text-left hover:bg-dark-700/20 focus:outline-none focus:ring-2 focus:ring-eagle-500/50">
-    <span className="min-w-0"><span className="block text-sm font-medium text-dark-200 group-hover:text-eagle-300">{label}</span><span className="mt-1 block text-xs text-dark-500">{definition}</span></span>
-    <span className="flex flex-shrink-0 items-center gap-2"><span className={`text-xl font-semibold tabular-nums ${warning && count > 0 ? 'text-amber-400' : 'text-dark-100'}`}>{fmt(count)}</span><ArrowUpRight className="h-4 w-4 text-dark-500 group-hover:text-eagle-400" /></span>
+  return <button type="button" onClick={onClick} className="group flex w-full items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors hover:bg-eagle-500/[0.05]">
+    <span className="min-w-0"><span className="block text-sm font-medium text-dark-200 group-hover:text-eagle-400">{label}</span><span className="mt-1 block text-xs text-dark-500">{definition}</span></span>
+    <span className="flex flex-shrink-0 items-center gap-2"><span className={`font-display text-xl font-semibold tabular-nums ${warning && count > 0 ? 'text-amber-400' : 'text-dark-100'}`}>{fmt(count)}</span><ArrowUpRight className="h-4 w-4 text-dark-500 transition-colors group-hover:text-eagle-400" /></span>
   </button>
 }
 
@@ -47,36 +43,39 @@ export default function AssetVisibility({ summary, loading, onInventory, onAgent
 
   return (
     <section aria-labelledby="asset-visibility-title">
-      <div className="mb-4">
-        <h2 id="asset-visibility-title" className="text-lg font-semibold tracking-tight text-dark-100">Asset visibility & coverage</h2>
-        <p className="mt-1 text-sm text-dark-400">What is in the environment, and where monitoring or ownership is incomplete.</p>
-      </div>
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <SectionHeader id="asset-visibility-title" title="Asset visibility & coverage" className="mb-4"
+        description="What is in the environment, and where monitoring or ownership is incomplete." />
+      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
         <div className="glass-card p-5 lg:p-6">
-          <PanelTitle icon={HardDrive} title="Asset landscape" detail={total == null ? 'Known asset records' : `${fmt(total)} unique asset records · ${fmt(summary?.overview?.new_assets_7d)} newly discovered in 7 days`} />
+          <PanelHeading title="Asset landscape" detail={total == null ? 'Known asset records' : `${fmt(total)} unique asset records · ${fmt(summary?.overview?.new_assets_7d)} newly discovered in 7 days`} />
           {loading ? <div className="space-y-4 animate-pulse">{[0,1,2,3].map(n => <div key={n} className="h-7 rounded bg-dark-700/50" />)}</div>
             : !mix ? <p className="py-8 text-center text-sm text-dark-400">Asset distribution unavailable.</p>
               : <div className="space-y-3.5">
                 {Object.entries(mix).filter(([, count]) => count > 0).sort((a,b) => b[1] - a[1]).map(([type,count]) => {
                   const meta = TYPE_META[type] ?? { label: type, color: 'bg-dark-400' }
-                  return <button key={type} type="button" onClick={() => onInventory({ device_type: type })} className="group w-full text-left focus:outline-none focus:ring-2 focus:ring-eagle-500/50 rounded">
-                    <span className="mb-1.5 flex items-center justify-between gap-3 text-sm"><span className="text-dark-200 group-hover:text-eagle-300">{meta.label}</span><span className="tabular-nums text-dark-100">{fmt(count)}</span></span>
-                    <span className="block h-2 overflow-hidden rounded-full bg-dark-700/60"><span className={`block h-full rounded-full ${meta.color} opacity-80`} style={{ width: `${Math.max(1, Number(count) / max * 100)}%` }} /></span>
+                  return <button key={type} type="button" onClick={() => onInventory({ device_type: type })} className="group w-full rounded text-left">
+                    <span className="mb-1.5 flex items-center justify-between gap-3 text-sm"><span className="inline-flex items-center gap-2 text-dark-200 group-hover:text-eagle-400"><span className={`h-2 w-2 rounded-sm ${meta.color}`} />{meta.label}</span><span className="tabular-nums text-dark-100">{fmt(count)}</span></span>
+                    <span className="block h-1.5 overflow-hidden rounded-full bg-dark-700/60"><span className={`block h-full rounded-full ${meta.color} transition-[width] duration-700 ease-out`} style={{ width: `${Math.max(1, Number(count) / max * 100)}%` }} /></span>
                   </button>
                 })}
-                {!total && <div className="py-5 text-center text-sm text-dark-400">No known assets yet. <button onClick={() => navigate('/discovery')} className="text-eagle-400 hover:underline">Start discovery</button></div>}
+                {!total && <div className="flex flex-col items-center gap-3 py-6 text-center">
+                  <span aria-hidden="true" className="flex w-24 items-center"><span className="trace-line" /><span className="trace-node" /></span>
+                  <p className="text-sm text-dark-300">No known assets yet.</p>
+                  <p className="max-w-xs text-xs text-dark-500">Run a discovery scan from an agent, or add assets by hand in the Inventory.</p>
+                  <button type="button" onClick={() => navigate('/discovery')} className="btn-secondary mt-1">Start discovery <ArrowRight className="h-4 w-4" /></button>
+                </div>}
                 <p className="pt-1 text-xs text-dark-500">Each bar is a device-type count. Asset totals use unique inventory records.</p>
               </div>}
         </div>
 
         <div className="glass-card p-5 lg:p-6">
-          <PanelTitle icon={ShieldAlert} title="Visibility & coverage gaps" detail="Each count has a defined asset scope; no coverage percentages are inferred." />
+          <PanelHeading title="Visibility & coverage gaps" detail="Each count has a defined asset scope; no coverage percentages are inferred." />
           {loading ? <div className="space-y-4 animate-pulse">{[0,1,2,3].map(n => <div key={n} className="h-10 rounded bg-dark-700/50" />)}</div>
             : !summary ? <p className="py-8 text-center text-sm text-dark-400">Coverage data unavailable.</p>
               : <div className="-mx-2 divide-y divide-dark-700/50">
                 {gaps.map(gap => <GapRow key={gap.label} {...gap} />)}
                 {unknown > 0 && <GapRow label="Unidentified device types" definition="Device type is unknown; classify in Inventory" count={unknown} onClick={() => onInventory({ device_type: 'unknown' })} warning />}
-                {gaps.every(gap => Number(gap.count ?? 0) === 0) && unknown === 0 && <div className="px-2 py-5 text-sm text-emerald-400"><CircleCheck className="mr-2 inline h-4 w-4" />No listed visibility gaps.</div>}
+                {gaps.every(gap => Number(gap.count ?? 0) === 0) && unknown === 0 && <div className="px-2 py-5 text-sm text-accent-green"><CircleCheck className="mr-2 inline h-4 w-4" />No listed visibility gaps.</div>}
               </div>}
         </div>
       </div>

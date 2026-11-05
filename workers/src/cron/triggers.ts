@@ -46,7 +46,7 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
         const purged = await purgeOldData(db)
         console.log(`[retention] Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events`)
         const closed = await runAlertHygiene(db)
-        console.log(`[alert-hygiene] Closed ${closed.cve} CVE alerts without an SBOM, ${closed.newDevices} reviewed or stale new-device alerts`)
+        console.log(`[alert-hygiene] Closed ${closed.cve} CVE alerts without an SBOM, ${closed.newDevices} reviewed or stale new-device alerts; resolved ${closed.advisories} advisories of closed alerts`)
         // Criticality is recomputed on every scan, inventory and edit; this applies a
         // scoring-rule change to assets nothing has touched since (manual ones, say).
         // One read per tenant, writes only for scores that moved.

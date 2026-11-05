@@ -1,5 +1,5 @@
 # Builds the Windows package of the EagleEye Agent.
-#   1. icon      build\eagleeye.ico (drawn by the app's own code)
+#   1. icon      build\eagleeye.ico (the EagleEye emblem, eagleeye\gui\assets\mark.png)
 #   2. program   dist\EagleEyeAgent\  (PyInstaller one-folder build: EagleEyeAgent.exe + eagleeye.exe)
 #   3. installer dist\EagleEyeAgent-Setup-<version>.exe  (only if Inno Setup 6 is installed)
 #

@@ -42,11 +42,11 @@ export function AddAssetModal({ onClose, onSave }) {
   const set = (field) => (e) => setForm(f => ({ ...f, [field]: e.target?.value ?? e }))
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4">
       <div className="glass-card w-full max-w-md p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Add Asset</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+          <h2 className="text-lg font-semibold text-dark-50">Add Asset</h2>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -111,7 +111,7 @@ export function AddAssetModal({ onClose, onSave }) {
             <button
               type="button"
               onClick={() => setForm(f => ({ ...f, is_internet_facing: !f.is_internet_facing }))}
-              className="text-dark-400 hover:text-white transition-colors"
+              className="text-dark-400 hover:text-dark-50 transition-colors"
             >
               {form.is_internet_facing
                 ? <ToggleRight className="w-7 h-7 text-eagle-400" />
@@ -199,11 +199,11 @@ export function EditAssetModal({ asset, onClose, onSave }) {
   }, [onClose])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4">
       <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="edit-asset-title" className="glass-card w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
-            <h2 id="edit-asset-title" className="text-lg font-semibold text-white">Edit Asset</h2>
+            <h2 id="edit-asset-title" className="text-lg font-semibold text-dark-50">Edit Asset</h2>
             <p className="font-mono text-xs text-accent-cyan mt-0.5">{asset.ipAddress}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="text-dark-400 hover:text-dark-100 transition-colors"><X className="w-5 h-5" /></button>
@@ -367,16 +367,16 @@ export function ImportModal({ onClose, onImport, tenantId }) {
   const visibleHeaders = headers.filter(h => DISPLAY_COLS.includes(h))
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4">
       <div className="glass-card w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-white">Import Assets via CSV</h2>
+            <h2 className="text-lg font-semibold text-dark-50">Import Assets via CSV</h2>
             <p className="text-xs text-dark-400 mt-0.5">
               {tenantId ? <span>Importing into <span className="text-eagle-400">selected tenant</span></span> : 'Bulk import assets with OS, port and criticality data'}
             </p>
           </div>
-          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -386,7 +386,7 @@ export function ImportModal({ onClose, onImport, tenantId }) {
           <div className="flex items-center gap-3">
             <FileText className="w-5 h-5 text-eagle-400 flex-shrink-0" />
             <div>
-              <p className="text-sm text-white font-medium">Download CSV Template</p>
+              <p className="text-sm text-dark-50 font-medium">Download CSV Template</p>
               <p className="text-xs text-dark-400">Includes sample rows with all supported columns</p>
             </div>
           </div>

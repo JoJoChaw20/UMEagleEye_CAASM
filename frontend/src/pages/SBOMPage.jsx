@@ -16,7 +16,7 @@ import { Tabs, StatTile, Toast, useToast, Spinner, ago } from '../components/com
 // with an old one, show up here. Server: GET /sboms/computers.
 
 const STATE = {
-  running: { label: 'Running',     cls: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
+  running: { label: 'Running',     cls: 'bg-eagle-500/10 text-eagle-400 border-eagle-500/30' },
   queued:  { label: 'Queued',      cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' },
   failed:  { label: 'Failed',      cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
   none:    { label: 'No SBOM yet', cls: 'bg-dark-600/40 text-dark-300 border-dark-500/30' },
@@ -46,7 +46,7 @@ function RowMenu({ items }) {
         <MoreHorizontal className="w-4 h-4" />
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-dark-700 bg-dark-850 shadow-xl py-1">
+        <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-dark-700 bg-dark-850 shadow-float py-1">
           {shown.map((it) => (
             <button key={it.label} onClick={() => { setOpen(false); it.onClick() }} disabled={it.disabled}
               className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-dark-700/50 disabled:opacity-40 ${it.danger ? 'text-red-400' : 'text-dark-200'}`}>
@@ -169,7 +169,7 @@ export default function SBOMPage() {
 
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Software Bill of Materials</h1>
+          <h1 className="page-title">Software Bill of Materials</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">
             The software packages on each computer with an EagleEye agent, rebuilt daily and checked for known vulnerabilities.
           </p>
@@ -255,7 +255,7 @@ export default function SBOMPage() {
                           {ago(c.sbom?.generated_at, 'never')}
                         </td>
                         <td>
-                          <span className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${st.cls}`}
+                          <span className={`text-xs px-2 py-0.5 rounded-md border font-medium whitespace-nowrap ${st.cls}`}
                             title={c.state === 'failed' ? (c.job?.failure_reason || 'The run failed without a reason') : undefined}>
                             {st.label}{c.state === 'running' && c.job?.mode === 'quick' ? ' (daily)' : ''}
                             {inProgress && c.job?.started_at ? ` · ${elapsed(c.job.started_at, now)}` : ''}

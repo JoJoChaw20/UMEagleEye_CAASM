@@ -98,10 +98,10 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
             </div>
             {pms.length > 0 && (
               <div className="flex flex-wrap gap-1" role="group" aria-label="Package manager">
-                <button onClick={() => { setPm(''); setPage(1) }} className={`text-xs px-2 py-0.5 rounded-full border ${!pm ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>All</button>
+                <button onClick={() => { setPm(''); setPage(1) }} className={`text-xs px-2 py-0.5 rounded-md border ${!pm ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>All</button>
                 {pms.map(({ package_manager: p, count }) => (
                   <button key={p} onClick={() => { setPm(p); setPage(1) }} aria-pressed={pm === p}
-                    className={`text-xs px-2 py-0.5 rounded-full border ${pm === p ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
+                    className={`text-xs px-2 py-0.5 rounded-md border ${pm === p ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
                     {pmLabel(p)} <span className="text-dark-500">{count}</span>
                   </button>
                 ))}

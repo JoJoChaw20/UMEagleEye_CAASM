@@ -28,6 +28,7 @@ import { alsoAffected } from '../lib/affectedVersions'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 import { loadMsrcMonth } from '../services/windowsPatch'
 import { UNSEEN_NOTE } from '../services/alertHygiene'
+import { resolveAdvisoriesOfClosedEvents } from '../lib/advisoryScope'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -755,6 +756,8 @@ async function applyUpdate(
     previousState: { status: event.status, assigned_to: event.assignedTo },
     newState:      { status: set.status ?? event.status, assigned_to: assignedTo, note: body.note ?? null },
   })
+  // A closed alert needs no remediation: its advisory is resolved with it.
+  if (closing) await resolveAdvisoriesOfClosedEvents(db, { eventIds: [event.eventId] })
   return {}
 }
 
@@ -814,6 +817,11 @@ export async function applyUpdateMany(
     }))))
   }
   await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+  if (closing) {
+    for (let i = 0; i < rows.length; i += 500) {
+      await resolveAdvisoriesOfClosedEvents(db, { eventIds: rows.slice(i, i + 500).map(r => r.event.eventId) })
+    }
+  }
   return { updated: rows.length }
 }
 

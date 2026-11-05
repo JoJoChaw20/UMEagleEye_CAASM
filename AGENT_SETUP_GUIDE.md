@@ -32,8 +32,9 @@ collects and never collects is listed on its Privacy page and in `agent-gui/READ
 2. Give it a name you will recognise, for example *Finance laptop 03*.
 3. Copy the **connection code** shown next. It contains the API URL, the agent ID and the API key, and it is
    shown **only once**. (The three values are also available separately under the code.)
-4. Send the installer, the connection code and the install guide link to the user over a **private** channel.
-   Anyone with the code can report as this agent.
+4. Send the connection code and the install guide link to the user over a **private** channel.
+   Anyone with the code can report as this agent. The installer itself holds no secrets: anyone signed in to the
+   dashboard can get it with **Download agent** on the Agents page (also in the dialog that shows the code).
 
 Lost the code, or sent it to the wrong place? Choose **New connection code** (the key icon) on the agent's row.
 The old key stops working at once; paste the new code into the agent.
@@ -52,6 +53,16 @@ The old key stops working at once; paste the new code into the agent.
    the agent because of their licences; the agent downloads the official, signed installers.
 
 Updating: run the newer installer over the old one. It closes the running agent and keeps its settings.
+
+Publishing a new installer (maintainers): build it with `agent-gui\packaging\build.ps1` (needs Inno Setup 6), then
+upload it to the environment's R2 bucket under `agent-installer/`. The Agents page offers the highest version there.
+
+```powershell
+cd workers
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAgent-Setup-2.3.2.exe `
+  --file ..\agent-gui\dist\EagleEyeAgent-Setup-2.3.2.exe --content-type application/vnd.microsoft.portable-executable --remote
+# production: the same into umeagleeye-reports/agent-installer/
+```
 
 ---
 

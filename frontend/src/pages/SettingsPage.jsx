@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Users, Shield, Clock, Key, Eye, EyeOff, Lock, Copy, Check } from 'lucide-react'
+import { Users, Shield, Clock, Eye, EyeOff, Lock, Copy, Check } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 
@@ -86,30 +86,30 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      <h1 className="text-2xl font-bold text-white">Settings</h1>
+      <h1 className="page-title">Settings</h1>
 
       {/* Profile */}
       <div className="glass-card p-6">
         <div className="flex items-center gap-3 mb-4">
           <Users className="w-5 h-5 text-eagle-400" />
-          <h2 className="text-lg font-semibold text-white">Profile</h2>
+          <h2 className="text-lg font-semibold text-dark-50">Profile</h2>
         </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-dark-400 mb-1">Username</p>
-            <p className="text-white font-medium">{user?.username || '—'}</p>
+            <p className="text-dark-50 font-medium">{user?.username || '—'}</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Email</p>
-            <p className="text-white font-medium">{user?.email || '—'}</p>
+            <p className="text-dark-50 font-medium">{user?.email || '—'}</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Role</p>
-            <p className="text-white font-medium capitalize">{user?.role?.replace(/_/g, ' ') || '—'}</p>
+            <p className="text-dark-50 font-medium capitalize">{user?.role?.replace(/_/g, ' ') || '—'}</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Tenant</p>
-            <p className="text-white font-medium">
+            <p className="text-dark-50 font-medium">
               {user?.tenantName ?? (user?.role === 'superadmin' ? 'All Tenants' : '—')}
             </p>
           </div>
@@ -120,7 +120,7 @@ export default function SettingsPage() {
       <div className="glass-card p-6">
         <div className="flex items-center gap-3 mb-4">
           <Lock className="w-5 h-5 text-accent-cyan" />
-          <h2 className="text-lg font-semibold text-white">Change Password</h2>
+          <h2 className="text-lg font-semibold text-dark-50">Change Password</h2>
         </div>
 
         {pwMessage && (
@@ -193,7 +193,7 @@ export default function SettingsPage() {
       <div className="glass-card p-6">
         <div className="flex items-center gap-3 mb-4">
           <Shield className="w-5 h-5 text-accent-green" />
-          <h2 className="text-lg font-semibold text-white">Multi-Factor Authentication</h2>
+          <h2 className="text-lg font-semibold text-dark-50">Multi-Factor Authentication</h2>
         </div>
         {mfaMessage && (
           <p className={`text-sm mb-3 ${mfaMessage.includes('success') ? 'text-accent-green' : 'text-red-400'}`}>
@@ -281,58 +281,29 @@ export default function SettingsPage() {
       <div className="glass-card p-6">
         <div className="flex items-center gap-3 mb-4">
           <Clock className="w-5 h-5 text-accent-amber" />
-          <h2 className="text-lg font-semibold text-white">Platform Configuration</h2>
+          <h2 className="text-lg font-semibold text-dark-50">Platform Configuration</h2>
         </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-dark-400 mb-1">Drift Audit Cycle</p>
-            <p className="text-white font-mono">Every 15 minutes</p>
+            <p className="text-dark-50 font-mono">Every 15 minutes</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">SLA Monitor Cycle</p>
-            <p className="text-white font-mono">Every 30 minutes</p>
+            <p className="text-dark-50 font-mono">Every 30 minutes</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">SLA Breach Threshold</p>
-            <p className="text-white font-mono">72 hours</p>
+            <p className="text-dark-50 font-mono">72 hours</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">CTI Ingestion</p>
-            <p className="text-white font-mono">Daily 6:00 AM MYT</p>
+            <p className="text-dark-50 font-mono">Daily 6:00 AM MYT</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Posture Snapshot</p>
-            <p className="text-white font-mono">Daily midnight MYT</p>
+            <p className="text-dark-50 font-mono">Daily midnight MYT</p>
           </div>
-        </div>
-      </div>
-
-      {/* Integration Status */}
-      <div className="glass-card p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Key className="w-5 h-5 text-accent-purple" />
-          <h2 className="text-lg font-semibold text-white">Integrations</h2>
-        </div>
-        <div className="space-y-2 text-sm">
-          {[
-            { name: 'DeepSeek AI (via OpenRouter)', status: true, detail: 'Advisory generation & chatbot' },
-            { name: 'AlienVault OTX', status: true, detail: 'Threat intelligence feed' },
-            { name: 'ThreatFox', status: true, detail: 'IoC feed' },
-            { name: 'Cloudflare R2', status: true, detail: 'PDF report storage' },
-            { name: 'Grype vulnerability DB', status: true, detail: 'CVE matching on the agent (NVD, GitHub advisories, Linux distro feeds)' },
-            { name: 'CISA KEV', status: true, detail: 'Known exploited CVEs' },
-            { name: 'FIRST EPSS', status: true, detail: 'Exploit probability for CVEs' },
-          ].map(api => (
-            <div key={api.name} className="flex items-center justify-between py-2 border-b border-dark-800/50">
-              <div>
-                <span className="text-dark-200">{api.name}</span>
-                <span className="ml-2 text-dark-500 text-xs">{api.detail}</span>
-              </div>
-              <span className={api.status ? 'text-accent-green text-xs' : 'text-dark-500 text-xs'}>
-                {api.status ? '● Connected' : '○ Not configured'}
-              </span>
-            </div>
-          ))}
         </div>
       </div>
     </div>

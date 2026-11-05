@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
+import { resolveAdvisoriesOfClosedEvents } from '../lib/advisoryScope'
 
 // Closes alerts whose reason is gone but that no scan or audit would ever close on its
 // own. Runs nightly (cron posture-snapshot), with the manual drift audit (tenant-scoped),
@@ -105,8 +106,10 @@ export async function reopenReturnedNewDevices(db: DB, assetIds: string[]): Prom
   return Number((res.rows[0] as { n?: number } | undefined)?.n ?? 0)
 }
 
-export async function runAlertHygiene(db: DB, s: Scope = {}): Promise<{ cve: number; newDevices: number }> {
+export async function runAlertHygiene(db: DB, s: Scope = {}): Promise<{ cve: number; newDevices: number; advisories: number }> {
   const cve = await closeOrphanCveAlerts(db, s)
   const newDevices = await closeReviewedNewDevices(db, s)
-  return { cve, newDevices }
+  // Also catches every other path that closes alerts in SQL (retention, drift, SBOM).
+  const advisories = s.assetIds ? 0 : await resolveAdvisoriesOfClosedEvents(db, { tenantId: s.tenantId })
+  return { cve, newDevices, advisories }
 }

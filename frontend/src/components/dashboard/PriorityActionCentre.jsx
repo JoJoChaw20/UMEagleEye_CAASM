@@ -2,12 +2,13 @@ import { AlertTriangle, ArrowUpRight, CircleCheck, ListFilter } from 'lucide-rea
 import { Link } from 'react-router-dom'
 import { alertLabel, playbook, renderDetail, SevBadge, timeAgo } from '../common/alertMeta'
 import { dashboardHref, operationalTier, priorityContext } from './dashboardUtils'
+import SectionHeader from '../ui/SectionHeader'
 
 const tierStyle = {
   P0: 'border-red-500/40 bg-red-500/10 text-red-300',
   P1: 'border-red-500/30 bg-red-500/5 text-red-400',
   P2: 'border-amber-500/30 bg-amber-500/5 text-amber-400',
-  P3: 'border-dark-600 bg-dark-800/50 text-dark-300',
+  P3: 'border-dark-600 bg-dark-900 text-dark-300',
 }
 
 function itemHref(item, tenantId) {
@@ -23,29 +24,23 @@ function itemHref(item, tenantId) {
 function Context({ item }) {
   const reasons = priorityContext(item)
   return reasons.length ? <div className="flex flex-wrap gap-1.5">
-    {reasons.map(reason => <span key={reason} className="rounded-full border border-dark-700 bg-dark-900/40 px-2 py-0.5 text-[11px] text-dark-300">{reason}</span>)}
+    {reasons.map(reason => <span key={reason} className="rounded-md border border-dark-700 bg-dark-900 px-2 py-0.5 text-[11px] text-dark-300">{reason}</span>)}
   </div> : <span className="text-xs text-dark-500">Priority score {Math.round(item.priority_score ?? 0)}</span>
 }
 
 export default function PriorityActionCentre({ actions, loading, available, tenantId }) {
   return (
-    <section aria-labelledby="priority-actions-title" className="glass-card overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-dark-700/60 px-5 py-5 lg:px-6">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <span className="rounded-lg border border-eagle-500/30 bg-eagle-500/10 p-2 text-eagle-400"><AlertTriangle className="h-4 w-4" /></span>
-            <h2 id="priority-actions-title" className="text-xl font-semibold tracking-tight text-dark-100">Priority Action Centre</h2>
-          </div>
-          <p className="mt-2 text-sm text-dark-400">Security issues requiring attention, prioritized by risk and operational impact.</p>
-        </div>
-        <Link to={dashboardHref('/alerts', { sort: 'priority' }, tenantId)} className="inline-flex items-center gap-1.5 rounded-lg border border-dark-700 px-3 py-2 text-sm text-dark-200 hover:border-eagle-500/50 hover:text-eagle-300">
+    <section aria-labelledby="priority-actions-title">
+      <SectionHeader id="priority-actions-title" title="Priority Action Centre" className="mb-4"
+        description="Security issues requiring attention, prioritised by risk and operational impact."
+        actions={<Link to={dashboardHref('/alerts', { sort: 'priority' }, tenantId)} className="btn-secondary">
           View all issues <ArrowUpRight className="h-4 w-4" />
-        </Link>
-      </div>
+        </Link>} />
 
+      <div className="glass-card overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1050px] text-left text-sm">
-          <thead className="bg-dark-900/35 text-xs uppercase tracking-wide text-dark-400">
+          <thead className="border-b border-dark-700 bg-dark-900/50 text-[11px] uppercase tracking-[0.06em] text-dark-400">
             <tr>
               <th className="px-5 py-3 font-medium">Priority</th>
               <th className="px-4 py-3 font-medium">Affected asset</th>
@@ -69,15 +64,15 @@ export default function PriorityActionCentre({ actions, loading, available, tena
                   : `${alertLabel(item)} · ${renderDetail(item)}`
                 const assignee = item.assignee || item.assignees?.[0] || null
                 return (
-                  <tr key={item.key} className="align-top hover:bg-dark-700/15">
+                  <tr key={item.key} className="align-top transition-colors hover:bg-eagle-500/[0.04]">
                     <td className="px-5 py-4">
                       <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${tierStyle[tier.id]}`}>
                         {tier.id === 'P0' && <AlertTriangle className="h-3.5 w-3.5" />}{tier.id} · {tier.label}
                       </span>
-                      {tier.id === 'P0' && <span className="mt-1 block text-[10px] text-dark-500">Possible compromise</span>}
+                      {tier.id === 'P0' && <span className="mt-1 block text-[11px] text-dark-500">Possible compromise</span>}
                     </td>
                     <td className="px-4 py-4">
-                      <Link to={dashboardHref(`/inventory/${encodeURIComponent(item.asset?.asset_id ?? '')}`, {}, tenantId)} className="font-medium text-dark-100 hover:text-eagle-300">
+                      <Link to={dashboardHref(`/inventory/${encodeURIComponent(item.asset?.asset_id ?? '')}`, {}, tenantId)} className="font-medium text-dark-50 hover:text-eagle-400">
                         {item.asset?.hostname || item.asset?.ip || 'Unknown asset'}
                       </Link>
                       <div className="mt-1 text-xs capitalize text-dark-500">{item.asset?.device_type || 'type unknown'}{item.asset?.ip && item.asset?.hostname ? ` · ${item.asset.ip}` : ''}</div>
@@ -103,7 +98,7 @@ export default function PriorityActionCentre({ actions, loading, available, tena
             </tbody>
           ) : (
             <tbody><tr><td colSpan="6" className="px-5 py-14 text-center">
-              <CircleCheck className="mx-auto h-8 w-8 text-emerald-400" />
+              <CircleCheck className="mx-auto h-8 w-8 text-accent-green" />
               <p className="mt-3 font-medium text-dark-200">No actionable open findings</p>
               <p className="mt-1 text-sm text-dark-500">New priorities will appear here when scans or threat intelligence identify them.</p>
             </td></tr></tbody>
@@ -111,7 +106,8 @@ export default function PriorityActionCentre({ actions, loading, available, tena
         </table>
       </div>
       <div className="flex items-center gap-2 border-t border-dark-700/50 px-5 py-3 text-xs text-dark-500">
-        <ListFilter className="h-3.5 w-3.5" />Priorities map existing scores: P1 ≥100, P2 ≥75, P3 below 75. Direct threat-intel matches are P0 and indicate a possible compromise, not confirmation.
+        <ListFilter className="h-3.5 w-3.5 flex-shrink-0" />Priorities map existing scores: P1 ≥100, P2 ≥75, P3 below 75. Direct threat-intel matches are P0 and indicate a possible compromise, not confirmation.
+      </div>
       </div>
     </section>
   )

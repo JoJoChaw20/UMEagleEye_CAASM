@@ -37,7 +37,7 @@ const WRITE_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin']
 
 const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : '—')
 const Badge = ({ cls, children, title }) => (
-  <span title={title} className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${cls}`}>{children}</span>
+  <span title={title} className={`text-xs px-2 py-0.5 rounded-md border font-medium whitespace-nowrap ${cls}`}>{children}</span>
 )
 const StatusBadge = ({ status }) => status === 'published'
   ? <Badge cls="bg-green-500/15 text-green-300 border-green-500/40">Published</Badge>
@@ -77,7 +77,7 @@ function TechniquePicker({ cat, value, onChange }) {
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (results[0]) add(results[0].id) } }}
           className="input-field w-full text-sm" placeholder={cat ? 'Search by ID or name, e.g. T1566 or phishing' : 'Loading ATT&CK…'} />
         {results.length > 0 && (
-          <div className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-lg border border-dark-600 bg-dark-800 shadow-lg">
+          <div className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-lg border border-dark-600 bg-dark-800 shadow-float">
             {results.map(t => (
               <button key={t.id} type="button" onClick={() => add(t.id)}
                 className="w-full text-left px-2.5 py-1.5 text-xs hover:bg-dark-700 flex gap-2">
@@ -155,10 +155,10 @@ function EventDialog({ user, initial, onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4" onClick={onClose}>
       <div className="glass-card w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{initial ? 'Edit event' : 'New threat-intel event'}</h2>
+          <h2 className="text-lg font-semibold text-dark-50">{initial ? 'Edit event' : 'New threat-intel event'}</h2>
           <button onClick={onClose} className="text-dark-400 hover:text-dark-100"><X className="w-5 h-5" /></button>
         </div>
         <label className="block text-sm text-dark-300">Title
@@ -368,7 +368,7 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
       <div className="glass-card p-5 space-y-3">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0">
-            <h2 className="text-xl font-semibold text-white break-words">{ev.title}</h2>
+            <h2 className="text-xl font-semibold text-dark-50 break-words">{ev.title}</h2>
             <div className="flex items-center gap-1.5 flex-wrap mt-2">
               <StatusBadge status={ev.status} />
               <Badge cls={LEVELS[ev.threat_level]?.cls}>{LEVELS[ev.threat_level]?.label} threat</Badge>
@@ -547,7 +547,7 @@ export default function TiEventsPanel({ user, showToast }) {
         <div className="flex gap-1 bg-dark-800 rounded-lg p-1">
           {[['all', 'All'], ['ours', 'Ours'], ['shared', 'Shared with us'], ['drafts', 'Drafts']].map(([id, label]) => (
             <button key={id} onClick={() => setFilter(id)}
-              className={`px-3 py-1.5 rounded-md text-sm ${filter === id ? 'bg-eagle-600 text-white' : 'text-dark-400 hover:text-dark-100'}`}>
+              className={`px-3 py-1.5 rounded-md text-sm ${filter === id ? 'bg-eagle-600 text-on-brand' : 'text-dark-400 hover:text-dark-100'}`}>
               {label}
             </button>
           ))}

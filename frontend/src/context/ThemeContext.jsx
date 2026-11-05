@@ -2,27 +2,32 @@ import { createContext, useContext, useEffect, useState } from 'react'
 
 const ThemeContext = createContext(null)
 
+const prefersDark = () => window.matchMedia('(prefers-color-scheme: dark)').matches
+
+// theme: the user's choice ('dark' | 'light' | 'system'); resolved: what is on screen.
 export function ThemeProvider({ children }) {
-  const [theme, setThemeState] = useState(() => localStorage.getItem('theme') || 'dark')
+  const [theme, setThemeState] = useState(() => localStorage.getItem('theme') || 'system')
+  const [resolved, setResolved] = useState(() =>
+    theme === 'system' ? (prefersDark() ? 'dark' : 'light') : theme)
 
   useEffect(() => {
     const root = document.documentElement
-    const applyTheme = (t) => {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      root.classList.toggle('light', t === 'light' || (t === 'system' && !prefersDark))
+    const apply = () => {
+      const next = theme === 'system' ? (prefersDark() ? 'dark' : 'light') : theme
+      root.classList.toggle('light', next === 'light')
+      setResolved(next)
     }
-    applyTheme(theme)
+    apply()
     localStorage.setItem('theme', theme)
     if (theme === 'system') {
       const mq = window.matchMedia('(prefers-color-scheme: dark)')
-      const handler = () => applyTheme('system')
-      mq.addEventListener('change', handler)
-      return () => mq.removeEventListener('change', handler)
+      mq.addEventListener('change', apply)
+      return () => mq.removeEventListener('change', apply)
     }
   }, [theme])
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme: setThemeState }}>
+    <ThemeContext.Provider value={{ theme, resolved, setTheme: setThemeState }}>
       {children}
     </ThemeContext.Provider>
   )

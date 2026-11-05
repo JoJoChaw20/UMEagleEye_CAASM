@@ -6,8 +6,8 @@ import { useAuth } from '../context/AuthContext'
 // ── Status badge ──────────────────────────────────────────────────
 function ActiveBadge({ active }) {
   return active
-    ? <span className="text-xs px-2 py-0.5 rounded-full border bg-green-500/20 text-green-400 border-green-500/30">Active</span>
-    : <span className="text-xs px-2 py-0.5 rounded-full border bg-red-500/20 text-red-400 border-red-500/30">Inactive</span>
+    ? <span className="text-xs px-2 py-0.5 rounded-md border bg-green-500/20 text-green-400 border-green-500/30">Active</span>
+    : <span className="text-xs px-2 py-0.5 rounded-md border bg-red-500/20 text-red-400 border-red-500/30">Inactive</span>
 }
 
 // ── Auto-generate slug from name ──────────────────────────────────
@@ -43,11 +43,11 @@ function CreateTenantModal({ onClose, onSubmit }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4">
       <div className="glass-card w-full max-w-md p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Create Tenant</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+          <h2 className="text-lg font-semibold text-dark-50">Create Tenant</h2>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -115,11 +115,11 @@ function EditTenantModal({ tenant, onClose, onSave }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4">
       <div className="glass-card w-full max-w-md p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Edit Tenant</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+          <h2 className="text-lg font-semibold text-dark-50">Edit Tenant</h2>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -183,11 +183,11 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
 
   if (result) {
     return (
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-950/70 p-4">
         <div className="glass-card w-full max-w-sm p-5 space-y-4">
           <div className="flex items-center gap-2 text-green-400">
             <Check className="w-5 h-5" />
-            <h3 className="font-semibold text-white text-sm">
+            <h3 className="font-semibold text-dark-50 text-sm">
               {result.action === 'created' ? 'User Created & Assigned' : 'User Assigned'}
             </h3>
           </div>
@@ -206,11 +206,11 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-950/70 p-4">
       <div className="glass-card w-full max-w-sm p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-white text-sm">Add User to Tenant</h3>
-          <button onClick={onClose} className="text-dark-400 hover:text-white">
+          <h3 className="font-semibold text-dark-50 text-sm">Add User to Tenant</h3>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -220,14 +220,14 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
           <button
             type="button"
             onClick={() => setMode('email')}
-            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'email' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
+            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'email' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}
           >
             Invite by Email
           </button>
           <button
             type="button"
             onClick={() => setMode('username')}
-            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'username' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
+            className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === 'username' ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}
           >
             Assign by Username
           </button>
@@ -299,8 +299,8 @@ function InviteUserModal({ tenantId, onClose, onInvite }) {
 
 // ── Users side panel ──────────────────────────────────────────────
 const ROLE_OPTIONS = [
-  { value: 'tenant_superadmin', label: 'Tenant Superadmin', color: 'text-purple-400' },
-  { value: 'tenant_admin',      label: 'Tenant Admin',      color: 'text-blue-400'   },
+  { value: 'tenant_superadmin', label: 'Tenant Superadmin', color: 'text-accent-purple' },
+  { value: 'tenant_admin',      label: 'Tenant Admin',      color: 'text-eagle-400'   },
   { value: 'business_owner',    label: 'Business Owner',    color: 'text-green-400'  },
 ]
 const roleColor = (r) => ROLE_OPTIONS.find(o => o.value === r)?.color ?? 'text-dark-300'
@@ -356,11 +356,11 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-end bg-dark-950/70">
       <div className="glass-card w-full sm:w-[460px] h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden sm:rounded-2xl sm:mr-4 sm:mb-4">
         <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
           <div>
-            <h3 className="font-semibold text-white">Users — {tenant.name}</h3>
+            <h3 className="font-semibold text-dark-50">Users — {tenant.name}</h3>
             <p className="text-xs text-dark-400 mt-0.5">{users.length} member{users.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -371,7 +371,7 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
               <Plus className="w-3 h-3" />
               Add User
             </button>
-            <button onClick={onClose} className="text-dark-400 hover:text-white transition-colors">
+            <button onClick={onClose} className="text-dark-400 hover:text-dark-50 transition-colors">
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -392,7 +392,7 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
                 <div key={u.user_id} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40 space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="font-medium text-white text-sm">{u.username}</p>
+                      <p className="font-medium text-dark-50 text-sm">{u.username}</p>
                       <p className="text-xs text-dark-400 truncate">{u.email}</p>
                       <p className="text-[11px] text-dark-400 font-mono mt-1 break-all bg-dark-900/70 border border-dark-700 rounded px-2 py-1">
                         <span className="text-dark-500 mr-1">User ID:</span>{u.user_id || '—'}
@@ -526,15 +526,15 @@ export default function TenantsPage() {
   return (
     <div className="space-y-6">
       {/* SuperAdmin banner */}
-      <div className="flex items-center gap-3 p-3 bg-purple-500/10 border border-purple-500/30 rounded-xl">
-        <Shield className="w-5 h-5 text-purple-400 flex-shrink-0" />
-        <p className="text-sm text-purple-300">You are managing as <strong>SuperAdmin</strong> — all tenants are visible.</p>
+      <div className="flex items-center gap-3 p-3 bg-accent-purple/10 border border-accent-purple/30 rounded-xl">
+        <Shield className="w-5 h-5 text-accent-purple flex-shrink-0" />
+        <p className="text-sm text-accent-purple">You are managing as <strong>SuperAdmin</strong> — all tenants are visible.</p>
       </div>
 
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Tenant Management</h1>
+          <h1 className="page-title">Tenant Management</h1>
           <p className="text-dark-400 text-sm mt-1">{tenants.length} tenant{tenants.length !== 1 ? 's' : ''} registered</p>
         </div>
         <div className="flex items-center gap-2">
@@ -582,7 +582,7 @@ export default function TenantsPage() {
                 return (
                   <tr key={t.tenant_id}>
                     <td>
-                      <p className="font-medium text-white">{t.name}</p>
+                      <p className="font-medium text-dark-50">{t.name}</p>
                       <p className="text-xs text-dark-500 font-mono break-all">{t.tenant_id || '—'}</p>
                     </td>
                     <td className="font-mono text-sm text-accent-cyan">{t.slug}</td>
@@ -596,14 +596,14 @@ export default function TenantsPage() {
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => setUsersTenant(t)}
-                          className="p-1.5 hover:bg-blue-500/10 rounded text-dark-400 hover:text-blue-400 transition-colors"
+                          className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors"
                           title="View Users"
                         >
                           <Users className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => setEditTenant(t)}
-                          className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-white transition-colors"
+                          className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors"
                           title="Edit Tenant"
                         >
                           <Edit2 className="w-4 h-4" />

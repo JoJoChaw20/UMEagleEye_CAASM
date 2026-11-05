@@ -81,7 +81,7 @@ function MenuButton({ label, icon: Icon, items, primary = false, title }) {
         {label && <ChevronDown className="w-3.5 h-3.5 opacity-70" />}
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 z-30 mt-1 w-56 rounded-lg border border-dark-700 bg-dark-850 shadow-xl py-1">
+        <div role="menu" className="absolute right-0 z-30 mt-1 w-56 rounded-lg border border-dark-700 bg-dark-850 shadow-float py-1">
           {items.map((it) => (
             <button key={it.label} role="menuitem" onClick={() => { setOpen(false); it.onClick() }} disabled={it.disabled}
               className="w-full text-left px-3 py-2 text-sm flex items-start gap-2 text-dark-200 hover:bg-dark-700/50 disabled:opacity-40">
@@ -345,7 +345,7 @@ export default function InventoryPage() {
       {/* Header: the same controls on every tab */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-white">Asset Inventory</h1>
+          <h1 className="page-title">Asset Inventory</h1>
           <p className="text-dark-400 text-sm mt-1">{subtitle}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -421,7 +421,7 @@ export default function InventoryPage() {
                 placeholder="Search hostname, vendor, IP or MAC"
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                className="input-field pl-10 text-sm"
+                className="input-field w-full pl-10 text-sm sm:w-80"
                 aria-label="Search assets"
               />
             </div>
@@ -456,6 +456,9 @@ export default function InventoryPage() {
                 <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
               </div>
             ) : assets.length > 0 ? (
+              // Scrolls sideways on narrow screens so Actions stays inside the card
+              // (the criticality and device-type menus are portals, so nothing is clipped).
+              <div className="overflow-x-auto">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -466,7 +469,7 @@ export default function InventoryPage() {
                     <th className="criticality-col">Criticality</th>
                     <th>Source</th>
                     <th>First / Last seen</th>
-                    {showActions && <th>Actions</th>}
+                    {showActions && <th className="actions-col">Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -491,7 +494,7 @@ export default function InventoryPage() {
                             )}
                           </td>
                           <td>
-                            <Link to={`/inventory/${a.assetId}`} onClick={(e) => e.stopPropagation()} className="font-medium text-white hover:text-eagle-400">
+                            <Link to={`/inventory/${a.assetId}`} onClick={(e) => e.stopPropagation()} className="font-medium text-dark-50 hover:text-eagle-400">
                               {a.hostname || '—'}
                             </Link>
                             <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
@@ -515,8 +518,8 @@ export default function InventoryPage() {
                               <AddressCellInfo asset={a} searchTerm={search} expanded={expandedId === a.assetId} onToggle={() => setExpandedId((cur) => (cur === a.assetId ? null : a.assetId))} />
                             </div>
                           </td>
-                          <td className="text-sm text-dark-200">{a.owner || <span className="text-dark-500">—</span>}</td>
-                          <td className="text-dark-300 text-sm">
+                          <td className="text-sm text-dark-200 max-w-[160px] break-words">{a.owner || <span className="text-dark-500">—</span>}</td>
+                          <td className="text-dark-300 text-sm max-w-[180px] break-words">
                             {a.hardwareVendor
                               ? a.hardwareVendor
                               : isLocallyAdministeredMac(a.macAddress)
@@ -528,7 +531,7 @@ export default function InventoryPage() {
                             <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} footer="computed" />
                           </td>
                           <td className="whitespace-nowrap">
-                            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${srcMeta.cls}`}>{srcMeta.label}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-md border font-medium ${srcMeta.cls}`}>{srcMeta.label}</span>
                           </td>
                           <td className="text-xs">
                             <div className="space-y-0.5 whitespace-nowrap">
@@ -537,8 +540,8 @@ export default function InventoryPage() {
                             </div>
                           </td>
                           {showActions && (
-                            <td>
-                              <div className="flex items-center gap-1">
+                            <td className="actions-col">
+                              <div className="flex items-center justify-end gap-1">
                                 {!isReadOnly && a.inMyAssets && (
                                   <>
                                     <button onClick={stop(() => setEditingAsset(a))} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="Edit asset" aria-label="Edit asset">
@@ -574,6 +577,7 @@ export default function InventoryPage() {
                   })}
                 </tbody>
               </table>
+              </div>
             ) : (
               <div className="text-center py-20 text-dark-400">
                 <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />

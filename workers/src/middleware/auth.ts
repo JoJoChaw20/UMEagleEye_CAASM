@@ -32,7 +32,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   // deleted) would otherwise pass routes that filter by tenant only when one is set, and
   // read every tenant's data. It may use its own account endpoints (/auth/...) and
   // nothing else until an admin adds it to a tenant.
-  if (payload.role !== 'superadmin' && !payload.tenant_id && !/\/auth\//.test(c.req.path)) {
+  if (payload.role !== 'superadmin' && !payload.tenant_id && !/^\/api\/v1\/auth\//.test(c.req.path)) {
     return c.json({ detail: 'Your account is not part of an organisation yet. Ask your administrator to add you.' }, 403)
   }
 

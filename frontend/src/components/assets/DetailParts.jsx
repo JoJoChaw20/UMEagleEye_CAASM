@@ -4,7 +4,7 @@ export function Section({ icon: Icon, title, right, children, className = '' }) 
   return (
     <section className={`glass-card p-5 ${className}`}>
       <div className="flex items-center justify-between gap-3 mb-4">
-        <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-dark-50 flex items-center gap-2">
           <Icon className="w-4 h-4 text-eagle-400" /> {title}
         </h2>
         {right}

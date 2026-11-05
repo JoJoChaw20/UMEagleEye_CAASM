@@ -82,7 +82,7 @@ export default function CriticalityBadge({ score, assetId, footer = 'slider' }) 
         role="button"
         aria-label={`Criticality ${s} out of 10, ${label}. Show breakdown.`}
         aria-describedby={open ? tipId : undefined}
-        className={`inline-block text-xs px-2 py-0.5 rounded-full border font-medium cursor-default select-none outline-none focus-visible:ring-2 focus-visible:ring-eagle-500 ${cls}`}
+        className={`inline-block text-xs px-2 py-0.5 rounded-md border font-medium cursor-default select-none outline-none focus-visible:ring-2 focus-visible:ring-eagle-500 ${cls}`}
         onMouseEnter={show}
         onMouseLeave={hide}
         onFocus={show}
@@ -98,7 +98,7 @@ export default function CriticalityBadge({ score, assetId, footer = 'slider' }) 
           role="tooltip"
           style={{ position: 'fixed', left: pos.left, top: pos.top, width: TIP_W, transform: pos.above ? 'translateY(-100%)' : 'none', zIndex: 1000, pointerEvents: 'none' }}
         >
-          <div className="bg-dark-900 border border-dark-600 rounded-xl p-3 shadow-2xl text-xs space-y-2 text-dark-200">
+          <div className="bg-dark-900 border border-dark-600 rounded-xl p-3 shadow-float text-xs space-y-2 text-dark-200">
             <p className="font-semibold text-dark-100">Criticality Breakdown</p>
             {loading && <p className="text-dark-300">Loading…</p>}
             {mismatch && (

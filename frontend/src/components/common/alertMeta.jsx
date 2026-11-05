@@ -2,12 +2,21 @@
 // rendering, status badges and the junior-analyst playbook.
 import { Crosshair, Radio, Fingerprint, Bug, MonitorSmartphone } from 'lucide-react'
 
+// Theme tokens (src/index.css), so severity reads correctly in dark and light mode.
 export const SEVERITY_COLORS = {
-  critical: '#ff5252',
-  high:     '#ff9800',
-  medium:   '#ffc400',
-  low:      '#00e676',
+  critical: 'rgb(var(--sev-critical))',
+  high:     'rgb(var(--sev-high))',
+  medium:   'rgb(var(--sev-medium))',
+  low:      'rgb(var(--sev-low))',
 }
+const SEV_VAR = { critical: 'sev-critical', high: 'sev-high', medium: 'sev-medium', low: 'sev-low' }
+/** Severity colour with optional alpha, e.g. sevColor('high', 0.4). */
+export const sevColor = (sev, alpha) => {
+  const v = SEV_VAR[sev] ?? 'dark-400'
+  return alpha == null ? `rgb(var(--${v}))` : `rgb(var(--${v}) / ${alpha})`
+}
+/** CVSS base score → severity colour (9+ critical, 7+ high, 4+ medium, else low). */
+export const cvssColor = (score) => sevColor(score >= 9 ? 'critical' : score >= 7 ? 'high' : score >= 4 ? 'medium' : 'low')
 
 export const EVENT_TYPE_LABELS = {
   cve_detected:      'CVE Detected',
@@ -113,10 +122,10 @@ export const CONCERNS = [
 ]
 
 export const TONE = {
-  critical: { text: 'text-red-400',    bg: 'bg-red-500/10',    border: 'border-red-500/40',    bar: '#ff5252' },
-  serious:  { text: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/40', bar: '#ff9800' },
-  warning:  { text: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', bar: '#ffc400' },
-  good:     { text: 'text-emerald-400', bg: 'bg-emerald-500/5', border: 'border-dark-700/50',  bar: '#00e676' },
+  critical: { text: 'text-red-400',    bg: 'bg-red-500/10',    border: 'border-red-500/40',    bar: 'rgb(var(--sev-critical))' },
+  serious:  { text: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/40', bar: 'rgb(var(--sev-high))' },
+  warning:  { text: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', bar: 'rgb(var(--sev-medium))' },
+  good:     { text: 'text-emerald-400', bg: 'bg-emerald-500/5', border: 'border-dark-700/50',  bar: 'rgb(var(--sev-low))' },
 }
 
 // Priority score (backend lib/priority.ts) → a tier a human can act on.
@@ -315,8 +324,8 @@ export function upgradePlan(d) {
 }
 
 export const STATUS_META = {
-  open:           { label: 'Open',           cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
-  in_progress:    { label: 'In progress',    cls: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
+  open:           { label: 'Open',           cls: 'bg-eagle-500/15 text-eagle-400 border-eagle-500/30' },
+  in_progress:    { label: 'In progress',    cls: 'bg-accent-purple/15 text-accent-purple border-accent-purple/30' },
   resolved:       { label: 'Resolved',       cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
   false_positive: { label: 'False positive', cls: 'bg-dark-600/40 text-dark-300 border-dark-500/40' },
   accepted_risk:  { label: 'Accepted risk',  cls: 'bg-amber-500/15 text-amber-400 border-amber-500/30' },
@@ -334,7 +343,7 @@ const UNREVIEWED = { label: 'Closed – not reviewed', cls: 'bg-amber-500/10 tex
 export function StatusBadge({ status, note }) {
   const m = isClosedUnreviewed({ status, resolution_note: note }) ? UNREVIEWED : (STATUS_META[status] ?? STATUS_META.open)
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium whitespace-nowrap ${m.cls}`}
+    <span className={`text-xs px-2 py-0.5 rounded-md border font-medium whitespace-nowrap ${m.cls}`}
       title={m === UNREVIEWED ? 'Closed because the device was not seen; nobody reviewed it' : undefined}>{m.label}</span>
   )
 }
@@ -347,7 +356,7 @@ export function SevBadge({ sev }) {
     low:      'bg-green-500/20 text-green-400 border-green-500/30',
   }[sev] ?? 'bg-dark-700 text-dark-300 border-dark-600'
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold uppercase tracking-wide ${cls}`}>
+    <span className={`text-xs px-2 py-0.5 rounded-md border font-semibold uppercase tracking-wide ${cls}`}>
       {sev}
     </span>
   )
@@ -363,6 +372,7 @@ export function timeAgo(ts) {
 }
 
 export const CHART_TOOLTIP_STYLE = {
-  background: 'rgb(var(--dark-700))', border: '1px solid rgb(var(--dark-500))', borderRadius: '8px',
-  color: 'rgb(var(--dark-100))', boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+  background: 'rgb(var(--dark-800))', border: '1px solid rgb(var(--dark-700))', borderRadius: '8px',
+  color: 'rgb(var(--dark-100))', boxShadow: '0 12px 32px -8px rgb(var(--shadow) / 0.35)',
+  fontSize: '12px',
 }

@@ -99,6 +99,12 @@ collector is not written yet; there the agent reports that once and stops trying
 `python -m eagleeye gui`, or `EagleEyeAgent.exe` from the installer. One copy runs per user; it keeps running in the
 system tray when the window is closed (right-click the tray icon to quit).
 
+It uses the dashboard's design (the repository's `DESIGN.md`): a navy rail with the logo and the pages in two groups
+(Agent: Status, Log; Setup: Settings, Privacy, Dependencies), a header with the agent's live state, **Start/Stop** and a
+dark / light / system theme switch (saved per Windows user; system follows the Windows app theme). The look lives in
+`gui/theme.py` (colour tokens, stylesheet) and `gui/widgets.py` (rail, panels, circuit trace); the logo, the fonts
+(Chakra Petch, Geist, Geist Mono; SIL OFL) are in `gui/assets/`, and the icons are Lucide's (`gui/icons.py`).
+
 | Page | What it does |
 |---|---|
 | (first start) | Shows the data-collection notice with the choices below; the agent does not run until it is accepted. The acceptance date and notice version are saved (`consent_version`, `consent_at`); a new notice version is shown again |

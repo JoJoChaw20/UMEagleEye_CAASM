@@ -6,6 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { advisories, events, assets, auditLogs, users } from '../db/schema'
+import { advisoryScope } from '../lib/advisoryScope'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -54,41 +55,9 @@ app.get('/', authMiddleware, async (c) => {
       conditions.push(eq(advisories.assignedTo, assigned_to))
     }
 
-    // Tenant filter: join through events->assets
-    const tenantIdParam = c.req.query('tenant_id')
-    const effectiveTenantId = user.role === 'superadmin'
-      ? (tenantIdParam ?? undefined)
-      : (user.tenantId ?? undefined)
-
-    if (effectiveTenantId) {
-      // Get asset IDs belonging to tenant
-      const assetRows = await db
-        .select({ assetId: assets.assetId })
-        .from(assets)
-        .where(eq(assets.tenantId, effectiveTenantId))
-      const allowedAssetIds = assetRows.map((a) => a.assetId)
-
-      if (allowedAssetIds.length === 0) {
-        return c.json({ total: 0, page, limit, items: [] })
-      }
-
-      // Get event IDs belonging to those assets
-      const eventRows = await db
-        .select({ eventId: events.eventId })
-        .from(events)
-        .where(
-          sql`${events.assetId} = ANY(ARRAY[${sql.join(allowedAssetIds.map(id => sql`${id}::uuid`), sql`, `)}])`,
-        )
-      const allowedEventIds = eventRows.map((e) => e.eventId)
-
-      if (allowedEventIds.length === 0) {
-        return c.json({ total: 0, page, limit, items: [] })
-      }
-
-      conditions.push(
-        sql`${advisories.eventId} = ANY(ARRAY[${sql.join(allowedEventIds.map(id => sql`${id}::uuid`), sql`, `)}])`,
-      )
-    }
+    // Tenant filter through the alert's asset, as a subquery (lib/advisoryScope.ts)
+    const scope = advisoryScope(db, user, c.req.query('tenant_id'))
+    if (scope) conditions.push(scope)
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
@@ -147,10 +116,10 @@ app.get('/:advisoryId', authMiddleware, async (c) => {
     }
     const advisory = row.advisory
 
-    // Tenant check via event->asset
-    if (user.role !== 'superadmin' && user.tenantId) {
+    // Tenant check via event->asset (fails closed for an account without a tenant)
+    if (user.role !== 'superadmin') {
       const meta = await getAdvisoryTenantId(db, advisoryId)
-      if (!meta || meta.tenantId !== user.tenantId) {
+      if (!meta || !user.tenantId || meta.tenantId !== user.tenantId) {
         return c.json({ detail: 'Advisory not found' }, 404)
       }
     }
@@ -194,10 +163,10 @@ app.patch(
         return c.json({ detail: 'Advisory not found' }, 404)
       }
 
-      // Tenant check
-      if (user.role !== 'superadmin' && user.tenantId) {
+      // Tenant check (fails closed for an account without a tenant)
+      if (user.role !== 'superadmin') {
         const meta = await getAdvisoryTenantId(db, advisoryId)
-        if (!meta || meta.tenantId !== user.tenantId) {
+        if (!meta || !user.tenantId || meta.tenantId !== user.tenantId) {
           return c.json({ detail: 'Advisory not found' }, 404)
         }
       }

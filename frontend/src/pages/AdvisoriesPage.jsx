@@ -4,6 +4,7 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import AdvisoryBody from '../components/common/AdvisoryBody'
 
 const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved']
 
@@ -81,16 +82,16 @@ export default function AdvisoriesPage() {
     const map = {
       open:         'bg-red-500/20 text-red-400 border-red-500/30',
       acknowledged: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-      in_progress:  'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      in_progress:  'bg-eagle-500/15 text-eagle-400 border-eagle-500/30',
       resolved:     'bg-green-500/20 text-green-400 border-green-500/30',
     }
-    return `text-xs px-2 py-0.5 rounded-full border font-medium ${map[s] || 'bg-dark-600/40 text-dark-400 border-dark-500/30'}`
+    return `text-xs px-2 py-0.5 rounded-md border font-medium ${map[s] || 'bg-dark-600/40 text-dark-400 border-dark-500/30'}`
   }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-white">AI Advisories</h1>
+        <h1 className="page-title">AI Advisories</h1>
         <div className="flex items-center gap-2 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={(tenantId) => {
             setTenantFilter(tenantId)
@@ -160,63 +161,34 @@ export default function AdvisoriesPage() {
       </div>
 
       {selectedAdvisory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-950/70">
+          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-float w-full max-w-3xl max-h-[90vh] flex flex-col">
 
             <div className="p-6 border-b border-dark-600 flex justify-between items-start bg-dark-900/50 rounded-t-xl">
               <div className="flex items-center gap-3">
                 <ShieldAlert className="w-8 h-8 text-eagle-500" />
                 <div>
-                  <h2 className="text-xl font-bold text-white">Advisory Details</h2>
+                  <h2 className="text-xl font-bold text-dark-50">Advisory Details</h2>
                   <p className="text-sm text-dark-400 mt-1">
                     Generated {new Date(selectedAdvisory.createdAt).toLocaleString()}
                   </p>
                 </div>
               </div>
-              <button onClick={() => setSelectedAdvisory(null)} className="text-dark-400 hover:text-white transition-colors">
+              <button onClick={() => setSelectedAdvisory(null)} className="text-dark-400 hover:text-dark-50 transition-colors">
                 <X className="w-6 h-6" />
               </button>
             </div>
 
             <div className="p-6 overflow-y-auto custom-scrollbar flex-1 space-y-6">
               <div>
-                <h3 className="text-sm font-semibold text-eagle-400 uppercase tracking-wider mb-2">Summary</h3>
-                <div className="bg-dark-900 p-4 rounded-lg border border-dark-700 text-dark-100">
+                <h3 className="mb-2 text-base font-semibold text-dark-50">Summary</h3>
+                <div className="rounded-lg border border-dark-700 bg-dark-900 p-4 text-sm leading-relaxed text-dark-100">
                   {selectedAdvisory.summary}
                 </div>
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-eagle-400 uppercase tracking-wider mb-2">Recommended Action</h3>
-                <div className="bg-dark-900 p-4 rounded-lg border border-dark-700 space-y-2">
-                  {(() => {
-                    const raw = (selectedAdvisory.recommendedAction ?? '').trim()
-                    let steps = []
-                    if (raw.startsWith('{') && raw.endsWith('}')) {
-                      // Curly-brace set format: {"step one","step two"}
-                      steps = raw
-                        .slice(1, -1)
-                        .split(/",\s*"/)
-                        .map(s => s.replace(/^"+|"+$/g, '').trim())
-                        .filter(Boolean)
-                        .map(s => s.replace(/^\d+\.\s*/, ''))
-                    } else {
-                      // Plain newline-separated format: "1. step\n2. step"
-                      steps = raw
-                        .split(/\n/)
-                        .map(s => s.trim())
-                        .filter(Boolean)
-                        .map(s => s.replace(/^\d+\.\s*/, ''))
-                    }
-                    return steps.length > 1 ? steps.map((step, i) => (
-                      <div key={i} className="flex gap-3 items-start">
-                        <span className="flex-shrink-0 w-6 h-6 rounded-full bg-eagle-500/20 text-eagle-400 text-xs font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
-                        <p className="text-dark-100 text-sm leading-relaxed">{step}</p>
-                      </div>
-                    )) : (
-                      <p className="text-dark-100 text-sm leading-relaxed whitespace-pre-wrap">{raw}</p>
-                    )
-                  })()}
-                </div>
+                <h3 className="mb-2 text-base font-semibold text-dark-50">Recommended action</h3>
+                <AdvisoryBody text={selectedAdvisory.recommendedAction} />
               </div>
             </div>
 
@@ -252,7 +224,7 @@ export default function AdvisoriesPage() {
                 {canManageAdvisories && selectedAdvisory.status === 'open' && (
                   <button
                     onClick={() => handleAssignToMe(selectedAdvisory.advisoryId)}
-                    className="btn-primary flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white"
+                    className="btn-primary flex items-center gap-2 bg-eagle-600 hover:bg-eagle-500 text-on-brand"
                   >
                     <UserPlus className="w-4 h-4" />
                     Assign to Me

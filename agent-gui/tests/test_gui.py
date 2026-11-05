@@ -126,7 +126,7 @@ def test_connection_code_fills_the_server_fields(window):
     assert page.code.text() == "" and "Test connection" in page.test_result.text()
     page.code.setText("not a code")
     page._use_code()
-    assert page.test_result.text().startswith("✖") and page.api_url.text() == EXPECTED[0]   # fields kept
+    assert page.test_result.property("tone") == "error" and page.api_url.text() == EXPECTED[0]   # fields kept
 
 
 def test_schedules_page_is_hidden_while_schedules_are_off(window):

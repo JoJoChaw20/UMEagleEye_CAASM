@@ -1,16 +1,27 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/eagle-icon.svg" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex, nofollow" />
     <link rel="canonical" href="https://umeagleeye.csnet.my/" />
     <meta name="description" content="UMEagleEye - AI-Driven Cyber Asset Attack Surface Management for Malaysian SMEs" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <meta name="theme-color" content="#08101F" />
+    <script>
+      // Apply the saved theme before first paint so the page never flashes the wrong mode.
+      (function () {
+        try {
+          var t = localStorage.getItem('theme') || 'system';
+          var dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (!dark) document.documentElement.classList.add('light');
+        } catch (e) { /* storage blocked: stay dark */ }
+      })();
+    </script>
     <title>UMEagleEye | CAASM Dashboard</title>
   </head>
-  <body class="bg-dark-950 text-white antialiased">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

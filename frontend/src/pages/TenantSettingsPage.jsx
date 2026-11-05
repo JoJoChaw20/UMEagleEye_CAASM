@@ -8,13 +8,13 @@ import { useAuth } from '../context/AuthContext'
 
 // Roles a tenant_superadmin may assign to other users
 const ASSIGNABLE_ROLES = [
-  { value: 'tenant_admin',   label: 'Tenant Admin',   color: 'text-blue-400'  },
+  { value: 'tenant_admin',   label: 'Tenant Admin',   color: 'text-eagle-400'  },
   { value: 'business_owner', label: 'Business Owner', color: 'text-green-400' },
 ]
 
 const ROLE_COLORS = {
-  tenant_superadmin: 'text-purple-400',
-  tenant_admin:      'text-blue-400',
+  tenant_superadmin: 'text-accent-purple',
+  tenant_admin:      'text-eagle-400',
   business_owner:    'text-green-400',
 }
 
@@ -52,11 +52,11 @@ function InviteModal({ tenantId, onClose, onInvite }) {
 
   if (result) {
     return (
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-950/70 p-4">
         <div className="glass-card w-full max-w-sm p-5 space-y-4">
           <div className="flex items-center gap-2 text-green-400">
             <Check className="w-5 h-5" />
-            <h3 className="font-semibold text-white text-sm">
+            <h3 className="font-semibold text-dark-50 text-sm">
               {result.action === 'created' ? 'User Created & Assigned' : 'User Assigned'}
             </h3>
           </div>
@@ -75,11 +75,11 @@ function InviteModal({ tenantId, onClose, onInvite }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-950/70 p-4">
       <div className="glass-card w-full max-w-sm p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-white text-sm">Add User</h3>
-          <button onClick={onClose} className="text-dark-400 hover:text-white">
+          <h3 className="font-semibold text-dark-50 text-sm">Add User</h3>
+          <button onClick={onClose} className="text-dark-400 hover:text-dark-50">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -90,7 +90,7 @@ function InviteModal({ tenantId, onClose, onInvite }) {
               key={m}
               type="button"
               onClick={() => setMode(m)}
-              className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === m ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-white'}`}
+              className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === m ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}
             >
               {m === 'email' ? 'Invite by Email' : 'Assign by Username'}
             </button>
@@ -269,7 +269,7 @@ export default function TenantSettingsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-white">Tenant Management</h1>
+        <h1 className="page-title">Tenant Management</h1>
         <p className="text-dark-400 text-sm mt-1">
           {tenant?.name} · {isTenantSuperadmin ? 'Manage settings and users' : 'View users'}
         </p>
@@ -278,7 +278,7 @@ export default function TenantSettingsPage() {
       {/* ── Tenant Settings (tenant_superadmin only) ── */}
       {isTenantSuperadmin && tenant && (
         <div className="glass-card p-6 space-y-5">
-          <h2 className="font-semibold text-white flex items-center gap-2 text-base">
+          <h2 className="font-semibold text-dark-50 flex items-center gap-2 text-base">
             <Building2 className="w-4 h-4 text-accent-cyan" />
             Tenant Settings
           </h2>
@@ -335,7 +335,7 @@ export default function TenantSettingsPage() {
       <div className="glass-card overflow-hidden">
         <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
           <div>
-            <h2 className="font-semibold text-white flex items-center gap-2 text-base">
+            <h2 className="font-semibold text-dark-50 flex items-center gap-2 text-base">
               <Users className="w-4 h-4 text-accent-cyan" />
               Users
             </h2>
@@ -367,9 +367,9 @@ export default function TenantSettingsPage() {
                 <div key={u.user_id} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40 space-y-2">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="font-medium text-white text-sm">
+                      <p className="font-medium text-dark-50 text-sm">
                         {u.username}
-                        {isSelf && <span className="ml-2 text-[10px] text-dark-500 bg-dark-700 rounded px-1 py-0.5">you</span>}
+                        {isSelf && <span className="ml-2 text-[11px] text-dark-500 bg-dark-700 rounded px-1 py-0.5">you</span>}
                       </p>
                       <p className="text-xs text-dark-400 truncate">{u.email}</p>
                     </div>
@@ -386,7 +386,7 @@ export default function TenantSettingsPage() {
                           onClick={() => toggleUserActive(u.user_id, u.is_active)}
                           disabled={!!togglingActive[u.user_id]}
                           title={u.is_active ? 'Deactivate user' : 'Activate user'}
-                          className="text-dark-400 hover:text-white transition-colors"
+                          className="text-dark-400 hover:text-dark-50 transition-colors"
                         >
                           {togglingActive[u.user_id]
                             ? <RefreshCw className="w-4 h-4 animate-spin" />

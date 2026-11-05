@@ -14,6 +14,7 @@ ICON = ROOT / "build" / "eagleeye.ico"
 datas = [
     (str(ROOT / "eagleeye" / "collectors" / "windows_inventory.ps1"), "eagleeye/collectors"),
     (str(ROOT / "packaging" / "THIRD-PARTY-NOTICES.txt"), "."),
+    (str(ROOT / "eagleeye" / "gui" / "assets"), "eagleeye/gui/assets"),   # logo, fonts (OFL)
 ]
 datas += collect_data_files("pysnmp")            # MIB modules are loaded from files at run time
 datas += copy_metadata("keyring")                # keyring finds its backends through package metadata

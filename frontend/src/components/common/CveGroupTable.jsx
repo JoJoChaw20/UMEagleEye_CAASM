@@ -1,7 +1,7 @@
 // Open CVE alerts grouped by fix: one row per vulnerable package on an asset
 // (GET /events/cve-groups). Clicking a row lists that package's CVEs.
 import { Server, Globe, User, ArrowRight } from 'lucide-react'
-import { SEVERITY_COLORS, SevBadge, timeAgo } from './alertMeta'
+import { SEVERITY_COLORS, SevBadge, timeAgo, sevColor, cvssColor } from './alertMeta'
 import { PriorityTier } from './triageViz'
 
 export const groupKey = (g) => `${g.asset_id}|${g.package_name}|${g.package_version ?? ''}`
@@ -11,7 +11,7 @@ function SevCounts({ by }) {
   return (
     <span className="flex flex-wrap gap-1">
       {parts.map(([k, l]) => (
-        <span key={k} className="text-[10px] px-1.5 py-0.5 rounded border" style={{ color: SEVERITY_COLORS[k], borderColor: `${SEVERITY_COLORS[k]}66` }}>
+        <span key={k} className="text-[11px] px-1.5 py-0.5 rounded border" style={{ color: SEVERITY_COLORS[k], borderColor: sevColor(k, 0.4) }}>
           {by[k]} {l}
         </span>
       ))}
@@ -41,11 +41,11 @@ export default function CveGroupTable({ groups, canManage, selected, onToggle, o
           return (
             <tr key={key} onClick={() => onOpen(g)} className="cursor-pointer" title="List this package's CVEs">
               {canManage && (
-                <td onClick={ev => ev.stopPropagation()} style={{ boxShadow: `inset 3px 0 0 ${SEVERITY_COLORS[g.severity]}` }}>
+                <td onClick={ev => ev.stopPropagation()}>
                   <input type="checkbox" checked={selected.has(key)} onChange={() => onToggle(key)} aria-label="Select fix" />
                 </td>
               )}
-              <td style={canManage ? undefined : { boxShadow: `inset 3px 0 0 ${SEVERITY_COLORS[g.severity]}` }}>
+              <td>
                 <div className="flex flex-col items-start gap-1">
                   <PriorityTier score={g.priority_score} />
                   <SevBadge sev={g.severity} />
@@ -85,11 +85,11 @@ export default function CveGroupTable({ groups, canManage, selected, onToggle, o
               <td className="text-xs">
                 <div className="flex items-center gap-1.5 mb-1">
                   <span className="text-sm text-dark-100 font-semibold">{g.cves}</span>
-                  {g.kev > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="On CISA's Known Exploited Vulnerabilities list">{g.kev} KEV</span>}
-                  {g.threat_intel > g.kev && <span className="text-[10px] text-accent-red">threat intel</span>}
+                  {g.kev > 0 && <span className="text-[11px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="On CISA's Known Exploited Vulnerabilities list">{g.kev} KEV</span>}
+                  {g.threat_intel > g.kev && <span className="text-[11px] text-accent-red">threat intel</span>}
                 </div>
                 <SevCounts by={g.by_severity} />
-                {g.top_cves.length > 0 && <p className="font-mono text-[10px] text-dark-500 mt-1 truncate max-w-[200px]">{g.top_cves.slice(0, 3).join(', ')}{g.cves > 3 ? '…' : ''}</p>}
+                {g.top_cves.length > 0 && <p className="font-mono text-[11px] text-dark-500 mt-1 truncate max-w-[200px]">{g.top_cves.slice(0, 3).join(', ')}{g.cves > 3 ? '…' : ''}</p>}
               </td>
               <td>
                 <div className="flex items-start gap-1.5">
@@ -107,7 +107,7 @@ export default function CveGroupTable({ groups, canManage, selected, onToggle, o
                 </div>
               </td>
               <td className="font-mono text-xs whitespace-nowrap">
-                {g.max_cvss != null ? <span style={{ color: g.max_cvss >= 9 ? '#ff5252' : g.max_cvss >= 7 ? '#ff9800' : g.max_cvss >= 4 ? '#ffc400' : '#00e676' }}>{g.max_cvss}</span> : '—'}
+                {g.max_cvss != null ? <span style={{ color: cvssColor(g.max_cvss) }}>{g.max_cvss}</span> : '—'}
                 <span className="text-dark-500"> / </span>
                 {g.max_epss != null ? `${(g.max_epss * 100).toFixed(1)}%` : '—'}
               </td>

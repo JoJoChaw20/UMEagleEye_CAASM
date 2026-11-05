@@ -18,6 +18,7 @@ import topologyRoutes from './routes/topology'
 import tenantRoutes from './routes/tenants'
 import notificationRoutes from './routes/notifications'
 import chatbotRoutes from './routes/chatbot'
+import mcpRoutes from './routes/mcp'
 import dashboardRoutes from './routes/dashboard'
 import sbomRoutes from './routes/sbom'
 
@@ -39,7 +40,7 @@ app.use('*', async (c, next) => {
       'http://localhost:3000',
     ].filter(Boolean),
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization'],
+    allowHeaders: ['Content-Type', 'Authorization', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID'],
     maxAge: 86400,
   })
   return corsHandler(c, next)
@@ -67,6 +68,7 @@ api.route('/topology', topologyRoutes)
 api.route('/tenants', tenantRoutes)
 api.route('/notifications', notificationRoutes)
 api.route('/chatbot', chatbotRoutes)
+api.route('/mcp', mcpRoutes)
 api.route('/sboms', sbomRoutes)
 api.route('/dashboard', dashboardRoutes)
 

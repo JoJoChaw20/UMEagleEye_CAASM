@@ -16,7 +16,7 @@ const STALE_HOURS = 36       // the feeds load nightly: older than this means a 
 
 function ConfBar({ score }) {
   const pct = ((score ?? 0) * 100).toFixed(0)
-  const color = score >= 0.8 ? '#ff5252' : score >= 0.6 ? '#ff9800' : '#ffc400'
+  const color = score >= 0.8 ? 'rgb(var(--sev-critical))' : score >= 0.6 ? 'rgb(var(--sev-high))' : 'rgb(var(--sev-medium))'
   return (
     <div className="flex items-center gap-1.5">
       <div className="w-14 h-1.5 bg-dark-700 rounded-full overflow-hidden">
@@ -164,7 +164,7 @@ export default function ThreatIntelPage() {
       {/* Header + lookup */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Threat Intelligence</h1>
+          <h1 className="page-title">Threat Intelligence</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">Which of your assets threat intelligence names, your own threat-intel events, and the feeds behind them.</p>
         </div>
         <form onSubmit={lookup} className="flex gap-2 w-full sm:w-auto" role="search">
@@ -224,14 +224,14 @@ export default function ThreatIntelPage() {
             </div>
             <div className="flex items-center gap-1 flex-wrap" role="group" aria-label="Indicator type">
               <button onClick={() => { setTypeFilter(''); setPage(1) }}
-                className={`text-xs px-2.5 py-1 rounded-full border ${!typeFilter ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
+                className={`text-xs px-2.5 py-1 rounded-md border ${!typeFilter ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
                 All
               </button>
               {types.map(([t, n]) => {
                 const Icon = TYPE_META[t]?.icon ?? Globe
                 return (
                   <button key={t} onClick={() => { setTypeFilter(t); setPage(1) }} aria-pressed={typeFilter === t}
-                    className={`text-xs px-2.5 py-1 rounded-full border inline-flex items-center gap-1 ${typeFilter === t ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
+                    className={`text-xs px-2.5 py-1 rounded-md border inline-flex items-center gap-1 ${typeFilter === t ? 'bg-eagle-600/20 text-eagle-300 border-eagle-500/40' : 'border-dark-600 text-dark-400 hover:text-dark-200'}`}>
                     <Icon className="w-3 h-3" />{TYPE_META[t]?.label ?? t}<span className="text-dark-500">{n.toLocaleString()}</span>
                   </button>
                 )

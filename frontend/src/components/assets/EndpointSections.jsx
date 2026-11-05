@@ -253,7 +253,7 @@ export function SoftwareSection({ software, sbom, inventoryAt, className = '' })
           <tbody>
             {filtered.map((s) => (
               <tr key={s.softwareId}>
-                <td className="text-sm text-dark-100">{s.name}{s.scope === 'user' && <span className="ml-1.5 text-[10px] text-dark-400">(user)</span>}</td>
+                <td className="text-sm text-dark-100">{s.name}{s.scope === 'user' && <span className="ml-1.5 text-[11px] text-dark-400">(user)</span>}</td>
                 <td className="font-mono text-xs text-dark-300">{s.version || '—'}</td>
                 <td className="text-sm text-dark-300">{s.publisher || '—'}</td>
                 <td className="text-xs text-dark-400 whitespace-nowrap">{s.installDate || '—'}</td>

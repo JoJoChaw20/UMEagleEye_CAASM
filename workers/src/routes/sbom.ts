@@ -10,7 +10,7 @@ import { eq, and, desc, ilike, isNull, sql, count, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators } from '../db/schema'
+import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators, advisories } from '../db/schema'
 import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } from '../services/drift'
 import { cveIntelFor, linkCveIndicators, type CveIntel } from '../services/threatIntel'
 import { matchIocs } from '../services/iocMatch'
@@ -984,6 +984,13 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
         .set({ status: 'resolved', resolvedAt: now, updatedAt: now,
                resolutionNote: 'Auto-resolved: CVE no longer present in latest SBOM scan' })
         .where(inArray(events.eventId, fixedIds)))
+    }
+    // Verified fix: an advisory whose alert the rescan just closed is resolved too, so
+    // "Resolved" on the Advisories page means the scanner confirmed it.
+    if (fixedIds.length > 0) {
+      stmts.push(db.update(advisories)
+        .set({ status: 'resolved', resolvedAt: now })
+        .where(and(inArray(advisories.eventId, fixedIds), inArray(advisories.status, ['open', 'acknowledged', 'in_progress']))))
     }
 
     for (let i = 0; i < stmts.length; i += WRITE_BATCH) {

@@ -23,7 +23,9 @@
     "msrc:upload:prod": "node scripts/msrc/upload-msrc.mjs .msrc-out production"
   },
   "dependencies": {
+    "@cfworker/json-schema": "4.1.1",
     "@hono/zod-validator": "^0.4.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@neondatabase/serverless": "^0.10.1",
     "drizzle-orm": "^0.36.4",
     "hono": "^4.6.14",
@@ -32,7 +34,8 @@
     "pdf-lib": "^1.17.1",
     "pg": "^8.21.0",
     "qrcode": "^1.5.4",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "3.25.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241210.0",

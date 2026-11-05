@@ -85,7 +85,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
     <div className="flex gap-1 bg-dark-800 rounded-lg p-1 w-fit">
       {Object.entries(SCOPES).map(([id, { label }]) => (
         <button key={id} onClick={() => pickScope(id)}
-          className={`px-3 py-1.5 rounded-md text-sm ${scope === id ? 'bg-eagle-600 text-white' : 'text-dark-400 hover:text-dark-100'}`}>
+          className={`px-3 py-1.5 rounded-md text-sm ${scope === id ? 'bg-eagle-600 text-on-brand' : 'text-dark-400 hover:text-dark-100'}`}>
           {label}
         </button>
       ))}
@@ -196,7 +196,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
           <div className="flex items-center gap-1 bg-dark-800 rounded-md p-0.5 text-[11px]">
             {[['iocs', 'Indicators'], ['families', isEvents ? 'Events' : 'Families']].map(([id, label]) => (
               <button key={id} onClick={() => setShadeBy(id)}
-                className={`px-2 py-1 rounded ${shadeBy === id ? 'bg-eagle-600 text-white' : 'text-dark-400 hover:text-dark-100'}`}>
+                className={`px-2 py-1 rounded ${shadeBy === id ? 'bg-eagle-600 text-on-brand' : 'text-dark-400 hover:text-dark-100'}`}>
                 {label}
               </button>
             ))}
@@ -224,8 +224,8 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
                   <div key={col.short} className="flex flex-col gap-0.5 w-[118px]">
                     <div className="text-center px-1 py-1 rounded bg-dark-800 border border-dark-700/60 h-12 flex flex-col items-center justify-center"
                       title={`${col.name} (${col.id})`}>
-                      <span className="text-[10px] font-bold leading-tight text-dark-100">{col.name}</span>
-                      <span className="text-[9px] text-dark-500">{col.techniques.length} of {col.technique_total}</span>
+                      <span className="text-[11px] font-bold leading-tight text-dark-100">{col.name}</span>
+                      <span className="text-[11px] text-dark-500">{col.techniques.length} of {col.technique_total}</span>
                     </div>
                     {rows.map((t) => {
                       const v = shadeBy === 'iocs' ? t.iocs : t.family_count
@@ -234,21 +234,21 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
                       return (
                         <button key={t.id} onClick={() => setSelected(isSel ? null : t.id)}
                           title={`${t.id} ${t.name}: ${t.iocs.toLocaleString()} indicators, ${t.family_count} ${famWord}`}
-                          className={`text-left px-1.5 py-1 rounded text-[10px] leading-tight transition-transform hover:scale-[1.03] ${isSel ? 'ring-2 ring-accent-orange' : ''}`}
-                          style={{ background: rgba(SHADE, a), color: a > 0.55 ? '#fff' : undefined, border: `1px solid ${rgba(SHADE, 0.35)}` }}>
+                          className={`text-left px-1.5 py-1 rounded text-[11px] leading-tight transition-transform hover:scale-[1.03] ${isSel ? 'ring-2 ring-accent-orange' : ''}`}
+                          style={{ background: `rgb(var(--eagle-500) / ${a.toFixed(2)})`, color: a > 0.55 ? '#fff' : undefined, border: '1px solid rgb(var(--eagle-500) / 0.35)' }}>
                           <span className="block truncate font-medium">{t.name}</span>
-                          <span className="flex justify-between font-mono text-[9px] opacity-80">
+                          <span className="flex justify-between font-mono text-[11px] opacity-80">
                             <span>{t.id}</span><span>{v.toLocaleString()}</span>
                           </span>
                         </button>
                       )
                     })}
                     {col.techniques.length === 0 && (
-                      <div className="text-center py-1.5 rounded text-[10px] text-dark-600 border border-dark-800/40">—</div>
+                      <div className="text-center py-1.5 rounded text-[11px] text-dark-600 border border-dark-800/40">—</div>
                     )}
                     {col.techniques.length > COLUMN_ROWS && (
                       <button onClick={() => setExpanded((e) => ({ ...e, [col.short]: !e[col.short] }))}
-                        className="text-[10px] text-dark-400 hover:text-dark-100 py-1">
+                        className="text-[11px] text-dark-400 hover:text-dark-100 py-1">
                         {expanded[col.short] ? 'Show fewer' : `+${col.techniques.length - COLUMN_ROWS} more`}
                       </button>
                     )}
