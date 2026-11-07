@@ -630,6 +630,11 @@ class AgentService:
         }
         if self.applied_policy_version:
             report["policy_version"] = self.applied_policy_version
+        try:
+            from .passive.adapters import connected_networks
+            report["networks"] = connected_networks()      # for routing scans to this agent (2.5.1)
+        except Exception as exc:  # noqa: BLE001 - optional
+            log.debug("Could not list this computer's networks: %s", exc)
         return report
 
     def _busy(self) -> bool:

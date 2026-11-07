@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X, Wifi } from 'lucide-react'
+import client from '../../api/client'
 
 // A full (active) scan, run by one agent. Passive listening needs no scan: agents listen
-// all the time. The range starts as the network the chosen agent was last on.
+// all the time. "Automatic" lets the server pick the online agent with the Scanner role
+// that is on the range's network (GET /scans/route shows which, and why); an agent that is
+// not on it scans only when picked here (through a router: no MAC addresses).
 
 function validateSubnet(value) {
   const v = value.trim()
@@ -22,18 +25,31 @@ export default function NewScanModal({ agents, networks, initial, onClose, onSub
   // The network each agent was last on (networks are newest first)
   const lastNetwork = useMemo(() => {
     const out = {}
+    for (const a of agents) if (a.networks?.length) out[a.agent_id] = a.networks[0]   // reported (2.5.1+)
     for (const n of networks) for (const id of n.agent_ids) if (!out[id]) out[id] = n.subnet
     return out
-  }, [networks])
+  }, [agents, networks])
 
-  const [agentId, setAgentId] = useState(initial?.agentId ?? online[0]?.agent_id ?? '')
-  const [subnet, setSubnet] = useState(initial?.subnet ?? (online[0] ? lastNetwork[online[0].agent_id] ?? '' : ''))
+  const [agentId, setAgentId] = useState(initial?.agentId ?? 'auto')
+  const [subnet, setSubnet] = useState(initial?.subnet ?? (initial?.agentId ? lastNetwork[initial.agentId] ?? '' : networks[0]?.subnet ?? ''))
+  const [route, setRoute] = useState(null)          // the server's pick for this range
   const [touched, setTouched] = useState(!!initial?.subnet)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
   // Follow the chosen agent's network until the range is edited by hand
-  useEffect(() => { if (!touched && agentId) setSubnet(lastNetwork[agentId] ?? '') }, [agentId, touched, lastNetwork])
+  useEffect(() => { if (!touched && agentId && agentId !== 'auto') setSubnet(lastNetwork[agentId] ?? '') }, [agentId, touched, lastNetwork])
+  // Which agent "Automatic" would use for this range (asked a moment after typing stops)
+  useEffect(() => {
+    if (agentId !== 'auto' || validateSubnet(subnet)) { setRoute(null); return undefined }
+    let live = true
+    const t = setTimeout(() => {
+      client.get('/scans/route', { params: { subnet: subnet.trim() } })
+        .then((r) => live && setRoute(r.data))
+        .catch(() => live && setRoute(null))
+    }, 350)
+    return () => { live = false; clearTimeout(t) }
+  }, [agentId, subnet])
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -45,7 +61,7 @@ export default function NewScanModal({ agents, networks, initial, onClose, onSub
 
   const submit = async (e) => {
     e.preventDefault()
-    if (subnetError || !agentId) return
+    if (subnetError || !agentId || (agentId === 'auto' && route && !route.agent_id)) return
     setSubmitting(true)
     setError(null)
     try {
@@ -76,20 +92,47 @@ export default function NewScanModal({ agents, networks, initial, onClose, onSub
             <div>
               <label htmlFor="scan-agent" className="block text-xs text-dark-400 mb-1">Agent that runs it</label>
               <select id="scan-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
+                <option value="auto">Automatic: the agent on that network (recommended)</option>
                 {agents.map((a) => (
                   <option key={a.agent_id} value={a.agent_id} disabled={a.status !== 'online'}>
                     {a.name}{a.status !== 'online' ? ` (${a.status})` : lastNetwork[a.agent_id] ? ` · on ${lastNetwork[a.agent_id]}` : ''}
                   </option>
                 ))}
               </select>
-              <p className="text-[11px] text-dark-500 mt-1">The agent can only reach networks its computer is connected to.</p>
+              {agentId === 'auto' ? (
+                route && (route.agent_id
+                  ? <p className="text-[11px] text-green-400 mt-1">Runs on {route.name}: {route.reason.replace(`${route.name} `, '')}.</p>
+                  : (
+                    <div className="text-[11px] text-yellow-400 mt-1 space-y-1">
+                      <p>{route.reason}</p>
+                      {route.routed?.length > 0 && (
+                        <p className="flex flex-wrap gap-1">
+                          {route.routed.map((r) => (
+                            <button key={r.agent_id} type="button" onClick={() => { setAgentId(r.agent_id); setTouched(true) }}
+                              className="px-2 py-0.5 rounded border border-yellow-500/40 hover:bg-yellow-500/10">Scan through {r.name}</button>
+                          ))}
+                        </p>
+                      )}
+                      {route.networks?.length > 0 && (
+                        <p className="flex flex-wrap gap-1">
+                          {route.networks.map((n) => (
+                            <button key={n} type="button" onClick={() => { setSubnet(n); setTouched(true) }}
+                              className="px-2 py-0.5 rounded border border-yellow-500/40 hover:bg-yellow-500/10 font-mono">{n}</button>
+                          ))}
+                        </p>
+                      )}
+                    </div>
+                  ))
+              ) : (
+                <p className="text-[11px] text-dark-500 mt-1">The agent can only reach networks its computer is connected to; others only through a router (no MAC addresses).</p>
+              )}
             </div>
             <div>
               <label htmlFor="scan-range" className="block text-xs text-dark-400 mb-1">Range or address</label>
               <input id="scan-range" type="text" value={subnet} onChange={(e) => { setSubnet(e.target.value); setTouched(true) }}
                 placeholder="192.168.1.0/24" className={`input-field w-full text-sm font-mono ${subnet && subnetError ? 'border-red-500/60' : ''}`} />
               {subnet && subnetError && <p className="text-xs text-red-400 mt-1">{subnetError}</p>}
-              {agent && lastNetwork[agentId] && subnet.trim() !== lastNetwork[agentId] && (
+              {agentId !== 'auto' && agent && lastNetwork[agentId] && subnet.trim() !== lastNetwork[agentId] && (
                 <button type="button" onClick={() => { setSubnet(lastNetwork[agentId]); setTouched(false) }} className="text-[11px] text-eagle-400 hover:underline mt-1">
                   Use {agent.name}'s network ({lastNetwork[agentId]})
                 </button>
@@ -97,7 +140,7 @@ export default function NewScanModal({ agents, networks, initial, onClose, onSub
             </div>
             <div className="flex gap-3 pt-1">
               <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
-              <button type="submit" disabled={submitting || !!subnetError || !agentId}
+              <button type="submit" disabled={submitting || !!subnetError || !agentId || (agentId === 'auto' && route && !route.agent_id)}
                 className="btn-primary flex-1 text-sm flex items-center justify-center gap-2 disabled:opacity-50">
                 {submitting ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Wifi className="w-4 h-4" />}
                 Start scan

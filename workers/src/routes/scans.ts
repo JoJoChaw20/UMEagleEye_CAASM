@@ -23,6 +23,8 @@ import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostE
 import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
 import { resolveNetworkScope } from '../lib/networkScope'
 import { expireStaleActiveScans, pendingJobsFor } from '../services/pendingJobs'
+import { chooseAgent, countIn, coverageOf } from '../lib/agentRouting'
+import { routeAgents, unmanagedHostIps } from '../services/agentRouting'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
 import {
@@ -284,6 +286,15 @@ function networkCondition(subnet: string): SQL {
 // From the last NETWORK_DAYS of Discovery records: the agents on it, when it was last
 // heard passively, the last full scan of it, hosts seen in 24 h, open new-device alerts.
 const NETWORK_DAYS = 30
+// ── GET /route?subnet= ─── which agent New scan would send it to, and why ──
+app.get('/route', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
+  const user = c.get('user')
+  const subnet = c.req.query('subnet') ?? ''
+  if (!user.tenantId || !isValidSubnet(subnet)) return c.json({ detail: 'Enter an IPv4 address or range' }, 400)
+  const db = getDb(c.env.DATABASE_URL)
+  return c.json(chooseAgent(subnet, await routeAgents(db, user.tenantId)))
+})
+
 app.get('/networks', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
@@ -326,6 +337,14 @@ app.get('/networks', authMiddleware, async (c) => {
     const ipsByScan = new Map<string, string[]>()
     for (const row of recentIps.rows as { scan_id: string; ips: string[] }[]) ipsByScan.set(row.scan_id, row.ips ?? [])
     const networks = buildNetworks(records, ipsByScan, newDevices.map((d) => d.ip).filter((ip): ip is string => !!ip))
+    // How each network is covered by the agents on it, and its PCs/servers without an agent.
+    if (tenantId) {
+      const [routing, unmanaged] = await Promise.all([routeAgents(db, tenantId), unmanagedHostIps(db, tenantId)])
+      return c.json({
+        networks: networks.map((n) => ({ ...n, coverage: coverageOf(n.subnet, routing), unmanaged_hosts: countIn(n.subnet, unmanaged) })),
+        days: NETWORK_DAYS,
+      })
+    }
     return c.json({ networks, days: NETWORK_DAYS })
   } catch (err) {
     console.error('scans GET /networks error:', err)
@@ -607,7 +626,8 @@ const activeScanSchema = z.object({
     .refine((v) => v === undefined || v === 'arp-discovery' || isValidSubnet(v), {
       message: 'Invalid subnet — must be a valid IPv4 address or CIDR range (e.g. 192.168.1.0/24)',
     }),
-  agent_id: z.string().uuid().optional(),
+  // 'auto' (or none, for an active scan): the server picks the agent on that network.
+  agent_id: z.union([z.string().uuid(), z.literal('auto')]).optional(),
   tenant_id: z.string().uuid().nullable().optional(),
   scan_type: z.enum(['active', 'passive']).optional().default('active'),
 })
@@ -622,7 +642,7 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
-    const { subnet, agent_id, tenant_id, scan_type } = c.req.valid('json')
+    const { subnet, agent_id: requestedAgent, tenant_id, scan_type } = c.req.valid('json')
 
     const effectiveScanType = scan_type ?? 'active'
     const effectiveSubnet = effectiveScanType === 'passive' ? 'arp-discovery' : (subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24')
@@ -633,8 +653,15 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
     // never checked, so any agent whose id was known could be told to scan).
     void tenant_id
     const effectiveTenantId = user.tenantId ?? null
+    let agent_id = requestedAgent === 'auto' ? undefined : requestedAgent
     if (effectiveScanType === 'active' && !agent_id) {
-      return c.json({ detail: 'Choose the agent that runs the scan' }, 400)
+      // Automatic: the online agent with the Scanner role that is on this network.
+      const decision = effectiveTenantId ? chooseAgent(effectiveSubnet, await routeAgents(db, effectiveTenantId)) : null
+      if (!decision?.agent_id) {
+        return c.json({ detail: decision?.reason ?? 'Choose the agent that runs the scan',
+          networks: decision?.networks, routed: decision?.routed }, 409)
+      }
+      agent_id = decision.agent_id
     }
     if (agent_id) {
       const [agent] = await db.select({ tenantId: agents.tenantId, retiredAt: agents.retiredAt })

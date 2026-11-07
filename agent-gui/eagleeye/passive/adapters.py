@@ -162,6 +162,27 @@ def probe() -> tuple[str, list[dict[str, Any]]]:
     return local_ip(), list_adapters()
 
 
+def connected_networks(adapters: Optional[list[dict[str, Any]]] = None) -> list[str]:
+    """The IPv4 networks this computer is directly on, e.g. ["192.168.36.0/24"]: real
+    adapters only (not VMware/Hyper-V/Docker host networks, loopback or self-assigned
+    addresses). The server sends a scan of one of them to this agent (2.5.1)."""
+    from .sniffers import _is_virtual_adapter
+    out: list[str] = []
+    for adapter in adapters if adapters is not None else list_adapters():
+        if _is_virtual_adapter(adapter):
+            continue
+        for ip in adapter.get("ips") or []:
+            if ip.startswith(("127.", "169.254.")):
+                continue
+            prefix = (adapter.get("prefixes") or {}).get(ip)
+            if prefix is None or not 8 <= prefix <= 30:
+                continue
+            net = str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False))
+            if net not in out:
+                out.append(net)
+    return out[:16]
+
+
 def network_from(ip: str, adapters: list[dict[str, Any]]) -> dict[str, Optional[str]]:
     """{local_ip, subnet, gateway_ip} of the adapter holding `ip` (/24 when unknown)."""
     for a in adapters:

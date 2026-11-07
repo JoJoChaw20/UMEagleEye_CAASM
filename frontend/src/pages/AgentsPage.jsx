@@ -319,6 +319,12 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
             {retired ? '—' : (a.local_ip ? <span className="font-mono">{a.local_ip}</span> : 'Not reported yet')}
           </span>
         )}
+        {/* the networks it is on (2.5.1+): New scan sends scans of them to it automatically */}
+        {!retired && a.networks?.length > 0 && (
+          <span className="block text-[11px] text-dark-500 mt-0.5" title="Networks this agent is directly on">
+            on <span className="font-mono">{a.networks.join(', ')}</span>
+          </span>
+        )}
       </td>
       <td className="text-sm"><Seen value={a.last_heartbeat} nullText="Never" /></td>
       <td className="text-sm">{a.host ? <Seen value={a.host.inventory_collected_at} nullText="—" /> : <span className="text-dark-500">—</span>}</td>

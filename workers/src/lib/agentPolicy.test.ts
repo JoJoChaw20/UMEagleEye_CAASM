@@ -81,7 +81,7 @@ test('what an agent reports is kept within limits', () => {
     capabilities: { native_capture: true, os: 'windows', 'Bad Key': 1, long: 'x'.repeat(200), nested: { a: 1 } },
   })
   assert.deepEqual(r, { kind: 'host', settings: { passive: true }, capabilities: { native_capture: true, os: 'windows' },
-    policyVersion: 'abcdef12' })
+    policyVersion: 'abcdef12', networks: [] })
   assert.deepEqual(cleanReport({ kind: 'toaster', policy_version: 'x' }).kind, null)
 })
 
@@ -92,4 +92,10 @@ test('each setting says what it inherits without this agent override', () => {
   assert.deepEqual([by.sbom!.value, by.sbom!.inherited], [true, true])
   assert.deepEqual([by.scanner!.value, by.scanner!.inherited, by.scanner!.source], [true, true, 'local'])  // every agent runs them
   assert.equal(by.inventory!.inherited, null)                                     // not reported: unknown
+})
+
+test('the networks an agent reports are kept only when they look like IPv4 ranges', () => {
+  const r = cleanReport({ networks: ['192.168.36.0/24', 'fe80::/64', 42, '10.0.0.0/8; drop table', '10.1.0.0/16'] })
+  assert.deepEqual(r.networks, ['192.168.36.0/24', '10.1.0.0/16'])
+  assert.deepEqual(cleanReport({}).networks, [])
 })

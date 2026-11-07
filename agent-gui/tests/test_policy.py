@@ -99,12 +99,13 @@ def test_new_settings_are_applied_between_jobs_and_kept(tmp_path):
     assert (svc.settings.scan_ports, svc.settings.sbom) == ("base", False)
 
 
-def test_the_heartbeat_reports_what_the_agent_runs(tmp_path):
+def test_the_heartbeat_reports_what_the_agent_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr("eagleeye.passive.adapters.connected_networks", lambda: ["192.168.36.0/24"])
     svc, c = make(tmp_path, passive=True)
     svc._capabilities = {"os": "win32"}
     svc._heartbeat()
     assert c.reports[-1] == {"kind": "host", "settings": policy.local_report(svc.local_settings),
-                             "capabilities": {"os": "win32"}}
+                             "capabilities": {"os": "win32"}, "networks": ["192.168.36.0/24"]}
     c.policy_managed, c.policy_version = {"passive": False}, "0a1b2c3d"
     svc._maybe_apply_policy()
     svc._heartbeat()

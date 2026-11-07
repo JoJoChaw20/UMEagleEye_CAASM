@@ -65,6 +65,9 @@ function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy) {
       inventory_collected_at: host.inventoryCollectedAt,
     } : null,
     kind: a.kind,
+    // The networks it is directly on (2.5.1+; scans of them go to it: lib/agentRouting.ts).
+    networks: Array.isArray((reportedOf(a) as { networks?: unknown }).networks)
+      ? (reportedOf(a) as { networks: string[] }).networks : [],
     // Roles read from the settings (lib/agentPolicy.ts); null = not known yet.
     roles: resolved?.roles ?? null,
     // Whether the agent runs the settings set for it: it reports the version it applied
@@ -377,6 +380,7 @@ router.post(
     settings: z.unknown().optional(),
     capabilities: z.unknown().optional(),
     policy_version: z.unknown().optional(),
+    networks: z.unknown().optional(),
     // 2.5.0+: send the jobs waiting for it with the answer (instead of GET /scans/pending).
     want_jobs: z.unknown().optional(),
   })),
@@ -419,7 +423,7 @@ router.post(
     const report = cleanReport(body)
     if (body.settings !== undefined || body.policy_version !== undefined) {
       updateData.reported = {
-        settings: report.settings, capabilities: report.capabilities,
+        settings: report.settings, capabilities: report.capabilities, networks: report.networks,
         policy_version: report.policyVersion, reported_at: new Date().toISOString(),
       }
     }

@@ -178,3 +178,10 @@ def test_udp_payload_ends_where_the_udp_length_says():
     raw = bytearray(bytes(Ether() / IP(src="192.168.0.5") / UDP(sport=1900, dport=1900) / b"NOTIFY * HTTP/1.1\r\n\r\nJUNK"))
     raw[38:40] = (8 + len(b"NOTIFY * HTTP/1.1\r\n\r\n")).to_bytes(2, "big")     # UDP length shorter than IP's
     assert decode.frame(bytes(raw)).payload == b"NOTIFY * HTTP/1.1\r\n\r\n"
+
+
+def test_connected_networks_are_the_real_adapters_networks():
+    found = adapters.parse_ip_addr(IP_ADDR + [
+        {"ifindex": 4, "ifname": "docker0", "address": "02:42:11:22:33:44",
+         "addr_info": [{"family": "inet", "local": "172.17.0.1", "prefixlen": 16}]}], [])
+    assert adapters.connected_networks(found) == ["142.19.0.0/23", "192.168.36.0/24"]   # not lo, not docker0

@@ -27,6 +27,39 @@ function StatusBadge({ status }) {
   return <span className={`text-xs px-2 py-0.5 rounded-md border font-medium capitalize ${STATUS_CLS[status] ?? STATUS_CLS.cancelled}`}>{status}</span>
 }
 
+// How the agents on a network cover it (GET /scans/networks coverage; lib/agentRouting.ts):
+// a sensor notices new devices between scans, a scanner runs the scans sent to it.
+const COVERAGE = {
+  covered: ['Covered', 'border-green-500/30 bg-green-500/10 text-green-400', 'An agent listens and an agent scans here'],
+  scan_only: ['Scan only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'No agent listens here: new devices are noticed only by scans. Turn on the Sensor role of an agent on it.'],
+  listen_only: ['Listen only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'No agent here runs scans: turn on the Scanner role of an agent on it.'],
+  no_agent: ['No agent', 'border-red-500/30 bg-red-500/10 text-red-400', 'No online agent is on this network: install one on a computer here.'],
+}
+
+function Coverage({ n, agentName }) {
+  const c = n.coverage
+  if (!c) return null
+  const [label, cls, help] = COVERAGE[c.state] ?? COVERAGE.no_agent
+  const names = (list) => list.map((a) => a.name || agentName(a.agent_id)).join(', ')
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      <span title={help} className={`px-2 py-0.5 rounded-full border ${cls}`}>{label}</span>
+      {c.sensors.length > 0 && <span className="text-dark-300">Listening: {names(c.sensors)}</span>}
+      {c.scanners.length > 0 && <span className="text-dark-300">Scans: {names(c.scanners)}</span>}
+      {c.duplicate_sensors && (
+        <span className="text-dark-400" title="Each sensor uploads what it hears; one is enough per network">
+          {c.sensors.length} agents listen here: one can stop (Agents page, Sensor role)
+        </span>
+      )}
+      {n.unmanaged_hosts > 0 && (
+        <Link to="/inventory" className="text-amber-400 hover:underline" title="PCs and servers on this network with no EagleEye agent">
+          {n.unmanaged_hosts} PC{n.unmanaged_hosts > 1 ? 's/servers' : '/server'} without an agent
+        </Link>
+      )}
+    </div>
+  )
+}
+
 function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
   const listening = n.last_heard_at && (Date.now() - new Date(n.last_heard_at).getTime()) < QUIET_MINUTES * 60000
   return (
@@ -45,6 +78,8 @@ function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
           {listening ? 'Agent listening now' : n.last_heard_at ? `Last heard ${ago(n.last_heard_at)}` : 'Not heard passively'}
         </span>
       </div>
+
+      <Coverage n={n} agentName={agentName} />
 
       <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <div className="bg-dark-800/60 rounded-lg p-2.5">
@@ -208,7 +243,7 @@ export default function DiscoveryPage() {
             </p>
             {networks.map((n) => (
               <NetworkCard key={n.subnet} n={n} agentName={agentName} canScan={canScan}
-                onScan={() => setNewScan({ subnet: n.subnet, agentId: agents.find((a) => a.agent_id === n.latest_agent_id && a.status === 'online')?.agent_id })}
+                onScan={() => setNewScan({ subnet: n.subnet, agentId: 'auto' })}
                 onHosts={() => setHostsOf({ scanId: n.last_heard_scan_id, agentName: agentName(n.latest_agent_id) })}
                 onHistory={() => showHistory(n.subnet)} />
             ))}

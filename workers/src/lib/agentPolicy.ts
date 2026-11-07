@@ -212,8 +212,8 @@ export function jobRefusal(effective: Partial<Record<PolicyKey, PolicyValue>>, j
 
 /** What an agent reports in its heartbeat about itself, kept within limits. */
 export function cleanReport(raw: {
-  kind?: unknown; settings?: unknown; capabilities?: unknown; policy_version?: unknown
-}): { kind: string | null; settings: Partial<Record<PolicyKey, PolicyValue>>; capabilities: Record<string, string | number | boolean>; policyVersion: string | null } {
+  kind?: unknown; settings?: unknown; capabilities?: unknown; policy_version?: unknown; networks?: unknown
+}): { kind: string | null; settings: Partial<Record<PolicyKey, PolicyValue>>; capabilities: Record<string, string | number | boolean>; policyVersion: string | null; networks: string[] } {
   const kind = typeof raw.kind === 'string' && AGENT_KINDS.includes(raw.kind) ? raw.kind : null
   const capabilities: Record<string, string | number | boolean> = {}
   if (raw.capabilities && typeof raw.capabilities === 'object') {
@@ -225,5 +225,9 @@ export function cleanReport(raw: {
   }
   const policyVersionRaw = typeof raw.policy_version === 'string' && /^[0-9a-f]{8}$/.test(raw.policy_version)
     ? raw.policy_version : null
-  return { kind, settings: cleanPolicy(raw.settings, kindKeys(kind)), capabilities, policyVersion: policyVersionRaw }
+  // The IPv4 networks it is directly on (2.5.1+), for routing scans to it.
+  const networks = Array.isArray(raw.networks)
+    ? raw.networks.filter((n): n is string => typeof n === 'string' && /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(n)).slice(0, 16)
+    : []
+  return { kind, settings: cleanPolicy(raw.settings, kindKeys(kind)), capabilities, policyVersion: policyVersionRaw, networks }
 }
