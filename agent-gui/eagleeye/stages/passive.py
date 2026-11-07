@@ -118,7 +118,7 @@ class PassiveCollectStage(Stage):
         if self.suite.arp is None:
             raise StageError(
                 "passive sniffing is not running. Start the agent with passive mode enabled, "
-                "as Administrator/root, with scapy and Npcap/libpcap installed"
+                "as Administrator/root (with Npcap/libpcap and scapy unless the built-in capture is used)"
             )
         if self.batch is not None:
             # The network they were heard on goes with them (see UploadStage).

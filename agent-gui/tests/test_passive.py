@@ -28,6 +28,29 @@ from eagleeye.passive.sniffers import (  # noqa: E402
 from eagleeye.pipeline.record import HostRecord  # noqa: E402
 from eagleeye.stages import enrich_passive_hosts  # noqa: E402
 
+from eagleeye.passive import decode as own_decode  # noqa: E402
+
+
+@pytest.fixture(params=["scapy", "native"])
+def path(request):
+    """Every sniffer test runs twice: on scapy's layers (the Npcap capture) and on the
+    built-in capture's own decoding, which must reach the same result."""
+    return request.param
+
+
+def feeder(sniffer, path):
+    if path == "scapy":
+        return sniffer._make_handler()
+    handle = sniffer._make_frame_handler()
+
+    def feed(pkt):
+        raw = bytes(pkt)
+        frame = own_decode.frame(raw)
+        if frame is not None and type(sniffer).wants(raw):     # what the capture hub does
+            handle(frame)
+    return feed
+
+
 IPAD_MAC = "0e:18:7c:8f:fd:91"
 APPLE_MAC = "06:00:59:e5:9a:c6"
 PHONE_MAC = "c4:fe:5b:a9:44:05"
@@ -46,16 +69,16 @@ def mdns6(src6, mac, **dns):
 
 
 @pytest.fixture
-def mdns():
+def mdns(path):
     sniffer = MdnsNetbiosSniffer()
-    sniffer.feed = sniffer._make_handler()
+    sniffer.feed = feeder(sniffer, path)
     return sniffer
 
 
 @pytest.fixture
-def dhcp():
+def dhcp(path):
     sniffer = DhcpSniffer()
-    sniffer.feed = sniffer._make_handler()
+    sniffer.feed = feeder(sniffer, path)
     return sniffer
 
 
@@ -239,9 +262,9 @@ def ssdp(src, mac, text, dst="239.255.255.250", sport=1900, dport=1900):
 
 
 @pytest.fixture
-def upnp():
+def upnp(path):
     sniffer = SsdpSniffer()
-    sniffer.feed = sniffer._make_handler()
+    sniffer.feed = feeder(sniffer, path)
     return sniffer
 
 
@@ -442,35 +465,35 @@ def arp(ip, mac):
     return wire(Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / ARP(op=1, psrc=ip, hwsrc=mac, pdst="192.168.100.1"))
 
 
-def test_sniffers_ignore_this_computers_own_packets():
+def test_sniffers_ignore_this_computers_own_packets(path):
     chooser = InterfaceChooser(probe=FakeProbe("192.168.100.71"))
     chooser.refresh()
     arp_sniffer = ArpSniffer(chooser=chooser)
-    feed = arp_sniffer._make_handler()
+    feed = feeder(arp_sniffer, path)
     feed(arp("142.19.0.1", LOOP_MAC))                   # the PC's own loopback adapter
     feed(arp("192.168.100.71", WIFI_MAC))               # the PC itself on Wi-Fi
     feed(arp("192.168.100.186", IPAD_MAC))              # a real device
     assert arp_sniffer.pending() == 1
 
     names = MdnsNetbiosSniffer(chooser=chooser)
-    names_feed = names._make_handler()
+    names_feed = feeder(names, path)
     names_feed(nbns("142.19.0.1", LOOP_MAC, NBNSHeader(OPCODE=5, RESPONSE=0),
                     NBNSRegistrationRequest(QUESTION_NAME="JOJOCHAW", SUFFIX=0x4141, G=0, NB_ADDRESS="142.19.0.1"), dst="142.19.1.255"))
     assert names.get_hostname("142.19.0.1") is None
 
     dhcp_sniffer = DhcpSniffer(chooser=chooser)
-    dhcp_feed = dhcp_sniffer._make_handler()
+    dhcp_feed = feeder(dhcp_sniffer, path)
     dhcp_feed(dhcp_pkt("0.0.0.0", WIFI_MAC, [("message-type", "request"), ("requested_addr", "192.168.100.71"), ("hostname", b"JoJochaw")]))
     assert dhcp_sniffer.get_info_by_mac(WIFI_MAC) == {}
 
 
-def test_hosts_are_discovered_from_their_broadcast_and_multicast_not_only_arp():
+def test_hosts_are_discovered_from_their_broadcast_and_multicast_not_only_arp(path):
     # A quiet Wi-Fi network: only the router ARPs; the other devices are heard only
     # through mDNS, NetBIOS or SSDP until an active scan makes them answer.
     chooser = InterfaceChooser(probe=FakeProbe("192.168.100.71"))
     chooser.refresh()
     hosts = ArpSniffer(chooser=chooser)
-    feed = hosts._make_handler()
+    feed = feeder(hosts, path)
     feed(arp("192.168.100.1", "98:48:27:cb:55:6c"))
     feed(mdns4("192.168.100.186", IPAD_MAC, qd=DNSQR(qname="_airplay._tcp.local", qtype="PTR")))
     feed(wire(Ether(src=PHONE_MAC, dst="ff:ff:ff:ff:ff:ff") / IP(src="192.168.100.50", dst="192.168.100.255")
@@ -485,9 +508,9 @@ def test_hosts_are_discovered_from_their_broadcast_and_multicast_not_only_arp():
                     "192.168.100.50": PHONE_MAC, "192.168.100.60": APPLE_MAC}
 
 
-def test_without_a_chooser_nothing_is_filtered():
+def test_without_a_chooser_nothing_is_filtered(path):
     arp_sniffer = ArpSniffer()
-    arp_sniffer._make_handler()(arp("142.19.0.1", LOOP_MAC))
+    feeder(arp_sniffer, path)(arp("142.19.0.1", LOOP_MAC))
     assert arp_sniffer.pending() == 1
 
 
@@ -536,12 +559,12 @@ def test_an_interface_set_in_settings_takes_the_network_of_its_own_address():
     assert chooser.network["subnet"] == "10.179.32.0/19"
 
 
-def test_hosts_are_kept_per_network_and_a_failed_batch_goes_back():
+def test_hosts_are_kept_per_network_and_a_failed_batch_goes_back(path):
     probe, clock = FakeProbe("10.179.37.235", campus_adapters()), Clock()
     chooser = InterfaceChooser(probe=probe, clock=clock)
     chooser.refresh()
     hosts = ArpSniffer(chooser=chooser)
-    feed = hosts._make_handler()
+    feed = feeder(hosts, path)
     feed(arp("10.179.63.254", CAMPUS_MAC))
     feed(arp("172.20.10.6", "10:91:d1:b7:25:78"))     # stale hotspot address: not a host here
     feed(arp("169.254.15.196", "10:91:d1:b7:25:78"))

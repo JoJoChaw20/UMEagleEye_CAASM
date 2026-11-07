@@ -397,7 +397,7 @@ def make_source(backend: str) -> Any:
 class CaptureHub:
     """Runs one capture on the adapter the InterfaceChooser picks (re-checked every 5 s)
     and gives each registered sniffer the frames its filter would let through, decoded
-    once by scapy (which needs no Npcap for decoding)."""
+    once (decode.frame; no scapy)."""
 
     def __init__(self, source: Any, chooser: Any, decode: Optional[Callable[[bytes], Any]] = None) -> None:
         self.source = source
@@ -433,6 +433,8 @@ class CaptureHub:
             if pkt is None:
                 pkt = self._decoder()(frame)
                 self.dispatched += 1
+                if pkt is None:
+                    return
             try:
                 handler(pkt)
             except Exception as exc:  # noqa: BLE001 - one bad packet never stops the capture
@@ -440,8 +442,8 @@ class CaptureHub:
 
     def _decoder(self) -> Callable[[bytes], Any]:
         if self._decode is None:
-            from scapy.layers.l2 import Ether  # type: ignore
-            self._decode = Ether
+            from .decode import frame
+            self._decode = frame
         return self._decode
 
     def start(self) -> bool:

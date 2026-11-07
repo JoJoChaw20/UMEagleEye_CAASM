@@ -7,10 +7,13 @@ rewritten in Phase C because the originals extracted nothing from real traffic: 
 ignored IPv6 and the additional section, NetBIOS decoded from the wrong byte, and DHCP
 looked options up by number (scapy names them) and dropped every 0.0.0.0 sender.
 
-All of them need scapy and, for capture, Administrator/root plus either Npcap/libpcap
-(each sniffer runs scapy's sniff) or the built-in capture in capture.py (Microsoft's NDIS
-capture driver on Windows, a packet socket on Linux), which serves all of them from one
-capture and gives each the frames its BPF filter would have let through.
+Capture needs Administrator/root, and either Npcap/libpcap with scapy (each sniffer runs
+scapy's sniff and reads scapy's layers) or nothing extra: the built-in capture in
+capture.py (Microsoft's NDIS capture driver on Windows, a packet socket on Linux) serves
+all of them from one capture, gives each the frames its BPF filter would have let
+through, decoded by decode.py, and the sniffers' _make_frame_handler reads those. Both
+paths share everything after decoding (_heard, _handle_mdns, _own_netbios, _observe,
+_record).
 
 Where they listen is decided by InterfaceChooser (2.0.1): the adapter the operating
 system really uses for the network, re-checked while running, never scapy's default,
@@ -32,8 +35,9 @@ from typing import Any, Callable, Optional
 
 from .. import httpclient
 from ..pipeline.record import HostRecord
-from . import frames
+from . import adapters, decode, frames
 from .capture import CaptureHub, make_source, resolve_backend
+from .decode import Frame
 
 log = logging.getLogger("eagleeye.passive")
 
@@ -286,7 +290,17 @@ class _Sniffer:
     def _prune(self, now: float) -> None:
         """Remove what is older than its TTL; sniffers that keep nothing do nothing."""
 
+    def _make_frame_handler(self) -> Callable[[Frame], None]:  # pragma: no cover - implemented by subclasses
+        raise NotImplementedError
+
     def start(self) -> bool:
+        if self.hub is not None:
+            # The built-in capture decodes frames itself (decode.py): no scapy needed.
+            self._stop.clear()
+            self._handler = self._make_frame_handler()
+            self.hub.add(type(self).wants, self._handler)
+            log.info("%s started (%s)", self.label, self.hub.label)
+            return True
         try:
             from ..netinfo import patch_scapy_route_reader
             patch_scapy_route_reader()                 # before scapy.all reads the routes
@@ -296,11 +310,6 @@ class _Sniffer:
             self.error = "scapy not installed"
             return False
         self._stop.clear()
-        if self.hub is not None:
-            self._handler = self._make_handler()
-            self.hub.add(type(self).wants, self._handler)
-            log.info("%s started (%s)", self.label, self.hub.label)
-            return True
         self._thread = threading.Thread(target=self._loop, daemon=True, name=self.thread_name)
         self._thread.start()
         where = "automatic" if self.chooser is not None and self.chooser.fixed is None else (self.interface or "default")
@@ -410,15 +419,33 @@ class ArpSniffer(_Sniffer):
                     return
             else:
                 return
-            if not _valid_ip(ip) or self._own(mac):
-                return
-            if self.chooser is not None and not self.chooser.accepts(ip):
-                return                      # 169.254.x.x, or an address from another network
-            network = self.chooser.network if self.chooser is not None else None
-            with self._lock:
-                self._seen[ip] = {"mac": mac, "last_seen": time.time(), "network": network}
+            self._heard(ip, mac)
 
         return handle
+
+    def _make_frame_handler(self) -> Callable[[Frame], None]:
+        def handle(f: Frame) -> None:
+            if f.arp is not None:
+                ip, mac = f.arp
+            elif f.ip_src is not None:
+                ip, mac = f.ip_src, f.src_mac
+                if ip == "255.255.255.255" or _is_multicast_mac(mac):
+                    return
+            else:
+                return
+            self._heard(ip, mac)
+
+        return handle
+
+    def _heard(self, ip: str, mac: str) -> None:
+        """A host announced itself (either capture)."""
+        if not _valid_ip(ip) or self._own(mac):
+            return
+        if self.chooser is not None and not self.chooser.accepts(ip):
+            return                          # 169.254.x.x, or an address from another network
+        network = self.chooser.network if self.chooser is not None else None
+        with self._lock:
+            self._seen[ip] = {"mac": mac, "last_seen": time.time(), "network": network}
 
     def pending(self) -> int:
         """Hosts heard since the last drain."""
@@ -632,6 +659,10 @@ class MdnsNetbiosSniffer(_Sniffer):
                     if 2 <= len(name) <= 15:
                         owned.append((src_ip, name))
                         break
+        self._own_netbios(owned, src_ip, mac)
+
+    def _own_netbios(self, owned: list[tuple[str, str]], src_ip: Optional[str], mac: Optional[str]) -> None:
+        """Names devices own, from a NetBIOS packet (either capture)."""
         if not owned:
             return
         with self._lock:
@@ -639,6 +670,26 @@ class MdnsNetbiosSniffer(_Sniffer):
                 self._set_name(ip, name, from_mdns=False)
                 if mac and ip == src_ip:
                     self._mac_entry(mac)["netbios_name"] = name
+
+    def _make_frame_handler(self) -> Callable[[Frame], None]:
+        def handle(f: Frame) -> None:
+            try:
+                if f.sport is None:
+                    return
+                src_ip = f.ip_src if f.ip_src is not None and _valid_ip(f.ip_src) else None
+                if self._own(f.src_mac):
+                    return
+                ports = {f.sport, f.dport}
+                if 5353 in ports:
+                    message = decode.dns(f.payload)
+                    if message is not None:
+                        self._handle_mdns(message, src_ip, f.ip6_src, f.src_mac)
+                elif 137 in ports:
+                    self._own_netbios(decode.netbios_names(f.payload, src_ip), src_ip, f.src_mac)
+            except Exception as exc:  # noqa: BLE001 - one bad packet never stops the sniffer
+                log.debug("mDNS/NetBIOS packet skipped: %s", exc)
+
+        return handle
 
     def _make_handler(self) -> Any:
         from scapy.all import DNS, IP, UDP, IPv6  # type: ignore
@@ -705,6 +756,19 @@ class MdnsNetbiosSniffer(_Sniffer):
 # scapy names the DHCP options; the original code looked them up by number.
 _DHCP_OPTION_NUMBERS = {"message-type": 53, "hostname": 12, "vendor_class_id": 60,
                         "param_req_list": 55, "requested_addr": 50}
+
+
+def _dhcp_text(v: Any) -> str:
+    """A DHCP text option. UTF-8 first: a device named in Chinese, Malay or any accented
+    language sends its DHCP name that way, and reading it as ASCII dropped those
+    characters. Bytes that are not UTF-8 are read as Latin-1, never lost."""
+    if isinstance(v, (bytes, bytearray)):
+        raw = bytes(v).replace(b"\x00", b"")
+        try:
+            return raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return raw.decode("latin-1").strip()
+    return str(v).strip() if v else ""
 
 
 class DhcpSniffer(_Sniffer):
@@ -779,85 +843,88 @@ class DhcpSniffer(_Sniffer):
     def _make_handler(self) -> Any:
         from scapy.all import BOOTP, DHCP, IP  # type: ignore
 
-        def _decode(v: Any) -> str:
-            # UTF-8 first: a device named in Chinese, Malay or any accented language
-            # sends its DHCP name that way, and reading it as ASCII dropped those
-            # characters. Bytes that are not UTF-8 are read as Latin-1, never lost.
-            if isinstance(v, (bytes, bytearray)):
-                raw = bytes(v).replace(b"\x00", b"")
-                try:
-                    return raw.decode("utf-8").strip()
-                except UnicodeDecodeError:
-                    return raw.decode("latin-1").strip()
-            return str(v).strip() if v else ""
-
         def handle(pkt: Any) -> None:
             try:
                 if not pkt.haslayer(BOOTP) or not pkt.haslayer(DHCP):
                     return
-                options = self._options(pkt)
                 bootp = pkt[BOOTP]
-                mac = ":".join(f"{b:02x}" for b in bytes(bootp.chaddr)[:6])
-                if mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") or self._own(mac):
-                    return
-                mtype = options.get(53)
-
-                if mtype == 5:                                    # ACK: the address the server assigned
-                    assigned = str(bootp.yiaddr or "")
-                    if _valid_ip(assigned):
-                        with self._lock:
-                            entry = self._by_mac.get(mac)
-                            if entry is not None:
-                                self._link_ip(assigned, entry)
-                    return
-                if mtype not in (1, 3):                           # client Discover/Request only
-                    return
-
-                candidates = [str(options.get(50) or ""), str(bootp.ciaddr or ""),
-                              pkt[IP].src if pkt.haslayer(IP) else ""]
-                ip = next((c for c in candidates if _valid_ip(c) and c != "255.255.255.255"), None)
-
-                hostname = _decode(options.get(12, b""))
-                vendor_class = _decode(options.get(60, b""))
-                params = options.get(55, b"")
-                if isinstance(params, (bytes, bytearray)):
-                    params = list(params)
-                param_list = ",".join(str(int(b)) for b in params) if isinstance(params, (list, tuple)) else ""
-
-                vendor_hint: Optional[str] = None
-                for prefix, label in self._VENDOR_HINTS.items():
-                    if vendor_class.startswith(prefix):
-                        vendor_hint = label
-                        break
-
-                entry: dict[str, Any] = {}
-                if hostname:
-                    entry["dhcp_hostname"] = hostname
-                if vendor_class:
-                    entry["dhcp_vendor_class"] = vendor_class
-                if vendor_hint:
-                    entry["dhcp_device_hint"] = vendor_hint
-                if param_list:
-                    entry["dhcp_param_list"] = param_list
-                if not entry:
-                    return
-
-                with self._lock:
-                    existing = self._by_mac.setdefault(mac, {})
-                    existing.update(entry)
-                    existing["_t"] = self._clock()
-                    if ip:
-                        self._link_ip(ip, existing)
-                    already_looked_up = existing.get("fingerbank_device")
-
-                if self.fingerbank_key and param_list and not already_looked_up:
-                    threading.Thread(
-                        target=self._fingerbank_lookup, args=(mac, param_list, vendor_class), daemon=True,
-                    ).start()
+                self._observe(bytes(bootp.chaddr), self._options(pkt), str(bootp.yiaddr or ""),
+                              str(bootp.ciaddr or ""), pkt[IP].src if pkt.haslayer(IP) else "")
             except Exception as exc:  # noqa: BLE001 - always non-fatal
                 log.debug("DHCP packet skipped: %s", exc)
 
         return handle
+
+    def _make_frame_handler(self) -> Callable[[Frame], None]:
+        def handle(f: Frame) -> None:
+            try:
+                if f.sport is None:
+                    return
+                message = decode.dhcp(f.payload)
+                if message is not None:
+                    self._observe(message.chaddr, message.options, message.yiaddr, message.ciaddr, f.ip_src or "")
+            except Exception as exc:  # noqa: BLE001 - always non-fatal
+                log.debug("DHCP packet skipped: %s", exc)
+
+        return handle
+
+    def _observe(self, chaddr: bytes, options: dict[int, Any], yiaddr: str, ciaddr: str, src_ip: str) -> None:
+        """One DHCP message (either capture): options keyed by number, as _options gives."""
+        mac = ":".join(f"{b:02x}" for b in chaddr[:6])
+        if mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") or self._own(mac):
+            return
+        mtype = options.get(53)
+
+        if mtype == 5:                                    # ACK: the address the server assigned
+            if _valid_ip(yiaddr):
+                with self._lock:
+                    entry = self._by_mac.get(mac)
+                    if entry is not None:
+                        self._link_ip(yiaddr, entry)
+            return
+        if mtype not in (1, 3):                           # client Discover/Request only
+            return
+
+        candidates = [str(options.get(50) or ""), ciaddr, src_ip]
+        ip = next((c for c in candidates if _valid_ip(c) and c != "255.255.255.255"), None)
+
+        hostname = _dhcp_text(options.get(12, b""))
+        vendor_class = _dhcp_text(options.get(60, b""))
+        params = options.get(55, b"")
+        if isinstance(params, (bytes, bytearray)):
+            params = list(params)
+        param_list = ",".join(str(int(b)) for b in params) if isinstance(params, (list, tuple)) else ""
+
+        vendor_hint: Optional[str] = None
+        for prefix, label in self._VENDOR_HINTS.items():
+            if vendor_class.startswith(prefix):
+                vendor_hint = label
+                break
+
+        entry: dict[str, Any] = {}
+        if hostname:
+            entry["dhcp_hostname"] = hostname
+        if vendor_class:
+            entry["dhcp_vendor_class"] = vendor_class
+        if vendor_hint:
+            entry["dhcp_device_hint"] = vendor_hint
+        if param_list:
+            entry["dhcp_param_list"] = param_list
+        if not entry:
+            return
+
+        with self._lock:
+            existing = self._by_mac.setdefault(mac, {})
+            existing.update(entry)
+            existing["_t"] = self._clock()
+            if ip:
+                self._link_ip(ip, existing)
+            already_looked_up = existing.get("fingerbank_device")
+
+        if self.fingerbank_key and param_list and not already_looked_up:
+            threading.Thread(
+                target=self._fingerbank_lookup, args=(mac, param_list, vendor_class), daemon=True,
+            ).start()
 
     def _fingerbank_lookup(self, mac: str, param_list: str, vendor_class: str) -> None:
         try:
@@ -999,6 +1066,21 @@ class SsdpSniffer(_Sniffer):
 
         return handle
 
+    def _make_frame_handler(self) -> Callable[[Frame], None]:
+        def handle(f: Frame) -> None:
+            try:
+                if f.sport is None or self._own(f.src_mac):
+                    return
+                parsed = parse_ssdp(f.payload)
+                if not parsed or parsed[0] == "search":
+                    return
+                kind, headers = parsed
+                self._record(f.src_mac, f.ip_src, headers, "nt" if kind == "notify" else "st")
+            except Exception as exc:  # noqa: BLE001
+                log.debug("SSDP packet skipped: %s", exc)
+
+        return handle
+
     def get_mac_info(self, mac: Optional[str]) -> dict[str, Any]:
         """{ssdp_server, ssdp_types} seen from this MAC."""
         if not mac:
@@ -1104,15 +1186,19 @@ class PassiveSuite:
     cannot start is left as None and the rest keep working.
 
     `backend` is the passive_backend setting: "npcap" (each sniffer runs scapy's sniff,
-    as before), "native" (the built-in capture) or "auto" (see capture.resolve_backend)."""
+    as before), "native" (the built-in capture and decoding: no Npcap, no scapy) or
+    "auto" (see capture.resolve_backend)."""
 
     def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None,
                  chooser: Optional[InterfaceChooser] = None, backend: str = "npcap",
                  make_hub: Optional[Callable[[str, InterfaceChooser], CaptureHub]] = None) -> None:
         self.interface = interface
         self.fingerbank_key = fingerbank_key
-        self.chooser = chooser or InterfaceChooser(interface)
         self.backend = resolve_backend(backend)
+        if chooser is None and self.backend != "npcap":
+            # The adapter list and networks without scapy, like the capture itself.
+            chooser = InterfaceChooser(interface, probe=adapters.probe, network_of=adapters.network_of)
+        self.chooser = chooser or InterfaceChooser(interface)
         self._make_hub = make_hub or (lambda name, chooser: CaptureHub(make_source(name), chooser))
         self.hub: Optional[CaptureHub] = None
         self.arp: Optional[ArpSniffer] = None

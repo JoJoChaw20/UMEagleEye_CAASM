@@ -125,7 +125,8 @@ def check_all() -> list[DepStatus]:
     pcap_ok, pcap_detail = _packet_capture_library()
     results.append(DepStatus(
         "Packet capture (Npcap/libpcap)", pcap_ok, False,
-        pcap_detail if pcap_ok else f"{pcap_detail} - passive sniffing unavailable", "" if pcap_ok else _hint("pcap"),
+        pcap_detail if pcap_ok else f"{pcap_detail} - passive listening uses the built-in capture",
+        "" if pcap_ok else _hint("pcap"),
     ))
 
     from . import sbom
@@ -137,7 +138,8 @@ def check_all() -> list[DepStatus]:
             "" if path else sbom.install_hint(tool), version=sbom.tool_version(path) if path else None,
         ))
 
-    results.append(_module("scapy", "scapy", False, "needed for passive sniffing"))
+    results.append(_module("scapy", "scapy", False, "needed for passive listening with Npcap/libpcap "
+                                                       "(the built-in capture does not use it)"))
     results.append(_module("pysnmp", "pysnmp", False, "needed for SNMPv3 polling"))
 
     admin = is_admin()
