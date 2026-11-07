@@ -79,7 +79,7 @@ def migrate_user_settings(source: Optional[Path], instance: str = "") -> str:
             dest = target.with_name(f"{name}{'-' + instance if instance else ''}.json")
             shutil.copy2(companion, dest)
             moved.append(name)
-    return f"moved {src} to {target}" + (f" (with {', '.join(moved)})" if moved else "")
+    return f"copied {src} to {target}" + (f" (with {', '.join(moved)})" if moved else "")
 
 
 def _run(args: list[str], check: bool = False) -> subprocess.CompletedProcess:

@@ -155,7 +155,7 @@ def test_a_users_settings_move_into_the_machine_folder_once(machine_dir, tmp_pat
 
     note = serviceinstall.migrate_user_settings(user, "production")
     target = machine_dir / "config-production.json"
-    assert note.startswith("moved") and "state" in note and "policy" in note
+    assert note.startswith("copied") and "state" in note and "policy" in note
     assert json.loads(target.read_text())["passive"] is True and "from-credman" not in target.read_text()
     assert load_settings(target, env={}, keychain=machine_secrets).api_key == "from-credman"
     assert (machine_dir / "state-production.json").exists() and (machine_dir / "policy-production.json").exists()
