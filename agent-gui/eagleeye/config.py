@@ -39,6 +39,7 @@ class Settings:
     passive: bool = False
     passive_interface: str = ""
     passive_interval: int = 300         # seconds between passive uploads (5 min)
+    passive_backend: str = "auto"       # what captures packets: auto, npcap or native (built in)
     fingerbank_key: str = ""
     snmp_user: str = ""
     snmp_auth_key: str = ""
@@ -96,6 +97,8 @@ class Settings:
             out.append("scan_engine must be auto, nmap, own or compare")
         if self.scan_ports not in ("base", "consumer", "wide"):
             out.append("scan_ports must be base, consumer or wide")
+        if self.passive_backend not in ("auto", "npcap", "native"):
+            out.append("passive_backend must be auto, npcap or native")
         from .schedule import Schedule
         for raw in self.schedules:
             out += [f"schedule {raw.get('subnet') or '?'}: {p}" for p in Schedule.from_dict(raw).problems()]
@@ -119,6 +122,7 @@ _ENV_VARS = {
     "passive": "EAGLEEYE_PASSIVE",
     "passive_interface": "EAGLEEYE_PASSIVE_INTERFACE",
     "passive_interval": "EAGLEEYE_PASSIVE_INTERVAL",
+    "passive_backend": "EAGLEEYE_PASSIVE_BACKEND",
     "fingerbank_key": "EAGLEEYE_FINGERBANK_KEY",
     "snmp_user": "EAGLEEYE_SNMP_USER",
     "snmp_auth_key": "EAGLEEYE_SNMP_AUTH_KEY",

@@ -336,7 +336,8 @@ class StatusPage(QWidget):
             self.passive_on.setText("-" if svc is None else "not running (see Dependencies)")
             set_tone(self.passive_on, None if svc is None else "warn")
         else:
-            self.passive_on.setText(suite.listening_on)
+            capture = getattr(suite, "capture", "")
+            self.passive_on.setText(f"{suite.listening_on}, {capture}" if capture else suite.listening_on)
             set_tone(self.passive_on, None)
 
         busy_bits = []
@@ -631,15 +632,23 @@ class SettingsPage(QWidget):
         self.passive_iface = QLineEdit(s.passive_interface)
         self.passive_iface.setPlaceholderText("automatic")
         self.passive_interval = self._spin(10, 3600, s.passive_interval, " s")
+        self.capture = QComboBox()
+        for text, value in (("Automatic (Npcap if installed, otherwise built in)", "auto"),
+                            ("Npcap", "npcap"),
+                            ("Built in (Windows' own capture driver; no Npcap needed)", "native")):
+            self.capture.addItem(text, value)
+        self.capture.setCurrentIndex(max(0, self.capture.findData(s.passive_backend)))
         self.fingerbank = QLineEdit()
         self.fingerbank.setEchoMode(QLineEdit.EchoMode.Password)
         passive.add(self.passive)
         p = FieldGrid(1)
         p.add("Network interface", self.passive_iface)
+        p.add("Capture with", self.capture)
         p.add("Upload what was heard every", _left(self.passive_interval))
         p.add("Fingerbank API key (optional)", self.fingerbank)
         passive.add_layout(p)
-        passive.add(_hint("Needs Npcap and Administrator rights (see Dependencies)."))
+        passive.add(_hint("Needs Administrator rights, and Npcap unless the built-in capture is used "
+                          "(see Dependencies)."))
 
         snmp = Panel("SNMPv3 polling of network devices (optional)")
         self.snmp_user = QLineEdit(s.snmp_user)
@@ -742,6 +751,7 @@ class SettingsPage(QWidget):
         s.passive = self.passive.isChecked()
         s.passive_interface = self.passive_iface.text().strip()
         s.passive_interval = self.passive_interval.value()
+        s.passive_backend = self.capture.currentData()
         s.fingerbank_key = self._secret(self.fingerbank, s.fingerbank_key)
         s.snmp_user = self.snmp_user.text().strip()
         s.snmp_auth_key = self._secret(self.snmp_auth, s.snmp_auth_key)

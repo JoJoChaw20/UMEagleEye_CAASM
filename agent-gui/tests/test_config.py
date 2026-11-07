@@ -122,3 +122,10 @@ def test_instance_names_are_safe_and_config_json_elsewhere_is_unnamed(tmp_path):
     from eagleeye.config import instance_name
     assert instance_name({"EAGLEEYE_CONFIG": str(tmp_path / "lab agent#2.json")}) == "lab_agent_2"
     assert instance_name({"EAGLEEYE_CONFIG": str(tmp_path / "config.json")}) == ""
+
+
+def test_passive_capture_defaults_to_automatic_and_is_validated(tmp_path):
+    assert load_settings(tmp_path / "missing.json", env={}).passive_backend == "auto"
+    assert load_settings(tmp_path / "missing.json", env={"EAGLEEYE_PASSIVE_BACKEND": "native"}).passive_backend == "native"
+    s = Settings(api_url="https://x", api_key="k", agent_id="a", passive_backend="pktmon")
+    assert s.problems() == ["passive_backend must be auto, npcap or native"]

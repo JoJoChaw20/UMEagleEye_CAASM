@@ -347,14 +347,58 @@ def test_automatic_listens_where_the_os_routes_not_on_a_virtual_adapter():
 
 def test_no_network_yet_waits_then_follows_wifi_when_it_connects():
     # Npcap lists a loopback adapter that really holds 127.0.0.1: never listen there.
-    probe, clock = FakeProbe("127.0.0.1", ADAPTERS + [
+    # Wi-Fi has no address until it connects; the virtual adapters do not count.
+    offline = [dict(a, ips=[]) if a["name"] == "Wi-Fi" else a for a in ADAPTERS]
+    probe, clock = FakeProbe("127.0.0.1", offline + [
         {"name": "Npcap Loopback Adapter", "description": "Adapter for loopback traffic capture", "ips": ["127.0.0.1"], "mac": None}]), Clock()
     chooser = InterfaceChooser(probe=probe, clock=clock)
     assert chooser.refresh() is None
     assert chooser.label == "waiting for a network connection (no route to the internet yet: the Wi-Fi or cable is not connected)"
-    probe.route_ip = "192.168.100.71"
+    probe.route_ip, probe.adapters = "192.168.100.71", ADAPTERS
     clock.t = 31
     assert chooser.refresh() == "Wi-Fi"
+
+
+# The lab Ubuntu VM: no default route (its NAT card is disconnected), the lab address
+# next to GNS3's 142.19.0.1 on ens33, and Docker bridges for the lab services.
+LAB_UBUNTU = [
+    {"name": "lo", "description": "lo", "ips": ["127.0.0.1"], "mac": "00:00:00:00:00:00", "index": 1},
+    {"name": "ens33", "description": "ens33", "ips": ["142.19.0.1", "192.168.36.50"], "mac": "00:0c:29:04:6c:77", "index": 2},
+    {"name": "ens37", "description": "ens37", "ips": [], "mac": "00:0c:29:04:6c:81", "index": 3},
+    {"name": "docker0", "description": "docker0", "ips": ["172.17.0.1"], "mac": "02:42:11:22:33:44", "index": 4},
+    {"name": "br-5f1c2a9e0d11", "description": "br-5f1c2a9e0d11", "ips": ["172.18.0.1"], "mac": "02:42:55:66:77:88", "index": 5},
+    {"name": "veth1a2b3c4", "description": "veth1a2b3c4", "ips": [], "mac": "6a:1b:2c:3d:4e:5f", "index": 6},
+]
+
+
+def lab_network(ip):
+    return {"local_ip": ip, "subnet": "192.168.36.0/24" if ip.startswith("192.168.36.") else "142.19.0.0/23",
+            "gateway_ip": None}
+
+
+def test_without_a_route_to_the_internet_the_only_real_adapter_is_listened_on():
+    chooser = InterfaceChooser(probe=FakeProbe("127.0.0.1", LAB_UBUNTU), network_of=lab_network)
+    assert chooser.refresh() == "ens33" and chooser.index == 2
+    assert chooser.label == "ens33 (192.168.36.50)"
+    assert chooser.network["subnet"] == "192.168.36.0/24"               # the private address, not GNS3's
+    assert chooser.accepts("192.168.36.60") and not chooser.accepts("142.19.0.11")
+
+
+def test_without_a_route_and_two_real_adapters_it_still_waits():
+    two = LAB_UBUNTU + [{"name": "ens38", "description": "ens38", "ips": ["10.0.5.2"], "mac": "00:0c:29:04:6c:99"}]
+    chooser = InterfaceChooser(probe=FakeProbe("127.0.0.1", two), network_of=lab_network)
+    assert chooser.refresh() is None and chooser.label.startswith("waiting for a network connection")
+
+
+def test_an_interface_set_in_settings_takes_its_private_address():
+    chooser = InterfaceChooser("ens33", probe=FakeProbe("127.0.0.1", LAB_UBUNTU), network_of=lab_network)
+    assert chooser.refresh() == "ens33" and chooser.network["subnet"] == "192.168.36.0/24"
+
+
+def test_container_bridges_are_virtual():
+    from eagleeye.passive.sniffers import _is_virtual_adapter
+    assert all(_is_virtual_adapter(a) for a in LAB_UBUNTU[3:])
+    assert not any(_is_virtual_adapter(a) for a in LAB_UBUNTU[1:3])
 
 
 def test_rechecks_every_30_seconds_and_follows_a_switch_to_a_cable():

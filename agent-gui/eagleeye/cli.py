@@ -50,6 +50,9 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
                    help="enable passive sniffing (ARP, mDNS/NetBIOS, DHCP)")
     g.add_argument("--passive-interface", dest="passive_interface")
     g.add_argument("--passive-interval", dest="passive_interval", type=int)
+    g.add_argument("--capture", dest="passive_backend", choices=("auto", "npcap", "native"),
+                   help="what captures packets for passive listening: npcap (Npcap/libpcap), "
+                        "native (built in: Microsoft's NDIS capture on Windows, a packet socket on Linux)")
     g.add_argument("--fingerbank-key", dest="fingerbank_key")
     g.add_argument("--snmp-user", dest="snmp_user")
     g.add_argument("--snmp-auth-key", dest="snmp_auth_key")
@@ -97,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     listen = sub.add_parser("listen", help="passively listen for a while, then print what was seen")
     listen.add_argument("--seconds", type=int, default=60)
     listen.add_argument("--json", type=Path, dest="json_out")
+    listen.add_argument("--compare", action="store_true",
+                        help="listen with Npcap and the built-in capture at the same time and compare them")
     _add_settings_flags(listen)
 
     inv = sub.add_parser("inventory", help="collect this machine's endpoint inventory and print a summary; nothing is uploaded")
@@ -228,12 +233,18 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_listen(args: argparse.Namespace) -> int:
     settings = _settings_from(args)
-    suite = PassiveSuite(settings.passive_interface or None, settings.fingerbank_key or None)
+    if args.compare:
+        return _compare_capture(args, settings)
+    suite = PassiveSuite(settings.passive_interface or None, settings.fingerbank_key or None,
+                         backend=settings.passive_backend)
     if not suite.start():
-        print("Passive sniffing could not start (needs scapy, Npcap/libpcap and Administrator/root).", file=sys.stderr)
+        print("Passive sniffing could not start (needs scapy, Administrator/root and, for --capture npcap, "
+              "Npcap/libpcap).", file=sys.stderr)
+        for problem in suite.problems():
+            print(f"  {problem}", file=sys.stderr)
         print("Run `eagleeye check-deps` for details.", file=sys.stderr)
         return 1
-    print(f"Listening for {args.seconds}s ...")
+    print(f"Listening for {args.seconds}s with {suite.capture} ...")
     import time
     time.sleep(args.seconds)
     holder: dict[str, Any] = {}
@@ -249,6 +260,41 @@ def cmd_listen(args: argparse.Namespace) -> int:
         return 1
     _print_hosts(ctx.hosts)
     _write_json(args.json_out, holder)
+    return 0
+
+
+def _compare_capture(args: argparse.Namespace, settings: Settings) -> int:
+    from datetime import datetime
+
+    from .passive import compare
+    from .stages.scan_own import report_dir
+    report = compare.run(settings.passive_interface or None, args.seconds, settings.fingerbank_key or None)
+    if report["capture"] is None:
+        print("Could not start both captures:", file=sys.stderr)
+        for problem in report["problems"]:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    cpu, fr = report["cpu_seconds"], report["frames"]
+    print(f"\nListening on {report['listening_on']} (adapter index {report['adapter_index']})")
+    print(f"Built-in capture: {fr['built_in_from_adapter']} frames ({fr['per_second']}/s), "
+          f"{fr['built_in_to_sniffers']} passed to the sniffers")
+    if report["ndis_indexes"]:
+        print("Packets per driver adapter index (miniport/lower): "
+              + ", ".join(f"{k}: {v}" for k, v in report["ndis_indexes"].items()))
+    print(f"CPU in {args.seconds}s: Npcap sniffers {cpu['npcap']} s, built-in capture {cpu['built_in']} s")
+    print(f"\n{'':8} {'Npcap':>6} {'built-in':>9} {'both':>6}")
+    for kind, row in report["compare"].items():
+        print(f"{kind:8} {row['npcap']:>6} {row['built_in']:>9} {row['both']:>6}")
+        for side in ("only_npcap", "only_built_in"):
+            for item in row[side][:10]:
+                print(f"           {side.replace('_', ' ')}: {item}")
+    for problem in report["problems"]:
+        print(f"warning: {problem}", file=sys.stderr)
+    out = report_dir()
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"listen-compare-{datetime.now():%Y%m%d-%H%M%S}.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"\nReport: {path}")
     return 0
 
 

@@ -620,7 +620,8 @@ class AgentService:
             log.warning("%d active scan(s) from an earlier run never finished; marked as interrupted", interrupted)
         threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat").start()
         if self.settings.passive:
-            self.suite = PassiveSuite(self.settings.passive_interface or None, self.settings.fingerbank_key or None)
+            self.suite = PassiveSuite(self.settings.passive_interface or None, self.settings.fingerbank_key or None,
+                                      backend=self.settings.passive_backend)
             self.suite.start()
             self._last_flush = time.time()
 

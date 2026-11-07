@@ -121,6 +121,15 @@ def test_settings_page_saves_the_scan_engine_and_port_tier(window):
     assert (window.store.settings.scan_engine, window.store.settings.scan_ports) == ("compare", "consumer")
 
 
+def test_settings_page_saves_the_passive_capture(window):
+    page = window.settings_page
+    assert page.capture.currentData() == "auto"
+    window.controller.start = lambda settings: None
+    page.capture.setCurrentIndex(page.capture.findData("native"))
+    page._save()
+    assert json.loads(window.store.path.read_text())["passive_backend"] == "native"
+
+
 def test_saving_incomplete_server_details_does_not_start(window):
     page = window.settings_page
     window.controller.start = lambda settings: pytest.fail("must not start without an API key")

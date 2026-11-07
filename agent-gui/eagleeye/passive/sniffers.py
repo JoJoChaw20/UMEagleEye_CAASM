@@ -7,7 +7,10 @@ rewritten in Phase C because the originals extracted nothing from real traffic: 
 ignored IPv6 and the additional section, NetBIOS decoded from the wrong byte, and DHCP
 looked options up by number (scapy names them) and dropped every 0.0.0.0 sender.
 
-All of them need scapy and, for capture, Administrator/root plus Npcap/libpcap.
+All of them need scapy and, for capture, Administrator/root plus either Npcap/libpcap
+(each sniffer runs scapy's sniff) or the built-in capture in capture.py (Microsoft's NDIS
+capture driver on Windows, a packet socket on Linux), which serves all of them from one
+capture and gives each the frames its BPF filter would have let through.
 
 Where they listen is decided by InterfaceChooser (2.0.1): the adapter the operating
 system really uses for the network, re-checked while running, never scapy's default,
@@ -29,6 +32,8 @@ from typing import Any, Callable, Optional
 
 from .. import httpclient
 from ..pipeline.record import HostRecord
+from . import frames
+from .capture import CaptureHub, make_source, resolve_backend
 
 log = logging.getLogger("eagleeye.passive")
 
@@ -69,7 +74,7 @@ def _probe_interfaces() -> tuple[str, list[dict[str, Any]]]:
         if not ips and getattr(iface, "ip", None):
             ips = [iface.ip]
         adapters.append({"name": iface.name, "description": getattr(iface, "description", "") or iface.name,
-                         "ips": ips, "mac": getattr(iface, "mac", None)})
+                         "ips": ips, "mac": getattr(iface, "mac", None), "index": getattr(iface, "index", None)})
     return local_ip(), adapters
 
 
@@ -100,6 +105,7 @@ class InterfaceChooser:
         self._lock = threading.Lock()
         self._checked_at: Optional[float] = None
         self.name: Optional[str] = self.fixed
+        self.index: Optional[int] = None                 # its interface index (the built-in capture on Windows)
         self.label = f"{self.fixed} (set in Settings)" if self.fixed else "checking..."
         self._own_macs: frozenset[str] = frozenset()
         # Replaced (never changed in place) when the network changes, so a host's tag
@@ -124,12 +130,19 @@ class InterfaceChooser:
             self._own_macs = frozenset(m for m in (_norm_mac(a.get("mac")) for a in adapters) if m)
             if self.fixed:
                 fixed = next((a for a in adapters if a.get("name") == self.fixed), None)
-                ips = [ip for ip in (fixed or {}).get("ips") or [] if not ip.startswith(("127.", "169.254."))]
-                self._set_network(ips[0] if ips else None)
+                self.index = (fixed or {}).get("index")
+                self._set_network(_main_ip(fixed))
                 return self.name
             match = None
             if route_ip and not route_ip.startswith("127."):
                 match = next((a for a in adapters if route_ip in (a.get("ips") or [])), None)
+            else:
+                # No route to the internet: an isolated network (a lab, an OT segment, a
+                # sensor without a gateway). With exactly one real adapter that has an
+                # address, that is the network; with none or several, wait.
+                real = [a for a in adapters if _main_ip(a) and not _is_virtual_adapter(a)]
+                if len(real) == 1:
+                    match, route_ip = real[0], _main_ip(real[0])
             waiting = waiting_reason(route_ip, match)
             if match is not None and _is_virtual_adapter(match):
                 # Wi-Fi dropped and Windows routed through a virtual adapter (the GNS3
@@ -141,6 +154,7 @@ class InterfaceChooser:
             if name != self.name or label != self.label:
                 log.info("Passive listening on %s", label)
             self.name, self.label = name, label
+            self.index = match.get("index") if match else None
             self._set_network(route_ip if match else None)
             return name
 
@@ -201,9 +215,28 @@ _VIRTUAL_ADAPTER_WORDS = ("loopback", "km-test", "vmware virtual", "vmware netwo
                           "hyper-v virtual", "vethernet", "wsl", "docker", "npcap loopback")
 
 
+# Linux bridges and links of containers and local VMs (Docker, libvirt, LXD, Kubernetes).
+_VIRTUAL_LINUX_PREFIXES = ("br-", "veth", "virbr", "lxdbr", "cni", "flannel")
+
+
 def _is_virtual_adapter(adapter: dict[str, Any]) -> bool:
     text = f"{adapter.get('name') or ''} {adapter.get('description') or ''}".lower()
-    return any(word in text for word in _VIRTUAL_ADAPTER_WORDS)
+    return (any(word in text for word in _VIRTUAL_ADAPTER_WORDS)
+            or str(adapter.get("name") or "").lower().startswith(_VIRTUAL_LINUX_PREFIXES))
+
+
+def _main_ip(adapter: Optional[dict[str, Any]]) -> Optional[str]:
+    """The adapter's address that names its network: a private one first, because an
+    adapter can also carry a lab or test address (the lab VM's ens33 holds GNS3's
+    142.19.0.1 next to 192.168.36.50); never loopback or self-assigned."""
+    ips = [ip for ip in (adapter or {}).get("ips") or [] if not ip.startswith(("127.", "169.254."))]
+    for ip in ips:
+        try:
+            if ipaddress.IPv4Address(ip).is_private:
+                return ip
+        except ValueError:
+            continue
+    return ips[0] if ips else None
 
 
 def waiting_reason(route_ip: Optional[str], match: Optional[dict[str, Any]]) -> str:
@@ -225,8 +258,10 @@ def _local_network(ip: str) -> dict[str, Optional[str]]:
 
 class _Sniffer:
     bpf = ""
+    wants: Callable[[bytes], bool] = staticmethod(lambda frame: False)    # bpf, for the built-in capture
     thread_name = "sniffer"
     label = "sniffer"
+    hub: Optional[CaptureHub] = None    # the built-in capture serving it; None = its own scapy sniff()
 
     def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
         self.interface = interface
@@ -261,6 +296,11 @@ class _Sniffer:
             self.error = "scapy not installed"
             return False
         self._stop.clear()
+        if self.hub is not None:
+            self._handler = self._make_handler()
+            self.hub.add(type(self).wants, self._handler)
+            log.info("%s started (%s)", self.label, self.hub.label)
+            return True
         self._thread = threading.Thread(target=self._loop, daemon=True, name=self.thread_name)
         self._thread.start()
         where = "automatic" if self.chooser is not None and self.chooser.fixed is None else (self.interface or "default")
@@ -269,9 +309,13 @@ class _Sniffer:
 
     def stop(self) -> None:
         self._stop.set()
+        if self.hub is not None:
+            self.hub.remove(getattr(self, "_handler", None))
 
     @property
     def running(self) -> bool:
+        if self.hub is not None:
+            return self.hub.running and not self._stop.is_set()
         return self._thread is not None and self._thread.is_alive()
 
     def _own(self, mac: Optional[str]) -> bool:
@@ -346,6 +390,7 @@ class ArpSniffer(_Sniffer):
     so their sender is a neighbour, and the frame's source MAC is the sender's own."""
 
     bpf = "arp or (ip and (ether broadcast or ether multicast))"
+    wants = staticmethod(frames.arp_or_broadcast)
     thread_name = "arp-sniffer"
     label = "ARP/broadcast sniffer"
 
@@ -472,6 +517,7 @@ class MdnsNetbiosSniffer(_Sniffer):
     another device) and a device's entry after 24 hours."""
 
     bpf = "udp port 5353 or udp port 137"
+    wants = staticmethod(frames.mdns_or_netbios)
     thread_name = "mdns-sniffer"
     label = "mDNS/NetBIOS sniffer"
 
@@ -672,6 +718,7 @@ class DhcpSniffer(_Sniffer):
     On Wi-Fi the access point may not pass other clients' DHCP to this machine."""
 
     bpf = "udp port 67 or udp port 68"
+    wants = staticmethod(frames.dhcp)
     thread_name = "dhcp-sniffer"
     label = "DHCP fingerprint sniffer"
 
@@ -901,6 +948,7 @@ class SsdpSniffer(_Sniffer):
     Nothing is fetched from the devices; only what they broadcast is read."""
 
     bpf = "udp port 1900"
+    wants = staticmethod(frames.ssdp)
     thread_name = "ssdp-sniffer"
     label = "SSDP/UPnP sniffer"
 
@@ -1053,13 +1101,20 @@ class ReverseDnsCache:
 
 class PassiveSuite:
     """Starts and stops the sniffers as a unit. Each one is optional: a sniffer that
-    cannot start is left as None and the rest keep working."""
+    cannot start is left as None and the rest keep working.
+
+    `backend` is the passive_backend setting: "npcap" (each sniffer runs scapy's sniff,
+    as before), "native" (the built-in capture) or "auto" (see capture.resolve_backend)."""
 
     def __init__(self, interface: Optional[str] = None, fingerbank_key: Optional[str] = None,
-                 chooser: Optional[InterfaceChooser] = None) -> None:
+                 chooser: Optional[InterfaceChooser] = None, backend: str = "npcap",
+                 make_hub: Optional[Callable[[str, InterfaceChooser], CaptureHub]] = None) -> None:
         self.interface = interface
         self.fingerbank_key = fingerbank_key
         self.chooser = chooser or InterfaceChooser(interface)
+        self.backend = resolve_backend(backend)
+        self._make_hub = make_hub or (lambda name, chooser: CaptureHub(make_source(name), chooser))
+        self.hub: Optional[CaptureHub] = None
         self.arp: Optional[ArpSniffer] = None
         self.mdns: Optional[MdnsNetbiosSniffer] = None
         self.dhcp: Optional[DhcpSniffer] = None
@@ -1068,35 +1123,51 @@ class PassiveSuite:
 
     def start(self) -> bool:
         """True when ARP discovery (the primary source) is running."""
+        if self.backend != "npcap":
+            hub = self._make_hub(self.backend, self.chooser)
+            if not hub.start():
+                self.hub = hub                  # kept for problems()
+                log.warning("Passive listening disabled: the built-in capture could not start")
+                return False
+            self.hub = hub
+
+        def started(sniffer: _Sniffer) -> bool:
+            sniffer.hub = self.hub
+            return sniffer.start()
+
         arp = ArpSniffer(self.interface, self.chooser)
-        if arp.start():
+        if started(arp):
             self.arp = arp
         else:
             log.warning("ARP sniffer could not start - passive host discovery disabled")
 
         mdns = MdnsNetbiosSniffer(self.interface, self.chooser)
-        if mdns.start():
+        if started(mdns):
             self.mdns = mdns
         else:
             log.warning("mDNS/NetBIOS sniffer could not start - hostname enrichment disabled")
 
         dhcp = DhcpSniffer(self.interface, self.fingerbank_key or None, self.chooser)
-        if dhcp.start():
+        if started(dhcp):
             self.dhcp = dhcp
         else:
             log.warning("DHCP sniffer could not start - DHCP fingerprinting disabled")
 
         ssdp = SsdpSniffer(self.interface, self.chooser)
-        if ssdp.start():
+        if started(ssdp):
             self.ssdp = ssdp
         else:
             log.warning("SSDP sniffer could not start - UPnP device details disabled")
+        if self.hub is not None and not any((self.arp, self.mdns, self.dhcp, self.ssdp)):
+            self.hub.stop()                     # nothing to feed (e.g. no scapy): don't keep capturing
         return self.arp is not None
 
     def stop(self) -> None:
         for sniffer in (self.arp, self.mdns, self.dhcp, self.ssdp):
             if sniffer:
                 sniffer.stop()
+        if self.hub is not None:
+            self.hub.stop()
         self.rdns.shutdown()
 
     @property
@@ -1104,9 +1175,16 @@ class PassiveSuite:
         """Where passive listening listens, for display (e.g. "Wi-Fi (192.168.1.20)")."""
         return self.chooser.label
 
+    @property
+    def capture(self) -> str:
+        """What captures the packets, for display."""
+        return self.hub.label if self.hub is not None else "Npcap/libpcap"
+
     def problems(self) -> list[str]:
         """Why a sniffer is not working (for display)."""
         out = []
+        if self.hub is not None and self.hub.error:
+            out.append(f"{self.hub.label}: {self.hub.error}")
         for sniffer in (self.arp, self.mdns, self.dhcp, self.ssdp):
             if sniffer and sniffer.error:
                 out.append(f"{sniffer.label}: {sniffer.error}")
