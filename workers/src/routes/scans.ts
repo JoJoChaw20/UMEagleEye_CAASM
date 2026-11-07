@@ -715,11 +715,21 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
     const effectiveScanType = scan_type ?? 'active'
     const effectiveSubnet = effectiveScanType === 'passive' ? 'arp-discovery' : (subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24')
 
-    // Derive tenant: explicit body > agent's tenant > user's tenant
-    let effectiveTenantId = tenant_id !== undefined ? tenant_id : (user.tenantId ?? null)
-    if (!effectiveTenantId && agent_id) {
-      const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
-      if (agent?.tenantId) effectiveTenantId = agent.tenantId
+    // Only tenant roles reach this route, and they always act in their own tenant: a
+    // tenant_id in the body is ignored (it used to win, so a scan could be filed under
+    // another tenant), and the agent must be one of this tenant's live agents (it was
+    // never checked, so any agent whose id was known could be told to scan).
+    void tenant_id
+    const effectiveTenantId = user.tenantId ?? null
+    if (effectiveScanType === 'active' && !agent_id) {
+      return c.json({ detail: 'Choose the agent that runs the scan' }, 400)
+    }
+    if (agent_id) {
+      const [agent] = await db.select({ tenantId: agents.tenantId, retiredAt: agents.retiredAt })
+        .from(agents).where(eq(agents.agentId, agent_id)).limit(1)
+      if (!agent || agent.retiredAt || !effectiveTenantId || agent.tenantId !== effectiveTenantId) {
+        return c.json({ detail: 'Agent not found' }, 404)
+      }
     }
 
     // The same scan already waiting for this agent: return it instead of queueing a
@@ -1180,7 +1190,9 @@ Example:
     let investigatedIp: string | null = null
     if (scan_id) {
       const [scan] = await db.select().from(scanResults).where(eq(scanResults.scanId, scan_id)).limit(1)
-      if (!scan) return c.json({ detail: 'Scan not found' }, 404)
+      // Only the agent the job was given to may fill it (as /fail and /:scanId/start check):
+      // without this, any agent could write into another tenant's scan record.
+      if (!scan || scan.agentId !== agent_id) return c.json({ detail: 'Scan not found' }, 404)
       effectiveScanId = scan_id
       if (isInvestigation(scan.networkInfo)) { investigation = scan.networkInfo; investigatedIp = scan.subnet }
     } else if (isPassive) {
