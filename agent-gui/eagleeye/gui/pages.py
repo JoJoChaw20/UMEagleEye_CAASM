@@ -605,6 +605,26 @@ class SettingsPage(QWidget):
         t.add("Heartbeat every", _left(self.heartbeat))
         timing.add_layout(t)
 
+        active = Panel("Active scanning")
+        self.engine = QComboBox()
+        for text, value in (("Nmap (built-in sweep when Nmap is missing)", "auto"),
+                            ("EagleEye engine (no Nmap or Npcap needed)", "own"),
+                            ("Both, and compare (writes a report on this computer)", "compare")):
+            self.engine.addItem(text, value)
+        self.engine.setCurrentIndex(max(0, self.engine.findData("auto" if s.scan_engine == "nmap" else s.scan_engine)))
+        self.scan_ports = QComboBox()
+        for text, value in (("Base: 13 server and remote-access ports", "base"),
+                            ("Consumer: base + phones, TVs, printers, cameras (36)", "consumer"),
+                            ("Wide: consumer + server, directory and industrial ports (90)", "wide")):
+            self.scan_ports.addItem(text, value)
+        self.scan_ports.setCurrentIndex(max(0, self.scan_ports.findData(s.scan_ports)))
+        a = FieldGrid(1)
+        a.add("Scan engine", self.engine)
+        a.add("Ports (EagleEye engine)", self.scan_ports)
+        active.add_layout(a)
+        active.add(_hint("The EagleEye engine finds devices with ARP and names Windows machines from SMB "
+                         "without logging in. Comparison reports go to the 'compare' folder next to the config file."))
+
         passive = Panel("Passive listening")
         self.passive = QCheckBox("Listen for ARP, mDNS, NetBIOS and DHCP announcements")
         self.passive.setChecked(s.passive)
@@ -646,7 +666,7 @@ class SettingsPage(QWidget):
         self.save_result = label("", wrap=True)
         _root(self, _scroll(PageHeader("Settings", "How this agent reaches the dashboard, how often it checks in, "
                                                    "and what it listens for on the network."),
-                            conn, timing, passive, snmp),
+                            conn, timing, active, passive, snmp),
               _footer(self.save_btn, self.save_result))
         self._secret_placeholders()
 
@@ -717,6 +737,8 @@ class SettingsPage(QWidget):
         s.api_key = self._secret(self.api_key, s.api_key)
         s.poll_interval = self.poll.value()
         s.heartbeat_interval = self.heartbeat.value()
+        s.scan_engine = self.engine.currentData()
+        s.scan_ports = self.scan_ports.currentData()
         s.passive = self.passive.isChecked()
         s.passive_interface = self.passive_iface.text().strip()
         s.passive_interval = self.passive_interval.value()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -106,6 +107,18 @@ def test_saving_new_server_details_starts_the_agent_once(window):
     page._save()
     assert started == ["00000000-0000-0000-0000-000000000002"] and page.save_result.text() == "Saved."
     window.controller = real
+
+
+def test_settings_page_saves_the_scan_engine_and_port_tier(window):
+    page = window.settings_page
+    assert page.engine.currentData() == "auto" and page.scan_ports.currentData() == "base"   # old behaviour
+    window.controller.start = lambda settings: None
+    page.engine.setCurrentIndex(page.engine.findData("compare"))
+    page.scan_ports.setCurrentIndex(page.scan_ports.findData("consumer"))
+    page._save()
+    saved = json.loads(window.store.path.read_text())
+    assert (saved["scan_engine"], saved["scan_ports"]) == ("compare", "consumer")
+    assert (window.store.settings.scan_engine, window.store.settings.scan_ports) == ("compare", "consumer")
 
 
 def test_saving_incomplete_server_details_does_not_start(window):
