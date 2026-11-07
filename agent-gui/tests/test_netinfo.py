@@ -44,8 +44,24 @@ def test_an_address_without_routes_has_no_network():
 
 
 def test_local_network_falls_back_to_the_24_around_the_address(monkeypatch):
+    from eagleeye.passive import adapters
     monkeypatch.setattr(netinfo, "_scapy_routes", lambda: [])
+    monkeypatch.setattr(adapters, "list_adapters", lambda: [])                  # nothing known at all
     assert netinfo.local_network("192.168.0.139") == {"local_ip": "192.168.0.139", "subnet": "192.168.0.0/24", "gateway_ip": None}
+
+
+def test_without_scapy_the_network_comes_from_the_adapter_list(monkeypatch):
+    from eagleeye.passive import adapters
+    monkeypatch.setattr(netinfo, "_scapy_routes", lambda: [])
+    campus = [{"name": "Wi-Fi", "ips": ["10.179.37.235"], "prefixes": {"10.179.37.235": 19},
+               "gateway": "10.179.32.1", "mac": "14:13:33:c3:f6:03"}]
+    monkeypatch.setattr(adapters, "list_adapters", lambda: campus)
+    assert netinfo.local_network("10.179.37.235") == {"local_ip": "10.179.37.235", "subnet": "10.179.32.0/19",
+                                                      "gateway_ip": "10.179.32.1"}
+    import sys
+    monkeypatch.setitem(sys.modules, "scapy", None)
+    monkeypatch.setitem(sys.modules, "scapy.all", None)
+    assert netinfo.own_mac("10.179.37.235") == "14:13:33:c3:f6:03"
 
 
 def test_passive_hosts_go_up_with_the_network_they_were_heard_on(monkeypatch):

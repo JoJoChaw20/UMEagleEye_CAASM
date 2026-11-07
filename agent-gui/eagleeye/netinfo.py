@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import platform
 import re
 import socket
@@ -12,6 +13,9 @@ from typing import Any, Optional
 from .pipeline.record import HostRecord
 
 _IPV4 = re.compile(r"\d{1,3}(\.\d{1,3}){3}")
+
+
+log = logging.getLogger("eagleeye.netinfo")
 
 
 def local_ip() -> str:
@@ -175,11 +179,23 @@ def _scapy_routes() -> list[tuple[Any, ...]]:
 
 
 def local_network(ip: Optional[str] = None) -> dict[str, Optional[str]]:
-    """{local_ip, subnet, gateway_ip} of the adapter the OS uses (or of `ip`). The
-    subnet falls back to the /24 around the address when the route table is unknown."""
+    """{local_ip, subnet, gateway_ip} of the adapter the OS uses (or of `ip`). Read from
+    scapy's route table where scapy is installed, otherwise from the adapter list
+    (passive/adapters.py: the address's on-link prefix and the adapter's gateway). The
+    subnet falls back to the /24 around the address when neither knows it."""
     ip = ip or local_ip()
-    subnet, gateway = network_of(ip, _scapy_routes()) if ip and not ip.startswith("127.") else (None, None)
-    return {"local_ip": ip, "subnet": subnet or (_slash24(ip) if ip else None), "gateway_ip": gateway}
+    if not ip or ip.startswith("127."):
+        return {"local_ip": ip, "subnet": _slash24(ip) if ip else None, "gateway_ip": None}
+    routes = _scapy_routes()
+    if routes:
+        subnet, gateway = network_of(ip, routes)
+        return {"local_ip": ip, "subnet": subnet or _slash24(ip), "gateway_ip": gateway}
+    try:
+        from .passive.adapters import network_of as adapter_network
+        return adapter_network(ip)
+    except Exception as exc:  # noqa: BLE001 - keep the /24 guess
+        log.debug("Could not read the adapter list: %s", exc)
+        return {"local_ip": ip, "subnet": _slash24(ip), "gateway_ip": None}
 
 
 def local_subnet() -> str:
@@ -188,7 +204,8 @@ def local_subnet() -> str:
 
 
 def own_mac(ip: str) -> Optional[str]:
-    """MAC of this computer's adapter that holds `ip` (Nmap cannot see its own)."""
+    """MAC of this computer's adapter that holds `ip` (Nmap cannot see its own): from
+    scapy's adapter list where scapy is installed, otherwise from passive/adapters.py."""
     try:
         from scapy.all import conf  # type: ignore
         for iface in conf.ifaces.values():
@@ -196,9 +213,16 @@ def own_mac(ip: str) -> Optional[str]:
             if ip in ips or getattr(iface, "ip", None) == ip:
                 mac = getattr(iface, "mac", None)
                 return str(mac).lower() if mac else None
-    except Exception:  # noqa: BLE001
+        return None
+    except ImportError:
         pass
-    return None
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from .passive.adapters import list_adapters
+        return next((a.get("mac") for a in list_adapters() if ip in (a.get("ips") or [])), None)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def source_ip_for(target: Optional[str]) -> Optional[str]:

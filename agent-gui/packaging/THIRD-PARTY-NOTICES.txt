@@ -12,17 +12,17 @@ PySide6 / Qt 6 (Qt for Python)  LGPL-3.0                      https://www.qt.io/
     Qt libraries are shipped as separate DLLs in this folder and may be replaced
     with compatible versions (LGPL-3.0 section 4).
 keyring, pywin32-ctypes         MIT / BSD-3-Clause            https://github.com/jaraco/keyring
-scapy                           GPL-2.0-only                  https://github.com/secdev/scapy
 pysnmp, pyasn1                  BSD-2-Clause                  https://github.com/lextudio/pysnmp
 Chakra Petch (font)             SIL Open Font License 1.1     https://github.com/m4rc1e/Chakra-Petch
 Geist, Geist Mono (fonts)       SIL Open Font License 1.1     https://github.com/vercel/geist-font
     Static instances of the fonts, renamed only in their name tables; the licence
     texts are in _internal\eagleeye\gui\assets\fonts.
 Lucide icons                    ISC                           https://lucide.dev/license
+IEEE OUI registry (MAC vendors) public registry data          https://standards-oui.ieee.org
 
-Because scapy is GPL-2.0-only, this package as a whole is distributed under the
-GPL-2.0; its complete source code is agent-gui/ in the EagleEye repository. PySide6
-is used under its GPL-2.0 option (it is offered as LGPL-3.0, GPL-2.0 or GPL-3.0).
+PySide6 / Qt are used under the LGPL-3.0. Packet capture and decoding are the agent's
+own code (Microsoft's built-in NDIS capture driver on Windows); no packet-capture library
+is included.
 
 NOT included (downloaded from the official site only if you ask for it)
 ----------------------------------------------------------------------

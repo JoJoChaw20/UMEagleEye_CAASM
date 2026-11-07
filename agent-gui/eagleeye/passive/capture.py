@@ -39,19 +39,30 @@ def npcap_installed() -> bool:
     return _packet_capture_library()[0]
 
 
+def scapy_available() -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec("scapy") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def resolve_backend(setting: str, platform: str = sys.platform,
-                    has_npcap: Optional[Callable[[], bool]] = None) -> str:
+                    has_npcap: Optional[Callable[[], bool]] = None,
+                    has_scapy: Optional[Callable[[], bool]] = None) -> str:
     """"npcap" (scapy's sniff on Npcap/libpcap), "ndis" or "packet" (built-in).
 
-    Automatic keeps Npcap on Windows where it is installed (the capture the agent has
-    always used) and uses Microsoft's driver otherwise; Linux uses its packet socket,
-    which needs neither libpcap nor tcpdump. Other systems only have libpcap."""
+    Automatic keeps Npcap on Windows where it is installed AND the agent has scapy to
+    read it with (the capture the agent has always used); otherwise it uses Microsoft's
+    driver, which is what a package built without scapy always does. Linux uses its
+    packet socket, which needs neither libpcap nor tcpdump. Other systems only have
+    libpcap."""
     native = "ndis" if platform == "win32" else "packet" if platform.startswith("linux") else None
     if setting == "npcap" or native is None:
         return "npcap"
     if setting == "native":
         return native
-    if platform == "win32" and (has_npcap or npcap_installed)():
+    if platform == "win32" and (has_scapy or scapy_available)() and (has_npcap or npcap_installed)():
         return "npcap"
     return native
 

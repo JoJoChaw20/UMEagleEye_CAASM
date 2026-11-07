@@ -437,3 +437,23 @@ def test_the_capture_stops_when_no_sniffer_could_start(monkeypatch):
     assert not suite.start()
     hub._thread.join(2)
     assert not hub.running and hub.source.closed == 1
+
+
+# ── without scapy (the default package) ──────────────────────────────────────
+
+def test_automatic_needs_scapy_to_use_npcap():
+    assert resolve_backend("auto", "win32", lambda: True, lambda: False) == "ndis"
+    assert resolve_backend("auto", "win32", lambda: True, lambda: True) == "npcap"
+
+
+def test_the_built_in_path_runs_with_scapy_missing():
+    # A fresh interpreter in which every scapy import fails, as in the package.
+    import subprocess
+    import sys
+    code = (
+        "import sys; sys.modules['scapy'] = None\n"
+        "from tests.test_capture_noscapy import run; run()\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.strip().endswith("ok")

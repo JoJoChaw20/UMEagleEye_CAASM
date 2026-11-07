@@ -16,9 +16,15 @@ and API key). Paste it into Settings > Connection code > **Use code**, or pass `
 
 ## Requirements
 - Python 3.12 or newer
-- Nmap and, for passive sniffing, Npcap (Windows) / libpcap (Linux, macOS). They are **not** bundled
-  (their licences restrict redistribution). `check-deps` tells you what is missing and where to get it.
-  Without Nmap, scans fall back to a built-in sweep that finds hosts and open ports but not services or OS.
+- Optional: Nmap, and Npcap (Windows) / libpcap (macOS). They are **not** bundled (their licences restrict
+  redistribution). `check-deps` tells you what is missing and where to get it. Without Nmap, scans use the agent's
+  own engine (`scan_engine`) or a built-in sweep.
+- Passive listening needs Administrator/root but no capture library: the built-in capture reads Microsoft's own
+  NDIS capture driver on Windows and a packet socket (with a kernel filter) on Linux, and decodes the frames itself.
+  `passive_backend` (`--capture`): `auto` (Npcap when it is installed **and** scapy is available, else built in),
+  `npcap` (the original scapy + Npcap/libpcap sniffers) or `native`. `eagleeye listen --compare` runs both side by
+  side. The packaged agent is built without scapy (set `EAGLEEYE_WITH_SCAPY=1` for the old build), so it uses the
+  built-in capture.
 - For the SBOM: [Syft](https://github.com/anchore/syft) and [Grype](https://github.com/anchore/grype), also not
   bundled (`winget install Anchore.Syft` and `winget install Anchore.Grype` on Windows). Without both, the daily
   SBOM is skipped and a dashboard request fails with that reason. Grype downloads its vulnerability database on
@@ -170,7 +176,8 @@ or messages, location, and the contents of network traffic. For ports that only 
 system uses to reach the internet, re-checked every 30 seconds (so it follows Wi-Fi connecting after sign-in, a
 switch to a cable, or a VPN, and never sits on a virtual adapter such as a GNS3/VMware loopback). The Status page
 shows the choice, e.g. "Wi-Fi (192.168.1.20)", or why it is waiting: no route yet (Wi-Fi not connected), a route
-through an address no Npcap adapter has, or Windows routing through a virtual adapter. Virtual means the *host's*
+through an address no adapter has, or Windows routing through a virtual adapter. With no route to the internet at
+all (an isolated lab or OT network), the one real adapter that has an address is used; with several, it waits. Virtual means the *host's*
 adapters for virtual machines and tunnels (KM-TEST loopback, VMware VMnet, Hyper-V vEthernet, VirtualBox host-only,
 WSL, Docker); inside a VM its own card (e.g. "Microsoft Hyper-V Network Adapter") is its real network. A name typed
 in Settings is used as it is. The same rule picks the computer's own address in the inventory (Windows and Linux):

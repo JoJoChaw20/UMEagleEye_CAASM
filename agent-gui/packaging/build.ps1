@@ -28,6 +28,7 @@ Write-Host "`n[2/3] PyInstaller"
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 & dist\EagleEyeAgent\eagleeye.exe version
 if ($LASTEXITCODE -ne 0) { throw "the built eagleeye.exe does not start" }
+& $python packaging\size_report.py dist\EagleEyeAgent
 
 Write-Host "`n[3/3] Installer"
 $iscc = @(

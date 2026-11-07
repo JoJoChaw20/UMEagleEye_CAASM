@@ -104,7 +104,8 @@ def _module(name: str, pip_name: str, required: bool, why: str) -> DepStatus:
     return DepStatus(
         name=f"python: {pip_name}", ok=ok, required=required,
         detail="installed" if ok else f"missing ({why})",
-        hint="" if ok else f"pip install {pip_name}",
+        # A packaged agent cannot pip-install; what it leaves out is left out on purpose.
+        hint="" if ok or getattr(sys, "frozen", False) else f"pip install {pip_name}",
     )
 
 
