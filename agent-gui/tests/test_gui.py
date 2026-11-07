@@ -39,17 +39,16 @@ def window(qapp, tmp_path, monkeypatch):
     win.close()
 
 
-def test_consent_defaults_keep_personal_data_off(qapp):
+def test_the_notice_lists_what_is_collected_with_personal_data_off(qapp):
     s = Settings()
     assert needs_consent(s)
     dlg = ConsentDialog(s)
-    assert dlg.inventory.isChecked() and not dlg.user_software.isChecked() and not dlg.admin_names.isChecked()
-    assert not dlg.passive.isChecked()
-    dlg.inventory.setChecked(False)
-    dlg.user_software.setChecked(True)          # ignored while inventory is off
-    dlg.apply()
-    assert (s.inventory, s.inventory_user_software, s.consent_version) == (False, False, CONSENT_VERSION)
-    assert s.consent_at and not needs_consent(s)
+    on = {text[4:].strip() for text in dlg.items if text.startswith("On ")}
+    assert "This computer's inventory" in on
+    assert not any("personal data" in item for item in on) and not any("Passive" in item for item in on)
+    dlg.apply()                                 # read: the settings stay as they are
+    assert (s.inventory, s.inventory_user_software, s.inventory_admin_names, s.passive) == (True, False, False, False)
+    assert (s.consent_version, bool(s.consent_at), needs_consent(s)) == (CONSENT_VERSION, True, False)
 
 
 def test_main_window_builds_and_cannot_start_unconfigured(window, monkeypatch):
@@ -189,3 +188,27 @@ def test_quit_button_in_header_quits(window, monkeypatch):
     button = next(b for b in window.findChildren(QPushButton) if b.text() == "Quit")
     button.click()
     assert quits == [1] and window._quitting
+
+
+def test_settings_the_administrator_set_are_read_only_and_not_saved_over(window, tmp_path):
+    from eagleeye.policy import PolicyStore, policy_path
+    s = window.store.settings
+    s.scan_engine, s.inventory_user_software = "auto", False
+    store = PolicyStore(policy_path())
+    assert store.path.parent == tmp_path                               # beside the test config, not the real one
+    store.save("0a1b2c3d", {"scan_engine": "own", "inventory_user_software": True, "sbom": False})
+    page, privacy = window.settings_page, window.privacy_page
+    page.apply_managed()
+    privacy.reload()
+    assert page.engine.currentData() == "own" and not page.engine.isEnabled()
+    assert page.scan_ports.isEnabled() and "Scan engine" in page.managed_hint.text()
+    assert privacy.user_software.isChecked() and not privacy.user_software.isEnabled()
+    assert not privacy.sbom.isChecked() and not privacy.sbom.isEnabled()
+    window.controller.start = lambda settings: None
+    page._save()
+    privacy._save()
+    saved = json.loads(window.store.path.read_text())
+    assert (saved["scan_engine"], saved["inventory_user_software"]) == ("auto", False)   # this computer's own
+    store.save("811c9dc5", {})                                         # the administrator cleared them
+    page.apply_managed()
+    assert page.engine.isEnabled() and page.engine.currentData() == "auto" and page.managed_hint.isHidden()

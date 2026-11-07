@@ -7,7 +7,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
 from PySide6.QtCore import Qt, QTime, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -550,7 +550,41 @@ class SchedulesPage(QWidget):
 
 
 # ── Settings ──────────────────────────────────────────────────────────────
+def managed_now(win: "MainWindow") -> dict[str, Any]:
+    """The settings the administrator set for this agent (policy.py): what the running
+    agent applied, or else what it applied last time (kept on disk)."""
+    svc = win.controller.service if win.controller.running else None
+    if svc is not None:
+        return dict(getattr(svc, "managed", {}) or {})
+    from ..policy import PolicyStore, policy_path
+    return PolicyStore(policy_path()).load()[1]
+
+
+def _lock(widget: QWidget, managed: dict[str, Any], key: str, show: Callable[[Any], None]) -> bool:
+    """Show the administrator's value read-only, or give the control back. True if locked."""
+    from ..policy import MANAGED_NOTE
+    if key in managed:
+        show(managed[key])
+        widget.setEnabled(False)
+        widget.setToolTip(MANAGED_NOTE)
+        return True
+    widget.setToolTip("")
+    return False
+
+
+def _managed_hint(managed: dict[str, Any], keys: tuple[str, ...]) -> str:
+    from ..policy import LABELS, MANAGED_NOTE
+    names = [LABELS[k] for k in keys if k in managed]
+    return f"{MANAGED_NOTE}: {', '.join(names)}." if names else ""
+
+
+def _select(combo: QComboBox, value: Any) -> None:
+    combo.setCurrentIndex(max(0, combo.findData(value)))
+
+
 class SettingsPage(QWidget):
+    MANAGED = ("scan_engine", "scan_ports", "passive", "passive_interval", "passive_backend")
+
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
         self.win = win
@@ -673,11 +707,33 @@ class SettingsPage(QWidget):
 
         self.save_btn = button("Save", "primary", "check", self._save)
         self.save_result = label("", wrap=True)
+        self.managed_hint = _hint("")
         _root(self, _scroll(PageHeader("Settings", "How this agent reaches the dashboard, how often it checks in, "
                                                    "and what it listens for on the network."),
-                            conn, timing, active, passive, snmp),
+                            self.managed_hint, conn, timing, active, passive, snmp),
               _footer(self.save_btn, self.save_result))
         self._secret_placeholders()
+        self.apply_managed()
+
+    def apply_managed(self) -> None:
+        """Settings the administrator set: shown read-only (their own value stays saved)."""
+        s = self.win.store.settings
+        m = managed_now(self.win)
+        for key, widget, show, local in (
+            ("scan_engine", self.engine, lambda v: _select(self.engine, v),
+             "auto" if s.scan_engine == "nmap" else s.scan_engine),
+            ("scan_ports", self.scan_ports, lambda v: _select(self.scan_ports, v), s.scan_ports),
+            ("passive", self.passive, self.passive.setChecked, s.passive),
+            ("passive_interval", self.passive_interval, self.passive_interval.setValue, s.passive_interval),
+            ("passive_backend", self.capture, lambda v: _select(self.capture, v), s.passive_backend),
+        ):
+            if not _lock(widget, m, key, show):
+                if not widget.isEnabled():          # was the administrator's: back to this computer's own
+                    show(local)
+                widget.setEnabled(True)
+        text = _managed_hint(m, self.MANAGED)
+        self.managed_hint.setText(text)
+        self.managed_hint.setVisible(bool(text))
 
     @staticmethod
     def _spin(lo: int, hi: int, value: int, suffix: str) -> QSpinBox:
@@ -746,12 +802,18 @@ class SettingsPage(QWidget):
         s.api_key = self._secret(self.api_key, s.api_key)
         s.poll_interval = self.poll.value()
         s.heartbeat_interval = self.heartbeat.value()
-        s.scan_engine = self.engine.currentData()
-        s.scan_ports = self.scan_ports.currentData()
-        s.passive = self.passive.isChecked()
+        m = managed_now(self.win)           # the administrator's: this computer's own value stays
+        if "scan_engine" not in m:
+            s.scan_engine = self.engine.currentData()
+        if "scan_ports" not in m:
+            s.scan_ports = self.scan_ports.currentData()
+        if "passive" not in m:
+            s.passive = self.passive.isChecked()
         s.passive_interface = self.passive_iface.text().strip()
-        s.passive_interval = self.passive_interval.value()
-        s.passive_backend = self.capture.currentData()
+        if "passive_interval" not in m:
+            s.passive_interval = self.passive_interval.value()
+        if "passive_backend" not in m:
+            s.passive_backend = self.capture.currentData()
         s.fingerbank_key = self._secret(self.fingerbank, s.fingerbank_key)
         s.snmp_user = self.snmp_user.text().strip()
         s.snmp_auth_key = self._secret(self.snmp_auth, s.snmp_auth_key)
@@ -771,6 +833,7 @@ class SettingsPage(QWidget):
     def reload(self) -> None:
         s = self.win.store.settings
         self.passive.setChecked(s.passive)
+        self.apply_managed()
 
 
 def _left(widget: QWidget) -> QWidget:
@@ -785,6 +848,8 @@ def _left(widget: QWidget) -> QWidget:
 
 # ── Privacy ───────────────────────────────────────────────────────────────
 class PrivacyPage(QWidget):
+    MANAGED = ("inventory", "inventory_user_software", "inventory_admin_names", "inventory_interval", "sbom")
+
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
         self.win = win
@@ -848,9 +913,10 @@ class PrivacyPage(QWidget):
 
         save = button("Save", "primary", "check", self._save)
         self.result = label("", wrap=True)
+        self.managed_hint = _hint("")
         _root(self, _scroll(PageHeader("Privacy", "What this agent collects about this computer and sends to the "
                                                   "dashboard."),
-                            inv, sb, notice),
+                            self.managed_hint, inv, sb, notice),
               _footer(save, self.result))
         self.restyle()
         self.reload()
@@ -881,15 +947,43 @@ class PrivacyPage(QWidget):
             accepted = datetime.fromisoformat(s.consent_at).strftime("%d %b %Y at %H:%M") if s.consent_at else ""
         except ValueError:
             accepted = s.consent_at
-        self.consent.setText(f"Notice accepted on {accepted}." if accepted else "Notice not yet accepted.")
+        self.consent.setText(f"Notice read on {accepted}." if accepted else "Notice not yet read.")
+        m = managed_now(self.win)
+        inventory_on = self.inventory.isChecked()
+        _lock(self.inventory, m, "inventory", self.inventory.setChecked)
+        if "inventory" in m:
+            inventory_on = bool(m["inventory"])
+            self._enable(inventory_on)
+        else:
+            self.inventory.setEnabled(True)
+        for key, widget in (("inventory_user_software", self.user_software), ("inventory_admin_names", self.admin_names)):
+            if not _lock(widget, m, key, widget.setChecked):
+                widget.setEnabled(inventory_on)
+        if not _lock(self.interval, m, "inventory_interval",
+                     lambda v: self.interval.setValue(max(1, min(168, round(v / 3600))))):
+            self.interval.setEnabled(inventory_on)
+        if _lock(self.sbom, m, "sbom", self.sbom.setChecked):
+            self.sbom_extra.setEnabled(bool(m["sbom"]))
+            self.sbom_binaries.setEnabled(bool(m["sbom"]))
+        else:
+            self.sbom.setEnabled(True)
+        text = _managed_hint(m, self.MANAGED)
+        self.managed_hint.setText(text)
+        self.managed_hint.setVisible(bool(text))
 
     def _save(self) -> None:
         s = self.win.store.settings
-        s.inventory = self.inventory.isChecked()
-        s.inventory_user_software = s.inventory and self.user_software.isChecked()
-        s.inventory_admin_names = s.inventory and self.admin_names.isChecked()
-        s.inventory_interval = self.interval.value() * 3600
-        s.sbom = self.sbom.isChecked()
+        m = managed_now(self.win)           # the administrator's: this computer's own value stays
+        if "inventory" not in m:
+            s.inventory = self.inventory.isChecked()
+        if "inventory_user_software" not in m:
+            s.inventory_user_software = s.inventory and self.user_software.isChecked()
+        if "inventory_admin_names" not in m:
+            s.inventory_admin_names = s.inventory and self.admin_names.isChecked()
+        if "inventory_interval" not in m:
+            s.inventory_interval = self.interval.value() * 3600
+        if "sbom" not in m:
+            s.sbom = self.sbom.isChecked()
         s.sbom_include_binaries = self.sbom_binaries.isChecked()
         s.sbom_extra_paths = "\n".join(p for p in (line.strip() for line in self.sbom_extra.toPlainText().splitlines()) if p)
         self.win.store.save()

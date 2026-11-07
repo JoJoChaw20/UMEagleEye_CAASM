@@ -20,6 +20,8 @@ import { classifyMac, matchAsset, prefetchIdentity, resolveAssetIdentity, type C
 import { findDuplicateGroups, pairKey, type DupAsset, type DupAddress, type DupDismissal, type DupIdentifier } from '../lib/duplicates'
 import { planMerge, type MergeAsset, type MergeOp, type MergeRelated } from '../lib/merge'
 import { buildBaseline, buildManualBaseline, extractPorts, extractOsVersion, mergeBaselineFields, type AssetBaseline } from '../services/drift'
+import { jobRefusal } from '../lib/agentPolicy'
+import { agentPolicy } from '../services/agentPolicy'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -1583,6 +1585,9 @@ app.post('/:assetId/collect-inventory', authMiddleware, requireRoles(...WRITE_RO
       return c.json({ detail: 'No EagleEye agent is installed on this device, so it cannot collect an inventory. '
         + 'Install the agent on it (its first inventory links the agent to this asset).' }, 409)
     }
+    // Its settings rule it out (Agents page): say so instead of the agent declining it.
+    const inventoryRefusal = jobRefusal((await agentPolicy(db, agent.agentId))?.resolved.effective ?? {}, 'inventory')
+    if (inventoryRefusal) return c.json({ detail: `${inventoryRefusal} Change it on the Agents page.` }, 409)
 
     // One job at a time: a queued or running one already brings a fresh inventory.
     const [open] = await db.select({ scanId: scanResults.scanId, status: scanResults.status }).from(scanResults)
@@ -1652,6 +1657,8 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES), as
         return c.json({ detail: 'No EagleEye agent is installed on this device, so it cannot build an SBOM. '
           + 'Install the agent on it (its first inventory links the agent to this asset).' }, 409)
       }
+      const sbomRefusal = jobRefusal((await agentPolicy(db, agent.agentId))?.resolved.effective ?? {}, 'sbom')
+      if (sbomRefusal) return c.json({ detail: `${sbomRefusal} Change it on the Agents page.` }, 409)
 
       // One SBOM at a time. Agents from 2.2.6 say which kind is running (network_info.sbom_mode).
       const [running] = await db.select({ scanId: scanResults.scanId, networkInfo: scanResults.networkInfo }).from(scanResults)

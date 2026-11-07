@@ -19,7 +19,8 @@ class FakeClient:
         self.ingest_ok = ingest_ok
         self.failed, self.running, self.ingested = [], [], []
 
-    def send_heartbeat(self):
+    def send_heartbeat(self, report=None):
+        self.report = report
         return True
 
     def get_pending_scans(self):

@@ -75,6 +75,10 @@ export const tenants = pgTable('tenants', {
   // off, only the dashboard starts them (scans POST /agent-start refuses). Off for new
   // tenants: probing the network is the admin's decision (tenants created before keep theirs).
   allowLocalScans: boolean('allow_local_scans').notNull().default(false),
+  // Default agent settings of this tenant ({setting: value}, lib/agentPolicy.ts). A
+  // setting not here is the agent's own unless the agent has an override. local_scans
+  // stays in allow_local_scans.
+  agentPolicy: jsonb('agent_policy').notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -353,6 +357,15 @@ export const agents = pgTable('agents', {
   // The asset this agent runs on (bound by its endpoint inventory). Re-resolved when
   // the asset is deleted or merged away.
   hostAssetId: uuid('host_asset_id').references(() => assets.assetId, { onDelete: 'set null' }),
+  // What kind of agent this is, from its installer (lib/agentPolicy.ts KIND_KEYS): 'host'
+  // (a computer's own agent); 'network' (SNMP) to come.
+  kind: varchar('kind', { length: 20 }).notNull().default('host'),
+  // This agent's setting overrides ({setting: value}); the rest come from the tenant
+  // defaults or are the agent's own (lib/agentPolicy.ts resolvePolicy).
+  policy: jsonb('policy').notNull().default({}),
+  // What the agent reports about itself in its heartbeat (2.4.0+): {settings, capabilities,
+  // policy_version, reported_at}. Its own settings show where the admin set nothing.
+  reported: jsonb('reported').notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_agents_tenant').on(t.tenantId)])
 

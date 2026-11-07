@@ -5,7 +5,9 @@ import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm'
 import type { R2Bucket } from '@cloudflare/workers-types'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
-import { AGENT_MANAGE_ROLES } from '../lib/permissions'
+import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
+import { POLICY_SPECS, ROLE_KEYS, applyChange, cleanReport, kindKeys, roleChange, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
+import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
 import { getDb } from '../db/client'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, scanResults, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
@@ -44,7 +46,8 @@ function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'off
 // asset its endpoint inventory is bound to (agents.host_asset_id).
 type AgentRow = typeof agents.$inferSelect
 type HostRow = { assetId: string; hostname: string | null; ipAddress: string; inventoryCollectedAt: Date | null } | null
-function agentOut(a: AgentRow, host: HostRow) {
+function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy) {
+  const applied = reportedOf(a).policy_version ?? null
   return {
     agent_id: a.agentId,
     tenant_id: a.tenantId,
@@ -59,6 +62,16 @@ function agentOut(a: AgentRow, host: HostRow) {
     host: host ? {
       asset_id: host.assetId, hostname: host.hostname, ip_address: host.ipAddress,
       inventory_collected_at: host.inventoryCollectedAt,
+    } : null,
+    kind: a.kind,
+    // Roles read from the settings (lib/agentPolicy.ts); null = not known yet.
+    roles: resolved?.roles ?? null,
+    // Whether the agent runs the settings set for it: it reports the version it applied
+    // (2.4.0+; null for older agents, which only know the agent-started scans switch).
+    policy: resolved ? {
+      version: resolved.version, applied_version: applied,
+      in_sync: applied === null ? null : applied === resolved.version,
+      managed: Object.keys(resolved.managed).length,
     } : null,
     created_at: a.createdAt,
   }
@@ -79,7 +92,10 @@ router.get('/', authMiddleware, async (c) => {
     .leftJoin(assets, eq(assets.assetId, agents.hostAssetId))
     .where(user.role === 'superadmin' ? undefined : eq(agents.tenantId, user.tenantId!))
 
-  return c.json({ agents: rows.map(r => agentOut(r.agent, r.host?.assetId ? r.host : null)) })
+  const policies = await tenantPolicies(db, rows.map(r => r.agent.tenantId))
+  return c.json({ agents: rows.map(r => agentOut(
+    r.agent, r.host?.assetId ? r.host : null, policyOf(r.agent, policies.get(r.agent.tenantId ?? '') ?? null),
+  )) })
 })
 
 // ── POST / — Register new agent ───────────────────────────────────
@@ -184,8 +200,83 @@ router.get('/:agentId', authMiddleware, async (c) => {
     return c.json({ detail: 'Forbidden' }, 403)
   }
 
-  return c.json(agentOut(row.agent, row.host?.assetId ? row.host : null))
+  const policies = await tenantPolicies(db, [row.agent.tenantId])
+  return c.json(agentOut(row.agent, row.host?.assetId ? row.host : null,
+    policyOf(row.agent, policies.get(row.agent.tenantId ?? '') ?? null)))
 })
+
+// ── GET /:agentId/policy — this agent's settings and where each comes from ──
+// value + source per setting: 'agent' (this agent's override), 'tenant' (the tenant
+// default), 'local' (the agent's own setting, as it reported it), 'unknown'.
+function policyOut(agent: AgentRow, resolved: ResolvedPolicy, canEdit: boolean) {
+  const reported = reportedOf(agent)
+  return {
+    agent_id: agent.agentId,
+    kind: agent.kind,
+    version: resolved.version,
+    applied_version: reported.policy_version ?? null,
+    reported_at: reported.reported_at ?? null,
+    capabilities: reported.capabilities ?? {},
+    roles: resolved.roles,
+    role_settings: ROLE_KEYS,
+    settings: resolved.entries.map((e) => ({ ...e, spec: POLICY_SPECS[e.key] })),
+    can_edit: canEdit,
+  }
+}
+
+router.get('/:agentId/policy', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+  const user = c.get('user')
+  const { agentId } = c.req.param()
+  if (!z.string().uuid().safeParse(agentId).success) return c.json({ detail: 'Invalid agent id' }, 400)
+  const found = await agentPolicy(db, agentId)
+  if (!found || (user.role !== 'superadmin' && found.agent.tenantId !== user.tenantId)) {
+    return c.json({ detail: 'Agent not found' }, 404)
+  }
+  const canEdit = (AGENT_MANAGE_ROLES as readonly string[]).includes(user.role) && !found.agent.retiredAt
+  return c.json(policyOut(found.agent, found.resolved, canEdit))
+})
+
+// ── PATCH /:agentId/policy — change this agent's overrides ──
+// {settings: {setting: value | null}} (null = back to the tenant default / the agent's
+// own), and/or {roles: {inventory|sensor|scanner: true|false}}, which sets the role's
+// settings. Applied by the agent at its next heartbeat, between jobs.
+router.patch(
+  '/:agentId/policy',
+  authMiddleware,
+  requireRoles(...AGENT_MANAGE_ROLES),
+  zValidator('json', z.object({
+    settings: z.record(z.string(), z.unknown()).optional(),
+    roles: z.record(z.enum(Object.keys(ROLE_KEYS) as [Role, ...Role[]]), z.boolean()).optional(),
+  })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { agentId } = c.req.param()
+    if (!z.string().uuid().safeParse(agentId).success) return c.json({ detail: 'Invalid agent id' }, 400)
+    const body = c.req.valid('json')
+
+    const found = await agentPolicy(db, agentId)
+    if (!found || found.agent.tenantId !== user.tenantId) return c.json({ detail: 'Agent not found' }, 404)
+    if (found.agent.retiredAt) return c.json({ detail: 'This agent is retired' }, 400)
+
+    const change: Record<string, unknown> = {}
+    for (const [role, on] of Object.entries(body.roles ?? {}) as [Role, boolean][]) Object.assign(change, roleChange(role, on))
+    Object.assign(change, body.settings ?? {})
+    const { policy, errors } = applyChange(found.agent.policy, change, kindKeys(found.agent.kind))
+    if (errors.length) return c.json({ detail: errors.join('; ') }, 400)
+
+    const [updated] = await db.update(agents).set({ policy }).where(eq(agents.agentId, agentId)).returning()
+    if (!updated) return c.json({ detail: 'Agent not found' }, 404)
+    await db.insert(auditLogs).values({
+      userId: user.userId, tenantId: found.agent.tenantId, actionType: 'agent.policy', targetEntity: agentId,
+      previousState: { name: found.agent.name, policy: found.agent.policy }, newState: { policy },
+    }).catch(err => console.error('agent policy audit failed:', err))
+
+    const policies = await tenantPolicies(db, [updated.tenantId])
+    return c.json(policyOut(updated, policyOf(updated, policies.get(updated.tenantId ?? '') ?? null), true))
+  }
+)
 
 // ── PATCH /:agentId — Rename ──────────────────────────────────────
 // The config JSON the 1.x agent read is no longer editable (the current agent is set up
@@ -280,11 +371,17 @@ router.post(
     // Lenient on purpose: a bad value must never reject the whole heartbeat
     // (that would mark the agent offline). Validated below before storing.
     default_gateway: z.string().max(45).optional(),
+    // 2.4.0+: what the agent is and does. Lenient for the same reason; cleaned below.
+    kind: z.unknown().optional(),
+    settings: z.unknown().optional(),
+    capabilities: z.unknown().optional(),
+    policy_version: z.unknown().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const { agentId } = c.req.param()
-    const { version, gateway_ip, default_gateway } = c.req.valid('json')
+    const body = c.req.valid('json')
+    const { version, gateway_ip, default_gateway } = body
 
     // Extract API key from Authorization header
     const authHeader = c.req.header('Authorization')
@@ -314,15 +411,27 @@ router.post(
     if (default_gateway && isIPv4(default_gateway)) {
       updateData.config = { ...((agent.config ?? {}) as Record<string, unknown>), default_gateway }
     }
+    // What a 2.4.0+ agent says about itself: its kind (from its installer), its own
+    // settings, what it can do, and the policy version it applied.
+    const report = cleanReport(body)
+    if (body.settings !== undefined || body.policy_version !== undefined) {
+      updateData.reported = {
+        settings: report.settings, capabilities: report.capabilities,
+        policy_version: report.policyVersion, reported_at: new Date().toISOString(),
+      }
+    }
+    if (report.kind && report.kind !== agent.kind) updateData.kind = report.kind
 
-    await db.update(agents).set(updateData).where(eq(agents.agentId, agentId))
+    const [current] = await db.update(agents).set(updateData).where(eq(agents.agentId, agentId)).returning()
 
-    // The tenant's scan policy, so the agent app can grey out what the admin turned off
-    // (agents 2.3.0+; older ones ignore it, and scans /agent-start refuses anyway).
-    const [tenant] = agent.tenantId
-      ? await db.select({ allowLocalScans: tenants.allowLocalScans }).from(tenants).where(eq(tenants.tenantId, agent.tenantId)).limit(1)
-      : []
-    return c.json({ ok: true, policy: { local_scans: tenant?.allowLocalScans ?? true } })
+    // The settings the admin set for this agent (managed), for the agent to apply between
+    // jobs (2.4.0+), and the agent-started scans switch every agent since 2.3.0 reads.
+    const policies = await tenantPolicies(db, [agent.tenantId])
+    const resolved = policyOf(current ?? agent, policies.get(agent.tenantId ?? '') ?? null)
+    return c.json({
+      ok: true,
+      policy: { local_scans: resolved.effective.local_scans === true, managed: resolved.managed, version: resolved.version },
+    })
   }
 )
 

@@ -195,7 +195,8 @@ class FakeClient:
             return InventoryResult(False, error="server rejected the inventory (HTTP 400)")
         return InventoryResult(True, "asset-1", False, "mac", {"added": 2, "removed": 0, "unchanged": 0})
 
-    def send_heartbeat(self):
+    def send_heartbeat(self, report=None):
+        self.report = report
         return True
 
     def get_pending_scans(self):

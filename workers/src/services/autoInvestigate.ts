@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
+import { jobRefusal } from '../lib/agentPolicy'
+import { agentPolicy } from './agentPolicy'
 import { classifyMac, isSharedVirtualMac } from '../lib/identity'
 import { isGenericHostname } from '../lib/hostnames'
 
@@ -53,6 +55,8 @@ export async function queueInvestigations(
 
   const setting = await db.execute(sql`SELECT auto_investigate_new_devices AS on FROM tenants WHERE tenant_id = ${tenantId}`)
   if (!(setting.rows[0] as { on?: boolean } | undefined)?.on) return 0
+  // The agent that heard the device scans it: not one whose Scanner role is off.
+  if (jobRefusal((await agentPolicy(db, agentId))?.resolved.effective ?? {}, 'active')) return 0
 
   // New-device alerts this upload just raised (first seen in the last few minutes), not
   // yet investigated, on assets without an agent and not scanned actively lately.

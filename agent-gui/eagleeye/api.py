@@ -63,6 +63,10 @@ class AgentClient:
         self._sleep = sleep
         # The tenant's scan policy, from each heartbeat answer (servers before 2.3.0 send none).
         self.local_scans_allowed = True
+        # The settings an admin set for this agent and their version (servers before
+        # 2.4.0 send none: None). The service applies them between jobs (policy.py).
+        self.policy_managed: dict[str, Any] = {}
+        self.policy_version: Optional[str] = None
         # No redirects: the API key must never be sent anywhere but the configured server.
         self.session = session or httpclient.Session(follow_redirects=False)
         self.session.headers.update({
@@ -103,11 +107,15 @@ class AgentClient:
         return f"HTTP {resp.status_code}"
 
     # ── endpoints ──
-    def send_heartbeat(self) -> bool:
+    def send_heartbeat(self, report: Optional[dict[str, Any]] = None) -> bool:
+        """`report`: what this agent says about itself (kind, its own settings, what it
+        can do, the policy version it applied; see AgentService._report)."""
         payload: dict[str, Any] = {"version": VERSION, "gateway_ip": local_ip()}
         gateway = default_gateway()
         if gateway:
             payload["default_gateway"] = gateway
+        if report:
+            payload.update(report)
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
             resp.raise_for_status()
@@ -124,6 +132,10 @@ class AgentClient:
                 log.info("Scans started on this computer are now %s by the administrator",
                          "allowed" if allowed else "turned off")
             self.local_scans_allowed = allowed
+        if isinstance(policy, dict) and isinstance(policy.get("version"), str):
+            managed = policy.get("managed")
+            self.policy_managed = dict(managed) if isinstance(managed, dict) else {}
+            self.policy_version = policy["version"]
         return True
 
     def check_connection(self) -> tuple[bool, str]:

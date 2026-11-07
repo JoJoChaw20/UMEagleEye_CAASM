@@ -14,13 +14,9 @@ const SCAN_POLICY = [
       + 'last 24 hours are skipped; at most 10 such scans run per hour. Active scans can trip intrusion '
       + 'detection, so turn this on only where your security team allows probing.',
   },
-  {
-    key: 'allow_local_scans',
-    label: 'Allow scans started on agent computers',
-    help: 'Lets agents run active scans from their own "Scan now" button and local schedules. When off, '
-      + 'active scans are started only from this dashboard (New scan, and new-device investigations).',
-  },
 ]
+// Whether agents may start scans themselves is now one of the agent settings ("May start
+// its own scans", AgentDefaultsCard), still stored in tenants.allow_local_scans.
 
 export default function ScanPolicyCard({ tenantId, canEdit }) {
   const [tenant, setTenant] = useState(null)
@@ -44,7 +40,7 @@ export default function ScanPolicyCard({ tenantId, canEdit }) {
       setError(err?.response?.data?.detail || 'Failed to save the scan policy')
     } finally { setSaving(null) }
   }
-  if (!tenant || !('allow_local_scans' in tenant)) return null
+  if (!tenant || !('auto_investigate_new_devices' in tenant)) return null
   return (
     <div className="glass-card p-6 space-y-4">
       <div>

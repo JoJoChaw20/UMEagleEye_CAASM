@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 from . import sbom as sbom_tools
 from .api import TRY_AGAIN_LATER, AgentClient
 from .config import Settings
+from . import policy
 from .passive import PassiveSuite
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
 from .schedule import Schedule, ScheduleState
@@ -118,8 +119,17 @@ class AgentService:
         on_event: Callable[[PipelineEvent], None] = log_event,
         state_path: Optional[Path] = None,
         sbom_cache_path: Optional[Path] = None,
+        policy_path: Optional[Path] = None,
     ) -> None:
-        self.settings = settings
+        # This computer's own settings (config file, GUI) and, in self.settings, the same
+        # with the administrator's settings applied (policy.py). The last applied policy
+        # is kept on disk, so it holds from the start, before the first heartbeat.
+        self.local_settings = settings
+        self.policy_store = policy.PolicyStore(policy_path)
+        self.applied_policy_version, self.managed = self.policy_store.load()
+        self.settings = policy.apply(settings, self.managed)
+        self._policy_deferred = False
+        self._capabilities: Optional[dict[str, Any]] = None
         self.client = client or AgentClient(settings.api_url, settings.api_key, settings.agent_id)
         self.on_event = on_event
         self.suite: Optional[PassiveSuite] = None
@@ -588,6 +598,7 @@ class AgentService:
         """One polling cycle: requests from the GUI, pending dashboard scans, local
         schedules, the periodic passive flush and the periodic endpoint inventory."""
         self._reap_active()
+        self._maybe_apply_policy()
         self._handle_requests()
         self._maybe_inventory()
         pending = self.client.get_pending_scans()
@@ -601,9 +612,73 @@ class AgentService:
         self._maybe_schedules()
         self._maybe_flush_passive()
 
+    # ── the administrator's settings ──
+    def _report(self) -> dict[str, Any]:
+        """What the heartbeat says about this agent: its kind, this computer's own
+        settings (what applies where the admin set none), what it can do, and the policy
+        version it runs."""
+        if self._capabilities is None:
+            self._capabilities = policy.capabilities()
+        report: dict[str, Any] = {
+            "kind": policy.KIND, "settings": policy.local_report(self.local_settings),
+            "capabilities": self._capabilities,
+        }
+        if self.applied_policy_version:
+            report["policy_version"] = self.applied_policy_version
+        return report
+
+    def _busy(self) -> bool:
+        """A job is running: settings change only between jobs."""
+        futures = (self._active_future, self._inventory_future, self._sbom_future, self._passive_future)
+        return any(f is not None and not f.done() for f in futures)
+
+    def _maybe_apply_policy(self) -> None:
+        """Apply settings the administrator changed (from the last heartbeat answer),
+        between jobs. Passive listening restarts only when it is switched on or off or
+        changes its capture, after uploading what it heard."""
+        version = getattr(self.client, "policy_version", None)
+        if not isinstance(version, str) or version == self.applied_policy_version:
+            return
+        if self._busy():
+            if not self._policy_deferred:
+                log.info("New settings from the administrator: applied when the running job ends")
+                self._policy_deferred = True
+            return
+        self._policy_deferred = False
+        managed = policy.clean(getattr(self.client, "policy_managed", {}))
+        new = policy.apply(self.local_settings, managed)
+        new.schedules = self.settings.schedules            # handed over live by the GUI
+        changed = [k for k in policy.FIELDS if getattr(new, k) != getattr(self.settings, k)]
+        restart_passive = any(k in changed for k in ("passive", "passive_backend"))
+        if restart_passive and self.suite is not None:
+            try:
+                if self.suite.arp is not None and self.suite.arp.pending():
+                    self.run_passive(None)                 # what was heard goes up first
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Upload before restarting passive listening failed: %s", exc)
+            self.suite.stop()
+            self.suite = None
+        self.settings, self.managed, self.applied_policy_version = new, managed, version
+        self.policy_store.save(version, managed)
+        if restart_passive and new.passive:
+            self._start_passive()
+        log.info("Applied the administrator's settings (managed: %s; changed: %s)",
+                 policy.describe(managed), ", ".join(changed) or "nothing")
+
+    def _start_passive(self) -> None:
+        self.suite = PassiveSuite(self.settings.passive_interface or None, self.settings.fingerbank_key or None,
+                                  backend=self.settings.passive_backend)
+        self.suite.start()
+        self._last_flush = time.time()
+
     # ── lifecycle ──
     def _heartbeat(self) -> None:
-        self.last_heartbeat_ok = self.client.send_heartbeat()
+        try:
+            report = self._report()
+        except Exception as exc:  # noqa: BLE001 - the heartbeat must go out anyway
+            log.debug("Agent report skipped: %s", exc)
+            report = None
+        self.last_heartbeat_ok = self.client.send_heartbeat(report) if report is not None else self.client.send_heartbeat()
         self.last_heartbeat_at = datetime.now()
 
     def _heartbeat_loop(self) -> None:
@@ -619,11 +694,9 @@ class AgentService:
         if interrupted:
             log.warning("%d active scan(s) from an earlier run never finished; marked as interrupted", interrupted)
         threading.Thread(target=self._heartbeat_loop, daemon=True, name="heartbeat").start()
-        if self.settings.passive:
-            self.suite = PassiveSuite(self.settings.passive_interface or None, self.settings.fingerbank_key or None,
-                                      backend=self.settings.passive_backend)
-            self.suite.start()
-            self._last_flush = time.time()
+        self._maybe_apply_policy()          # what the first heartbeat brought, before listening starts
+        if self.settings.passive and self.suite is None:
+            self._start_passive()
 
     def run_forever(self) -> None:
         self.start()

@@ -22,6 +22,8 @@ import { buildNetworks, networkOf, passiveNetworkOf, scanKind, type ScanKind } f
 import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
 import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
 import { resolveNetworkScope } from '../lib/networkScope'
+import { jobRefusal } from '../lib/agentPolicy'
+import { agentPolicy } from '../services/agentPolicy'
 import {
   INVESTIGATE_EXPIRE_HOURS, INVESTIGATE_TRIGGER, isInvestigation, queueInvestigations, recordInvestigationFailure,
   recordInvestigationResult, type InvestigationInfo,
@@ -729,6 +731,10 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
         .from(agents).where(eq(agents.agentId, agent_id)).limit(1)
       if (!agent || agent.retiredAt || !effectiveTenantId || agent.tenantId !== effectiveTenantId) {
         return c.json({ detail: 'Agent not found' }, 404)
+      }
+      if (effectiveScanType === 'active') {
+        const refusal = jobRefusal((await agentPolicy(db, agent_id))?.resolved.effective ?? {}, 'active')
+        if (refusal) return c.json({ detail: `${refusal} Choose another agent, or change it on the Agents page.` }, 409)
       }
     }
 

@@ -6,6 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles, requireTenantAccess } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { tenants, users, assets, auditLogs } from '../db/schema'
+import { POLICY_KEYS, POLICY_SPECS, ROLE_KEYS, applyChange, cleanPolicy } from '../lib/agentPolicy'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -159,6 +160,65 @@ router.patch(
       auto_investigate_new_devices: updated.autoInvestigateNewDevices,
       allow_local_scans: updated.allowLocalScans,
     })
+  }
+)
+
+// ── Default agent settings of a tenant (lib/agentPolicy.ts) ────────
+// A setting set here applies to every agent of the tenant that has no override of its
+// own; one not set here stays each agent's own. local_scans is the allow_local_scans
+// column (the Scan Policy of 2.3.0), so it always has a value.
+function agentPolicyOut(t: typeof tenants.$inferSelect, canEdit: boolean) {
+  const defaults = cleanPolicy(t.agentPolicy)
+  return {
+    tenant_id: t.tenantId,
+    settings: POLICY_KEYS.map((key) => ({
+      key,
+      value: key === 'local_scans' ? t.allowLocalScans : (defaults[key] ?? null),
+      spec: POLICY_SPECS[key],
+    })),
+    role_settings: ROLE_KEYS,
+    can_edit: canEdit,
+  }
+}
+
+router.get('/:tenantId/agent-policy', ...tenantViewAccess, async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+  const user = c.get('user')
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, c.req.param('tenantId'))).limit(1)
+  if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+  return c.json(agentPolicyOut(tenant, user.role === 'superadmin' || user.role === 'tenant_superadmin'))
+})
+
+// {settings: {setting: value | null}}: null = no tenant default (each agent's own).
+router.patch(
+  '/:tenantId/agent-policy',
+  ...tenantAdminAccess,
+  zValidator('json', z.object({ settings: z.record(z.string(), z.unknown()) })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { tenantId } = c.req.param()
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+
+    const { local_scans: localScans, ...rest } = c.req.valid('json').settings
+    if (localScans !== undefined && typeof localScans !== 'boolean') {
+      return c.json({ detail: 'local_scans: must be true or false' }, 400)
+    }
+    const keys = POLICY_KEYS.filter((k) => k !== 'local_scans')
+    const { policy, errors } = applyChange(tenant.agentPolicy, rest, keys)
+    if (errors.length) return c.json({ detail: errors.join('; ') }, 400)
+
+    const [updated] = await db.update(tenants)
+      .set({ agentPolicy: policy, ...(localScans !== undefined ? { allowLocalScans: localScans } : {}) })
+      .where(eq(tenants.tenantId, tenantId)).returning()
+    if (!updated) return c.json({ detail: 'Tenant not found' }, 404)
+    await db.insert(auditLogs).values({
+      userId: user.userId, tenantId, actionType: 'tenant.agent_policy', targetEntity: tenantId,
+      previousState: { agent_policy: tenant.agentPolicy, allow_local_scans: tenant.allowLocalScans },
+      newState: { agent_policy: policy, allow_local_scans: updated.allowLocalScans },
+    }).catch(err => console.error('tenant agent policy audit failed:', err))
+    return c.json(agentPolicyOut(updated, true))
   }
 )
 

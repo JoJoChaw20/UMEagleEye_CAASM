@@ -187,7 +187,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     for d in missing:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
 
-    service = AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path())
+    from .policy import policy_path
+    service = AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path(),
+                           policy_path=policy_path())
     if SCHEDULES_ENABLED:
         for sched in settings.schedules:
             log.info("Schedule     : %s %s", sched.get("subnet"), Schedule.from_dict(sched).describe())

@@ -1,11 +1,13 @@
-"""The data-collection notice shown before the agent first runs (PDPA 2010: notice
-and choice). Bump CONSENT_VERSION whenever what is collected changes, so the
-notice is shown again."""
+"""The data-collection notice shown before the agent first runs (PDPA 2010: notice).
+Bump CONSENT_VERSION whenever what is collected changes, so the notice is shown again.
+Since 2.4.0 what is collected is the organisation's decision (agent settings set on the
+dashboard), as with any company device-management tool; the notice says what it is."""
 
 from __future__ import annotations
 
-CONSENT_VERSION = 4     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
-                        # 4: automatic scan of newly heard devices (tenant setting), dashboard inventory requests
+CONSENT_VERSION = 5     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
+                        # 4: automatic scan of newly heard devices (tenant setting), dashboard inventory requests;
+                        # 5: the administrator sets what is collected from the dashboard (agent settings)
 
 NOTICE_TITLE = "What this agent collects"
 
@@ -33,9 +35,9 @@ names, addresses and what kind of device each one says it is. It never reads the
 (firewall, antivirus, disk encryption, Secure Boot, TPM, UAC, remote desktop, SMBv1), the
 <b>number</b> of local administrator accounts, network interfaces, network-reachable
 listening ports with the program behind them, and software installed for all users.</p>
-<p>Two items identify a person more directly and are <b>off unless you switch them on</b>:
-software one user installed only for themselves, and the names of the administrator
-accounts.</p>
+<p>Two items identify a person more directly and are <b>off by default</b>: software one
+user installed only for themselves, and the names of the administrator accounts. Your
+organisation's administrator may switch them on.</p>
 
 <h3>Software packages (SBOM, on by default)</h3>
 <p>Every day (only the folders that changed), once a week in full, and when you or an
@@ -50,10 +52,12 @@ records, not your documents, and sends no file contents or file paths.</p>
 <p>Files or documents, browsing history, passwords or other credentials, keystrokes,
 screenshots, email or messages, location, or the contents of network traffic.</p>
 
-<h3>Your choices</h3>
-<p>You can change these choices at any time on the Privacy page, preview exactly what
-would be sent, or stop the agent. An administrator can ask for a fresh inventory from the
-dashboard, and can delete this computer's inventory
-from the server with <i>Clear inventory</i> on its asset page. Only the latest inventory
-is kept; each collection replaces the previous one.</p>
+<h3>Who decides</h3>
+<p>Your organisation's administrator sets what this agent collects from the EagleEye
+dashboard; the Privacy and Settings pages show those settings as set by the administrator.
+What the administrator has not set, you can change on those pages. You can preview exactly
+what would be sent at any time. An administrator can ask for a fresh inventory from the
+dashboard, and can delete this computer's inventory from the server with <i>Clear
+inventory</i> on its asset page. Only the latest inventory is kept; each collection
+replaces the previous one.</p>
 """

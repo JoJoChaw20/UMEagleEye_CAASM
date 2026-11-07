@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QTimer
 
 from ..config import Settings, sbom_cache_path, state_path as instance_state_path
+from ..policy import policy_path
 from ..pipeline import PipelineEvent
 from ..service import AgentService, log_event
 
@@ -121,7 +122,7 @@ class AgentController:
         if problems:
             return "; ".join(problems)
         self.service = AgentService(settings, on_event=self._on_event, state_path=state_path(),
-                                    sbom_cache_path=sbom_cache_path())
+                                    sbom_cache_path=sbom_cache_path(), policy_path=policy_path())
         service = self.service
 
         def run() -> None:

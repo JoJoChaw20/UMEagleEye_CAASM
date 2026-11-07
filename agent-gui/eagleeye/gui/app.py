@@ -386,6 +386,13 @@ class MainWindow(QMainWindow):
         self.status_page.refresh()
         self._refresh_state()
         if self._tick % 10 == 0:
+            # The administrator changed this agent's settings: show them on the pages.
+            from .pages import managed_now
+            managed = managed_now(self)
+            if managed != getattr(self, "_managed_shown", None):
+                self._managed_shown = managed
+                self.settings_page.apply_managed()
+                self.privacy_page.reload()
             if self.schedules_page is not None:
                 self.schedules_page.refresh()
         if self.toggle_btn.text() != ("Stop" if self.controller.running else "Start"):

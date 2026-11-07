@@ -2,12 +2,15 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Plus, Trash2, Copy, Check, X, RefreshCw, Radio, AlertCircle, KeyRound, Pencil, ChevronDown, ChevronRight, Monitor,
-  Download,
+  Download, SlidersHorizontal,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import ScanPolicyCard from '../components/common/ScanPolicyCard'
+import AgentPolicyModal from '../components/agents/AgentPolicyModal'
+import AgentDefaultsCard from '../components/agents/AgentDefaultsCard'
+import { ROLES } from '../components/agents/policy'
 import { formatSeen } from '../utils/time'
 import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
 
@@ -266,7 +269,30 @@ function RenameModal({ agent, onClose, onSave }) {
 }
 
 // ── One agent row ─────────────────────────────────────────────────
-function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, onDelete, busy }) {
+// The roles an agent has (read from its settings), and whether it applied the latest change.
+function Roles({ a }) {
+  if (!a.roles) return <span className="text-dark-500">—</span>
+  const on = ROLES.filter((r) => a.roles[r.key])
+  const unknown = ROLES.filter((r) => a.roles[r.key] === null)
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {on.map((r) => (
+        <span key={r.key} title={r.help} className="px-2 py-0.5 rounded-full text-[11px] border border-eagle-500/30 bg-eagle-500/10 text-eagle-300">{r.label}</span>
+      ))}
+      {on.length === 0 && unknown.length === 0 && <span className="text-xs text-dark-500">None</span>}
+      {unknown.length > 0 && (
+        <span className="text-[11px] text-dark-500" title="Agents before 2.4.0 do not report their settings">
+          {unknown.map((r) => r.label).join(', ')} unknown
+        </span>
+      )}
+      {a.policy?.in_sync === false && (
+        <span className="text-[11px] text-yellow-400" title="The agent applies the latest settings at its next heartbeat">applying…</span>
+      )}
+    </div>
+  )
+}
+
+function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, onDelete, onSettings, busy }) {
   const retired = a.status === 'retired'
   return (
     <tr className={retired ? 'opacity-70' : ''}>
@@ -278,6 +304,7 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
         </div>
       </td>
       <td><StatusBadge status={a.status} /></td>
+      <td>{retired ? <span className="text-dark-500">—</span> : <Roles a={a} />}</td>
       <td>
         {a.host ? (
           <Link to={`/inventory/${a.host.asset_id}`} className="group inline-flex items-start gap-2">
@@ -306,6 +333,9 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
           <div className="flex items-center gap-1">
             {!retired && (
               <>
+                <button onClick={() => onSettings(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Settings and roles" aria-label={`Settings of ${a.name}`}>
+                  <SlidersHorizontal className="w-4 h-4" />
+                </button>
                 <button onClick={() => onRename(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Rename" aria-label={`Rename ${a.name}`}>
                   <Pencil className="w-4 h-4" />
                 </button>
@@ -336,6 +366,7 @@ export default function AgentsPage() {
   const [showRegister, setShowRegister] = useState(false)
   const [connection, setConnection] = useState(null)     // { agentName, agentId, apiKey, rotated }
   const [renaming, setRenaming] = useState(null)
+  const [settingsOf, setSettingsOf] = useState(null)
   const [showRetired, setShowRetired] = useState(false)
   const [tenants, setTenants] = useState([])
   const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
@@ -431,6 +462,7 @@ export default function AgentsPage() {
       <tr>
         <th>Agent</th>
         <th>Status</th>
+        <th>Roles</th>
         <th>Computer</th>
         <th>Last heartbeat</th>
         <th>Last inventory</th>
@@ -442,7 +474,7 @@ export default function AgentsPage() {
   )
   const row = (a) => (
     <AgentRow key={a.agent_id} a={a} canManage={canManage} showTenant={isSuperadmin} tenantName={tenantName(a.tenant_id)}
-      onRename={setRenaming} onRotate={rotate} onDelete={remove} busy={busy} />
+      onRename={setRenaming} onRotate={rotate} onDelete={remove} onSettings={setSettingsOf} busy={busy} />
   )
 
   return (
@@ -511,6 +543,7 @@ export default function AgentsPage() {
       {/* Platform superadmin: the policy of the tenant picked in the filter */}
       <ScanPolicyCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId}
         canEdit={isSuperadmin || user?.role === 'tenant_superadmin'} />
+      <AgentDefaultsCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId} onSaved={load} />
 
       {retired.length > 0 && (
         <div className="glass-card overflow-hidden">
@@ -530,6 +563,7 @@ export default function AgentsPage() {
       {showRegister && <RegisterModal onClose={() => setShowRegister(false)} onSubmit={register} />}
       {connection && <ConnectionModal {...connection} installer={installer} onClose={() => setConnection(null)} />}
       {renaming && <RenameModal agent={renaming} onClose={() => setRenaming(null)} onSave={rename} />}
+      {settingsOf && <AgentPolicyModal agent={settingsOf} onClose={() => setSettingsOf(null)} onSaved={load} />}
     </div>
   )
 }

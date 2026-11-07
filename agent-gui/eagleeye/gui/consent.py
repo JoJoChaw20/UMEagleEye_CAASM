@@ -1,11 +1,13 @@
-"""First-run notice and choices. The agent does not start until it is accepted."""
+"""First-run notice. The agent does not start until it is acknowledged. What the agent
+collects is set by the organisation's administrator (agent settings on the dashboard,
+2.4.0); the notice lists what it collects until they set something."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout
 
 from ..config import Settings
 from ..privacy import CONSENT_VERSION, NOTICE_HTML, NOTICE_TITLE
@@ -25,28 +27,15 @@ class ConsentDialog(QDialog):
         text.document().setDefaultStyleSheet(theme.document_css(theme.current()))
         text.setHtml(NOTICE_HTML)
 
-        box = Panel("Your choices")
-        self.inventory = QCheckBox("Collect this computer's inventory")
-        self.inventory.setChecked(settings.inventory)
-        self.user_software = QCheckBox("Include software installed only for individual users (personal data)")
-        self.user_software.setChecked(settings.inventory_user_software)
-        self.admin_names = QCheckBox("Include the names of administrator accounts (personal data)")
-        self.admin_names.setChecked(settings.inventory_admin_names)
-        self.passive = QCheckBox("Listen passively for device announcements (needs Administrator)")
-        self.passive.setChecked(settings.passive)
-        self.inventory.toggled.connect(self.user_software.setEnabled)
-        self.inventory.toggled.connect(self.admin_names.setEnabled)
-        self.user_software.setEnabled(settings.inventory)
-        self.admin_names.setEnabled(settings.inventory)
-
-        box.add(label("You can change them later on the Privacy page.", "hint"))
-        for w in (self.inventory, self.user_software, self.admin_names, self.passive):
-            box.add(w)
-        for w in (self.user_software, self.admin_names):
-            w.setContentsMargins(26, 0, 0, 0)
+        box = Panel("What it collects now")
+        self.items = summary(settings)
+        for item in self.items:
+            box.add(label(item, "value", wrap=True))
+        box.add(label("Your organisation's administrator can change these from the EagleEye dashboard.", "hint",
+                      wrap=True))
 
         buttons = QDialogButtonBox()
-        accept = buttons.addButton("Accept and continue", QDialogButtonBox.ButtonRole.AcceptRole)
+        accept = buttons.addButton("OK, continue", QDialogButtonBox.ButtonRole.AcceptRole)
         accept.setProperty("role", "primary")
         quit_btn = buttons.addButton("Quit", QDialogButtonBox.ButtonRole.RejectRole)
         quit_btn.setProperty("role", "ghost")
@@ -72,8 +61,7 @@ class ConsentDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
         layout.addLayout(head)
-        layout.addWidget(label("The agent does not start until you accept. Read what it collects, then choose.",
-                               "description", wrap=True))
+        layout.addWidget(label("The agent starts once you have read what it collects.", "description", wrap=True))
         layout.addWidget(text, 1)
         layout.addWidget(box)
         note = label("By continuing you confirm you have read this notice.", "hint", wrap=True)
@@ -81,14 +69,23 @@ class ConsentDialog(QDialog):
         layout.addWidget(buttons)
 
     def apply(self) -> None:
-        """Write the choices and the consent record into the settings."""
+        """Record that the notice was read (the settings themselves are unchanged)."""
         s = self.settings
-        s.inventory = self.inventory.isChecked()
-        s.inventory_user_software = s.inventory and self.user_software.isChecked()
-        s.inventory_admin_names = s.inventory and self.admin_names.isChecked()
-        s.passive = self.passive.isChecked()
         s.consent_version = CONSENT_VERSION
         s.consent_at = datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def summary(settings: Settings) -> list[str]:
+    """One line per kind of collection, on or off, as the agent would run now."""
+    def mark(on: bool) -> str:
+        return "On " if on else "Off"
+    return [
+        f"{mark(settings.inventory)}  This computer's inventory",
+        f"{mark(settings.inventory and settings.inventory_user_software)}  Software individual users installed (personal data)",
+        f"{mark(settings.inventory and settings.inventory_admin_names)}  Names of administrator accounts (personal data)",
+        f"{mark(settings.sbom)}  Software packages and their known vulnerabilities (SBOM)",
+        f"{mark(settings.passive)}  Passive listening for device announcements",
+    ]
 
 
 def needs_consent(settings: Settings) -> bool:
