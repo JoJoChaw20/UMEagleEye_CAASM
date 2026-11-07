@@ -112,6 +112,8 @@ def parse_challenge(data: bytes) -> Optional[dict[str, Any]]:
         name = windows_name(major, minor, build)
         if name:
             out["name"] = name
+        elif (major, minor, build) == (6, 1, 0):
+            out["samba"] = True                                  # Samba answers 6.1 with build 0
     keys = {1: "smb_computer_name", 2: "smb_netbios_domain", 3: "smb_fqdn", 4: "smb_domain", 5: "smb_forest"}
     off, end = info_off, min(len(m), info_off + info_len)
     while off + 4 <= end:
@@ -126,6 +128,19 @@ def parse_challenge(data: bytes) -> Optional[dict[str, Any]]:
     if out.get("smb_domain", "").lower() in (out.get("smb_fqdn", "").lower(), out.get("smb_computer_name", "").lower()):
         out.pop("smb_domain", None)                             # not in a domain: Windows repeats its own name
     return out or None
+
+
+def netbios_name(name: str, suffix: int = 0x20) -> bytes:
+    """First-level NetBIOS encoding of a 16-byte name, as a length-prefixed label."""
+    raw = name.upper().ljust(15)[:15].encode("ascii", "replace") + bytes([suffix])
+    return b"\x20" + bytes(c for b in raw for c in (0x41 + (b >> 4), 0x41 + (b & 0x0F))) + b"\x00"
+
+
+def session_request(called: str = "*SMBSERVER") -> bytes:
+    """NetBIOS session request (port 139 needs one before SMB), from EAGLEEYE. Samba answers
+    to *SMBSERVER; Windows only to its own computer name."""
+    body = netbios_name(called) + netbios_name("EAGLEEYE")
+    return bytes([0x81, 0]) + struct.pack(">H", len(body)) + body
 
 
 def _recv_nbss(s: socket.socket) -> bytes:
@@ -145,9 +160,25 @@ def _read_exact(s: socket.socket, n: int) -> bytes:
 
 def smb_probe(ip: str, port: int = 445, timeout: float = 3.0) -> Optional[dict[str, Any]]:
     """{smb_dialect, signing_required, ..., name, smb_computer_name, smb_domain, ...} or None."""
+    if port != 139:
+        return _smb_exchange(ip, port, timeout, None)
+    found = _smb_exchange(ip, port, timeout, "*SMBSERVER")
+    if found is None:                                            # refused: ask for its own name
+        from .udp import netbios_status
+        computer = (netbios_status(ip, timeout) or {}).get("computer")
+        if computer:
+            found = _smb_exchange(ip, port, timeout, computer)
+    return found
+
+
+def _smb_exchange(ip: str, port: int, timeout: float, called: Optional[str]) -> Optional[dict[str, Any]]:
     try:
         with socket.create_connection((ip, port), timeout=timeout) as s:
             s.settimeout(timeout)
+            if called:
+                s.sendall(session_request(called))
+                if _read_exact(s, 4)[:1] != b"\x82":            # positive session response
+                    return None
             s.sendall(negotiate_request())
             neg = parse_negotiate(_recv_nbss(s))
             if neg is None:

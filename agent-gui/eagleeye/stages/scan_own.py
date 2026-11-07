@@ -9,8 +9,11 @@ the choice between them (Settings.scan_engine):
 
 from __future__ import annotations
 
+import csv
+import ipaddress
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +99,100 @@ def compare_hosts(own: list[HostRecord], ref: list[HostRecord]) -> dict[str, Any
     }
 
 
+# ── scoring against a ground-truth list (the lab's lab-devices.csv) ─────────
+
+def parse_truth_services(text: str) -> list[dict[str, Any]]:
+    """'22 OpenSSH 10.2p1; 139/445 Samba 4.23.6; udp161 net-snmp 5.9.4' -> one entry per port."""
+    out = []
+    for part in (text or "").split(";"):
+        words = part.split()
+        if not words or not re.match(r"^(udp)?\d+(/\d+)*$", words[0]):
+            continue
+        protocol = "udp" if words[0].startswith("udp") else "tcp"
+        rest = words[1:]
+        version = rest.pop() if rest and re.match(r"^\d+(\.\w+)+$", rest[-1]) else ""
+        for port in words[0].removeprefix("udp").split("/"):
+            out.append({"port": int(port), "protocol": protocol, "product": " ".join(rest), "version": version})
+    return out
+
+
+def load_truth(path: Path) -> dict[str, dict[str, Any]]:
+    """ip -> {mac, name, os, services} from a CSV with columns ip, mac, name, device, os, services."""
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    truth = {}
+    for row in rows:
+        row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+        if row.get("ip"):
+            truth[row["ip"]] = {"mac": row.get("mac", ""), "name": row.get("name", ""), "os": row.get("os", ""),
+                                "services": parse_truth_services(row.get("services", ""))}
+    return truth
+
+
+# A ground-truth list names a service the way people do ("RDP"); an engine names the
+# product ("Microsoft Terminal Services") or the service ("ms-wbt-server"). Equal for both.
+PRODUCT_SYNONYMS = {"rdp": ("terminal services", "rdp", "ms-wbt-server"),
+                    "smb": ("smb", "samba", "microsoft-ds", "netbios-ssn"),
+                    "rpc": ("rpc", "msrpc", "epmap")}
+
+
+def product_matches(truth_product: str, got: dict[str, Any]) -> bool:
+    first = truth_product.split()[0].lower()
+    text = f"{got.get('product') or ''} {got.get('service') or ''}".lower()
+    return any(alias in text for alias in PRODUCT_SYNONYMS.get(first, (first,)))
+
+
+def _known(value: str) -> bool:
+    return bool(value) and value != "?"
+
+
+def score_against_truth(hosts: list[HostRecord], truth: dict[str, dict[str, Any]], target: str) -> dict[str, Any]:
+    """How much of the truth one engine got right, for the truth devices inside `target`."""
+    net = ipaddress.ip_network(target, strict=False)
+    found = {h.ip: h for h in hosts}
+    c = {"devices": 0, "found": 0, "mac_checked": 0, "mac_right": 0, "name_checked": 0, "name_right": 0,
+         "ports": 0, "ports_found": 0, "product_checked": 0, "product_right": 0, "version_checked": 0, "version_right": 0}
+    missing, wrong = [], []
+    for ip, t in truth.items():
+        if ipaddress.ip_address(ip) not in net:
+            continue
+        c["devices"] += 1
+        h = found.get(ip)
+        if h is None:
+            missing.append(ip)
+            continue
+        c["found"] += 1
+        if _known(t["mac"]) and h.mac:
+            c["mac_checked"] += 1
+            c["mac_right"] += h.mac.replace("-", ":").upper() == t["mac"].replace("-", ":").upper()
+        if _known(t["name"]):
+            c["name_checked"] += 1
+            if (h.hostname or "").lower().split(".")[0] == t["name"].lower().split(" ")[0].split(".")[0]:
+                c["name_right"] += 1
+            else:
+                wrong.append({"ip": ip, "field": "name", "truth": t["name"], "got": h.hostname})
+        ports = {(p["port"], p.get("protocol", "tcp")): p for p in h.ports}
+        for svc in t["services"]:
+            c["ports"] += 1
+            got = ports.get((svc["port"], svc["protocol"]))
+            if not got:
+                continue
+            c["ports_found"] += 1
+            if svc["product"]:
+                c["product_checked"] += 1
+                if product_matches(svc["product"], got):
+                    c["product_right"] += 1
+                else:
+                    wrong.append({"ip": ip, "port": svc["port"], "field": "product", "truth": svc["product"], "got": got.get("product")})
+            if svc["version"]:
+                c["version_checked"] += 1
+                if (got.get("version") or "").split()[0:1] == [svc["version"]]:
+                    c["version_right"] += 1
+                else:
+                    wrong.append({"ip": ip, "port": svc["port"], "field": "version", "truth": svc["version"], "got": got.get("version")})
+    return {**c, "missing": missing, "wrong": wrong}
+
+
 def report_dir() -> Path:
     from ..config import config_dir
     return config_dir() / "compare"
@@ -105,10 +202,12 @@ class CompareScanStage(Stage):
     name = "scan"
     label = "Discover hosts with both engines and compare"
 
-    def __init__(self, subnet: str, tier: str = "base", out_dir: Optional[Path] = None) -> None:
+    def __init__(self, subnet: str, tier: str = "base", out_dir: Optional[Path] = None,
+                 truth: Optional[Path] = None) -> None:
         self.subnet = subnet
         self.tier = tier
         self.out_dir = out_dir
+        self.truth = truth
 
     def run(self, ctx: PipelineContext) -> None:
         own_ctx = PipelineContext(ctx.pipeline, subnet=self.subnet, cancelled=ctx.cancelled, _emit=ctx._emit, _stage=ctx._stage)
@@ -124,6 +223,11 @@ class CompareScanStage(Stage):
             "ref": {"scanner": ref_ctx.summary.get("scanner"), "seconds": ref_seconds},
             **compare_hosts(own_ctx.hosts, ref_ctx.hosts),
         }
+        if self.truth:
+            truth = load_truth(self.truth)
+            report["truth"] = {"file": str(self.truth),
+                               "own": score_against_truth(own_ctx.hosts, truth, self.subnet),
+                               "ref": score_against_truth(ref_ctx.hosts, truth, self.subnet)}
         out_dir = self.out_dir or report_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"compare-{datetime.now():%Y%m%d-%H%M%S}.json"
@@ -131,16 +235,18 @@ class CompareScanStage(Stage):
         ctx.hosts = own_ctx.hosts
         ctx.summary.update(own_ctx.summary)
         ctx.summary["compare"] = {"report": str(path), "hosts": report["hosts"], "ports": report["ports"],
-                                  "ref_scanner": report["ref"]["scanner"], "ref_seconds": ref_seconds}
+                                  "ref_scanner": report["ref"]["scanner"], "ref_seconds": ref_seconds,
+                                  "truth": {k: {n: v for n, v in report["truth"][k].items() if n not in ("missing", "wrong")}
+                                            for k in ("own", "ref")} if "truth" in report else None}
         log.info("Engine comparison written to %s", path)
 
 
-def active_scan_stage(subnet: str, settings: Any) -> Stage:
-    """The scan stage Settings.scan_engine asks for."""
+def active_scan_stage(subnet: str, settings: Any, truth: Optional[Path] = None) -> Stage:
+    """The scan stage Settings.scan_engine asks for (`truth`: a ground-truth CSV for compare)."""
     engine = getattr(settings, "scan_engine", "auto") or "auto"
     tier = getattr(settings, "scan_ports", "base") or "base"
     if engine == "own":
         return OwnScanStage(subnet, tier)
     if engine == "compare":
-        return CompareScanStage(subnet, tier)
+        return CompareScanStage(subnet, tier, truth=truth)
     return NmapScanStage(subnet)

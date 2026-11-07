@@ -30,7 +30,7 @@ TLS_PORTS = {443, 465, 636, 993, 995, 2376, 4443, 5986, 6443, 8443, 8883, 9443, 
 HTTP_PORTS = {80, 2375, 2869, 3000, 5000, 5601, 5985, 7000, 7001, 8000, 8001, 8008, 8060, 8080, 8081,
               8088, 8090, 8181, 8888, 9000, 9001, 9090, 9200, 10000, 15672, 49152, 49153}
 GREETING_PORTS = {21: "ftp", 23: "telnet", 25: "smtp", 110: "pop3", 143: "imap", 587: "smtp"}
-NAME_ONLY_PORTS = {135: "msrpc", 139: "netbios-ssn"}
+NAME_ONLY_PORTS = {135: "msrpc"}
 OS_KEYS = ("name", "smb_computer_name", "smb_domain", "smb_fqdn", "ntlm_version")
 READ_LIMIT = 65536
 
@@ -314,8 +314,8 @@ def probe(ip: str, port: int, timeout: float = 3.0) -> Optional[Finding]:
     """Identify the service on one open TCP port; None when nothing could be learned."""
     if port in NAME_ONLY_PORTS:
         return Finding(NAME_ONLY_PORTS[port])
-    if port == 445:
-        return smb_finding(msproto.smb_probe(ip, port, timeout))
+    if port in (139, 445):
+        return smb_finding(msproto.smb_probe(ip, port, timeout), "netbios-ssn" if port == 139 else "microsoft-ds")
     if port == 3389:
         return rdp_finding(msproto.rdp_probe(ip, port, timeout))
     if port in TLS_PORTS:
@@ -359,14 +359,14 @@ def probe(ip: str, port: int, timeout: float = 3.0) -> Optional[Finding]:
     return None
 
 
-def smb_finding(info: Optional[dict[str, Any]]) -> Finding:
+def smb_finding(info: Optional[dict[str, Any]], service: str = "microsoft-ds") -> Finding:
     """The SMB probe's answer as a port finding; its machine facts go to extra['os']."""
     if not info:
-        return Finding("microsoft-ds")
+        return Finding(service)
     windows = bool(info.get("name"))
-    f = Finding("microsoft-ds", "Microsoft Windows SMB" if windows else "SMB server",
-                info.get("ntlm_version", "") if windows else "")
-    f.extra = {k: v for k, v in info.items() if k not in OS_KEYS}
+    product = "Microsoft Windows SMB" if windows else "Samba smbd" if info.get("samba") else "SMB server"
+    f = Finding(service, product, info.get("ntlm_version", "") if windows else "")
+    f.extra = {k: v for k, v in info.items() if k not in OS_KEYS and k != "samba"}
     machine = {k: info[k] for k in OS_KEYS if info.get(k)}
     if machine:
         f.extra["os"] = machine

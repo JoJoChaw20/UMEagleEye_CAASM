@@ -90,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="scan a subnet once, locally; nothing is uploaded")
     scan.add_argument("target", help="IPv4 address or CIDR range, e.g. 192.168.1.0/24")
     scan.add_argument("--json", type=Path, dest="json_out", help="write the ingest payload to this file")
+    scan.add_argument("--truth", type=Path, help="with --engine compare: score both engines against this CSV "
+                                               "(columns ip, mac, name, device, os, services)")
     _add_settings_flags(scan)
 
     listen = sub.add_parser("listen", help="passively listen for a while, then print what was seen")
@@ -193,7 +195,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     settings = _settings_from(args)
-    stages: list[Any] = [active_scan_stage(args.target, settings)]
+    stages: list[Any] = [active_scan_stage(args.target, settings, getattr(args, "truth", None))]
     if settings.snmp_enabled:
         stages.append(SnmpPollStage(settings))
     holder: dict[str, Any] = {}
@@ -215,6 +217,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         h, p = cmp_["hosts"], cmp_["ports"]
         print(f"Compared with {cmp_['ref_scanner']} ({cmp_['ref_seconds']}s): hosts own {h['own']} / ref {h['ref']} / both {h['both']}"
               f"; only own {h['only_own']}; only ref {h['only_ref']}; open-port agreement {p['agreement']:.0%}")
+        for engine_name, t in (cmp_.get("truth") or {}).items():
+            print(f"Truth ({engine_name}): devices {t['found']}/{t['devices']}, MACs {t['mac_right']}/{t['mac_checked']}, "
+                  f"names {t['name_right']}/{t['name_checked']}, ports {t['ports_found']}/{t['ports']}, "
+                  f"products {t['product_right']}/{t['product_checked']}, versions {t['version_right']}/{t['version_checked']}")
         print(f"Report: {cmp_['report']}")
     _write_json(args.json_out, holder)
     return 0

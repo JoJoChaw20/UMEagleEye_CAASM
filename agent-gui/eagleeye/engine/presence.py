@@ -155,24 +155,42 @@ def parse_proc_net_arp(text: str) -> dict[str, str]:
     return found
 
 
+ARP_TRIGGER_BATCH = 32
+
+
+def trigger_arp(addresses: list[str], src: str, batch: int = ARP_TRIGGER_BATCH) -> int:
+    """Make the kernel ARP for each address by sending it an empty datagram (discard port).
+    A datagram to an unresolved address waits in the kernel, counted against its socket,
+    until ARP gives up (about 3 s); one socket for a whole /24 fills its send buffer and
+    then blocks. So each batch gets its own non-blocking socket. Returns datagrams sent."""
+    sent = 0
+    for start in range(0, len(addresses), batch):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setblocking(False)
+            s.bind((src, 0))
+            for ip in addresses[start:start + batch]:
+                try:
+                    s.sendto(b"", (ip, 9))
+                    sent += 1
+                except OSError:                        # EAGAIN, unreachable: that one is skipped
+                    pass
+    return sent
+
+
 def _linux_arp(addresses: list[str], src: str, rounds: int = 2, wait: float = 1.5) -> dict[str, str]:
     found: dict[str, str] = {}
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.bind((src, 0))
-        for _ in range(rounds):
-            for ip in addresses:
-                if ip not in found:
-                    try:
-                        s.sendto(b"", (ip, 9))              # discard port: only the ARP matters
-                    except OSError:
-                        pass
-            time.sleep(wait)
-            try:
-                with open("/proc/net/arp", encoding="ascii") as f:
-                    table = parse_proc_net_arp(f.read())
-            except OSError:
-                break
-            found.update({ip: mac for ip, mac in table.items() if ip in set(addresses)})
+    wanted = set(addresses)
+    for _ in range(rounds):
+        trigger_arp([ip for ip in addresses if ip not in found], src)
+        time.sleep(wait)
+        try:
+            with open("/proc/net/arp", encoding="ascii") as f:
+                table = parse_proc_net_arp(f.read())
+        except OSError:
+            break
+        found.update({ip: mac for ip, mac in table.items() if ip in wanted})
+        if len(found) == len(addresses):
+            break
     return found
 
 

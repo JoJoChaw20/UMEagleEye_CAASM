@@ -528,3 +528,55 @@ def test_own_macs_from_ip_addr_json():
              "addr_info": [{"family": "inet", "local": "142.19.0.1"}, {"family": "inet", "local": "192.168.36.50"},
                            {"family": "inet6", "local": "fe80::1"}]}]
     assert presence.parse_ip_addr_macs(data) == {"142.19.0.1": "00:0C:29:04:6C:77", "192.168.36.50": "00:0C:29:04:6C:77"}
+
+
+def test_arp_trigger_uses_a_fresh_non_blocking_socket_per_batch(monkeypatch):
+    made = []
+
+    class FakeSocket:
+        def __init__(self, *a):
+            self.sent, self.blocking = [], True
+            made.append(self)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def setblocking(self, flag): self.blocking = flag
+        def bind(self, addr): self.bound = addr
+        def sendto(self, data, addr):
+            if addr[0].endswith(".7"):
+                raise BlockingIOError()               # a full buffer skips one address, not the sweep
+            self.sent.append(addr)
+    monkeypatch.setattr(presence.socket, "socket", FakeSocket)
+    addrs = [f"192.168.36.{i}" for i in range(1, 71)]
+    assert presence.trigger_arp(addrs, "192.168.36.50", batch=32) == 69
+    assert [len(s.sent) for s in made] == [31, 32, 6] and all(not s.blocking for s in made)
+    assert made[0].sent[0] == ("192.168.36.1", 9) and made[0].bound == ("192.168.36.50", 0)
+
+
+
+def test_netbios_session_request_encodes_names():
+    req = msproto.session_request("LAB-WIN11")
+    assert req[0] == 0x81 and struct.unpack(">H", req[2:4])[0] == len(req) - 4
+    assert req[4:38] == msproto.netbios_name("LAB-WIN11") and req[5:7] == b"EM"     # 'L' = 0x4C -> 'E','M'
+    assert msproto.netbios_name("*SMBSERVER")[1:3] == b"CK"                          # '*' = 0x2A -> 'C','K'
+
+
+def test_port_139_falls_back_to_the_computer_name(monkeypatch):
+    calls = []
+
+    def exchange(ip, port, timeout, called):
+        calls.append(called)
+        return {"smb_computer_name": "LAB-WIN11"} if called == "LAB-WIN11" else None
+    monkeypatch.setattr(msproto, "_smb_exchange", exchange)
+    monkeypatch.setattr(udp, "netbios_status", lambda ip, timeout=1.5: {"computer": "LAB-WIN11"})
+    assert msproto.smb_probe("192.168.36.60", 139) == {"smb_computer_name": "LAB-WIN11"}
+    assert calls == ["*SMBSERVER", "LAB-WIN11"]
+    calls.clear()
+    msproto.smb_probe("192.168.36.60", 445)
+    assert calls == [None]                                                           # 445 needs no session
+
+
+def test_samba_is_recognised_by_its_ntlm_version():
+    r = msproto.parse_challenge(_challenge(6, 1, 0, [(1, "LAB-UBUNTU")]))
+    assert r["samba"] is True and "name" not in r
+    f = probes.smb_finding(r, "netbios-ssn")
+    assert (f.service, f.product, f.version) == ("netbios-ssn", "Samba smbd", "") and "samba" not in f.extra
