@@ -13,7 +13,7 @@ from datetime import datetime
 
 import pytest
 
-from eagleeye import ipc, machine, serviceinstall
+from eagleeye import ipc, machine, servicehost, serviceinstall
 from eagleeye.config import Settings, load_settings, save_settings
 from eagleeye.servicehost import ServiceHost
 
@@ -185,4 +185,4 @@ def test_the_service_waits_for_the_last_passive_upload(machine_dir):
     assert wait_for(lambda: host.state == "running")
     host.stop()
     worker.join(5)
-    assert waited == [30] and made[0].stopped.is_set()
+    assert waited == [servicehost.FINAL_UPLOAD_SECONDS] and made[0].stopped.is_set()

@@ -24,7 +24,7 @@ from .policy import policy_path
 log = logging.getLogger("eagleeye.servicehost")
 
 RESTART_AFTER_FAILURE_SECONDS = 30
-FINAL_UPLOAD_SECONDS = 30
+FINAL_UPLOAD_SECONDS = 40   # an upload took 30 s on staging (2026-11-07); Windows allows 60 s at shutdown
 NOT_SET_UP_RECHECK_SECONDS = 60
 
 
