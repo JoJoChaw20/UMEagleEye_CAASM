@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dynamic = ["version"]
 dependencies = [
     "keyring>=25.0",                # secrets in the OS credential store
+    "truststore>=0.10",             # HTTPS certificates checked by the OS (fetches missing Windows roots)
 ]
 
 [project.optional-dependencies]

@@ -147,7 +147,8 @@ class AgentService:
         self._active_future: Optional[Future[None]] = None
         self._inventory_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inventory")
         self._inventory_future: Optional[Future[PipelineResult]] = None
-        self._last_inventory = 0.0           # 0 = collect on the first poll
+        # When the inventory last ran, kept across restarts (0 = never: collect on the first poll).
+        self._last_inventory = self.schedule_state.job_time("inventory")
         self._inventory_retry_at = 0.0       # set after a failed run: retry then
         self._inventory_retry_delay = INVENTORY_RETRY_SECONDS
         self._inventory_supported = True
@@ -410,6 +411,7 @@ class AgentService:
         retry_due = 0 < self._inventory_retry_at <= now
         if force or retry_due or now - self._last_inventory >= self.settings.inventory_interval:
             self._last_inventory = now
+            self.schedule_state.mark_job("inventory", now)
             self._inventory_retry_at = 0.0
             try:
                 self._inventory_future = self._inventory_pool.submit(
@@ -601,7 +603,10 @@ class AgentService:
         self._maybe_apply_policy()
         self._handle_requests()
         self._maybe_inventory()
-        pending = self.client.get_pending_scans()
+        if getattr(self.client, "jobs_in_heartbeat", False):
+            pending = self.client.take_jobs()          # brought by the heartbeat (server 2.5.0+)
+        else:
+            pending = self.client.get_pending_scans()
         if pending:
             log.info("Found %d pending scan(s)", len(pending))
             for scan in pending:
@@ -680,6 +685,8 @@ class AgentService:
             report = None
         self.last_heartbeat_ok = self.client.send_heartbeat(report) if report is not None else self.client.send_heartbeat()
         self.last_heartbeat_at = datetime.now()
+        if getattr(self.client, "jobs_in_heartbeat", False) and self.client.has_jobs():
+            self._wake.set()                            # run what it brought now, not at the next poll
 
     def _heartbeat_loop(self) -> None:
         log.info("Heartbeat thread started (interval=%ss)", self.settings.heartbeat_interval)
@@ -719,7 +726,14 @@ class AgentService:
             return
         self._final_flush_started = True
         log.info("Uploading what passive listening heard before stopping")
-        threading.Thread(target=self.run_passive, args=(None,), daemon=True, name="passive-final").start()
+        self._final_thread = threading.Thread(target=self.run_passive, args=(None,), daemon=True, name="passive-final")
+        self._final_thread.start()
+
+    def wait_final_flush(self, timeout: float) -> None:
+        """Wait for the last passive upload (the service has time to stop; the app does not wait)."""
+        thread = getattr(self, "_final_thread", None)
+        if thread is not None:
+            thread.join(timeout)
 
     def stop(self) -> None:
         self._stop.set()

@@ -124,7 +124,8 @@ def test_heartbeat_payload_and_failure(monkeypatch):
     assert c.send_heartbeat()
     method, url, kwargs = session.calls[0]
     assert url.endswith(f"/agents/{AGENT}/heartbeat")
-    assert json.loads(kwargs["data"]) == {"version": VERSION, "gateway_ip": "192.168.1.20", "default_gateway": "192.168.1.1"}
+    assert json.loads(kwargs["data"]) == {"version": VERSION, "gateway_ip": "192.168.1.20", "default_gateway": "192.168.1.1",
+                                          "want_jobs": True}
 
     c2, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
     assert c2.send_heartbeat() is False

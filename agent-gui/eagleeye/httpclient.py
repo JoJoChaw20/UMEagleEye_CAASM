@@ -9,7 +9,12 @@ Responses with status_code/ok/json()/raise_for_status(), and streamed downloads.
 Like requests, a 4xx/5xx answer is returned as a Response, not raised. Unlike
 requests, a Session can refuse redirects altogether (`follow_redirects=False`),
 which the API client uses so its credentials are never sent anywhere else.
-HTTPS certificates are verified against the operating system's trust store.
+HTTPS certificates are verified by the operating system itself where `truststore` is
+installed (Windows CryptoAPI, macOS Security framework, the system CA store on Linux).
+Python's own check only knows the root certificates Windows already downloaded, and a
+fresh Windows fetches most of them on first use by its own checker: the agent service
+on a new lab VM failed every request with CERTIFICATE_VERIFY_FAILED (2026-11-07).
+Without truststore it falls back to Python's check against the system store.
 """
 
 from __future__ import annotations
@@ -175,11 +180,20 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None          # urllib then hands the 3xx back as an HTTPError, returned as a Response
 
 
+def tls_context() -> ssl.SSLContext:
+    """Certificate checks by the operating system (see the module notes)."""
+    try:
+        import truststore
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:  # noqa: BLE001 - not installed, or an OS it does not support
+        return ssl.create_default_context()
+
+
 class Session:
     def __init__(self, follow_redirects: bool = True) -> None:
         # Always identify the agent: Cloudflare answers urllib's default "Python-urllib" with 403.
         self.headers: dict[str, str] = {"User-Agent": f"EagleEye-Agent/{VERSION}"}
-        handlers: list[Any] = [_HTTPHandler(), _HTTPSHandler(ssl.create_default_context())]
+        handlers: list[Any] = [_HTTPHandler(), _HTTPSHandler(tls_context())]
         if not follow_redirects:
             handlers.append(_NoRedirect())
         self._opener = urllib.request.build_opener(*handlers)

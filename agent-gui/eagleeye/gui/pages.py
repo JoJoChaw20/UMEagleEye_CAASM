@@ -781,6 +781,16 @@ class SettingsPage(QWidget):
     def _test(self) -> None:
         s = self.win.store.settings
         url, agent, key = self.api_url.text().strip(), self.agent_id.text().strip(), self._secret(self.api_key, s.api_key)
+        from .remote import SAVED_SECRET
+        if key == SAVED_SECRET:                 # the service keeps the key: its own heartbeat is the test
+            svc = self.win.controller.service
+            if svc is None or svc.last_heartbeat_at is None:
+                self._result("The agent service is not connected yet (see the Status page and the Log).", "error")
+            elif svc.last_heartbeat_ok:
+                self._result(f"Connected: the agent service's heartbeat was accepted at {svc.last_heartbeat_at:%H:%M:%S}.", "ok")
+            else:
+                self._result(f"The agent service's last heartbeat failed at {svc.last_heartbeat_at:%H:%M:%S} (see the Log).", "error")
+            return
         if not (url and agent and key):
             self._result("Enter the API URL, agent ID and API key first.", "error")
             return
@@ -820,7 +830,11 @@ class SettingsPage(QWidget):
         s.snmp_priv_key = self._secret(self.snmp_priv, s.snmp_priv_key)
         s.snmp_auth_protocol = self.snmp_auth_proto.currentText()
         s.snmp_priv_protocol = self.snmp_priv_proto.currentText()
-        self.win.store.save()
+        failed = self.win.save_store()
+        if failed:
+            self.save_result.setText(failed)
+            set_tone(self.save_result, "error")
+            return
         self._secret_placeholders()
         problems = s.problems()
         started = self.win.settings_changed(connection_changed=(s.api_url, s.agent_id, s.api_key) != before)
@@ -986,7 +1000,11 @@ class PrivacyPage(QWidget):
             s.sbom = self.sbom.isChecked()
         s.sbom_include_binaries = self.sbom_binaries.isChecked()
         s.sbom_extra_paths = "\n".join(p for p in (line.strip() for line in self.sbom_extra.toPlainText().splitlines()) if p)
-        self.win.store.save()
+        failed = self.win.save_store()
+        if failed:
+            self.result.setText(failed)
+            set_tone(self.result, "error")
+            return
         self.result.setText("Saved.")
         set_tone(self.result, "ok")
         self.win.settings_changed()
@@ -1065,6 +1083,8 @@ class DependenciesPage(QWidget):
         self.win = win
         recheck = button("Re-check", None, "refresh-cw", self.refresh)
         self.admin_btn = button("Restart as Administrator", None, "shield", win.relaunch_elevated)
+        # The agent service always has administrator rights: nothing to restart.
+        self.admin_btn.setVisible(not getattr(win, "service_mode", False))
         box = Panel("Tools and permissions", [recheck, self.admin_btn], flush=True)
         self.table = _table(["Component", "Status", "Details"])
         self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)

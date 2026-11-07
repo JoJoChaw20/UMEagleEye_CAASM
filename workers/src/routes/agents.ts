@@ -8,6 +8,7 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
 import { POLICY_SPECS, ROLE_KEYS, applyChange, cleanReport, kindKeys, roleChange, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
+import { pendingJobsFor } from '../services/pendingJobs'
 import { getDb } from '../db/client'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, scanResults, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
@@ -376,6 +377,8 @@ router.post(
     settings: z.unknown().optional(),
     capabilities: z.unknown().optional(),
     policy_version: z.unknown().optional(),
+    // 2.5.0+: send the jobs waiting for it with the answer (instead of GET /scans/pending).
+    want_jobs: z.unknown().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -431,6 +434,7 @@ router.post(
     return c.json({
       ok: true,
       policy: { local_scans: resolved.effective.local_scans === true, managed: resolved.managed, version: resolved.version },
+      ...(body.want_jobs === true ? { scans: await pendingJobsFor(db, agentId) } : {}),
     })
   }
 )

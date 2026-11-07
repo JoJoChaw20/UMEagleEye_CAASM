@@ -194,8 +194,10 @@ def score_against_truth(hosts: list[HostRecord], truth: dict[str, dict[str, Any]
 
 
 def report_dir() -> Path:
-    from ..config import config_dir
-    return config_dir() / "compare"
+    """Next to this agent's settings: the user's config folder, or the service's machine
+    folder (not the SYSTEM account's profile)."""
+    from ..config import default_config_path
+    return default_config_path().parent / "compare"
 
 
 class CompareScanStage(Stage):

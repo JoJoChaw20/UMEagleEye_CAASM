@@ -97,7 +97,10 @@ class QtLogHandler(logging.Handler):
 
 class AgentController:
     """Owns the agent service. A plain Python object (not a QObject), so worker
-    threads may read its attributes freely."""
+    threads may read its attributes freely. (remote.ServiceController is the same
+    interface over an installed agent service.)"""
+
+    applies_settings_itself = False      # the app restarts the agent after a settings change
 
     def __init__(self) -> None:
         self.event = Listeners()             # (PipelineEvent)
@@ -143,6 +146,10 @@ class AgentController:
             self.service.stop()
         self._thread = None
         self.running_changed.emit(False)
+
+    def detach(self) -> None:
+        """The app closes: the agent it runs stops with it."""
+        self.stop()
 
     def apply_live(self, settings: Settings) -> None:
         """Hand settings that need no restart (schedules) to the running service."""

@@ -103,6 +103,9 @@ class ScheduleState:
     def __init__(self, path: Optional[Path]) -> None:
         self.path = path
         self.last_runs: dict[str, datetime] = {}
+        # When the agent's own periodic jobs last ran (e.g. "inventory": epoch seconds), so
+        # restarting the agent (a settings change, the service starting) does not repeat them.
+        self.jobs: dict[str, float] = {}
         self._load()
 
     def _load(self) -> None:
@@ -111,15 +114,17 @@ class ScheduleState:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             self.last_runs = {k: datetime.fromisoformat(v) for k, v in data.get("schedules", {}).items()}
-        except (OSError, ValueError, AttributeError):
-            self.last_runs = {}
+            self.jobs = {k: float(v) for k, v in (data.get("jobs") or {}).items()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            self.last_runs, self.jobs = {}, {}
 
     def save(self) -> None:
         if not self.path:
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"schedules": {k: v.isoformat(timespec="seconds") for k, v in self.last_runs.items()}}
+            data = {"schedules": {k: v.isoformat(timespec="seconds") for k, v in self.last_runs.items()},
+                    "jobs": {k: round(v, 1) for k, v in self.jobs.items()}}
             self.path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         except OSError:
             pass
@@ -133,6 +138,14 @@ class ScheduleState:
 
     def mark(self, schedule_id: str, when: datetime) -> None:
         self.last_runs[schedule_id] = when
+        self.save()
+
+    def job_time(self, name: str) -> float:
+        """When the agent's job `name` last started (0 = never)."""
+        return self.jobs.get(name, 0.0)
+
+    def mark_job(self, name: str, when: float) -> None:
+        self.jobs[name] = when
         self.save()
 
     def forget_except(self, ids: set[str]) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -67,6 +68,11 @@ class AgentClient:
         # 2.4.0 send none: None). The service applies them between jobs (policy.py).
         self.policy_managed: dict[str, Any] = {}
         self.policy_version: Optional[str] = None
+        # Servers since agent 2.5.0 send the waiting jobs with the heartbeat answer; then
+        # GET /scans/pending is no longer needed (one request every 30 s instead of two).
+        self.jobs_in_heartbeat = False
+        self._jobs: list[dict[str, Any]] = []
+        self._jobs_lock = threading.Lock()
         # No redirects: the API key must never be sent anywhere but the configured server.
         self.session = session or httpclient.Session(follow_redirects=False)
         self.session.headers.update({
@@ -116,6 +122,7 @@ class AgentClient:
             payload["default_gateway"] = gateway
         if report:
             payload.update(report)
+        payload["want_jobs"] = True
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
             resp.raise_for_status()
@@ -132,11 +139,29 @@ class AgentClient:
                 log.info("Scans started on this computer are now %s by the administrator",
                          "allowed" if allowed else "turned off")
             self.local_scans_allowed = allowed
+        try:
+            jobs = resp.json().get("scans")
+        except (ValueError, AttributeError):
+            jobs = None
+        if isinstance(jobs, list):
+            with self._jobs_lock:
+                self._jobs = [j for j in jobs if isinstance(j, dict)]
+            self.jobs_in_heartbeat = True
         if isinstance(policy, dict) and isinstance(policy.get("version"), str):
             managed = policy.get("managed")
             self.policy_managed = dict(managed) if isinstance(managed, dict) else {}
             self.policy_version = policy["version"]
         return True
+
+    def has_jobs(self) -> bool:
+        with self._jobs_lock:
+            return bool(self._jobs)
+
+    def take_jobs(self) -> list[dict[str, Any]]:
+        """The jobs the last heartbeat answer brought (each handed out once)."""
+        with self._jobs_lock:
+            jobs, self._jobs = self._jobs, []
+        return jobs
 
     def check_connection(self) -> tuple[bool, str]:
         """Send one heartbeat and explain the outcome (for the setup screen)."""

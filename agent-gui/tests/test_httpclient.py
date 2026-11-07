@@ -189,3 +189,13 @@ def test_unreachable_address_is_skipped_quickly_and_the_working_family_remembere
 def test_default_user_agent_identifies_the_agent(server):
     httpclient.Session().get(f"{server}/json", timeout=5)
     assert seen[0]["headers"]["user-agent"] == f"EagleEye-Agent/{VERSION}"
+
+
+def test_certificates_are_checked_by_the_operating_system_when_truststore_is_there(monkeypatch):
+    import ssl
+    import sys
+    pytest.importorskip("truststore")
+    assert type(httpclient.tls_context()).__module__.startswith("truststore")
+    monkeypatch.setitem(sys.modules, "truststore", None)             # not installed: Python's own check
+    ctx = httpclient.tls_context()
+    assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname

@@ -8,11 +8,13 @@ HAVE THIS READY
   You will paste it into the agent after the installation.
 
 WHAT HAPPENS
-  - The agent installs into Program Files and starts in the system tray
-    (the blue eye icon next to the clock).
-  - On first start it shows exactly what it collects. Personal data options
-    are off unless you switch them on.
-  - Recommended: let it start when you sign in, so it keeps reporting.
+  - The agent installs into Program Files and runs as a Windows service: it
+    starts with Windows and keeps reporting, whoever is signed in.
+  - Its app sits in the system tray (the blue eye icon next to the clock). On
+    first start it shows exactly what it collects. Your organisation's
+    administrator decides what is collected from the EagleEye dashboard;
+    personal data options are off unless they switch them on.
+  - Changing the agent's settings on this computer needs an administrator.
 
 WHAT IT NEVER COLLECTS
   Files or documents, browsing history, passwords, keystrokes, screenshots,

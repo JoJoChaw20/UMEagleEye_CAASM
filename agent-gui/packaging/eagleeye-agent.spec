@@ -35,7 +35,7 @@ datas += copy_metadata("keyring")                # keyring finds its backends th
 hiddenimports = (
     collect_submodules("keyring.backends")
     + collect_submodules("pysnmp.smi.mibs")
-    + ["win32ctypes.core"]
+    + ["win32ctypes.core", "truststore"]       # truststore: imported inside httpclient.tls_context
 )
 if WITH_SCAPY:
     hiddenimports += collect_submodules("scapy.layers") + ["scapy.libs.manuf"]   # vendor.py loads it by name

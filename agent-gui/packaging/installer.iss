@@ -6,13 +6,15 @@
 ;  - a short "before you install" page (what to have ready, what happens, what is never
 ;    collected) instead of a wall of licence text; the third-party notices are installed
 ;    and linked from the Start menu;
-;  - starting at sign-in is ON by default (the agent is meant to keep running), as an
-;    elevated logon task so passive listening and the full inventory work without a UAC
-;    prompt each time, kept running on battery and with no time limit; unticking it on an
-;    upgrade removes the task;
-;  - "Open EagleEye Agent now" starts it through that task, so the first run already has
-;    Administrator rights; without the task it starts as the signed-in user;
-;  - an upgrade closes the running agent first and keeps its settings.
+;  - the agent runs as the Windows service "EagleEye Agent" (2.5.0): started with Windows
+;    as LocalSystem (Administrator rights for passive listening and the full inventory),
+;    restarted after a failure, and not stopped by closing the app or signing out;
+;    `eagleeye.exe service install` registers it and moves the installing user's
+;    settings (and the key in their Credential Manager) into %ProgramData%\EagleEye;
+;  - the app opens in the tray when anyone signs in (ON by default), as that user: it
+;    shows the service and changes its settings after a Windows administrator prompt;
+;  - an upgrade stops the service and closes the app first, keeps the settings, and
+;    starts both again; it removes the elevated logon task earlier versions created.
 
 #ifndef AppVersion
   #define AppVersion "2.0.0"
@@ -50,7 +52,7 @@ CloseApplicationsFilter=EagleEyeAgent.exe,eagleeye.exe
 RestartApplications=no
 
 [Tasks]
-Name: "autostart"; Description: "Start EagleEye Agent when I sign in (recommended: it keeps reporting, with the Administrator rights it needs)"
+Name: "autostart"; Description: "Open the EagleEye Agent app in the tray when anyone signs in (the agent itself always runs as a service)"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
@@ -62,33 +64,54 @@ Name: "{group}\Third-party notices"; Filename: "{app}\_internal\THIRD-PARTY-NOTI
 Name: "{group}\Uninstall EagleEye Agent"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\EagleEye Agent"; Filename: "{app}\EagleEyeAgent.exe"; Tasks: desktopicon
 
+[Registry]
+; The app (not the agent) at every sign-in, as that user, in the tray.
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "EagleEye Agent"; \
+  ValueData: """{app}\EagleEyeAgent.exe"" --minimized"; Flags: uninsdeletevalue; Tasks: autostart
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "EagleEye Agent"; \
+  Flags: deletevalue; Tasks: not autostart
+
 [Run]
-; A logon task with highest privileges starts the agent elevated without a UAC prompt at each sign-in.
-Filename: "{sys}\schtasks.exe"; \
-  Parameters: "/Create /F /TN ""EagleEye Agent"" /TR ""\""{app}\EagleEyeAgent.exe\"" --minimized"" /SC ONLOGON /RL HIGHEST /IT"; \
-  Flags: runhidden; Tasks: autostart
-; schtasks' defaults would stop the agent: it is killed when the laptop switches to battery
-; (no crash log, no Windows crash report: seen entering standby, 2.2.4), is not started
-; on battery, and is killed after 72 hours. Keep it running regardless.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Set-ScheduledTask -TaskName 'EagleEye Agent' -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew)"""; \
-  Flags: runhidden; Tasks: autostart
-; Unticked on an upgrade: remove the task an earlier install created (no error if there is none).
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""EagleEye Agent"""; \
-  Flags: runhidden; Tasks: not autostart
-; Finish page. With the task: start through it, so the agent runs as Administrator right away
-; (a first run without settings still opens its window). Without it: as the signed-in user.
-Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""EagleEye Agent"""; \
-  Description: "Open EagleEye Agent now"; Flags: postinstall nowait runhidden skipifsilent; Tasks: autostart
+; Earlier versions started the app elevated through a logon task; the service replaces it.
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""EagleEye Agent"""; Flags: runhidden
+; Register (or update) the service, move this user's settings into it, and start it.
+Filename: "{app}\eagleeye.exe"; Parameters: "service install"; Flags: runhidden; \
+  StatusMsg: "Installing and starting the EagleEye Agent service..."
 Filename: "{app}\EagleEyeAgent.exe"; Description: "Open EagleEye Agent now"; \
-  Flags: postinstall nowait skipifsilent runasoriginaluser; Tasks: not autostart
+  Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [UninstallRun]
+; The settings in %ProgramData%\EagleEye are kept (a reinstall finds them);
+; `eagleeye.exe service uninstall --purge` removes them too.
+Filename: "{app}\eagleeye.exe"; Parameters: "service uninstall"; Flags: runhidden; RunOnceId: "RemoveService"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""EagleEye Agent"""; Flags: runhidden; RunOnceId: "RemoveTask"
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM EagleEyeAgent.exe /F"; Flags: runhidden; RunOnceId: "StopAgent"
+
+[Code]
+// Stop the running service before its files are replaced (sc.exe exits with the Windows
+// error: 0 = stop requested, 1060 = no such service, 1062 = not running), and end the app:
+// asked to close, it only hides in the tray, so its EagleEyeAgent.exe stayed in use
+// ("DeleteFile failed; code 5", 2026-11-07). The app holds nothing: the agent is the
+// service, and the app opens again at the end and at the next sign-in.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code, I: Integer;
+begin
+  Result := '';
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM EagleEyeAgent.exe /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  if Exec(ExpandConstant('{sys}\sc.exe'), 'stop EagleEyeAgent', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    for I := 1 to 90 do
+    begin
+      Exec(ExpandConstant('{cmd}'), '/c sc.exe query EagleEyeAgent | find "STOPPED" > nul', '', SW_HIDE,
+           ewWaitUntilTerminated, Code);
+      if Code = 0 then
+        Break;
+      Sleep(1000);
+    end;
+end;
 
 [Messages]
 WelcomeLabel2=This installs [name/ver] on your computer.%n%nIt connects this computer to your organisation's EagleEye dashboard. Have the connection code from your IT administrator ready.
 FinishedHeadingLabel=EagleEye Agent is installed
-FinishedLabel=Next: the agent shows what it collects, then opens its Settings. Paste the connection code from your IT administrator, choose Use code, then Test connection and Save.%n%nAfterwards it runs in the system tray (the blue eye icon next to the clock).
-FinishedLabelNoIcons=Next: the agent shows what it collects, then opens its Settings. Paste the connection code from your IT administrator, choose Use code, then Test connection and Save.%n%nAfterwards it runs in the system tray (the blue eye icon next to the clock).
+FinishedLabel=The agent now runs as a Windows service and starts with Windows.%n%nIf it is not set up yet: open the app, which shows what the agent collects, then paste the connection code from your IT administrator in Settings and Save (Windows asks for an administrator).%n%nThe app sits in the system tray (the blue eye icon next to the clock). Closing it does not stop the agent.
+FinishedLabelNoIcons=The agent now runs as a Windows service and starts with Windows.%n%nIf it is not set up yet: open the app, which shows what the agent collects, then paste the connection code from your IT administrator in Settings and Save (Windows asks for an administrator).%n%nThe app sits in the system tray (the blue eye icon next to the clock). Closing it does not stop the agent.

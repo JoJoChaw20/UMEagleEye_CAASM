@@ -125,8 +125,69 @@ def build_parser() -> argparse.ArgumentParser:
     gui = sub.add_parser("gui", help="open the desktop app (needs PySide6)")
     gui.add_argument("--minimized", action="store_true", help="start in the system tray")
 
+    svc = sub.add_parser("service", help="the agent as a system service: install, uninstall, start, stop, status, run")
+    svc.add_argument("action", choices=("install", "uninstall", "start", "stop", "status", "run", "scm", "apply"))
+    svc.add_argument("--instance", default="", help="a second agent on this computer, e.g. production")
+    svc.add_argument("--from-config", type=Path, dest="from_config",
+                     help="install: the settings to move into the service (default: this user's); "
+                          "apply: the settings the agent app saved")
+    svc.add_argument("--no-start", action="store_true", help="install: do not start it yet")
+    svc.add_argument("--purge", action="store_true", help="uninstall: also delete its settings, state and logs")
+
     sub.add_parser("version", help="print the version")
     return parser
+
+
+def cmd_service(args: argparse.Namespace) -> int:
+    """The agent as a Windows service / systemd unit (serviceinstall.py, servicehost.py)."""
+    from . import ipc, serviceinstall
+    from .machine import service_name
+    instance = "".join(ch for ch in args.instance if ch.isalnum() or ch in "-_")[:40]
+    if args.action == "scm":                       # started by Windows' Service Control Manager
+        from . import servicehost, winservice
+
+        def make_host() -> "servicehost.ServiceHost":
+            servicehost.setup_logging(instance)         # only once Windows really started the service
+            return servicehost.ServiceHost(instance)
+        return winservice.run(service_name(instance), make_host)
+    if args.action == "run":                       # foreground: systemd, or a test in a console
+        from . import servicehost
+        if not sys.stdout.isatty():
+            servicehost.setup_logging(instance)
+        return servicehost.run_foreground(instance)
+    if args.action == "status":
+        try:
+            st = ipc.call({"cmd": "status"}, ipc.address(instance))
+        except ipc.ServiceUnavailable as exc:
+            print(f"{service_name(instance)}: {exc}")
+            return 1
+        print(f"{service_name(instance)} {st.get('version')}: {st.get('state')}"
+              + (f" ({'; '.join(st['problems'])})" if st.get("problems") else ""))
+        if st.get("last_heartbeat_at"):
+            print(f"  last heartbeat {st['last_heartbeat_at']} ({'ok' if st.get('last_heartbeat_ok') else 'failed'})")
+        if st.get("passive"):
+            print(f"  passive listening on {st['passive']['listening_on']} with {st['passive']['capture']}")
+        if st.get("managed"):
+            print(f"  set by the administrator: {', '.join(sorted(st['managed']))}")
+        print(f"  settings {st.get('config_path')}\n  log {st.get('log_path')}")
+        return 0
+    if not serviceinstall.is_admin():
+        print("Run this as an administrator (Windows: an elevated PowerShell; Linux: sudo).", file=sys.stderr)
+        return 1
+    if args.action == "install":
+        for line in serviceinstall.install(instance, args.from_config, start=not args.no_start):
+            print(line)
+    elif args.action == "uninstall":
+        for line in serviceinstall.uninstall(instance, purge=args.purge):
+            print(line)
+    elif args.action == "apply":                   # run elevated by the agent app (gui/remote.py)
+        if not args.from_config:
+            print("apply needs --from-config", file=sys.stderr)
+            return 2
+        print(serviceinstall.apply_settings_file(args.from_config, instance))
+    else:
+        print(serviceinstall.control(args.action, instance))
+    return 0
 
 
 def _settings_from(args: argparse.Namespace) -> Settings:
@@ -410,6 +471,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     commands = {
         "run": cmd_run, "scan": cmd_scan, "listen": cmd_listen,
         "check-deps": cmd_check_deps, "config": cmd_config, "inventory": cmd_inventory, "sbom": cmd_sbom,
+        "service": cmd_service,
     }
     if args.command == "version":
         print(VERSION)

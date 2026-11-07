@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PySide6.QtCore import QLockFile, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
@@ -65,16 +65,26 @@ class Store:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, store: Store, log_dir: Path) -> None:
+    def __init__(self, store: Store, log_dir: Path, controller: Any = None) -> None:
         super().__init__()
         start_pump()
         self.store = store
-        self.controller = AgentController()
+        # With the agent installed as a service (2.5.0) the app is its client (remote.py).
+        self.controller = controller or AgentController()
+        self.service_mode = bool(getattr(self.controller, "applies_settings_itself", False))
         inst = instance_name()
         self.setWindowTitle(f"{APP_NAME} {VERSION}" + (f" ({inst})" if inst else ""))
         self.setWindowIcon(app_icon())
-        self.resize(1120, 780)
         self.setMinimumSize(900, 600)
+        # Never taller or wider than the screen: on a small display (a VM at 1024x768) the
+        # bar with Save at the bottom of a settings page would sit under the taskbar.
+        screen = QApplication.primaryScreen()
+        free = screen.availableGeometry() if screen is not None else None
+        width, height = 1120, 780
+        if free is not None:
+            width, height = min(width, free.width() - 40), min(height, free.height() - 40)
+            self.setMinimumSize(min(900, width), min(600, height))
+        self.resize(width, height)
 
         self.status_page = StatusPage(self)
         self.schedules_page = SchedulesPage(self) if SCHEDULES_ENABLED else None
@@ -272,12 +282,13 @@ class MainWindow(QMainWindow):
         self.hide()
         if not self._tray_hint_shown and self.controller.running:
             self.tray.showMessage(APP_NAME, "The agent keeps running in the background. "
-                                            "Right-click the tray icon to quit.", app_icon(), 4000)
+                                  + ("Closing this app never stops it." if self.service_mode
+                                     else "Right-click the tray icon to quit."), app_icon(), 4000)
             self._tray_hint_shown = True
 
     def quit(self) -> None:
         svc = self.controller.service if self.controller.running else None
-        if svc is not None and svc.active_running:
+        if svc is not None and svc.active_running and not self.service_mode:
             answer = QMessageBox.question(self, APP_NAME, "A scan is still running. Quit anyway? The scan will be lost.")
             if answer != QMessageBox.StandardButton.Yes:
                 return
@@ -292,18 +303,31 @@ class MainWindow(QMainWindow):
             logging.getLogger().removeHandler(self.log_handler)
             self.log_handler = None
         stop_pump()
-        self.controller.stop()
+        self.controller.detach()            # the in-app agent stops; a service keeps running
         if self.tray is not None:
             self.tray.hide()
 
     # ── agent ──
     def toggle(self) -> None:
         if self.controller.running:
-            self.controller.stop()
-            log.info("Agent stopped from the app")
+            failed = self.controller.stop()
+            if failed:
+                QMessageBox.warning(self, APP_NAME, f"The agent was not stopped: {failed}.")
+            else:
+                log.info("Agent stopped from the app")
         else:
             self.start_agent()
         self.refresh()
+
+    def save_store(self) -> Optional[str]:
+        """Save the settings being edited; why they were not saved, or None. With the
+        agent service, Windows asks for an administrator (remote.ServiceStore)."""
+        try:
+            self.store.save()
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            log.warning("Settings not saved: %s", exc)
+            return str(exc) or "Not saved."
+        return None
 
     def start_agent(self) -> None:
         s = self.store.settings
@@ -330,6 +354,9 @@ class MainWindow(QMainWindow):
         self.status_page.reload_subnets()
         self.privacy_page.reload()
         started = False
+        if getattr(self.controller, "applies_settings_itself", False):
+            self.refresh()                   # the service reloads them itself (eagleeye service apply)
+            return False
         if self.controller.running:
             log.info("Settings changed; restarting the agent")
             self.controller.stop()
@@ -355,8 +382,8 @@ class MainWindow(QMainWindow):
             self.toggle_btn.style().polish(self.toggle_btn)
             refresh_icons(self.toggle_btn.parentWidget())
         inst = instance_name()
-        self.admin.setText(("Administrator" if deps.is_admin() else "Standard user")
-                           + f" · v{VERSION}" + (f" · {inst}" if inst else ""))
+        who = "Agent service" if self.service_mode else ("Administrator" if deps.is_admin() else "Standard user")
+        self.admin.setText(who + f" · v{VERSION}" + (f" · {inst}" if inst else ""))
         self._refresh_state()
         if self.tray is not None:
             self.tray_toggle.setText("Stop agent" if running else "Start agent")
@@ -367,8 +394,11 @@ class MainWindow(QMainWindow):
     def _refresh_state(self) -> None:
         """The header's live dot and one line on what the agent is doing."""
         svc = self.controller.service if self.controller.running else None
-        if self.store.settings.problems():
+        service_state = getattr(self.controller, "state", None) if self.service_mode else None
+        if self.store.settings.problems() or service_state == "not_set_up":
             tone, state, detail = "off", "Not set up", "Paste the connection code in Settings"
+        elif service_state == "unavailable":
+            tone, state, detail = "down", "Stopped", "The agent service is not running (Start asks for an administrator)"
         elif svc is None:
             tone, state, detail = "down", "Stopped", "Press Start to connect to the server"
         elif svc.last_heartbeat_at is None:
@@ -572,7 +602,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Already running (perhaps as Administrator from the sign-in task): show that window.
     if guard.signal_running():
         return 0
-    if not args.no_task and start_via_task(guard):
+    from .remote import ServiceController, ServiceStore, notice_read, record_notice, service_installed
+    service_mode = service_installed(inst)
+    if not service_mode and not args.no_task and start_via_task(guard):
         return 0
     if not guard.acquire():
         if not guard.signal_running():
@@ -582,26 +614,33 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     app.single_instance = guard  # type: ignore[attr-defined]
 
-    store = Store(default_config_path())
+    store: Any = ServiceStore(inst) if service_mode else Store(default_config_path())
     if store.load_error:
         QMessageBox.warning(None, APP_NAME, f"The settings file could not be read:\n{store.load_error}\n\n"
                                             "Starting with default settings; saving will replace that file.")
 
-    if needs_consent(store.settings):
+    # The notice is shown to each user once per version. With the service the settings are
+    # the service's (an administrator's), so it is recorded per user instead.
+    from ..privacy import CONSENT_VERSION
+    unread = notice_read() < CONSENT_VERSION if service_mode else needs_consent(store.settings)
+    if unread:
         dialog = ConsentDialog(store.settings)
         dialog.setWindowIcon(app_icon())
         if not dialog.exec():
             guard.release()
             return 0
-        dialog.apply()
-        store.save()
-        log.info("Data-collection notice accepted (version %s)", store.settings.consent_version)
+        if service_mode:
+            record_notice(CONSENT_VERSION)
+        else:
+            dialog.apply()
+            store.save()
+        log.info("Data-collection notice read (version %s)", CONSENT_VERSION)
 
-    window = MainWindow(store, log_dir)
+    window = MainWindow(store, log_dir, ServiceController(inst) if service_mode else None)
     guard.listen(window.show_window)
 
     configured = not store.settings.problems()
-    if configured:
+    if configured and not service_mode:
         window.start_agent()
     else:
         window.show_page(window.settings_page)

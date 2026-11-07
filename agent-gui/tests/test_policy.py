@@ -138,3 +138,51 @@ def test_passive_listening_follows_the_administrator(tmp_path, monkeypatch):
     c.policy_managed, c.policy_version = {"passive": False}, "2a1b2c3d"
     svc._maybe_apply_policy()
     assert stopped == ["native"] and svc.suite is None
+
+
+def test_jobs_come_with_the_heartbeat_and_are_handed_out_once(monkeypatch):
+    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.0.139")
+    monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
+    job = {"scanId": "s1", "scanType": "inventory", "subnet": "asset-1", "status": "pending"}
+    c, session, _ = client(FakeResponse(200, {"ok": True, "policy": {"local_scans": True}, "scans": [job]}),
+                           FakeResponse(200, {"ok": True, "policy": {"local_scans": True}}))
+    assert not c.jobs_in_heartbeat
+    assert c.send_heartbeat()
+    assert json.loads(session.calls[0][2]["data"])["want_jobs"] is True
+    assert c.jobs_in_heartbeat and c.has_jobs()
+    assert c.take_jobs() == [job] and c.take_jobs() == [] and not c.has_jobs()
+
+
+def test_the_service_runs_jobs_from_the_heartbeat_instead_of_polling(tmp_path):
+    svc, c = make(tmp_path)
+    polled, dispatched = [], []
+    c.get_pending_scans = lambda: polled.append(1) or []
+    svc._dispatch = dispatched.append
+    svc.poll_once()
+    assert polled == [1]                                             # an older server: poll as before
+    c.jobs_in_heartbeat = True
+    c.take_jobs = lambda: [{"scanId": "s1"}]
+    svc.poll_once()
+    assert polled == [1] and dispatched == [{"scanId": "s1"}]       # no GET /scans/pending
+
+
+def test_a_restart_does_not_collect_the_inventory_again(tmp_path):
+    # The service starts the agent again after every settings change (2.5.0): an inventory
+    # collected a minute ago is not collected again.
+    def started(runs):
+        svc = AgentService(settings(inventory=True, inventory_interval=6 * 3600), client=Client(),
+                           on_event=lambda e: None, state_path=tmp_path / "state.json")
+        svc.run_inventory = lambda trigger="auto", scan_id=None: runs.append(trigger)
+        svc._maybe_sbom = svc._maybe_schedules = svc._maybe_flush_passive = lambda: None
+        return svc
+    runs: list = []
+    first = started(runs)
+    first.poll_once()
+    first._inventory_future.result(5)
+    assert runs == ["auto"]                                          # never collected: collect now
+    second = started(runs)
+    second.poll_once()
+    assert runs == ["auto"] and second._inventory_future is None    # collected moments ago: wait
+    second._maybe_inventory(force=True)                             # the dashboard asks: collect
+    second._inventory_future.result(5)
+    assert runs == ["auto", "manual"]

@@ -197,42 +197,40 @@ inventory is kept: each run replaces the previous one, and software that is unin
 the asset. To stop collection on a machine, run the agent with `--no-inventory` or stop it; otherwise it sends a
 new inventory at its next run.
 
-## Running as a service on Linux
-On Linux the agent runs from its folder (the `eagleeye` code next to a `.venv`); there is no
-installer. As a **systemd service** (`packaging/eagleeye.service`) it starts when the
-computer or VM boots, before anyone logs in, restarts after a crash, and logs to the journal.
-A desktop app is not needed: the dashboard runs the agent's scans, inventory and SBOMs.
+## Running as a service (Windows and Linux)
+Since 2.5.0 the agent runs as a system service: it starts with the computer, before anyone signs in, keeps
+running when the desktop app is closed, and restarts after a crash. The desktop app is only its window: it shows
+the service's state (over a local named pipe / Unix socket) and changes its settings after an administrator prompt.
 
-1. Install the tools: `sudo apt install nmap libpcap0.8`, and Syft + Grype for SBOMs:
-   ```bash
-   curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
-   curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
-   ```
-   Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
-2. Save the settings once, as root (the service reads root's config,
-   `/root/.config/eagleeye/config.json`). The service takes no flags, so everything goes here:
-   ```bash
-   cd ~/agent-gui
-   sudo .venv/bin/python -m eagleeye config init --connection-code '<code from the Agents page>'      --passive [--passive-interface ens33] [--snmp-user ... --snmp-auth-key ... --snmp-priv-key ...]
-   sudo .venv/bin/python -m eagleeye check-deps
-   ```
-3. Install and start the service (`$PWD` is the agent's folder):
-   ```bash
-   sudo sed -e "s#@AGENT_DIR@#$PWD#g" -e "s/\r$//" packaging/eagleeye.service | sudo tee /etc/systemd/system/eagleeye.service
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now eagleeye
-   ```
+| | Windows | Linux |
+|---|---|---|
+| Service | `EagleEye Agent` (LocalSystem, delayed automatic start) | systemd unit `eagleeye-agent` (root) |
+| Settings, state, logs | `%ProgramData%\EagleEye` (Users may read; only administrators change) | `/var/lib/eagleeye` |
+| Secrets | `secrets.dat`, DPAPI machine key, SYSTEM + Administrators only | `secrets.json`, mode 600 |
 
-| Task | Command |
-|---|---|
-| Is it running? | `sudo systemctl status eagleeye` |
-| Live log | `journalctl -u eagleeye -f` (from boot: `journalctl -u eagleeye -b`) |
-| Change settings | `sudo .venv/bin/python -m eagleeye config init ...`, then `sudo systemctl restart eagleeye` |
-| Update the agent | replace the `eagleeye` folder, then `sudo systemctl restart eagleeye` |
-| Stop / do not start at boot | `sudo systemctl stop eagleeye` / `sudo systemctl disable eagleeye` |
+The Windows installer sets it up. By hand, as an administrator (Windows: an elevated PowerShell; Linux: sudo,
+from the agent's folder):
+```
+eagleeye service install [--from-config <file>]   # moves this user's settings (and Credential Manager key) in, starts it
+eagleeye service status                           # works for any user
+eagleeye service stop | start
+eagleeye service uninstall [--purge]              # --purge also deletes its settings, state and logs
+```
+From source use `python -m eagleeye ...` (on Linux `sudo .venv/bin/python -m eagleeye ...`). On Linux, `install`
+replaces the hand-installed `eagleeye.service` of earlier versions (disabled; its file is kept) and moves root's
+settings (`/root/.config/eagleeye/config.json`) in. Windows: `Stop-Service "EagleEye Agent"` / `Set-Service ...
+-StartupType Disabled`; Linux: `systemctl stop|disable eagleeye-agent`, log: `journalctl -u eagleeye-agent` and
+`/var/lib/eagleeye/logs/agent.log`. Closing the desktop app never stops the agent.
 
-The service stops the agent with SIGINT, as Ctrl+C does, so running work ends cleanly. It
-does not start a second copy: stop it before running `eagleeye run` by hand.
+Without a service (development, or `EAGLEEYE_EMBEDDED=1`) the desktop app runs the agent itself, as before 2.5.0.
+
+On Linux the tools come from the distribution: `sudo apt install nmap` (passive listening needs no libpcap), and
+Syft + Grype for SBOMs:
+```bash
+curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
+```
+Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
 
 ## Testing against the staging environment
 Use a fresh test tenant, never production.
