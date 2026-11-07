@@ -29,8 +29,9 @@ from .schedule import Schedule
 from .service import SCHEDULES_ENABLED, AgentService, log_event
 from .stages import (
     CveCheckStage, InventoryDryRunStage, LocalInventoryStage, SbomBuildStage, SbomDryRunStage,
-    DryRunUploadStage, NmapScanStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage,
+    DryRunUploadStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage,
 )
+from .stages.scan_own import active_scan_stage
 
 log = logging.getLogger("eagleeye")
 
@@ -71,6 +72,11 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
                    help="extra folders for the SBOM, separated by ';'")
     g.add_argument("--sbom-include-binaries", dest="sbom_include_binaries", action="store_true", default=None,
                    help="also read compiled programs (Go binaries, .exe/.dll, Linux kernel); many more, noisier findings")
+    g.add_argument("--engine", dest="scan_engine", choices=("auto", "nmap", "own", "compare"),
+                   help="active scan engine: auto/nmap = the Nmap stage, own = the agent's own engine, "
+                        "compare = both, with a local comparison report")
+    g.add_argument("--ports", dest="scan_ports", choices=("base", "consumer", "wide"),
+                   help="port tier for the own engine (default base)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -187,7 +193,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     settings = _settings_from(args)
-    stages: list[Any] = [NmapScanStage(args.target)]
+    stages: list[Any] = [active_scan_stage(args.target, settings)]
     if settings.snmp_enabled:
         stages.append(SnmpPollStage(settings))
     holder: dict[str, Any] = {}
@@ -199,6 +205,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return 1
     _print_hosts(ctx.hosts)
     print(f"Scanner: {ctx.summary.get('scanner')}   Took {result.seconds:.1f}s")
+    engine = ctx.summary.get("engine")
+    if engine:
+        print(f"Own engine: {engine['up']} up of {engine['addresses']} (ARP {engine['by_arp']}, ping {engine['by_ping']}, "
+              f"ports {engine['by_port']}), {engine['connections']} connections, {engine['open_ports']} open, "
+              f"{engine['seconds']}s, CPU {engine['cpu_seconds']}s, phases {engine['phases']}")
+    cmp_ = ctx.summary.get("compare")
+    if cmp_:
+        h, p = cmp_["hosts"], cmp_["ports"]
+        print(f"Compared with {cmp_['ref_scanner']} ({cmp_['ref_seconds']}s): hosts own {h['own']} / ref {h['ref']} / both {h['both']}"
+              f"; only own {h['only_own']}; only ref {h['only_ref']}; open-port agreement {p['agreement']:.0%}")
+        print(f"Report: {cmp_['report']}")
     _write_json(args.json_out, holder)
     return 0
 

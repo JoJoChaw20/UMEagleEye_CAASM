@@ -42,8 +42,9 @@ from .passive import PassiveSuite
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
 from .schedule import Schedule, ScheduleState
 from .stages.scan_nmap import validate_target
+from .stages.scan_own import active_scan_stage
 from .stages import (
-    CveCheckStage, InventoryUploadStage, LocalInventoryStage, NmapScanStage, PassiveCollectStage,
+    CveCheckStage, InventoryUploadStage, LocalInventoryStage, PassiveCollectStage,
     PassiveEnrichStage, SbomBuildStage, SbomUploadStage, SnmpPollStage, UploadStage,
 )
 
@@ -155,7 +156,7 @@ class AgentService:
 
     # ── pipelines ──
     def _active_pipeline(self, subnet: str) -> Pipeline:
-        stages: list[Any] = [NmapScanStage(subnet)]
+        stages: list[Any] = [active_scan_stage(subnet, self.settings)]
         if self.settings.snmp_enabled:
             stages.append(SnmpPollStage(self.settings))
         stages.append(UploadStage(self.client, "active"))

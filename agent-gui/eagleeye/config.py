@@ -56,6 +56,11 @@ class Settings:
     sbom_interval: int = 86400          # seconds between SBOMs (24 h)
     sbom_extra_paths: str = ""          # extra folders to scan, one per line
     sbom_include_binaries: bool = False # also read compiled programs (Go binaries, .exe/.dll, Linux kernel)
+    # Active scan engine (stages/scan_own.py): auto | nmap (the Nmap stage, as before),
+    # own (the agent's own engine), compare (both, with a local report). Port tier for
+    # the own engine: base | consumer | wide (engine/ports.py).
+    scan_engine: str = "auto"
+    scan_ports: str = "base"
     # Local scan schedules (see schedule.py); the dashboard can still trigger scans too.
     schedules: list[dict[str, Any]] = field(default_factory=list)
     # The data-collection notice the person accepted in the GUI (0 = never shown).
@@ -87,6 +92,10 @@ class Settings:
             out.append("inventory_interval must be at least 300 seconds")
         if self.sbom and self.sbom_interval < 3600:
             out.append("sbom_interval must be at least 3600 seconds")
+        if self.scan_engine not in ("auto", "nmap", "own", "compare"):
+            out.append("scan_engine must be auto, nmap, own or compare")
+        if self.scan_ports not in ("base", "consumer", "wide"):
+            out.append("scan_ports must be base, consumer or wide")
         from .schedule import Schedule
         for raw in self.schedules:
             out += [f"schedule {raw.get('subnet') or '?'}: {p}" for p in Schedule.from_dict(raw).problems()]
@@ -124,6 +133,8 @@ _ENV_VARS = {
     "sbom_interval": "EAGLEEYE_SBOM_INTERVAL",
     "sbom_extra_paths": "EAGLEEYE_SBOM_EXTRA_PATHS",
     "sbom_include_binaries": "EAGLEEYE_SBOM_INCLUDE_BINARIES",
+    "scan_engine": "EAGLEEYE_SCAN_ENGINE",
+    "scan_ports": "EAGLEEYE_SCAN_PORTS",
 }
 
 

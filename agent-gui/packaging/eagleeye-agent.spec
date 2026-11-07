@@ -15,6 +15,7 @@ datas = [
     (str(ROOT / "eagleeye" / "collectors" / "windows_inventory.ps1"), "eagleeye/collectors"),
     (str(ROOT / "packaging" / "THIRD-PARTY-NOTICES.txt"), "."),
     (str(ROOT / "eagleeye" / "gui" / "assets"), "eagleeye/gui/assets"),   # logo, fonts (OFL)
+    (str(ROOT / "eagleeye" / "data" / "ieee_oui.tsv.gz"), "eagleeye/data"),   # MAC vendors (IEEE registry)
 ]
 datas += collect_data_files("pysnmp")            # MIB modules are loaded from files at run time
 datas += copy_metadata("keyring")                # keyring finds its backends through package metadata
