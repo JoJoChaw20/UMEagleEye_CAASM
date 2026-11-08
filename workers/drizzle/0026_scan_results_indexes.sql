@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS "idx_scans_agent_jobs" ON "scan_results" USING btree ("agent_id","scan_type","status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_scans_started" ON "scan_results" USING btree ("started_at");

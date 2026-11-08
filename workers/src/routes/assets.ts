@@ -5,6 +5,7 @@ import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, t
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
+import { audit } from '../services/audit'
 import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
@@ -1047,7 +1048,7 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
     if (!existing) {
       return c.json({ detail: 'Asset not found' }, 404)
     }
-    if (user.role !== 'superadmin' && user.tenantId && existing.tenantId !== user.tenantId) {
+    if (user.role !== 'superadmin' && (!user.tenantId || existing.tenantId !== user.tenantId)) {
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
@@ -1088,6 +1089,8 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
     ] as unknown as Parameters<typeof db.batch>[0])
     // The cascade removed its SBOM rows; the SBOM file in R2 goes too (best effort).
     await c.env.REPORTS_BUCKET.delete(sbomObjectKey(assetId)).catch(() => {})
+    await audit(db, c, { userId: user.userId, tenantId: existing.tenantId, actionType: 'asset.delete', targetEntity: assetId,
+      previousState: { ip: existing.ipAddress, mac: existing.macAddress, hostname: existing.hostname, device_type: existing.deviceType } })
 
     return c.json({
       message: 'Asset deleted',
@@ -1499,11 +1502,20 @@ app.get('/:assetId/baseline', authMiddleware, requireRoles(...READ_ROLES), async
   }
 })
 
+// Whether this user may see this asset: the platform superadmin any, everyone else their own
+// tenant's (a user without a tenant none).
+async function assetVisible(db: ReturnType<typeof getDb>, user: { role: string; tenantId?: string | null }, assetId: string): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/i.test(assetId)) return false
+  const [asset] = await db.select({ tenantId: assets.tenantId }).from(assets).where(eq(assets.assetId, assetId)).limit(1)
+  return !!asset && (user.role === 'superadmin' || (!!user.tenantId && asset.tenantId === user.tenantId))
+}
+
 // ── GET /:assetId/sbom-scan-status ─── frontend polls this after triggering ───
 app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const { assetId } = c.req.param()
+    if (!await assetVisible(db, c.get('user'), assetId)) return c.json({ detail: 'Asset not found' }, 404)
     const [row] = await db
       .select({
         scanId:    scanResults.scanId,
@@ -1538,6 +1550,7 @@ app.get('/:assetId/inventory-job-status', authMiddleware, requireRoles(...READ_R
   try {
     const db = getDb(c.env.DATABASE_URL)
     const { assetId } = c.req.param()
+    if (!await assetVisible(db, c.get('user'), assetId)) return c.json({ detail: 'Asset not found' }, 404)
     const [row] = await db
       .select({ scanId: scanResults.scanId, status: scanResults.status, failureReason: scanResults.failureReason,
         startedAt: scanResults.startedAt, completedAt: scanResults.completedAt })

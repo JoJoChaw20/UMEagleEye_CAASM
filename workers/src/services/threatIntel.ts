@@ -21,10 +21,13 @@ type DB = ReturnType<typeof getDb>
 export const KEV_SOURCE = 'CISA KEV'
 
 /** SQL: indicator `c` (joined to its event `te`, LEFT JOIN) is matchable for tenant `tenant`. */
+// An event a tenant shares with all tenants can be READ by every tenant, but raises alerts only in
+// its own tenant: otherwise one tenant admin could flood every tenant with alerts (an event naming
+// "Microsoft Edge" or "edu.my"). Only platform events (the superadmin's) alert every tenant.
 export function matchableSql(tenant: SQL): SQL {
   return sql`(c.to_ids AND c.warning IS NULL AND (
     c.ti_event_id IS NULL
-    OR (te.status = 'published' AND (te.tenant_id = ${tenant} OR te.distribution IN ('all_tenants', 'platform')))
+    OR (te.status = 'published' AND (te.tenant_id = ${tenant} OR te.distribution = 'platform'))
   ))`
 }
 
@@ -42,7 +45,7 @@ export async function cveIntelFor(db: DB, tenantId: string | null, cveIds: strin
       eq(ctiIndicators.indicatorType, 'cve'),
       inArray(ctiIndicators.value, cveIds),
       sql`${ctiIndicators.toIds} AND ${ctiIndicators.warning} IS NULL`,
-      sql`(${ctiIndicators.tiEventId} IS NULL OR (${tiEvents.status} = 'published' AND (${tiEvents.tenantId} = ${tenantId} OR ${tiEvents.distribution} IN ('all_tenants', 'platform'))))`,
+      sql`(${ctiIndicators.tiEventId} IS NULL OR (${tiEvents.status} = 'published' AND (${tiEvents.tenantId} = ${tenantId} OR ${tiEvents.distribution} = 'platform')))`,
     ))
   for (const r of rows) {
     const cur = out.get(r.value) ?? { kev: false, titles: [] }

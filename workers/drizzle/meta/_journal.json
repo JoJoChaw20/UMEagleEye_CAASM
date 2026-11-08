@@ -183,6 +183,13 @@
       "when": 1794158624514,
       "tag": "0025_preserve_agent_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794166760522,
+      "tag": "0026_scan_results_indexes",
+      "breakpoints": true
     }
   ]
 }

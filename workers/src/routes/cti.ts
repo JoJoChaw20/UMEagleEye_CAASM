@@ -447,8 +447,8 @@ app.get('/lookup', authMiddleware, async (c) => {
 })
 
 // ── GET /debug ───────────────────────────────────────────────────
-// Live reachability test — accessible to any authenticated user.
-app.get('/debug', authMiddleware, async (c) => {
+// Live reachability test of the feeds, with the platform's API keys: the platform superadmin only.
+app.get('/debug', authMiddleware, requireRoles('superadmin'), async (c) => {
   const results: Record<string, unknown> = {}
 
   // ── OTX ──

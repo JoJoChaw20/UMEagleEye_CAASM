@@ -10,6 +10,8 @@ import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
 import { pendingJobsFor } from '../services/pendingJobs'
 import { getDb } from '../db/client'
+import { audit } from '../services/audit'
+import { networkTargetErrors } from '../services/scanTargets'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, scanResults, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
 import { generateApiKey } from '../lib/auth'
@@ -130,6 +132,7 @@ router.post(
 
     const agent = inserted[0]
     if (!agent) return c.json({ detail: 'Failed to create agent' }, 500)
+    await audit(db, c, { userId: user.userId, tenantId: agent.tenantId, actionType: 'agent.create', targetEntity: agent.agentId, newState: { name } })
 
     return c.json({
       agent_id: agent.agentId,
@@ -278,6 +281,9 @@ router.patch(
     Object.assign(change, body.settings ?? {})
     const { policy, errors } = applyChange(found.agent.policy, change, kindKeys(found.agent.kind))
     if (errors.length) return c.json({ detail: errors.join('; ') }, 400)
+    // The routers a network agent reads get its SNMP credentials: private addresses only (lib/scanTarget.ts).
+    const targetErrors = await networkTargetErrors(db, found.agent.tenantId, change)
+    if (targetErrors.length) return c.json({ detail: targetErrors.join('; ') }, 400)
 
     const [updated] = await db.update(agents).set({ policy }).where(eq(agents.agentId, agentId)).returning()
     if (!updated) return c.json({ detail: 'Agent not found' }, 404)
@@ -317,6 +323,8 @@ router.patch(
     const patched = await db.update(agents).set({ name: updates.name }).where(eq(agents.agentId, agentId)).returning()
     const updated = patched[0]
     if (!updated) return c.json({ detail: 'Failed to update agent' }, 500)
+    await audit(db, c, { userId: user.userId, tenantId: updated.tenantId, actionType: 'agent.rename', targetEntity: agentId,
+      previousState: { name: existing.name }, newState: { name: updated.name } })
 
     return c.json({ agent_id: updated.agentId, tenant_id: updated.tenantId, name: updated.name })
   }
@@ -371,6 +379,8 @@ router.delete(
     }
 
     await db.delete(agents).where(eq(agents.agentId, agentId))
+    await audit(db, c, { userId: user.userId, tenantId: existing.tenantId, actionType: 'agent.delete', targetEntity: agentId,
+      previousState: { name: existing.name, kind: existing.kind, host_asset_id: existing.hostAssetId } })
     return c.json({ ok: true })
   }
 )
@@ -531,7 +541,11 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
     const agentRole = typeof inv.os?.role === 'string' ? inv.os.role : null
     const now = new Date()
     const parsedAt = new Date(inv.collected_at)
-    const collectedAt = isNaN(parsedAt.getTime()) ? now : parsedAt
+    // The agent's clock is not trusted: a time in the future (a PC whose clock runs ahead) would
+    // keep its alerts fresh forever and win every "newest inventory" comparison, so it is clamped
+    // to now; one more than 7 days old is taken as now too (the report is arriving now).
+    const collectedAt = isNaN(parsedAt.getTime()) || parsedAt > now || now.getTime() - parsedAt.getTime() > 7 * 86400_000
+      ? now : parsedAt
 
     // ── Candidate assets (one query per rule, all tenant-scoped) ──
     const hasMac = sql<boolean>`(${assets.macAddress} IS NOT NULL OR EXISTS (

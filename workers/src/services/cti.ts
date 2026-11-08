@@ -133,9 +133,10 @@ export async function ingestOtx(db: DB, apiKey: string): Promise<number> {
     'https://otx.alienvault.com/api/v1/pulses/activity?limit=50&page=1',
     { headers: { 'X-OTX-API-KEY': apiKey } },
   )
+  // A failed fetch throws, so feed health shows the feed as failing (it used to read "ok, 0
+  // indicators" for weeks when a key expired). An unset key above is a deliberate skip.
   if (!res.ok) {
-    console.error('[OTX] HTTP error:', res.status, await res.text().catch(() => ''))
-    return 0
+    throw new Error(`OTX answered HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
   }
 
   const data = await res.json() as { results?: OtxPulse[]; count?: number }
@@ -192,12 +193,15 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
   })
 
   if (!res.ok) {
-    console.error('[ThreatFox] HTTP error:', res.status, await res.text().catch(() => ''))
-    return 0
+    throw new Error(`ThreatFox answered HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
   }
 
   const data = await res.json() as { query_status?: string; data?: ThreatFoxIoc[] }
   console.log(`[ThreatFox] query_status=${data.query_status} records=${data.data?.length ?? 0}`)
+  // 'ok', or 'no_result' for a quiet week; anything else (e.g. 'unknown_auth_key') is a failure
+  if (data.query_status && data.query_status !== 'ok' && data.query_status !== 'no_result') {
+    throw new Error(`ThreatFox refused the query: ${data.query_status}`)
+  }
 
   if (!data.data?.length) return 0
 
@@ -249,10 +253,7 @@ interface KevEntry { cveID?: string; dateAdded?: string }
 
 export async function ingestKev(db: DB): Promise<number> {
   const res = await fetch(KEV_URL, { headers: { 'User-Agent': 'UMEagleEye-CTI/1.0' } })
-  if (!res.ok) {
-    console.error('[KEV] HTTP error:', res.status)
-    return 0
-  }
+  if (!res.ok) throw new Error(`CISA KEV answered HTTP ${res.status}`)
   const data = await res.json() as { catalogVersion?: string; vulnerabilities?: KevEntry[] }
   const now = new Date()
   const seen = new Set<string>()

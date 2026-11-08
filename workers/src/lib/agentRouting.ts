@@ -21,7 +21,7 @@ export interface RouteAgent {
   last_heartbeat: string | null
 }
 
-interface Cidr { net: number; prefix: number; text: string }
+export interface Cidr { net: number; prefix: number; text: string }
 
 function ipToInt(ip: string): number | null {
   const parts = ip.split('.')

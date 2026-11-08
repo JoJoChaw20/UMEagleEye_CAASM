@@ -517,4 +517,9 @@ export const scanResults = pgTable('scan_results', {
   failureReason: text('failure_reason'),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().default(now()),
   completedAt: timestamp('completed_at', { withTimezone: true }),
-}, (t) => [index('idx_scans_tenant').on(t.tenantId)])
+}, (t) => [
+  index('idx_scans_tenant').on(t.tenantId),
+  // Every agent poll looks up its jobs (services/pendingJobs.ts); the nightly purge reads by age.
+  index('idx_scans_agent_jobs').on(t.agentId, t.scanType, t.status),
+  index('idx_scans_started').on(t.startedAt),
+])

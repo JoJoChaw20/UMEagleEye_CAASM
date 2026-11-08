@@ -31,6 +31,14 @@ HTTP_PORTS = {80, 2375, 2869, 3000, 5000, 5601, 5985, 7000, 7001, 8000, 8001, 80
               8088, 8090, 8181, 8888, 9000, 9001, 9090, 9200, 10000, 15672, 49152, 49153}
 GREETING_PORTS = {21: "ftp", 23: "telnet", 25: "smtp", 110: "pop3", 143: "imap", 587: "smtp"}
 NAME_ONLY_PORTS = {135: "msrpc"}
+# Sent nothing, ever (only the port scan's connect): a raw print port prints whatever arrives (an
+# HTTP request became a page of headers on every network printer), and industrial controllers
+# (Modbus, S7, DNP3, EtherNet/IP, OPC UA, ...) can misbehave on bytes they do not expect. Nmap
+# skips 9100-9107 for the same reason. Named from the port only.
+NEVER_SEND_PORTS = frozenset({
+    515, *range(9100, 9108),                                   # LPD, raw printing (JetDirect)
+    102, 502, 789, 1911, 1962, 2404, 4840, 9600, 20000, 44818,  # S7, Modbus, Red Lion, Fox, PCWorx, IEC 104, OPC UA, FINS, DNP3, EtherNet/IP
+})
 OS_KEYS = ("name", "smb_computer_name", "smb_domain", "smb_fqdn", "ntlm_version")
 READ_LIMIT = 65536
 
@@ -314,6 +322,8 @@ def probe(ip: str, port: int, timeout: float = 3.0) -> Optional[Finding]:
     """Identify the service on one open TCP port; None when nothing could be learned."""
     if port in NAME_ONLY_PORTS:
         return Finding(NAME_ONLY_PORTS[port])
+    if port in NEVER_SEND_PORTS:
+        return Finding(service_name(port) or "unknown")
     if port in (139, 445):
         return smb_finding(msproto.smb_probe(ip, port, timeout), "netbios-ssn" if port == 139 else "microsoft-ds")
     if port == 3389:

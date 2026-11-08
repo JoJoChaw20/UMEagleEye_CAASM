@@ -18,6 +18,21 @@ function getCronName(cron: string): string {
   return names[cron] ?? cron
 }
 
+// One nightly step: its own failure no longer stops the steps after it (they all sat in one try,
+// so a failed snapshot silently skipped cleanup and alert tidy-up every night). Each step's last
+// result is kept in KV (cron:last:<step>, 30 days) for whoever needs to know it ran.
+async function step(env: Env, name: string, run: () => Promise<string>): Promise<void> {
+  const at = new Date().toISOString()
+  try {
+    const summary = await run()
+    console.log(`[${name}] ${summary}`)
+    await env.KV_CACHE.put(`cron:last:${name}`, JSON.stringify({ ok: true, at, summary }), { expirationTtl: 30 * 86400 }).catch(() => {})
+  } catch (err) {
+    console.error(`[${name}] failed:`, err)
+    await env.KV_CACHE.put(`cron:last:${name}`, JSON.stringify({ ok: false, at, error: String(err).slice(0, 500) }), { expirationTtl: 30 * 86400 }).catch(() => {})
+  }
+}
+
 export async function handleCron(controller: ScheduledController, env: Env): Promise<void> {
   const db = getDb(env.DATABASE_URL)
   const name = getCronName(controller.cron)
@@ -41,24 +56,30 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
       }
 
       case 'posture-snapshot': {
-        await savePostureSnapshot(db)
-        console.log('[posture-snapshot] Posture snapshot saved')
-        const purged = await purgeOldData(db)
-        console.log(`[retention] Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events`)
-        const closed = await runAlertHygiene(db)
-        console.log(`[alert-hygiene] Closed ${closed.cve} CVE alerts without an SBOM, ${closed.newDevices} reviewed or stale new-device alerts; resolved ${closed.advisories} advisories of closed alerts`)
+        const tenantIds = (await db.select({ tenantId: tenants.tenantId }).from(tenants)).map((t) => t.tenantId)
+        // The platform-wide snapshot, and one per tenant: tenant reports read their own trend,
+        // which only the manual "Save snapshot" wrote before.
+        await step(env, 'posture-snapshot', async () => {
+          await savePostureSnapshot(db)
+          for (const id of tenantIds) await savePostureSnapshot(db, id)
+          return `Posture snapshot saved (platform and ${tenantIds.length} tenant(s))`
+        })
+        await step(env, 'retention', async () => {
+          const purged = await purgeOldData(db)
+          return `Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events, ${purged.scans} old scan records`
+        })
+        await step(env, 'alert-hygiene', async () => {
+          const closed = await runAlertHygiene(db)
+          return `Closed ${closed.cve} CVE alerts without an SBOM, ${closed.newDevices} reviewed or stale new-device alerts; resolved ${closed.advisories} advisories of closed alerts`
+        })
         // Criticality is recomputed on every scan, inventory and edit; this applies a
         // scoring-rule change to assets nothing has touched since (manual ones, say).
         // One read per tenant, writes only for scores that moved.
-        try {
+        await step(env, 'rescore', async () => {
           let changed = 0
-          for (const t of await db.select({ tenantId: tenants.tenantId }).from(tenants)) {
-            changed += (await rescoreAssets(db, t.tenantId)).scoresChanged
-          }
-          console.log(`[rescore] ${changed} criticality score(s) changed`)
-        } catch (err) {
-          console.error('[rescore] Nightly rescore failed:', err)
-        }
+          for (const id of tenantIds) changed += (await rescoreAssets(db, id)).scoresChanged
+          return `${changed} criticality score(s) changed`
+        })
         break
       }
 

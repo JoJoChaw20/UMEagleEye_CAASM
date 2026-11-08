@@ -7,6 +7,9 @@ import { authMiddleware, requireRoles, requireTenantAccess } from '../middleware
 import { getDb } from '../db/client'
 import { tenants, users, assets, auditLogs } from '../db/schema'
 import { DEFAULTS, POLICY_KEYS, POLICY_SPECS, ROLE_KEYS, applyChange, cleanPolicy, kindsOf } from '../lib/agentPolicy'
+import { addRefusal, mayGrantRole, type Refusal } from '../lib/userAdmin'
+import { audit } from '../services/audit'
+import { networkTargetErrors } from '../services/scanTargets'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -16,6 +19,14 @@ const superadminOnly      = [authMiddleware, requireRoles('superadmin')] as cons
 const tenantAdminAccess   = [authMiddleware, requireTenantAccess(['superadmin'], ['tenant_superadmin'])] as const
 // superadmin platform-wide OR tenant_superadmin / tenant_admin for their own tenant
 const tenantViewAccess    = [authMiddleware, requireTenantAccess(['superadmin'], ['tenant_superadmin', 'tenant_admin'])] as const
+
+// What a refused add says (lib/userAdmin.ts). To a tenant superadmin, an account they may not add
+// looks like one that does not exist, so accounts of other tenants cannot be discovered.
+function refusalDetail(r: Refusal, callerIsSuperadmin: boolean, what: string): { detail: string; status: 403 | 404 } {
+  if (r === 'role') return { detail: 'Only the platform administrator can make a tenant superadmin', status: 403 }
+  if (callerIsSuperadmin) return { detail: 'The platform superadmin cannot be added to a tenant', status: 403 }
+  return { detail: `No user available with that ${what}`, status: 404 }
+}
 
 // ── GET / — List all tenants (superadmin only) ────────────────────
 router.get('/', ...superadminOnly, async (c) => {
@@ -50,6 +61,7 @@ router.post(
     const tenantRows = await db.insert(tenants).values({ name, slug }).returning()
     const tenant = tenantRows[0]
     if (!tenant) return c.json({ detail: 'Failed to create tenant' }, 500)
+    await audit(db, c, { userId: c.get('user').userId, tenantId: tenant.tenantId, actionType: 'tenant.create', targetEntity: tenant.tenantId, newState: { name, slug } })
 
     return c.json({
       tenant_id: tenant.tenantId,
@@ -204,6 +216,8 @@ router.patch(
 
     const { policy, errors } = applyChange(tenant.agentPolicy, c.req.valid('json').settings, POLICY_KEYS)
     if (errors.length) return c.json({ detail: errors.join('; ') }, 400)
+    const targetErrors = await networkTargetErrors(db, tenantId, c.req.valid('json').settings)
+    if (targetErrors.length) return c.json({ detail: targetErrors.join('; ') }, 400)
 
     const [updated] = await db.update(tenants)
       .set({ agentPolicy: policy })
@@ -227,6 +241,7 @@ router.delete('/:tenantId', ...superadminOnly, async (c) => {
   if (!existing) return c.json({ detail: 'Tenant not found' }, 404)
 
   await db.update(tenants).set({ isActive: false }).where(eq(tenants.tenantId, tenantId))
+  await audit(db, c, { userId: c.get('user').userId, tenantId, actionType: 'tenant.deactivate', targetEntity: tenantId, previousState: { is_active: existing.isActive } })
 
   return c.json({ ok: true })
 })
@@ -264,8 +279,8 @@ router.get('/:tenantId/users', ...tenantViewAccess, async (c) => {
 })
 
 // ── POST /:tenantId/users — Assign existing user to tenant ────────
-// superadmin platform-wide; tenant_superadmin for own tenant
-// Accepts user_id (UUID) or username for lookup
+// superadmin platform-wide; tenant_superadmin for own tenant, and only accounts without a
+// tenant (lib/userAdmin.ts). Accepts user_id (UUID) or username for lookup
 router.post(
   '/:tenantId/users',
   ...tenantAdminAccess,
@@ -277,21 +292,27 @@ router.post(
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId } = c.req.param()
     const { user_id, username } = c.req.valid('json')
+    const caller = c.get('user')
+    const what = user_id ? 'ID' : 'username'
 
     const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
 
-    let resolvedId = user_id
-    if (!resolvedId && username) {
-      const [found] = await db.select().from(users).where(eq(users.username, username)).limit(1)
-      if (!found) return c.json({ detail: `No user found with username "${username}"` }, 404)
-      resolvedId = found.userId
+    const [user] = await db.select().from(users)
+      .where(user_id ? eq(users.userId, user_id) : eq(users.username, username!)).limit(1)
+    if (!user) return c.json({ detail: `No user available with that ${what}` }, 404)
+    const refusal = addRefusal(caller, user, tenantId)
+    if (refusal) {
+      const { detail, status } = refusalDetail(refusal, caller.role === 'superadmin', what)
+      return c.json({ detail }, status)
     }
+    const resolvedId = user.userId
 
-    const [user] = await db.select().from(users).where(eq(users.userId, resolvedId!)).limit(1)
-    if (!user) return c.json({ detail: 'User not found' }, 404)
-
-    await db.update(users).set({ tenantId }).where(eq(users.userId, resolvedId!))
+    await db.update(users).set({ tenantId }).where(eq(users.userId, resolvedId))
+    await audit(db, c, {
+      userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: resolvedId,
+      previousState: { tenant_id: user.tenantId, role: user.role }, newState: { tenant_id: tenantId },
+    })
 
     return c.json({ ok: true, user_id: resolvedId, username: user.username, tenant_id: tenantId })
   }
@@ -311,13 +332,27 @@ router.post(
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId } = c.req.param()
     const { email, username, role } = c.req.valid('json')
+    const caller = c.get('user')
 
     const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+    if (role && !mayGrantRole(caller, role)) {
+      return c.json({ detail: 'Only the platform administrator can make a tenant superadmin' }, 403)
+    }
 
     const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
     if (existing) {
+      const refusal = addRefusal(caller, existing, tenantId)
+      if (refusal) {
+        // Not a 404 here (an unknown email creates an account): the same answer for every refusal.
+        return c.json({ detail: caller.role === 'superadmin' ? refusalDetail(refusal, true, 'email').detail
+          : 'This email cannot be invited to your tenant. Ask the platform administrator.' }, 403)
+      }
       await db.update(users).set({ tenantId }).where(eq(users.userId, existing.userId))
+      await audit(db, c, {
+        userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: existing.userId,
+        previousState: { tenant_id: existing.tenantId, role: existing.role }, newState: { tenant_id: tenantId, by: 'email' },
+      })
       return c.json({
         ok: true,
         user_id: existing.userId,
@@ -339,6 +374,10 @@ router.post(
 
     const newUser = inserted[0]
     if (!newUser) return c.json({ detail: 'Failed to create user' }, 500)
+    await audit(db, c, {
+      userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: newUser.userId,
+      newState: { email, username: newUser.username, role: newUser.role },
+    })
 
     return c.json({
       ok: true,
@@ -379,6 +418,7 @@ router.patch(
       .limit(1)
 
     if (!target) return c.json({ detail: 'User not found in this tenant' }, 404)
+    if (target.role === 'superadmin') return c.json({ detail: "The platform superadmin's role cannot be changed here" }, 403)
 
     // Prevent tenant_superadmin from reassigning another tenant_superadmin's role
     if (target.role === 'tenant_superadmin' && caller.role !== 'superadmin') {
@@ -402,6 +442,10 @@ router.patch(
     }
 
     await db.update(users).set({ role }).where(eq(users.userId, userId))
+    await audit(db, c, {
+      userId: caller.userId, tenantId, actionType: 'user.role', targetEntity: userId,
+      previousState: { role: target.role }, newState: { role },
+    })
 
     return c.json({ ok: true, user_id: userId, role })
   }
@@ -429,12 +473,17 @@ router.patch(
     if (!target) return c.json({ detail: 'User not found in this tenant' }, 404)
 
     const caller = c.get('user')
+    if (target.role === 'superadmin') return c.json({ detail: 'The platform superadmin cannot be deactivated here' }, 403)
     if (caller.role !== 'superadmin') {
       if (target.userId === caller.userId) return c.json({ detail: 'Cannot deactivate your own account' }, 403)
       if (target.role === 'tenant_superadmin') return c.json({ detail: 'Cannot deactivate another tenant superadmin' }, 403)
     }
 
     await db.update(users).set({ isActive: is_active }).where(eq(users.userId, userId))
+    await audit(db, c, {
+      userId: caller.userId, tenantId, actionType: is_active ? 'user.activate' : 'user.deactivate', targetEntity: userId,
+      previousState: { is_active: target.isActive },
+    })
 
     return c.json({ ok: true, user_id: userId, is_active })
   }

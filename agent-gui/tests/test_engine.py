@@ -283,6 +283,18 @@ def test_engine_puts_findings_snmp_and_netbios_into_the_host():
     assert stats.details["192.168.36.50"]["ports"]["22"] == {"os_hint": "Ubuntu"}
 
 
+def test_printer_and_industrial_ports_are_never_sent_anything(monkeypatch):
+    # No connection is even opened by the probe: the port scan already knows the port is open.
+    def refuse(*args, **kwargs):
+        raise AssertionError("the probe opened a connection")
+    monkeypatch.setattr(probes, "_open", refuse)
+    monkeypatch.setattr(probes.socket, "create_connection", refuse)
+    for port in (9100, 9103, 515, 502, 102, 44818, 20000, 4840):
+        f = probes.probe("192.0.2.10", port)
+        assert f is not None and f.banner == "" and f.product == ""
+    assert probes.probe("192.0.2.10", 9100).service == "pdl-datastream"
+
+
 def test_a_failing_probe_does_not_end_the_scan():
     def boom(ip, port):
         raise RuntimeError("device sent garbage")

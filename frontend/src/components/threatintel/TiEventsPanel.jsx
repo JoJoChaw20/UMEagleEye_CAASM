@@ -179,10 +179,15 @@ function EventDialog({ user, initial, onClose, onSaved }) {
             {isSuperadmin ? (
               <p className="input-field w-full mt-1 text-dark-200">Every tenant (platform event)</p>
             ) : (
-              <select value={form.distribution} onChange={set('distribution')} className="input-field w-full mt-1">
-                <option value="organisation">Only our organisation</option>
-                <option value="all_tenants">All tenants</option>
-              </select>
+              <>
+                <select value={form.distribution} onChange={set('distribution')} className="input-field w-full mt-1">
+                  <option value="organisation">Only our organisation</option>
+                  <option value="all_tenants">All tenants</option>
+                </select>
+                {form.distribution === 'all_tenants' && (
+                  <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts only in your organisation.</span>
+                )}
+              </>
             )}
           </label>
         </div>

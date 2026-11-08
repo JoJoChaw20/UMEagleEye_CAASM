@@ -4,7 +4,7 @@
  * the PDF) and by the report queue (the Worker builds it), so both PDFs are the same.
  * The layout is frontend/src/utils/reportPdf.js, shared by both.
  */
-import { eq, and, sql, or, desc, inArray } from 'drizzle-orm'
+import { eq, and, sql, or, desc, inArray, isNull } from 'drizzle-orm'
 import { ACTIVE_ADVISORY_STATUSES } from '../lib/advisoryScope'
 import type { DB } from '../db/client'
 import { isOpenEvent } from '../lib/eventStatus'
@@ -14,7 +14,7 @@ import { computePosture } from './posture'
 
 export async function buildReportData(db: DB, tenantId: string | undefined, reportType: string) {
   const af   = tenantId ? eq(assets.tenantId, tenantId) : undefined
-  const pmf  = tenantId ? eq(postureMetrics.tenantId, tenantId) : undefined
+  const pmf  = tenantId ? eq(postureMetrics.tenantId, tenantId) : isNull(postureMetrics.tenantId)   // platform-wide: the platform snapshots only
   const sf   = tenantId ? eq(scanResults.tenantId, tenantId) : undefined
   const now  = new Date()
   const slaThreshold = new Date(now.getTime() - 72 * 60 * 60 * 1000)

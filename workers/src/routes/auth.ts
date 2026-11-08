@@ -15,8 +15,15 @@ import {
   generateTotpQR,
 } from '../lib/auth'
 import { authenticator } from 'otplib'
+import { TOO_MANY, clearFailures, overLimit, recordFailure } from '../lib/loginLimit'
+import { audit, callerIp } from '../services/audit'
 
 const app = new Hono<{ Bindings: Env }>()
+
+// A password hash to check against when the username does not exist, so a wrong username takes
+// as long as a wrong password and cannot be told apart by timing.
+let decoyHash: Promise<string> | null = null
+const decoy = () => (decoyHash ??= hashPassword('decoy-password-never-matches'))
 
 // ── POST /register ───────────────────────────────────────────────
 const registerSchema = z.object({
@@ -76,6 +83,13 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
   try {
     const { username, password } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)
+    const kv = c.env.KV_CACHE
+    const ip = callerIp(c) ?? 'unknown'
+
+    // Brute force (lib/loginLimit.ts): refused while over the limit, even with the right password.
+    if (await overLimit(kv, 'password_account', username) || await overLimit(kv, 'password_address', ip)) {
+      return c.json({ detail: TOO_MANY }, 429)
+    }
 
     const [user] = await db
       .select()
@@ -83,14 +97,15 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
       .where(eq(users.username, username))
       .limit(1)
 
-    if (!user || !user.isActive) {
+    const valid = await verifyPassword(password, user?.passwordHash ?? await decoy())
+    if (!user || !user.isActive || !valid) {
+      await Promise.all([recordFailure(kv, 'password_account', username), recordFailure(kv, 'password_address', ip)])
+      if (user) {
+        await audit(db, c, { userId: user.userId, tenantId: user.tenantId, actionType: 'auth.login_failed', targetEntity: user.userId })
+      }
       return c.json({ detail: 'Invalid credentials' }, 401)
     }
-
-    const valid = await verifyPassword(password, user.passwordHash)
-    if (!valid) {
-      return c.json({ detail: 'Invalid credentials' }, 401)
-    }
+    await clearFailures(kv, 'password_account', username)
 
     // Update last login
     await db.update(users).set({ lastLogin: new Date() }).where(eq(users.userId, user.userId))
@@ -117,6 +132,13 @@ app.post('/mfa/setup', authMiddleware, async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
+
+    // Turning MFA on again would replace the authenticator without proving the current one: someone
+    // holding a stolen session could make the account theirs. Resetting it is an administrator's job.
+    const [current] = await db.select({ mfaEnabled: users.mfaEnabled }).from(users).where(eq(users.userId, user.userId)).limit(1)
+    if (current?.mfaEnabled) {
+      return c.json({ detail: 'MFA is already on for this account. To use a new authenticator, ask an administrator to reset your MFA.' }, 409)
+    }
 
     const secret = generateTotpSecret()
     const qr_code_base64 = await generateTotpQR(secret, user.username)
@@ -156,6 +178,7 @@ app.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableSchema), asy
     }
 
     await db.update(users).set({ mfaEnabled: true }).where(eq(users.userId, user.userId))
+    await audit(db, c, { userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'auth.mfa_enabled', targetEntity: user.userId })
 
     return c.json({ message: 'MFA enabled successfully' })
   } catch (err) {
@@ -174,6 +197,8 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
   try {
     const { user_id, code } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)
+    const kv = c.env.KV_CACHE
+    if (await overLimit(kv, 'mfa_account', user_id)) return c.json({ detail: TOO_MANY }, 429)
 
     const [user] = await db
       .select()
@@ -187,6 +212,8 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
 
     const valid = verifyTotp(user.totpSecret, code)
     if (!valid) {
+      await recordFailure(kv, 'mfa_account', user_id)
+      await audit(db, c, { userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_failed', targetEntity: user.userId })
       return c.json({ detail: 'Invalid TOTP code' }, 401)
     }
 
@@ -215,7 +242,21 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
     const { access_token: googleToken } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)
 
-    // Verify via Google's userinfo endpoint (the token in a header, not in the URL, so it is not logged)
+    // The token must have been issued to EagleEye's own Google client: userinfo alone accepts a
+    // token from ANY site the user signed in to with Google, which could then sign in here as them.
+    // tokeninfo names the client (aud/azp); the token goes in the body, not the URL, so it is not logged.
+    if (!c.env.GOOGLE_CLIENT_ID) return c.json({ detail: 'Google sign-in is not set up on this server' }, 503)
+    const infoRes = await fetch('https://oauth2.googleapis.com/tokeninfo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ access_token: googleToken }),
+    })
+    const info = infoRes.ok ? await infoRes.json() as { aud?: string; azp?: string } : null
+    if (!info || (info.aud !== c.env.GOOGLE_CLIENT_ID && info.azp !== c.env.GOOGLE_CLIENT_ID)) {
+      return c.json({ detail: 'Invalid Google access token' }, 401)
+    }
+
+    // The account's details from Google's userinfo endpoint (the token in a header, not the URL)
     const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${googleToken}` },
     })
@@ -303,6 +344,7 @@ app.post('/change-password', authMiddleware, zValidator('json', changePasswordSc
 
     const newHash = await hashPassword(new_password)
     await db.update(users).set({ passwordHash: newHash }).where(eq(users.userId, authUser.userId))
+    await audit(db, c, { userId: authUser.userId, tenantId: authUser.tenantId ?? null, actionType: 'auth.password_changed', targetEntity: authUser.userId })
 
     return c.json({ detail: 'Password changed successfully' })
   } catch (err) {
@@ -360,6 +402,7 @@ app.post('/mfa/reset', authMiddleware, zValidator('json', mfaResetSchema), async
     const db = getDb(c.env.DATABASE_URL)
     const result = await db.update(users).set({ mfaEnabled: false, totpSecret: null }).where(eq(users.email, email)).returning({ userId: users.userId, email: users.email })
     if (result.length === 0) return c.json({ detail: 'User not found' }, 404)
+    await audit(db, c, { userId: caller.userId, tenantId: null, actionType: 'auth.mfa_reset', targetEntity: result[0]!.userId })
     return c.json({ message: 'MFA reset successfully', user: result[0] })
   } catch (err) {
     console.error('mfa/reset error:', err)

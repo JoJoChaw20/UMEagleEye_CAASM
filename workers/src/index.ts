@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { secureHeaders } from 'hono/secure-headers'
 import { logger } from 'hono/logger'
 import type { Env } from './types'
 
@@ -32,14 +33,18 @@ const app = new Hono<{ Bindings: Env }>()
 // ── Global middleware ─────────────────────────────────────────────
 app.use('*', logger())
 
+// Browser hardening for every API answer (HSTS, nosniff, no framing). Cross-origin resource and
+// embedder policies are left off: the dashboard is on another origin and reads the API with CORS.
+app.use('*', secureHeaders({ crossOriginResourcePolicy: false, crossOriginEmbedderPolicy: false }))
+
 app.use('*', async (c, next) => {
   const corsHandler = cors({
     origin: [
       'https://umeagleeye.csnet.my',
       'https://umeagleeye.pages.dev',
       c.env.FRONTEND_URL ?? '',
-      'http://localhost:5173',
-      'http://localhost:3000',
+      // A local dev server only outside production (a page on localhost could be anything)
+      ...(c.env.APP_ENV === 'production' ? [] : ['http://localhost:5173', 'http://localhost:3000']),
     ].filter(Boolean),
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID'],

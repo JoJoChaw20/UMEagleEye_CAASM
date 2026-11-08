@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { desc, eq, and, or, sql, inArray } from 'drizzle-orm'
+import { desc, eq, and, or, sql, inArray, isNull } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -209,7 +209,7 @@ async function findAdvisory(
 
 async function queryPosture(db: ReturnType<typeof getDb>, tenantId?: string) {
   // Try latest posture snapshot first
-  const snapshotFilter = tenantId ? eq(postureMetrics.tenantId, tenantId) : undefined
+  const snapshotFilter = tenantId ? eq(postureMetrics.tenantId, tenantId) : isNull(postureMetrics.tenantId)
   const [snap] = await db.select()
     .from(postureMetrics)
     .where(snapshotFilter)
