@@ -1,0 +1,6 @@
+# Docker build context (packaging/network-agent/Dockerfile): only the package and the image files.
+*
+!eagleeye/
+!packaging/network-agent/
+eagleeye/**/__pycache__
+eagleeye/gui/

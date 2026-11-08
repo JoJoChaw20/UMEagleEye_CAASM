@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, SlidersHorizontal } from 'lucide-react'
 import client from '../../api/client'
-import { GROUPS, PolicyInput, invalid } from './policy'
+import { GROUPS, PolicyInput, invalid, same } from './policy'
 
 export default function AgentDefaultsCard({ tenantId, onSaved }) {
   const [data, setData] = useState(null)
@@ -23,7 +23,7 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
   useEffect(() => { load() }, [load])
 
   const byKey = useMemo(() => Object.fromEntries((data?.settings ?? []).map((s) => [s.key, s])), [data])
-  const changed = (data?.settings ?? []).filter((s) => (draft[s.key] ?? null) !== (s.value ?? null))
+  const changed = (data?.settings ?? []).filter((s) => !same(draft[s.key], s.value))
   const problems = (data?.settings ?? []).filter((s) => invalid(s.spec, draft[s.key]))
   if (!data) return null
   const canEdit = data.can_edit

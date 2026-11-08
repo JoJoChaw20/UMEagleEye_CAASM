@@ -1,0 +1,3 @@
+# What the network agent container needs beyond the standard library (Dockerfile).
+cryptography>=42        # AES for SNMPv3 privacy (eagleeye/netagent/snmp.py)
+truststore>=0.10        # HTTPS certificates checked by the OS trust store (httpclient.py)

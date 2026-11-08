@@ -2,11 +2,13 @@
 // labels, groups and one input that shows where a value comes from. A setting left at
 // "default" follows the tenant default, or, when the tenant set nothing, stays the
 // agent's own setting (what its user chose on that computer).
+import { useState } from 'react'
 
 export const ROLES = [
   { key: 'inventory', label: 'Inventory', help: "Reports its own computer: hardware, security settings, software, and the SBOM with its CVEs." },
   { key: 'sensor', label: 'Sensor', help: 'Listens passively on its network for the devices there (ARP, mDNS, NetBIOS, DHCP, SSDP).' },
   { key: 'scanner', label: 'Scanner', help: 'Runs the active scans the dashboard sends it (New scan, new-device investigations).' },
+  { key: 'collector', label: 'Collector', help: 'A network agent: reads the routers and switches over SNMP (ARP and MAC tables, CDP/LLDP neighbours) to find every device and the switch port it is on.' },
 ]
 
 const hours = (s) => (s % 3600 === 0 ? `${s / 3600} h` : s % 60 === 0 ? `${s / 60} min` : `${s} s`)
@@ -58,6 +60,22 @@ export const GROUPS = [
       { key: 'sbom_interval', label: 'Every', unit: 's', format: hours },
     ],
   },
+  {
+    title: 'Network devices (network agents)',
+    settings: [
+      { key: 'network_poll', label: 'Read the routers and switches' },
+      {
+        key: 'network_seeds', label: 'Start from', placeholder: '10.0.0.1',
+        help: 'The routers or switches it reads first, one address per line. Their SNMP credentials stay on the agent.',
+      },
+      {
+        key: 'network_ranges', label: 'Allowed ranges', placeholder: '10.0.0.0/8',
+        help: 'It follows CDP/LLDP neighbours only inside these ranges, one per line. With none, it reads only the seeds.',
+      },
+      { key: 'network_depth', label: 'Hops from a seed', unit: 'hops' },
+      { key: 'network_interval', label: 'Every', unit: 's', format: hours },
+    ],
+  },
 ]
 
 export const SOURCE_LABEL = {
@@ -70,6 +88,7 @@ export const SOURCE_LABEL = {
 export function show(meta, spec, value) {
   if (value === null || value === undefined) return '—'
   if (spec?.type === 'bool') return value ? 'On' : 'Off'
+  if (spec?.type === 'list') return value.length ? value.join(', ') : 'none'
   if (meta.options) return meta.options[value] ?? String(value)
   return meta.format ? meta.format(value) : String(value)
 }
@@ -78,6 +97,7 @@ export function show(meta, spec, value) {
 // "default" means for it (e.g. "Tenant default: On").
 export function PolicyInput({ meta, spec, value, onChange, disabled, fallback }) {
   const id = `policy-${meta.key}`
+  if (spec.type === 'list') return <ListInput id={id} meta={meta} value={value} onChange={onChange} disabled={disabled} fallback={fallback} />
   if (spec.type === 'int') {
     return (
       <div className="flex items-center gap-2">
@@ -107,9 +127,42 @@ export function PolicyInput({ meta, spec, value, onChange, disabled, fallback })
   )
 }
 
-// Whether a value is valid for its setting (ints are typed freely).
+// A list of addresses or ranges, one per line (or comma-separated). Empty = default.
+function ListInput({ id, meta, value, onChange, disabled, fallback }) {
+  const [text, setText] = useState(() => (value ?? []).join('\n'))
+  return (
+    <textarea
+      id={id} rows={3} disabled={disabled} aria-label={meta.label} className="input-field text-sm w-56 font-mono"
+      value={text} placeholder={value == null ? `${fallback}\n(e.g. ${meta.placeholder})` : meta.placeholder}
+      onChange={(e) => {
+        setText(e.target.value)
+        const items = e.target.value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+        onChange(items.length ? items : null)
+      }}
+    />
+  )
+}
+
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+
+// Whether a value is valid for its setting (ints and lists are typed freely).
 export function invalid(spec, value) {
-  if (value === null || value === undefined || spec.type !== 'int') return null
+  if (value === null || value === undefined) return null
+  if (spec.type === 'list') {
+    if (value.length > spec.max) return `at most ${spec.max}`
+    const bad = value.find((v) => {
+      if (spec.item === 'ip') return !IPV4.test(v)
+      const [ip, bits, extra] = v.split('/')
+      return extra !== undefined || !IPV4.test(ip) || !/^\d{1,2}$/.test(bits ?? '') || Number(bits) > 32
+    })
+    return bad ? `${spec.item === 'ip' ? 'IPv4 addresses' : 'ranges like 10.0.0.0/8'} (not "${bad}")` : null
+  }
+  if (spec.type !== 'int') return null
   if (!Number.isInteger(value) || value < spec.min || value > spec.max) return `${spec.min} to ${spec.max}`
   return null
+}
+
+// Whether two values of a setting are the same (lists compare by their items).
+export function same(a, b) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, RefreshCw, X } from 'lucide-react'
 import client from '../../api/client'
-import { GROUPS, PolicyInput, ROLES, SOURCE_LABEL, invalid, show } from './policy'
+import { GROUPS, PolicyInput, ROLES, SOURCE_LABEL, invalid, same, show } from './policy'
 
 export default function AgentPolicyModal({ agent, onClose, onSaved }) {
   const [policy, setPolicy] = useState(null)
@@ -30,7 +30,9 @@ export default function AgentPolicyModal({ agent, onClose, onSaved }) {
   }, [onClose])
 
   const byKey = useMemo(() => Object.fromEntries((policy?.settings ?? []).map((s) => [s.key, s])), [policy])
-  const changed = useMemo(() => (policy?.settings ?? []).filter((s) => (draft[s.key] ?? null) !== (s.override ?? null)), [policy, draft])
+  const changed = useMemo(() => (policy?.settings ?? []).filter((s) => !same(draft[s.key], s.override)), [policy, draft])
+  // The roles of this kind of agent (a network agent has only Collector)
+  const roles = ROLES.filter((r) => r.key in (policy?.roles ?? {}))
   const problems = (policy?.settings ?? []).map((s) => [s, invalid(s.spec, draft[s.key])]).filter(([, p]) => p)
   const canEdit = !!policy?.can_edit
 
@@ -92,8 +94,8 @@ export default function AgentPolicyModal({ agent, onClose, onSaved }) {
 
         {policy && (
           <>
-            <div className="grid sm:grid-cols-3 gap-3">
-              {ROLES.map((r) => {
+            <div className={`grid gap-3 ${roles.length > 1 ? 'sm:grid-cols-3' : ''}`}>
+              {roles.map((r) => {
                 const on = roleOn(r.key)
                 return (
                   <div key={r.key} className="rounded-lg border border-dark-700/60 p-3 space-y-2">
@@ -115,7 +117,7 @@ export default function AgentPolicyModal({ agent, onClose, onSaved }) {
               })}
             </div>
 
-            {GROUPS.map((g) => (
+            {GROUPS.filter((g) => g.settings.some((m) => byKey[m.key])).map((g) => (
               <div key={g.title} className="space-y-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-dark-400">{g.title}</h3>
                 {g.settings.filter((m) => byKey[m.key]).map((m) => {

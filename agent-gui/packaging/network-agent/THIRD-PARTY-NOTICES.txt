@@ -1,0 +1,17 @@
+EagleEye network agent (container image) - third-party components
+=================================================================
+
+The image includes the following open-source components. Their licence texts are
+available at the links below and in the image's Python site-packages; the agent's own
+source is in the EagleEye repository (agent-gui/eagleeye).
+
+Python 3.13 runtime (Debian slim base image)   PSF License      https://docs.python.org/3/license.html
+    Debian packages of the base image are under their own licences (/usr/share/doc/*/copyright).
+cryptography                       Apache-2.0 OR BSD-3-Clause   https://github.com/pyca/cryptography
+    Includes OpenSSL (Apache-2.0) in its wheel.
+cffi                               MIT-0                        https://github.com/python-cffi/cffi
+pycparser                          BSD-3-Clause                 https://github.com/eliben/pycparser
+truststore                         MIT                          https://github.com/sethmlarson/truststore
+IEEE OUI registry (MAC vendors)    public registry data         https://standards-oui.ieee.org
+
+SNMP is the agent's own code (eagleeye/netagent/snmp.py); no SNMP library is included.

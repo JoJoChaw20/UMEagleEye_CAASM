@@ -433,6 +433,7 @@ export default function InventoryPage() {
               <option value="">All Sources</option>
               <option value="scan_active">Active scan</option>
               <option value="scan_passive">Passive scan</option>
+              <option value="scan_network">Network agent</option>
               <option value="manual">Manual</option>
               <option value="agent">Agent</option>
             </select>

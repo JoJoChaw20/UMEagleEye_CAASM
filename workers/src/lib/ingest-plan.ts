@@ -76,7 +76,17 @@ export interface PlanHost {
   hardwareVendor: string | null
   internetFacing: boolean
   isPassive: boolean
+  // A network agent's crawl (scan_type snmp): passive-like, but its own source and alert text.
+  isNetwork?: boolean
   tenantId: string | null
+}
+
+/** The asset source and the new-device alert's source for how a host was seen. */
+export function observedBy(host: Pick<PlanHost, 'isPassive' | 'isNetwork'>): {
+  source: 'scan_active' | 'scan_passive' | 'scan_network'; event: 'active_scan' | 'passive_scan' | 'network_agent'
+} {
+  if (host.isNetwork) return { source: 'scan_network', event: 'network_agent' }
+  return host.isPassive ? { source: 'scan_passive', event: 'passive_scan' } : { source: 'scan_active', event: 'active_scan' }
 }
 
 // ── Emitted write operations (data only; caller maps to Drizzle) ──
@@ -266,7 +276,7 @@ export function planIngest(
       const dt = resolveIngestDeviceType({ deviceType: st.deviceType, deviceTypeSource: st.deviceTypeSource ?? null }, host.deviceType, host.isPassive)
       // source = last observation method. Membership (in_my_assets) is NEVER
       // changed by ingest, so a rescan no longer needs the old sticky-manual CASE.
-      const resolvedSource = host.isPassive ? 'scan_passive' : 'scan_active'
+      const resolvedSource = observedBy(host).source
       // Fill-only: an empty stored name (e.g. saved from an empty Edit field) counts as
       // missing, and a generic one ("Android") gives way to a specific one (lib/hostnames.ts).
       const newHostname = pickHostname(st.hostname, host.hostname)
@@ -407,7 +417,7 @@ export function planIngest(
         // them in instead of raising "port opened" for every service.
         portsKnown: !host.isPassive,
       })
-      const source = host.isPassive ? 'scan_passive' : 'scan_active'
+      const source = observedBy(host).source
 
       // rule 5: end the reused-IP address first (order: end before inserts).
       if (decision.rule === 5) {
@@ -426,7 +436,7 @@ export function planIngest(
       ops.push({ k: 'insertAddress', values: addrValues(nid, assetId, networkKey, host.ip, mac, host.tenantId) })
       ops.push({ k: 'insertEvent', values: {
         assetId, eventType: 'new_device', severity: newDeviceSeverity({ internetFacing: host.internetFacing, mac, hostname: host.hostname }),
-        details: { ip: host.ip, mac: mac ?? null, hostname: host.hostname ?? null, source: host.isPassive ? 'passive_scan' : 'active_scan' },
+        details: { ip: host.ip, mac: mac ?? null, hostname: host.hostname ?? null, source: observedBy(host).event },
       } })
 
       assetState.set(assetId, {

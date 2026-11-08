@@ -15,7 +15,7 @@ from typing import Optional
 log = logging.getLogger("eagleeye.keychain")
 
 SERVICE = "EagleEye Agent"
-SECRET_FIELDS = ("api_key", "fingerbank_key", "snmp_auth_key", "snmp_priv_key")
+SECRET_FIELDS = ("api_key", "fingerbank_key", "snmp_auth_key", "snmp_priv_key", "snmp_community")
 
 
 class Keychain:

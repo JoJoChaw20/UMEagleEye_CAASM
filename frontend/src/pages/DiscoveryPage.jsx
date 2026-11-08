@@ -296,7 +296,7 @@ export default function DiscoveryPage() {
                               {KIND_LABEL[s.kind] ?? s.kind}
                             </span>
                           </td>
-                          <td className="font-mono text-xs text-accent-cyan">{s.kind === 'passive' ? '—' : s.subnet}</td>
+                          <td className="font-mono text-xs text-accent-cyan">{s.kind === 'passive' || s.kind === 'snmp' ? '—' : s.subnet}</td>
                           <td className="font-mono text-xs text-dark-300">{s.network ?? <span className="text-dark-500">unknown</span>}</td>
                           <td className="text-xs text-dark-300">{agentName(s.agentId)}</td>
                           <td>

@@ -87,6 +87,21 @@ export async function pendingJobsFor(db: Db, agentId: string) {
         OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '15 minutes'))`,
     ))
 
+  // Network agent crawls ("Run now"): a crawl takes seconds to minutes.
+  await db.update(scanResults)
+    .set({
+      status: 'failed',
+      completedAt: new Date(),
+      failureReason: sql`CASE WHEN ${scanResults.status} = 'pending'
+        THEN 'The network agent did not pick up this crawl within 30 minutes (it was offline)'
+        ELSE 'The crawl did not finish within 30 minutes' END`,
+    })
+    .where(and(
+      eq(scanResults.agentId, agentId),
+      eq(scanResults.scanType, 'snmp'),
+      sql`${scanResults.status} IN ('pending', 'running') AND ${scanResults.startedAt} < now() - interval '30 minutes'`,
+    ))
+
   await expireStaleActiveScans(db, eq(scanResults.agentId, agentId))
 
   const pending = await db

@@ -5,6 +5,7 @@ export const KIND_LABEL = {
   network:       'Full scan',
   investigation: 'New-device check',
   host:          'Host scan',
+  snmp:          'Network devices (SNMP)',
 }
 
 export const KIND_HINT = {
@@ -12,4 +13,5 @@ export const KIND_HINT = {
   network:       'An active Nmap scan of a whole range',
   investigation: 'An automatic scan of one device the agent heard for the first time; its results are on the new-device alert',
   host:          'An active scan of a single address',
+  snmp:          'A network agent read the routers and switches over SNMP: their ARP tables, MAC tables and CDP/LLDP neighbours. One record per agent per hour.',
 }

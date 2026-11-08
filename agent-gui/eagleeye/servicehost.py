@@ -51,6 +51,10 @@ class ServiceHost:
 
     @staticmethod
     def _agent_service(settings: Settings) -> Any:
+        if settings.kind == "network":               # reads routers and switches (netagent/)
+            from .netagent.service import NetworkAgentService
+            from .vendor import mac_vendor
+            return NetworkAgentService(settings, state_path=state_path(), policy_path=policy_path(), vendor=mac_vendor)
         from .service import AgentService
         return AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path(),
                             policy_path=policy_path())
@@ -126,6 +130,8 @@ class ServiceHost:
                 svc.request_inventory()
             elif what == "sbom":
                 svc.request_sbom()
+            elif what == "crawl":
+                svc.request_crawl()
             elif what == "scan":
                 subnet = str(request.get("subnet") or "")
                 if not subnet:

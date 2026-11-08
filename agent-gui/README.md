@@ -233,7 +233,54 @@ curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sud
 ```
 Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
 
-## Network agent (`netpoll`)
+## Network agent
+The network agent reads the routers and switches instead of looking after one computer: from their ARP
+tables, MAC tables and CDP/LLDP neighbours it finds every device on the network and the switch port it is
+plugged into, and sends that to the dashboard (Inventory, Discovery, the asset page's "Plugged into" and
+"Network device"). A company runs one per site or management network, always on, next to the network
+equipment. It needs UDP 161 to the devices and HTTPS out to the EagleEye server; nothing connects to it.
+
+**1. On the network equipment (once, by the network team):** a read-only SNMPv3 user (authPriv: SHA or
+SHA-2 with AES-128), allowed only from the agent's address. Cisco IOS:
+```
+ip access-list standard EAGLEEYE-SNMP
+ permit host <agent address>
+snmp-server view EAGLEEYE-RO iso included
+snmp-server group EAGLEEYE-RO v3 priv read EAGLEEYE-RO access EAGLEEYE-SNMP
+snmp-server user eagleeye EAGLEEYE-RO v3 auth sha <auth password> priv aes 128 <priv password>
+```
+SNMPv2c with a read-only community also works (`--snmp-version 2c`), but sends the community in clear text.
+
+**2. On the dashboard:** Agents → Register agent → copy the connection code.
+
+**3. Install it, either way:**
+- Docker (any Linux host; build from `agent-gui/`; passwords as files, never in the environment):
+  ```bash
+  docker build -f packaging/network-agent/Dockerfile -t eagleeye-network-agent .
+  # one file each: connection_code, snmp_auth, snmp_priv; readable only by the container's user (uid 10001)
+  sudo install -d -m 700 -o 10001 /etc/eagleeye/secrets
+  sudo chown 10001 /etc/eagleeye/secrets/* && sudo chmod 600 /etc/eagleeye/secrets/*
+  docker run -d --name eagleeye-network-agent --restart unless-stopped \
+    -e EAGLEEYE_CONNECTION_CODE_FILE=/run/secrets/connection_code -e EAGLEEYE_SNMP_USER=eagleeye \
+    -e EAGLEEYE_SNMP_AUTH_KEY_FILE=/run/secrets/snmp_auth -e EAGLEEYE_SNMP_PRIV_KEY_FILE=/run/secrets/snmp_priv \
+    -v /etc/eagleeye/secrets:/run/secrets:ro -v eagleeye-netagent:/data eagleeye-network-agent
+  docker logs -f eagleeye-network-agent             # health: docker ps shows (healthy)
+  ```
+  The image holds only the agent, `cryptography` and `truststore` (`packaging/network-agent`), runs as an
+  ordinary user, and keeps its state in the `/data` volume.
+- A Linux service (systemd, as root; `pip install cryptography` first):
+  ```bash
+  sudo python3 -m eagleeye config init --config /root/netagent.json --connection-code <code> \
+      --kind network --snmp-user eagleeye             # asks for the SNMP passwords
+  sudo python3 -m eagleeye service install --from-config /root/netagent.json
+  ```
+
+**4. On the dashboard again:** the agent shows as a Network agent with the Collector role. In its Settings,
+set **Start from** (the core routers/switches), **Allowed ranges** and the hops; it reads the network every
+15 minutes, and **Run now** (the play button) reads it at once. The same can be given at install time with
+`--network-seed` / `--network-range`, or `EAGLEEYE_NETWORK_SEEDS` / `_RANGES` (comma-separated).
+
+### One crawl by hand (`netpoll`)
 Reads routers and switches over SNMP (read only) with our own client (`eagleeye/netagent/`): v2c, or v3 with
 MD5/SHA/SHA-2 authentication and AES-128 privacy (`pip install cryptography`, the `network` extra). From the seed
 devices it follows CDP/LLDP neighbours, polling only addresses inside `--allow` ranges, at most `--depth` hops (3).
@@ -252,7 +299,8 @@ VLANs. It then reports:
   CDP/LLDP neighbour carry many MACs).
 
 `--record DIR` keeps every answer as net-snmp text, one file per device; `--replay DIR` runs on them without a
-network (`tests/fixtures/gns3` is the GNS3 lab). Passwords are never accepted on the command line.
+network (`tests/fixtures/gns3` is the GNS3 lab). `--upload --config FILE` also sends the crawl to the server
+in that file, through the same code the service runs. Passwords are never accepted on the command line.
 
 ## Testing against the staging environment
 Use a fresh test tenant, never production.

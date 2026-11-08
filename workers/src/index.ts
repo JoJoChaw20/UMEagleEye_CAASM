@@ -15,6 +15,7 @@ import reportRoutes from './routes/reports'
 import relationshipRoutes from './routes/relationships'
 import agentRoutes from './routes/agents'
 import topologyRoutes from './routes/topology'
+import networkRoutes from './routes/network'
 import tenantRoutes from './routes/tenants'
 import notificationRoutes from './routes/notifications'
 import chatbotRoutes from './routes/chatbot'
@@ -65,6 +66,7 @@ api.route('/reports', reportRoutes)
 api.route('/relationships', relationshipRoutes)
 api.route('/agents', agentRoutes)
 api.route('/topology', topologyRoutes)
+api.route('/network', networkRoutes)
 api.route('/tenants', tenantRoutes)
 api.route('/notifications', notificationRoutes)
 api.route('/chatbot', chatbotRoutes)

@@ -46,6 +46,17 @@ class Settings:
     snmp_priv_key: str = ""
     snmp_auth_protocol: str = "SHA"
     snmp_priv_protocol: str = "AES"
+    # The network agent (netagent/): kind "network" reads routers and switches over SNMP
+    # instead of looking after this computer. The SNMP credentials stay here; what to read
+    # (seeds, allowed ranges, depth, interval) can be set from the dashboard (policy.py).
+    kind: str = "host"
+    snmp_version: str = "3"             # 3, or 2c with a read-only community
+    snmp_community: str = ""
+    network_poll: bool = True           # the Collector role
+    network_seeds: list[str] = field(default_factory=list)      # routers/switches to start from
+    network_ranges: list[str] = field(default_factory=list)     # where the crawl may go
+    network_depth: int = 3              # CDP/LLDP hops from a seed
+    network_interval: int = 900         # seconds between crawls (15 min)
     inventory: bool = True              # collect the endpoint inventory of this machine
     inventory_interval: int = 21600     # seconds between inventories (6 h)
     # Personal data, off by default (data minimisation): per-user software installs
@@ -99,6 +110,12 @@ class Settings:
             out.append("scan_ports must be base, consumer or wide")
         if self.passive_backend not in ("auto", "npcap", "native"):
             out.append("passive_backend must be auto, npcap or native")
+        if self.kind not in ("host", "network"):
+            out.append("kind must be host or network")
+        if self.snmp_version not in ("3", "2c"):
+            out.append("snmp_version must be 3 or 2c")
+        if self.kind == "network" and self.network_interval < 300:
+            out.append("network_interval must be at least 300 seconds")
         from .schedule import Schedule
         for raw in self.schedules:
             out += [f"schedule {raw.get('subnet') or '?'}: {p}" for p in Schedule.from_dict(raw).problems()]
@@ -139,7 +156,35 @@ _ENV_VARS = {
     "sbom_include_binaries": "EAGLEEYE_SBOM_INCLUDE_BINARIES",
     "scan_engine": "EAGLEEYE_SCAN_ENGINE",
     "scan_ports": "EAGLEEYE_SCAN_PORTS",
+    "kind": "EAGLEEYE_KIND",
+    "snmp_version": "EAGLEEYE_SNMP_VERSION",
+    "snmp_community": "EAGLEEYE_SNMP_COMMUNITY",
+    "network_poll": "EAGLEEYE_NETWORK_POLL",
+    "network_seeds": "EAGLEEYE_NETWORK_SEEDS",       # comma-separated
+    "network_ranges": "EAGLEEYE_NETWORK_RANGES",     # comma-separated
+    "network_depth": "EAGLEEYE_NETWORK_DEPTH",
+    "network_interval": "EAGLEEYE_NETWORK_INTERVAL",
 }
+
+# Settings that are lists of text (addresses, ranges): a JSON list in the config file, a
+# comma-separated list in an EAGLEEYE_* variable.
+STRING_LISTS = ("network_seeds", "network_ranges")
+
+
+def env_value(name: str, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """An EAGLEEYE_* variable, or the contents of the file named by NAME_FILE (Docker and
+    Kubernetes secrets are files: the secret then never sits in the environment)."""
+    env = os.environ if env is None else env
+    value = env.get(name)
+    if value is not None:
+        return value
+    path = env.get(f"{name}_FILE")
+    if not path:
+        return None
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ConfigError(f"{name}_FILE: cannot read {path}: {exc}") from exc
 
 
 def config_dir() -> Path:
@@ -188,6 +233,11 @@ def sbom_cache_path(env: Optional[Mapping[str, str]] = None) -> Path:
 
 def _coerce(name: str, raw: Any, default: Any) -> Any:
     try:
+        if name in STRING_LISTS:
+            value = [p.strip() for p in raw.split(",")] if isinstance(raw, str) else raw
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise TypeError("expected a list of text")
+            return [v.strip() for v in value if v.strip()]
         if isinstance(default, list):
             value = json.loads(raw) if isinstance(raw, str) else raw
             if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
@@ -243,7 +293,7 @@ def load_settings(
                     setattr(settings, name, value or "")
 
     for name, var in _ENV_VARS.items():
-        raw = env.get(var)
+        raw = env_value(var, env)
         if raw is None or (raw == "" and not isinstance(defaults[name], bool)):
             continue
         setattr(settings, name, _coerce(name, raw, defaults[name]))

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Plus, Trash2, Copy, Check, X, RefreshCw, Radio, AlertCircle, KeyRound, Pencil, ChevronDown, ChevronRight, Monitor,
-  Download, SlidersHorizontal,
+  Download, SlidersHorizontal, Network, Play,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -292,12 +292,21 @@ function Roles({ a }) {
   )
 }
 
-function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, onDelete, onSettings, busy }) {
+function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, onDelete, onSettings, onRunNow, busy }) {
   const retired = a.status === 'retired'
+  const network = a.kind === 'network'
   return (
     <tr className={retired ? 'opacity-70' : ''}>
       <td>
-        <p className="font-medium text-dark-50">{a.name}</p>
+        <p className="font-medium text-dark-50 flex items-center gap-1.5">
+          {a.name}
+          {network && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan"
+              title="Reads the routers and switches over SNMP instead of looking after one computer">
+              <Network className="w-3 h-3" /> Network agent
+            </span>
+          )}
+        </p>
         <div className="flex items-center gap-1 mt-0.5">
           <p className="text-[11px] text-dark-500 font-mono truncate max-w-[16rem]" title={a.agent_id}>{a.agent_id}</p>
           <CopyButton text={a.agent_id} label="Copy agent ID" />
@@ -319,8 +328,11 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
             {retired ? '—' : (a.local_ip ? <span className="font-mono">{a.local_ip}</span> : 'Not reported yet')}
           </span>
         )}
+        {network && !retired && (
+          <span className="block text-[11px] text-dark-500 mt-0.5">reads routers and switches (Settings: what it starts from)</span>
+        )}
         {/* the networks it is on (2.5.1+): New scan sends scans of them to it automatically */}
-        {!retired && a.networks?.length > 0 && (
+        {!retired && !network && a.networks?.length > 0 && (
           <span className="block text-[11px] text-dark-500 mt-0.5" title="Networks this agent is directly on">
             on <span className="font-mono">{a.networks.join(', ')}</span>
           </span>
@@ -342,6 +354,11 @@ function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, on
                 <button onClick={() => onSettings(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Settings and roles" aria-label={`Settings of ${a.name}`}>
                   <SlidersHorizontal className="w-4 h-4" />
                 </button>
+                {network && (
+                  <button onClick={() => onRunNow(a)} disabled={busy === a.agent_id} className="p-1.5 hover:bg-accent-cyan/10 rounded text-dark-400 hover:text-accent-cyan transition-colors" title="Read the network now (at the agent's next heartbeat)" aria-label={`Run ${a.name} now`}>
+                    <Play className="w-4 h-4" />
+                  </button>
+                )}
                 <button onClick={() => onRename(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Rename" aria-label={`Rename ${a.name}`}>
                   <Pencil className="w-4 h-4" />
                 </button>
@@ -434,6 +451,20 @@ export default function AgentsPage() {
     }
   }
 
+  const runNow = async (agent) => {
+    setBusy(agent.agent_id)
+    try {
+      const res = await client.post(`/network/run/${agent.agent_id}`)
+      setNotice(res.data.status === 'already waiting'
+        ? `${agent.name} already has a crawl waiting.`
+        : `${agent.name} reads the network at its next heartbeat (within a minute); the result appears on the Discovery page.`)
+    } catch (err) {
+      alert(err?.response?.data?.detail || 'Could not start the crawl')
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const remove = async (agent) => {
     if (!confirm(
       `Delete agent "${agent.name}"?\n\n` +
@@ -480,7 +511,7 @@ export default function AgentsPage() {
   )
   const row = (a) => (
     <AgentRow key={a.agent_id} a={a} canManage={canManage} showTenant={isSuperadmin} tenantName={tenantName(a.tenant_id)}
-      onRename={setRenaming} onRotate={rotate} onDelete={remove} onSettings={setSettingsOf} busy={busy} />
+      onRename={setRenaming} onRotate={rotate} onDelete={remove} onSettings={setSettingsOf} onRunNow={runNow} busy={busy} />
   )
 
   return (

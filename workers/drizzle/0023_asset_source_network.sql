@@ -1,0 +1,1 @@
+ALTER TYPE "public"."asset_source" ADD VALUE 'scan_network';

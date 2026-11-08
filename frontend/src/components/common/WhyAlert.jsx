@@ -61,7 +61,7 @@ function chain(e) {
       }
     case 'new_device':
       return {
-        evidence: `A ${d.source === 'passive_scan' ? 'passive' : 'network'} scan saw ${d.ip ?? 'a device'}${d.mac ? ` (${d.mac})` : ''}${d.hostname ? `, ${d.hostname}` : ''}`,
+        evidence: `${d.source === 'network_agent' ? 'The network agent found' : `A ${d.source === 'passive_scan' ? 'passive' : 'network'} scan saw`} ${d.ip ?? 'a device'}${d.mac ? ` (${d.mac})` : ''}${d.hostname ? `, ${d.hostname}` : ''}`,
         knowledge: ['No known asset in this organisation had that identity'],
         rule: 'Discovery · A device nobody has claimed joined the network',
       }

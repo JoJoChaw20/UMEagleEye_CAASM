@@ -10,13 +10,15 @@
 //
 // Roles are not stored; they are read from the settings: Inventory (inventory + SBOM of
 // its own computer), Sensor (passive listening on its network), Scanner (runs scans the
-// dashboard sends it). Switching a role on or off in the dashboard sets those settings.
+// dashboard sends it), and for a network agent Collector (reads routers and switches over
+// SNMP). Switching a role on or off in the dashboard sets those settings.
 
-export type PolicyValue = boolean | number | string
+export type PolicyValue = boolean | number | string | string[]
 type Spec =
   | { type: 'bool' }
   | { type: 'int'; min: number; max: number }
   | { type: 'enum'; values: readonly string[] }
+  | { type: 'list'; item: 'ip' | 'cidr'; max: number }
 
 export const POLICY_SPECS = {
   scanner: { type: 'bool' },
@@ -32,26 +34,60 @@ export const POLICY_SPECS = {
   inventory_admin_names: { type: 'bool' },
   sbom: { type: 'bool' },
   sbom_interval: { type: 'int', min: 3600, max: 30 * 86400 },
+  // The network agent (agent-gui/eagleeye/netagent): it reads the seed routers and switches,
+  // then their CDP/LLDP neighbours inside the allowed ranges, up to network_depth hops away,
+  // every network_interval seconds. Its SNMP credentials stay on the agent.
+  network_poll: { type: 'bool' },
+  network_seeds: { type: 'list', item: 'ip', max: 16 },
+  network_ranges: { type: 'list', item: 'cidr', max: 32 },
+  network_depth: { type: 'int', min: 0, max: 6 },
+  network_interval: { type: 'int', min: 300, max: 86400 },
 } as const satisfies Record<string, Spec>
 
 export type PolicyKey = keyof typeof POLICY_SPECS
 export const POLICY_KEYS = Object.keys(POLICY_SPECS) as PolicyKey[]
 
-// Which settings each kind of agent has. Only "host" exists so far; the network agent
-// (SNMP) will have its own list.
-export const KIND_KEYS: Record<string, readonly PolicyKey[]> = { host: POLICY_KEYS }
+// Which settings each kind of agent has: a computer's own agent, and the network agent.
+const NETWORK_KEYS = ['network_poll', 'network_seeds', 'network_ranges', 'network_depth', 'network_interval'] as const
+export const KIND_KEYS: Record<string, readonly PolicyKey[]> = {
+  host: POLICY_KEYS.filter((k) => !(NETWORK_KEYS as readonly string[]).includes(k)),
+  network: NETWORK_KEYS,
+}
 export const AGENT_KINDS = Object.keys(KIND_KEYS)
+
+/** The kinds of agent a setting belongs to (the tenant defaults page groups them). */
+export function kindsOf(key: PolicyKey): string[] {
+  return AGENT_KINDS.filter((kind) => KIND_KEYS[kind]!.includes(key))
+}
 
 export const ROLE_KEYS = {
   inventory: ['inventory', 'sbom'],
   sensor: ['passive'],
   scanner: ['scanner'],
+  collector: ['network_poll'],
 } as const satisfies Record<string, readonly PolicyKey[]>
 export type Role = keyof typeof ROLE_KEYS
 
 // A setting an agent does not report (an agent before 2.4.0) whose behaviour is known:
 // every agent runs the scans the dashboard sends it.
 const ASSUMED: Partial<Record<PolicyKey, PolicyValue>> = { scanner: true }
+
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+
+/** An IPv4 address, or a CIDR range written as its network address ("10.10.0.0/16"); a
+ *  range given by one of its addresses ("10.10.5.1/16") is moved to its network address. */
+function listItem(item: 'ip' | 'cidr', raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const text = raw.trim()
+  if (item === 'ip') return IPV4.test(text) ? text : undefined
+  const [ip, bits, extra] = text.split('/')
+  const prefix = Number(bits)
+  if (extra !== undefined || !ip || !IPV4.test(ip) || !/^\d{1,2}$/.test(bits ?? '') || prefix > 32) return undefined
+  const n = ip.split('.').reduce((acc, part) => acc * 256 + Number(part), 0)
+  const size = 2 ** (32 - prefix)
+  const base = Math.floor(n / size) * size
+  return [16777216, 65536, 256, 1].map((d) => Math.floor(base / d) % 256).join('.') + '/' + prefix
+}
 
 export type Source = 'agent' | 'tenant' | 'local' | 'unknown'
 export interface PolicyEntry {
@@ -74,6 +110,12 @@ export function coerce(key: PolicyKey, raw: unknown): PolicyValue | undefined {
   if (spec.type === 'bool') return typeof raw === 'boolean' ? raw : undefined
   if (spec.type === 'int') {
     return typeof raw === 'number' && Number.isInteger(raw) && raw >= spec.min && raw <= spec.max ? raw : undefined
+  }
+  if (spec.type === 'list') {
+    if (!Array.isArray(raw) || raw.length > spec.max) return undefined
+    const items = raw.map((r) => listItem(spec.item, r))
+    if (items.some((i) => i === undefined)) return undefined
+    return [...new Set(items as string[])]
   }
   return typeof raw === 'string' && spec.values.includes(raw) ? raw : undefined
 }
@@ -118,6 +160,9 @@ function describe(key: PolicyKey): string {
   const spec: Spec = POLICY_SPECS[key]
   if (spec.type === 'bool') return 'must be true or false'
   if (spec.type === 'int') return `must be a whole number from ${spec.min} to ${spec.max}`
+  if (spec.type === 'list') {
+    return `must be a list of at most ${spec.max} ${spec.item === 'ip' ? 'IPv4 addresses' : 'IPv4 ranges such as 10.0.0.0/8'}`
+  }
   return `must be one of ${spec.values.join(', ')}`
 }
 
@@ -133,7 +178,7 @@ export interface ResolvedPolicy {
   entries: PolicyEntry[]
   managed: Partial<Record<PolicyKey, PolicyValue>>   // what the agent must apply
   effective: Partial<Record<PolicyKey, PolicyValue>> // every known value
-  roles: Record<Role, boolean | null>                // null: not known
+  roles: Partial<Record<Role, boolean | null>>       // this kind's roles; null: not known
   version: string                                    // changes when `managed` changes
 }
 
@@ -170,10 +215,11 @@ export function resolvePolicy(input: ResolveInput): ResolvedPolicy {
       override: overrides[key] ?? null, tenant_default: defaults[key] ?? null, local: local[key] ?? null, inherited,
     })
   }
-  const roles = {} as Record<Role, boolean | null>
+  const roles: Partial<Record<Role, boolean | null>> = {}
   for (const [role, roleKeys] of Object.entries(ROLE_KEYS) as [Role, readonly PolicyKey[]][]) {
     const values = roleKeys.filter((k) => keys.includes(k)).map((k) => effective[k])
-    roles[role] = values.length === 0 || values.some((v) => v === undefined) ? null : values.some((v) => v === true)
+    if (values.length === 0) continue                 // not a role of this kind of agent
+    roles[role] = values.some((v) => v === undefined) ? null : values.some((v) => v === true)
   }
   return { entries, managed, effective, roles, version: policyVersion(managed) }
 }
@@ -197,7 +243,7 @@ export function policyVersion(managed: Partial<Record<PolicyKey, PolicyValue>>):
 
 /** Why the dashboard may not send this kind of job to an agent with this policy, or null.
  *  A value the agent has not reported does not block (an older agent decides itself). */
-export function jobRefusal(effective: Partial<Record<PolicyKey, PolicyValue>>, job: 'active' | 'inventory' | 'sbom'): string | null {
+export function jobRefusal(effective: Partial<Record<PolicyKey, PolicyValue>>, job: 'active' | 'inventory' | 'sbom' | 'snmp'): string | null {
   if (job === 'active' && effective.scanner === false) {
     return 'This agent does not run scans from the dashboard (its Scanner role is off).'
   }
@@ -206,6 +252,9 @@ export function jobRefusal(effective: Partial<Record<PolicyKey, PolicyValue>>, j
   }
   if (job === 'sbom' && effective.sbom === false) {
     return 'The SBOM is switched off for this agent.'
+  }
+  if (job === 'snmp' && effective.network_poll === false) {
+    return 'This network agent does not read the network (its Collector role is off).'
   }
   return null
 }

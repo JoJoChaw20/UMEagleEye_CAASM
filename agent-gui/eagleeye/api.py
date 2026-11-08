@@ -38,6 +38,7 @@ class IngestResult:
     hosts_discovered: int = 0
     assets_upserted: int = 0
     error: Optional[str] = None
+    scan_id: Optional[str] = None           # the Discovery record it went into
 
 
 @dataclass
@@ -61,6 +62,7 @@ class AgentClient:
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.agent_id = agent_id
+        self.kind = "host"                      # "network": the network agent (no local scans to log)
         self._sleep = sleep
         # The tenant's scan policy, from each heartbeat answer (servers before 2.3.0 send none).
         self.local_scans_allowed = True
@@ -138,7 +140,7 @@ class AgentClient:
             policy = {}
         if isinstance(policy, dict) and "local_scans" in policy:
             allowed = bool(policy["local_scans"])
-            if allowed != self.local_scans_allowed:
+            if allowed != self.local_scans_allowed and self.kind == "host":
                 log.info("Scans started on this computer are now %s by the administrator",
                          "allowed" if allowed else "turned off")
             self.local_scans_allowed = allowed
@@ -251,7 +253,21 @@ class AgentClient:
         if not resp.ok:
             return IngestResult(False, error=f"server rejected the results ({self._detail(resp)})")
         data = resp.json()
-        return IngestResult(True, data.get("hosts_discovered", 0), data.get("assets_upserted", 0))
+        return IngestResult(True, data.get("hosts_discovered", 0), data.get("assets_upserted", 0),
+                            scan_id=data.get("scan_id"))
+
+    def send_topology(self, topology: dict[str, Any]) -> tuple[bool, str]:
+        """POST /network/topology - a network agent's crawl beyond the addresses: the polled
+        devices, the cables between them and where each device is plugged in."""
+        try:
+            resp = self._request("POST", "/network/topology", 120, data=json.dumps(topology))
+        except httpclient.RequestException as exc:
+            return False, failure(exc)
+        if not resp.ok:
+            return False, f"server rejected the topology ({self._detail(resp)})"
+        data = resp.json()
+        return True, (f"{data.get('devices_matched', 0)} of {data.get('devices', 0)} device(s) matched, "
+                      f"{data.get('links', 0)} link(s), {data.get('located_on_ports', 0)} device(s) on switch ports")
 
     def start_sbom(self, trigger: str, scan_id: Optional[str] = None,
                    mode: str = "full") -> tuple[Optional[str], Optional[str]]:

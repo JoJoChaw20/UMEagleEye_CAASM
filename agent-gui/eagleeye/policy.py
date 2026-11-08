@@ -15,6 +15,7 @@ scans) and `local_scans` (whether it may start its own, delivered as before).
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import json
 import logging
 import sys
@@ -42,45 +43,80 @@ FIELDS: dict[str, tuple[str, Any]] = {
     "scan_ports": ("enum", ("base", "consumer", "wide")),
 }
 
+# The network agent's settings (kind "network", netagent/service.py): what it reads.
+NETWORK_FIELDS: dict[str, tuple[str, Any]] = {
+    "network_poll": ("bool", None),
+    "network_seeds": ("list", ("ip", 16)),
+    "network_ranges": ("list", ("cidr", 32)),
+    "network_depth": ("int", (0, 6)),
+    "network_interval": ("int", (300, 86400)),
+}
+KIND_FIELDS = {"host": FIELDS, "network": NETWORK_FIELDS}
+
+
+def fields_of(kind: str) -> dict[str, tuple[str, Any]]:
+    return KIND_FIELDS.get(kind, FIELDS)
+
+
 LABELS = {
     "passive": "Passive listening", "passive_interval": "Passive upload interval",
     "passive_backend": "Packet capture", "inventory": "Inventory", "inventory_interval": "Inventory interval",
     "inventory_user_software": "Software users installed", "inventory_admin_names": "Administrator account names",
     "sbom": "SBOM", "sbom_interval": "SBOM interval", "scan_engine": "Scan engine", "scan_ports": "Scan ports",
+    "network_poll": "Read the network", "network_seeds": "Seed devices", "network_ranges": "Allowed ranges",
+    "network_depth": "Crawl depth", "network_interval": "Crawl interval",
 }
 
 MANAGED_NOTE = "Set by your administrator on the EagleEye dashboard"
 
 
-def _valid(key: str, value: Any) -> bool:
-    kind, rule = FIELDS[key]
+def _list_item(item: str, value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        if item == "ip":
+            ipaddress.IPv4Address(value)
+        else:
+            ipaddress.IPv4Network(value, strict=False)
+        return "/" in value or item == "ip"
+    except ValueError:
+        return False
+
+
+def _valid(key: str, value: Any, table: Mapping[str, tuple[str, Any]] = FIELDS) -> bool:
+    kind, rule = table[key]
     if kind == "bool":
         return isinstance(value, bool)
     if kind == "int":
         return isinstance(value, int) and not isinstance(value, bool) and rule[0] <= value <= rule[1]
+    if kind == "list":
+        item, most = rule
+        return isinstance(value, list) and len(value) <= most and all(_list_item(item, v) for v in value)
     return isinstance(value, str) and value in rule
 
 
-def clean(managed: Any) -> dict[str, Any]:
+def clean(managed: Any, kind: str = "host") -> dict[str, Any]:
     """The managed settings this agent applies; anything unknown or invalid is ignored."""
     if not isinstance(managed, Mapping):
         return {}
-    return {k: v for k, v in managed.items() if k in FIELDS and _valid(k, v)}
+    table = fields_of(kind)
+    return {k: v for k, v in managed.items() if k in table and _valid(k, v, table)}
 
 
-def apply(settings: Settings, managed: Mapping[str, Any]) -> Settings:
+def apply(settings: Settings, managed: Mapping[str, Any], kind: str = "host") -> Settings:
     """A copy of `settings` with the managed values in place."""
-    return dataclasses.replace(settings, **clean(managed))
+    return dataclasses.replace(settings, **clean(managed, kind))
 
 
-def local_report(settings: Settings) -> dict[str, Any]:
+def local_report(settings: Settings, kind: str = "host") -> dict[str, Any]:
     """This computer's own value of each setting (what applies where the admin set none)."""
     out = {}
-    for key in FIELDS:
+    table = fields_of(kind)
+    for key in table:
         value = getattr(settings, key)
         if key == "scan_engine" and value == "nmap":
             value = "auto"                      # the same engine under its old name
-        if _valid(key, value):
+        if _valid(key, value, table):
             out[key] = value
     return out
 
@@ -112,8 +148,9 @@ def policy_path(env: Optional[Mapping[str, str]] = None) -> Path:
 class PolicyStore:
     """The last policy applied: {"version": str, "managed": {...}}. No path = memory only."""
 
-    def __init__(self, path: Optional[Path]) -> None:
+    def __init__(self, path: Optional[Path], kind: str = "host") -> None:
         self.path = path
+        self.kind = kind
 
     def load(self) -> tuple[Optional[str], dict[str, Any]]:
         if self.path is None or not self.path.exists():
@@ -124,7 +161,7 @@ class PolicyStore:
             log.warning("Could not read %s (%s); waiting for the server's settings", self.path, exc)
             return None, {}
         version = data.get("version") if isinstance(data, dict) else None
-        return (version if isinstance(version, str) else None), clean((data or {}).get("managed"))
+        return (version if isinstance(version, str) else None), clean((data or {}).get("managed"), self.kind)
 
     def save(self, version: str, managed: Mapping[str, Any]) -> None:
         if self.path is None:

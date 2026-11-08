@@ -9,7 +9,7 @@
  *   trigger     'new_device' on an automatic new-device check (services/autoInvestigate.ts)
  */
 
-export type ScanKind = 'passive' | 'investigation' | 'network' | 'host'
+export type ScanKind = 'passive' | 'investigation' | 'network' | 'host' | 'snmp'
 
 export interface ScanRecordFacts {
   scanType: string
@@ -32,6 +32,7 @@ export function isCidr(v: string | null | undefined): boolean {
 
 export function scanKind(r: ScanRecordFacts): ScanKind {
   if (r.scanType === 'passive') return 'passive'
+  if (r.scanType === 'snmp') return 'snmp'            // a network agent's crawl of routers and switches
   if (info(r)['trigger'] === 'new_device') return 'investigation'
   return isCidr(r.subnet) && !r.subnet!.endsWith('/32') ? 'network' : 'host'
 }

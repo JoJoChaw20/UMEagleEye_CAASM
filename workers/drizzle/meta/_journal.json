@@ -155,6 +155,20 @@
       "when": 1794041934755,
       "tag": "0021_agent_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794137977830,
+      "tag": "0022_network_agent",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794141242833,
+      "tag": "0023_asset_source_network",
+      "breakpoints": true
     }
   ]
 }

@@ -99,3 +99,30 @@ test('the networks an agent reports are kept only when they look like IPv4 range
   assert.deepEqual(r.networks, ['192.168.36.0/24', '10.1.0.0/16'])
   assert.deepEqual(cleanReport({}).networks, [])
 })
+
+test('a network agent has its own settings and the Collector role', () => {
+  assert.ok(kindKeys('network').includes('network_ranges') && !kindKeys('network').includes('passive'))
+  assert.ok(!kindKeys('host').includes('network_seeds'))
+  const r = resolvePolicy({ kind: 'network', overrides: { network_seeds: ['10.99.0.1'] }, reported: { network_poll: true } })
+  assert.deepEqual(r.roles, { collector: true })
+  assert.deepEqual(r.managed, { network_seeds: ['10.99.0.1'] })
+  assert.deepEqual(Object.keys(resolvePolicy({ reported: {} }).roles).sort(), ['inventory', 'scanner', 'sensor'])
+  assert.match(jobRefusal({ network_poll: false }, 'snmp')!, /Collector role/)
+  assert.equal(jobRefusal({ network_poll: true }, 'snmp'), null)
+})
+
+test('address and range lists are checked and written the same way', () => {
+  const keys = kindKeys('network')
+  const ok = applyChange({}, { network_seeds: ['10.99.0.1', ' 10.99.0.1 '], network_ranges: ['10.10.5.1/16', '10.99.0.0/24', '0.0.0.0/0'] }, keys)
+  assert.deepEqual(ok.errors, [])
+  assert.deepEqual(ok.policy.network_seeds, ['10.99.0.1'])
+  assert.deepEqual(ok.policy.network_ranges, ['10.10.0.0/16', '10.99.0.0/24', '0.0.0.0/0'])
+  for (const bad of [['10.99.0'], ['10.99.0.256'], 'x', [1]]) {
+    assert.match(applyChange({}, { network_seeds: bad }, keys).errors[0]!, /IPv4 addresses/)
+  }
+  for (const bad of [['10.0.0.0/33'], ['10.0.0.0'], ['10.0.0.0/8/1'], Array(33).fill('10.0.0.0/8')]) {
+    assert.match(applyChange({}, { network_ranges: bad }, keys).errors[0]!, /ranges/)
+  }
+  assert.deepEqual(cleanPolicy({ network_ranges: ['10.0.0.0/8', 'nope'] }, keys), {})   // a stored bad list is dropped
+  assert.deepEqual(cleanReport({ kind: 'network', settings: { network_depth: 3, passive: true } }).settings, { network_depth: 3 })
+})

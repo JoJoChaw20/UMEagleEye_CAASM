@@ -15,13 +15,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import socket
 import sys
 from pathlib import Path
 from typing import Any, Optional
 
 from . import VERSION, deps
-from .config import ConfigError, Settings, default_config_path, load_settings, save_settings, sbom_cache_path, state_path
+from .config import (
+    ConfigError, Settings, default_config_path, env_value, load_settings, save_settings, sbom_cache_path, state_path,
+)
 from .enrol import ConnectionCodeError, parse_connection_code
 from .keychain import Keychain
 from .netagent import command as netpoll
@@ -82,6 +85,16 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
                         "compare = both, with a local comparison report")
     g.add_argument("--ports", dest="scan_ports", choices=("base", "consumer", "wide"),
                    help="port tier for the own engine (default base)")
+    n = p.add_argument_group("network agent (kind network: reads routers and switches over SNMP)")
+    n.add_argument("--kind", dest="kind", choices=("host", "network"),
+                   help="host: this computer's agent (default); network: the network agent")
+    n.add_argument("--snmp-version", dest="snmp_version", choices=("3", "2c"))
+    n.add_argument("--network-seed", dest="network_seeds", action="append",
+                   help="a router or switch to start from (repeatable; the dashboard can set these)")
+    n.add_argument("--network-range", dest="network_ranges", action="append",
+                   help="a range it may read, e.g. 10.0.0.0/8 (repeatable; the dashboard can set these)")
+    n.add_argument("--network-depth", dest="network_depth", type=int)
+    n.add_argument("--network-interval", dest="network_interval", type=int, help="seconds between crawls (default 900)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -196,7 +209,9 @@ def cmd_service(args: argparse.Namespace) -> int:
 
 def _settings_from(args: argparse.Namespace) -> Settings:
     overrides = {k: v for k, v in vars(args).items() if k in Settings.__dataclass_fields__ and v is not None}
-    code = getattr(args, "connection_code", None)
+    # The code can also come from the environment (a container: EAGLEEYE_CONNECTION_CODE or
+    # EAGLEEYE_CONNECTION_CODE_FILE), so it never shows in a process list.
+    code = getattr(args, "connection_code", None) or env_value("EAGLEEYE_CONNECTION_CODE")
     if code:
         try:
             url, agent_id, key = parse_connection_code(code)
@@ -231,6 +246,10 @@ def _write_json(path: Optional[Path], payload: dict[str, Any]) -> None:
 # ── commands ──
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if getattr(args, "config", None):
+        # Its state and applied policy live next to this config (config.py instance_name), not
+        # next to the default one: a second agent on this computer must not share them.
+        os.environ["EAGLEEYE_CONFIG"] = str(args.config)
     settings = _settings_from(args)
     problems = settings.problems()
     if problems:
@@ -238,6 +257,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"\nSet them with flags, EAGLEEYE_* variables, or `eagleeye config init`. "
               f"Config file: {default_config_path()}", file=sys.stderr)
         return 2
+
+    from .policy import policy_path
+    if settings.kind == "network":
+        from .netagent.service import NetworkAgentService
+        from .vendor import mac_vendor
+        log.info("EagleEye network agent v%s starting (API %s, agent %s)", VERSION, settings.api_url, settings.agent_id)
+        net = NetworkAgentService(settings, state_path=state_path(), policy_path=policy_path(), vendor=mac_vendor)
+        try:
+            net.run_forever()
+        except KeyboardInterrupt:
+            log.info("Shutting down")
+        return 0
 
     log.info("EagleEye Agent v%s starting", VERSION)
     log.info("API URL      : %s", settings.api_url)
@@ -252,7 +283,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     for d in missing:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
 
-    from .policy import policy_path
     service = AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path(),
                            policy_path=policy_path())
     if SCHEDULES_ENABLED:
@@ -439,6 +469,23 @@ def cmd_check_deps(args: argparse.Namespace) -> int:
     return 1 if any(r.required and not r.ok for r in results) else 0
 
 
+def _ask_snmp_secrets(settings: Settings) -> None:
+    """A network agent's SNMP passwords, asked for when missing (never put on a command line)."""
+    import getpass
+    if not (sys.stdin and sys.stdin.isatty()):
+        return
+    if settings.snmp_version == "2c":
+        if not settings.snmp_community:
+            settings.snmp_community = getpass.getpass("SNMP read-only community: ")
+        return
+    if not settings.snmp_user:
+        settings.snmp_user = input("SNMPv3 user: ").strip()
+    if not settings.snmp_auth_key:
+        settings.snmp_auth_key = getpass.getpass(f"SNMPv3 authentication password for {settings.snmp_user}: ")
+    if settings.snmp_priv_protocol.lower() not in ("", "none") and not settings.snmp_priv_key:
+        settings.snmp_priv_key = getpass.getpass(f"SNMPv3 privacy password for {settings.snmp_user}: ")
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     settings = _settings_from(args)
     if args.config_command == "show":
@@ -447,6 +494,8 @@ def cmd_config(args: argparse.Namespace) -> int:
         if problems:
             print("\nNot ready:", *[f"  - {p}" for p in problems], sep="\n")
         return 0
+    if settings.kind == "network":
+        _ask_snmp_secrets(settings)
     keychain = Keychain()
     path = save_settings(settings, args.config, keychain=keychain)
     print(f"Config written to {path}")

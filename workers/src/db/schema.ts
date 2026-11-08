@@ -53,7 +53,8 @@ export const relationshipTypeEnum = pgEnum('relationship_type', [
 export const sbomFormatEnum = pgEnum('sbom_format', ['cyclonedx', 'spdx'])
 export const agentStatusEnum = pgEnum('agent_status', ['online', 'offline', 'degraded'])
 // 'agent' = created from an EagleEye agent's endpoint inventory of its own machine.
-export const assetSourceEnum = pgEnum('asset_source', ['manual', 'scan_active', 'scan_passive', 'agent'])
+// 'scan_network' = seen by a network agent in the routers' and switches' tables (SNMP).
+export const assetSourceEnum = pgEnum('asset_source', ['manual', 'scan_active', 'scan_passive', 'agent', 'scan_network'])
 export const topologyNodeTypeEnum = pgEnum('topology_node_type', [
   'gateway', 'router', 'switch', 'access_point', 'host'
 ])
@@ -149,6 +150,15 @@ export const assets = pgTable('assets', {
   // asset_software). NULL = no agent has reported for this asset.
   endpointInventory: jsonb('endpoint_inventory'),
   inventoryCollectedAt: timestamp('inventory_collected_at', { withTimezone: true }),
+  // What a network agent read from this device over SNMP (a router or switch it polled):
+  // {name, os, version, vendor, object_id, interfaces, addresses, vlans, notes, agent_id,
+  // seen_at}. NULL = never polled.
+  networkDevice: jsonb('network_device'),
+  // Where a network agent last saw this device plugged in: {switch, switch_asset_id, port,
+  // vlan, ambiguous, router, interface, agent_id, seen_at}. switch/port come only from a
+  // switch's edge port; vlan/router/interface from a router's ARP table
+  // (lib/networkTopology.ts).
+  networkLocation: jsonb('network_location'),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
@@ -358,7 +368,7 @@ export const agents = pgTable('agents', {
   // the asset is deleted or merged away.
   hostAssetId: uuid('host_asset_id').references(() => assets.assetId, { onDelete: 'set null' }),
   // What kind of agent this is, from its installer (lib/agentPolicy.ts KIND_KEYS): 'host'
-  // (a computer's own agent); 'network' (SNMP) to come.
+  // (a computer's own agent) or 'network' (reads routers and switches over SNMP).
   kind: varchar('kind', { length: 20 }).notNull().default('host'),
   // This agent's setting overrides ({setting: value}); the rest come from the tenant
   // defaults or are the agent's own (lib/agentPolicy.ts resolvePolicy).
@@ -443,6 +453,30 @@ export const topologyNodes = pgTable('topology_nodes', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_topology_tenant').on(t.tenantId)])
+
+// ─── Network links (network agent: CDP/LLDP) ─────────────────────
+// One row per cable between two devices, as a network agent's crawl saw it. The ends are
+// kept by device name and port (the far device may not be an asset: a neighbour outside the
+// allowed ranges), with its asset when known. The ends are sorted (lib/networkTopology.ts),
+// so a cable seen from both of its devices is one row.
+export const networkLinks = pgTable('network_links', {
+  linkId: uuid('link_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  agentId: uuid('agent_id').references(() => agents.agentId, { onDelete: 'set null' }),
+  aName: varchar('a_name', { length: 255 }).notNull(),
+  aPort: varchar('a_port', { length: 64 }).notNull(),
+  aAssetId: uuid('a_asset_id').references(() => assets.assetId, { onDelete: 'set null' }),
+  bName: varchar('b_name', { length: 255 }).notNull(),
+  bPort: varchar('b_port', { length: 64 }).notNull(),
+  bAssetId: uuid('b_asset_id').references(() => assets.assetId, { onDelete: 'set null' }),
+  protocols: jsonb('protocols').notNull().default([]),     // ["cdp", "lldp"]
+  firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
+  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  uniqueIndex('idx_links_ends').on(t.tenantId, t.aName, t.aPort, t.bName, t.bPort),
+  index('idx_links_a_asset').on(t.aAssetId),
+  index('idx_links_b_asset').on(t.bAssetId),
+])
 
 // ─── Junction: event_cti_indicators ─────────────────────────────
 export const eventCtiIndicators = pgTable('event_cti_indicators', {

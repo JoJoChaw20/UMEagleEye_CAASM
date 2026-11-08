@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles, requireTenantAccess } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { tenants, users, assets, auditLogs } from '../db/schema'
-import { POLICY_KEYS, POLICY_SPECS, ROLE_KEYS, applyChange, cleanPolicy } from '../lib/agentPolicy'
+import { POLICY_KEYS, POLICY_SPECS, ROLE_KEYS, applyChange, cleanPolicy, kindsOf } from '../lib/agentPolicy'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -175,6 +175,7 @@ function agentPolicyOut(t: typeof tenants.$inferSelect, canEdit: boolean) {
       key,
       value: key === 'local_scans' ? t.allowLocalScans : (defaults[key] ?? null),
       spec: POLICY_SPECS[key],
+      kinds: kindsOf(key),          // host / network: the page shows them apart
     })),
     role_settings: ROLE_KEYS,
     can_edit: canEdit,

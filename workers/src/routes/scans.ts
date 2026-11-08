@@ -12,7 +12,7 @@ import { applyHint, deviceTypeHint } from '../lib/deviceHints'
 import { normalizeMac } from '../lib/mac'
 import { mergeOsInfo } from '../lib/osInfo'
 import { addressesToEnd, classifyMac, prefetchIdentity, resolveAssetIdentity, sanitizeHostKey } from '../lib/identity'
-import { chunkPlan, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
+import { chunkPlan, observedBy, planIngest, resolveIngestDeviceType, type IngestOp, type PlanHost } from '../lib/ingest-plan'
 import { buildBaseline, runDriftAudit } from '../services/drift'
 import { reopenReturnedNewDevices, runAlertHygiene } from '../services/alertHygiene'
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
@@ -267,6 +267,7 @@ function kindCondition(kind: ScanKind): SQL {
   const rangeTarget = sql`(${scanResults.subnet} ~ ${CIDR_RE} AND ${scanResults.subnet} NOT LIKE '%/32')`
   switch (kind) {
     case 'passive':       return eq(scanResults.scanType, 'passive')
+    case 'snmp':          return eq(scanResults.scanType, 'snmp')
     case 'investigation': return and(eq(scanResults.scanType, 'active'), investigation)!
     case 'network':       return and(eq(scanResults.scanType, 'active'), notInvestigation, rangeTarget)!
     default:              return and(eq(scanResults.scanType, 'active'), notInvestigation, sql`NOT ${rangeTarget}`)!
@@ -871,12 +872,21 @@ const hostSchema = z.object({
   snmp_sysdescr: z.string().nullish(),
   snmp_sysobjectid: z.string().nullish(),
   snmp_interfaces: z.array(z.string()).optional(),
+  // A network agent's polled router or switch: its sysName names the device (host key).
+  snmp_sysname: z.string().max(255).nullish(),
 })
+
+// The stable name of a host: its SMB computer name, or a polled device's SNMP sysName.
+function hostKeyOf(h: z.infer<typeof hostSchema>): unknown {
+  return (h.os as Record<string, unknown> | null)?.['smb_computer_name'] ?? h.snmp_sysname
+}
 
 const ingestSchema = z.object({
   agent_id: z.string().uuid(),
   scan_id: z.string().uuid().optional(),   // optional for passive auto-ingest
-  scan_type: z.enum(['active', 'passive']).optional().default('active'),
+  // snmp: a network agent's crawl (agent-gui/eagleeye/netagent): the routers' ARP tables and
+  // the polled devices themselves. Like passive, it sees no ports.
+  scan_type: z.enum(['active', 'passive', 'snmp']).optional().default('active'),
   hosts: z.array(hostSchema),
   // Optional network metadata, stored on the scan record for reference. NOT used
   // for identity — the network key is derived from each host IP's /24.
@@ -904,7 +914,11 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     const incomingKeyHash = await sha256Hex(incomingKey)
 
     const { agent_id, scan_id, scan_type, hosts, network } = c.req.valid('json')
-    const isPassive = scan_type === 'passive'
+    // Seen without a port scan (passive listening, or a network agent's crawl): no port facts.
+    const isPassive = scan_type !== 'active'
+    const isSnmp = scan_type === 'snmp'
+    // The Discovery record an upload without a scan_id folds into, per agent and hour.
+    const autoSubnet = isSnmp ? 'snmp-crawl' : 'arp-discovery'
 
     // Fetch agent and verify API key hash
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agent_id)).limit(1)
@@ -931,7 +945,7 @@ app.post('/ingest', zValidator('json', ingestSchema), async (c) => {
     // addresses+assets at once. Replaces the old ~3 queries-per-host resolver.
     const batchMacs = [...new Set(hosts.map(h => classifyMac(h.mac).mac).filter((m): m is string => !!m))]
     const batchIps = [...new Set(hosts.map(h => h.ip))]
-    const batchHostKeys = [...new Set(hosts.map(h => sanitizeHostKey((h.os as Record<string, unknown> | null)?.['smb_computer_name'])).filter((k): k is string => !!k))]
+    const batchHostKeys = [...new Set(hosts.map(h => sanitizeHostKey(hostKeyOf(h))).filter((k): k is string => !!k))]
     const criticalityModel = ACTIVE_MODEL
     // Which network each address is on: the LAN subnet the agent reports (2.2.4+; a
     // passive upload's `subnet` from 2.2.2), widening the tenant's old /24 keys inside
@@ -1146,8 +1160,8 @@ Example:
         .from(scanResults)
         .where(and(
           eq(scanResults.agentId, agent_id),
-          eq(scanResults.scanType, 'passive'),
-          eq(scanResults.subnet, 'arp-discovery'),
+          eq(scanResults.scanType, scan_type),
+          eq(scanResults.subnet, autoSubnet),
           eq(scanResults.status, 'completed'),
           sql`${scanResults.startedAt} > now() - make_interval(mins => ${PASSIVE_FOLD_MINUTES})`,
           // a laptop that moved to another network starts a new record (one network per record)
@@ -1165,8 +1179,8 @@ Example:
           .values({
             agentId: agent_id,
             tenantId: tenantId ?? null,
-            scanType: 'passive',
-            subnet: 'arp-discovery',
+            scanType: scan_type,
+            subnet: autoSubnet,
             status: 'completed',
             hostsDiscovered: enhancedHosts.length,
             rawResults: enhancedHosts,
@@ -1174,7 +1188,7 @@ Example:
             completedAt: new Date(),
           })
           .returning()
-        if (!newScan) return c.json({ detail: 'Failed to create passive scan record' }, 500)
+        if (!newScan) return c.json({ detail: `Failed to create ${scan_type} scan record` }, 500)
         effectiveScanId = newScan.scanId
       }
     } else {
@@ -1219,13 +1233,14 @@ Example:
         ip: host.ip,
         rawMac: host.mac,
         hostname: host.hostname ?? null,
-        hostKeyRaw: (host.os as Record<string, unknown> | null)?.['smb_computer_name'],
+        hostKeyRaw: hostKeyOf(host),
         deviceType,
         observedOsInfo,
         ports: ports.map(p => p.port),
         hardwareVendor: macVendorMap.get(host.ip) ?? null,
         internetFacing: resolveInternetFacing(host.ip, defaultGateway, null),
         isPassive,
+        isNetwork: isSnmp,
         tenantId: tenantId ?? null,
       }
     }
@@ -1296,7 +1311,7 @@ Example:
           isInternetFacing: exposed,
           criticalityScore: crit,
           criticalityModel,
-          source: p.isPassive ? 'scan_passive' : 'scan_active',
+          source: observedBy(p).source,
           lastScanned: new Date(), updatedAt: new Date(),
           ...(existing?.baselineState ? (renamedBaseline ? { baselineState: renamedBaseline as typeof baselineForUpdate } : {}) : { baselineState: baselineForUpdate }),
         }).where(eq(assets.assetId, resolution.assetId))
@@ -1310,7 +1325,7 @@ Example:
       const crit = scoreAsset({ deviceType: newType, deviceTypeSource: 'auto', deviceTypeHint: newHint, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }, criticalityModel)
       const baseline = buildBaseline({ ports: p.ports, osInfo: merged as Record<string, unknown> | null, hostname: p.hostname ?? null, macAddress: mac ?? null, isInternetFacing: p.internetFacing, deviceType: newType, autoSet: true, portsKnown: !p.isPassive })
       const now = new Date()
-      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: newType, deviceTypeSource: 'auto' as const, deviceTypeHint: newHint, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, criticalityModel, baselineState: baseline, source: (p.isPassive ? 'scan_passive' : 'scan_active') as 'scan_active' | 'scan_passive', inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
+      const assetValues = { assetId: newAssetId, tenantId: tenantId ?? null, ipAddress: p.ip, hostname: p.hostname ?? null, macAddress: mac ?? null, hostKey: resolution.hostKey ?? null, hardwareVendor: p.hardwareVendor ?? null, deviceType: newType, deviceTypeSource: 'auto' as const, deviceTypeHint: newHint, osInfo: merged, isInternetFacing: p.internetFacing, criticalityScore: crit, criticalityModel, baselineState: baseline, source: observedBy(p).source, inMyAssets: false, lastScanned: now, createdAt: now, updatedAt: now }
       const addressValues = { assetId: newAssetId, tenantId: tenantId ?? null, networkKey, ipAddress: p.ip, macAddress: mac, firstSeen: now, lastSeen: now }
       if (resolution.endAddressId) {
         await db.batch([
@@ -1324,7 +1339,7 @@ Example:
           db.insert(assetAddresses).values(addressValues),
         ])
       }
-      await db.insert(events).values({ assetId: newAssetId, eventType: 'new_device', severity: newDeviceSeverity({ internetFacing: p.internetFacing, mac, hostname: p.hostname }), details: { ip: p.ip, mac: mac ?? null, hostname: p.hostname ?? null, source: p.isPassive ? 'passive_scan' : 'active_scan' } })
+      await db.insert(events).values({ assetId: newAssetId, eventType: 'new_device', severity: newDeviceSeverity({ internetFacing: p.internetFacing, mac, hostname: p.hostname }), details: { ip: p.ip, mac: mac ?? null, hostname: p.hostname ?? null, source: observedBy(p).event } })
       return newAssetId
     }
 
@@ -1400,7 +1415,8 @@ Example:
     try {
       if (investigation && investigatedIp) {
         await recordInvestigationResult(db, investigation, effectiveScanId, investigatedIp, hosts as Record<string, unknown>[])
-      } else if (isPassive && upsertedAssetIds.length) {
+      } else if (scan_type === 'passive' && upsertedAssetIds.length) {
+        // (a network agent's new devices are not queued: it cannot scan them itself)
         await queueInvestigations(db, { tenantId: tenantId ?? null, agentId: agent_id, assetIds: upsertedAssetIds })
       }
     } catch (err) {
@@ -1410,7 +1426,7 @@ Example:
     return c.json({
       message: 'Scan results ingested',
       scan_id: effectiveScanId,
-      scan_type: isPassive ? 'passive' : 'active',
+      scan_type,
       hosts_discovered: hosts.length,
       assets_upserted: upsertedAssetIds.length,
       failed_hosts: failedHosts,

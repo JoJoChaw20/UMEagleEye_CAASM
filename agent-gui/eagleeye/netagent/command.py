@@ -4,6 +4,7 @@ found. Nothing is uploaded.
     eagleeye netpoll --seed 10.99.0.1 --allow 10.10.0.0/16 --allow 10.99.0.0/24
     eagleeye netpoll --seed 10.99.0.1 --allow 10.0.0.0/8 --record lab/   # keep the answers
     eagleeye netpoll --seed 10.99.0.1 --allow 10.0.0.0/8 --replay lab/   # use them, no network
+    eagleeye netpoll ... --upload --config netagent.json                 # and send it, as the agent would
 
 Passwords and communities never go on the command line (shell history): they come from
 --credentials FILE (JSON), EAGLEEYE_SNMP_* variables, or a prompt.
@@ -49,6 +50,9 @@ def add_parser(sub: Any) -> None:
     p.add_argument("--truth", type=Path, help="score against a ground-truth devices CSV")
     p.add_argument("--links", type=Path, help="with --truth: score the links against this CSV")
     p.add_argument("--json", type=Path, dest="json_out", help="write the full result to this file")
+    p.add_argument("--upload", action="store_true",
+                   help="also send the result to the server, exactly as the network agent does (needs --config)")
+    p.add_argument("--config", type=Path, help="with --upload: the network agent's settings (API URL, agent ID, API key)")
 
 
 def credentials(args: argparse.Namespace, env: Optional[dict[str, str]] = None,
@@ -109,7 +113,12 @@ def run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"--allow: {exc}", file=sys.stderr)
         return 2
-    result = crawl(args.seed, open_session, allowed, depth=args.depth, progress=lambda m: print(f"  {m}"))
+    if args.upload:
+        result = _crawl_and_upload(args, open_session)
+        if result is None:
+            return 1
+    else:
+        result = crawl(args.seed, open_session, allowed, depth=args.depth, progress=lambda m: print(f"  {m}"))
     print_result(result, allowed)
     if args.record is not None:
         header = f"recorded by eagleeye netpoll {VERSION} on {datetime.now():%Y-%m-%d %H:%M}"
@@ -122,6 +131,40 @@ def run(args: argparse.Namespace) -> int:
         args.json_out.write_text(json.dumps(result.to_dict(), indent=2, default=str), encoding="utf-8")
         print(f"Result written to {args.json_out}")
     return 0 if result.devices else 1
+
+
+def _crawl_and_upload(args: argparse.Namespace, open_session: Any) -> Optional[CrawlResult]:
+    """One crawl through NetworkAgentService, the code the service runs: a heartbeat as a
+    network agent, the crawl, the addresses' ingest and the topology."""
+    import dataclasses
+    from ..config import ConfigError, load_settings
+    from ..vendor import mac_vendor
+    from .service import NetworkAgentService
+    if not args.config:
+        print("--upload needs --config: the network agent's settings file", file=sys.stderr)
+        return None
+    try:
+        settings = load_settings(args.config)
+    except ConfigError as exc:
+        print(f"Config: {exc}", file=sys.stderr)
+        return None
+    missing = [p for p in settings.problems() if p.split()[0] in ("api_url", "api_key", "agent_id")]
+    if missing:
+        print("Cannot upload: " + "; ".join(missing), file=sys.stderr)
+        return None
+    settings = dataclasses.replace(settings, kind="network", network_seeds=list(args.seed),
+                                   network_ranges=list(args.allow), network_depth=args.depth)
+    svc = NetworkAgentService(settings, open_session=open_session, vendor=mac_vendor)
+    svc._heartbeat()
+    if not svc.last_heartbeat_ok:
+        print("The server did not answer the heartbeat (API URL, agent ID or key?)", file=sys.stderr)
+        return None
+    result = svc.crawl_once(trigger="manual")
+    record = svc.history[-1] if svc.history else None
+    if record is not None:
+        print(f"\nUpload: {record.status}" + (f" ({record.error})" if record.error else "")
+              + (f"; {svc.last_crawl['topology']}" if svc.last_crawl else ""))
+    return result
 
 
 def print_result(r: CrawlResult, allowed: list) -> None:

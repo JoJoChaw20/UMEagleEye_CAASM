@@ -248,7 +248,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
     // `source` filters by the LAST observation method only (manual = hand/CSV and
     // never scanned since). This is NOT My Assets membership — use in_my_assets for
     // that. Unknown values are ignored (no filter), matching prior behavior.
-    if (source === 'manual' || source === 'scan_active' || source === 'scan_passive' || source === 'agent') {
+    if (source === 'manual' || source === 'scan_active' || source === 'scan_passive' || source === 'agent' || source === 'scan_network') {
       conditions.push(eq(assets.source, source))
     }
 

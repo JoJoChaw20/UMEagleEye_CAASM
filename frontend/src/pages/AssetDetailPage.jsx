@@ -20,6 +20,7 @@ import { RISKY_PORTS, SevBadge, StatusBadge, alertLabel, renderDetail, timeAgo }
 import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
 import DeviceTypePicker from '../components/assets/DeviceTypePicker'
+import { NetworkDeviceSection, NetworkLocationField } from '../components/assets/NetworkSections'
 
 // Human labels for the os_info keys written by scan ingest (active, passive, SNMP).
 const OS_FIELDS = [
@@ -440,6 +441,7 @@ export default function AssetDetailPage() {
                 : null}
             </Field>
             <Field label="Vendor">{asset.hardwareVendor}</Field>
+            <NetworkLocationField location={asset.networkLocation} />
             <Field label="Device type">
               {isReadOnly
                 ? deviceMeta.label
@@ -479,6 +481,7 @@ export default function AssetDetailPage() {
           ) : <Empty>No OS details collected yet. An active scan, SNMP poll or the EagleEye agent fills this in.</Empty>}
         </Section>
 
+        <NetworkDeviceSection assetId={asset.assetId} device={asset.networkDevice} />
         {inv && <HardwareSection inv={inv} />}
         {inv && <SecuritySection inv={inv} checks={asset.postureChecks} score={asset.postureScore} />}
         {inv && <PatchesSection inv={inv} checks={asset.postureChecks} />}
@@ -506,7 +509,9 @@ export default function AssetDetailPage() {
               </table>
             </div>
           ) : (
-            <Empty>{asset.source === 'scan_passive' ? 'Passive scans cannot see ports. Run an active scan to list services.' : 'No open ports recorded.'}</Empty>
+            <Empty>{asset.source === 'scan_passive' ? 'Passive scans cannot see ports. Run an active scan to list services.'
+              : asset.source === 'scan_network' ? 'The network agent reads addresses from the routers and switches, not ports. Run an active scan to list services.'
+              : 'No open ports recorded.'}</Empty>
           )}
         </Section>
 
