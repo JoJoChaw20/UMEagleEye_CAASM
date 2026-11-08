@@ -156,7 +156,10 @@ class InterfaceChooser:
             name = match["name"] if match else None
             label = f"{match['name']} ({route_ip})" if match else f"waiting for a network connection ({waiting})"
             if name != self.name or label != self.label:
-                log.info("Passive listening on %s", label)
+                if match:
+                    log.info("Passive listening on %s", label)
+                else:
+                    log.info("Passive capture: %s", label)
             self.name, self.label = name, label
             self.index = match.get("index") if match else None
             self._set_network(route_ip if match else None)

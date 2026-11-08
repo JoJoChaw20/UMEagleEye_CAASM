@@ -146,7 +146,7 @@ def test_pending_scans_and_failures_are_tolerated():
     c, _, _ = client(FakeResponse(200, {"scans": [{"scanId": "a"}]}))
     assert c.get_pending_scans() == [{"scanId": "a"}]
     c2, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
-    assert c2.get_pending_scans() == []
+    assert c2.get_pending_scans() is None                  # not "no scans": the server was not asked
 
 
 def test_mark_failed_truncates_the_reason():

@@ -611,7 +611,7 @@ class AgentService:
             log.info("Found %d pending scan(s)", len(pending))
             for scan in pending:
                 self._dispatch(scan)
-        else:
+        elif pending is not None:      # None: the server could not be reached (already logged)
             log.info("No pending scans")
         self._maybe_sbom()              # after the dashboard's jobs: a full run they asked for goes first
         self._maybe_schedules()

@@ -6,7 +6,8 @@ from __future__ import annotations
 import json
 from concurrent.futures import Future
 
-from eagleeye import policy
+from eagleeye import httpclient, policy
+from eagleeye.api import RETRY_DELAYS
 from eagleeye.config import Settings
 from eagleeye.service import AgentService
 from tests.test_api import FakeResponse, client
@@ -152,6 +153,28 @@ def test_jobs_come_with_the_heartbeat_and_are_handed_out_once(monkeypatch):
     assert json.loads(session.calls[0][2]["data"])["want_jobs"] is True
     assert c.jobs_in_heartbeat and c.has_jobs()
     assert c.take_jobs() == [job] and c.take_jobs() == [] and not c.has_jobs()
+
+
+def test_a_failed_heartbeat_is_not_reported_as_no_jobs(monkeypatch):
+    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.0.139")
+    monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
+    down = [httpclient.ConnectionError("x")] * (len(RETRY_DELAYS) + 1)
+    c, _, _ = client(FakeResponse(200, {"ok": True, "scans": []}), *down, FakeResponse(200, {"ok": True, "scans": []}))
+    assert c.send_heartbeat() and c.take_jobs() == []
+    assert not c.send_heartbeat() and c.take_jobs() is None
+    assert c.send_heartbeat() and c.take_jobs() == []
+
+
+def test_no_pending_scans_is_only_logged_when_the_server_answered(tmp_path, caplog):
+    svc, c = make(tmp_path)
+    c.get_pending_scans = lambda: None
+    with caplog.at_level("INFO"):
+        svc.poll_once()
+    assert "No pending scans" not in caplog.text
+    c.get_pending_scans = lambda: []
+    with caplog.at_level("INFO"):
+        svc.poll_once()
+    assert "No pending scans" in caplog.text
 
 
 def test_the_service_runs_jobs_from_the_heartbeat_instead_of_polling(tmp_path):

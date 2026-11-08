@@ -73,6 +73,7 @@ class AgentClient:
         self.jobs_in_heartbeat = False
         self._jobs: list[dict[str, Any]] = []
         self._jobs_lock = threading.Lock()
+        self._heartbeat_ok = True
         # No redirects: the API key must never be sent anywhere but the configured server.
         self.session = session or httpclient.Session(follow_redirects=False)
         self.session.headers.update({
@@ -128,7 +129,9 @@ class AgentClient:
             resp.raise_for_status()
         except httpclient.RequestException as exc:
             log.warning("Heartbeat failed: %s", exc)
+            self._heartbeat_ok = False
             return False
+        self._heartbeat_ok = True
         try:
             policy = resp.json().get("policy") or {}
         except (ValueError, AttributeError):
@@ -157,11 +160,12 @@ class AgentClient:
         with self._jobs_lock:
             return bool(self._jobs)
 
-    def take_jobs(self) -> list[dict[str, Any]]:
-        """The jobs the last heartbeat answer brought (each handed out once)."""
+    def take_jobs(self) -> Optional[list[dict[str, Any]]]:
+        """The jobs the last heartbeat answer brought (each handed out once); None when
+        there are none because the last heartbeat could not reach the server."""
         with self._jobs_lock:
             jobs, self._jobs = self._jobs, []
-        return jobs
+        return jobs if jobs or self._heartbeat_ok else None
 
     def check_connection(self) -> tuple[bool, str]:
         """Send one heartbeat and explain the outcome (for the setup screen)."""
@@ -178,14 +182,15 @@ class AgentClient:
             return False, "The server does not know this agent ID (or the API URL is wrong)."
         return False, f"The server answered {self._detail(resp)}."
 
-    def get_pending_scans(self) -> list[dict[str, Any]]:
+    def get_pending_scans(self) -> Optional[list[dict[str, Any]]]:
+        """GET /scans/pending; None when the server could not be asked."""
         try:
             resp = self._request("GET", "/scans/pending", 30)
             resp.raise_for_status()
             return resp.json().get("scans", [])
         except httpclient.RequestException as exc:
             log.error("Failed to fetch pending scans: %s", exc)
-            return []
+            return None
 
     def start_local_scan(self, subnet: str, trigger: str) -> tuple[Optional[str], Optional[str]]:
         """POST /scans/agent-start - ask for a scan record for a scan started on this
