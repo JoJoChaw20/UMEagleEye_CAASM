@@ -204,6 +204,10 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
 })
 
 // ── POST /google ─────────────────────────────────────────────────
+// Sign in with Google to an account an administrator created (Users page). An email with no
+// account is refused: access is granted by an admin, never by signing in (until 2026-11-09 it
+// created a tenantless business_owner). An existing account is matched by its linked Google
+// ID, or by email only when Google has verified that email.
 const googleSchema = z.object({ access_token: z.string() })
 
 app.post('/google', zValidator('json', googleSchema), async (c) => {
@@ -211,8 +215,10 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
     const { access_token: googleToken } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)
 
-    // Verify via Google's userinfo endpoint
-    const userinfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${googleToken}`)
+    // Verify via Google's userinfo endpoint (the token in a header, not in the URL, so it is not logged)
+    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${googleToken}` },
+    })
     if (!userinfoRes.ok) {
       return c.json({ detail: 'Invalid Google access token' }, 401)
     }
@@ -221,40 +227,31 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
       return c.json({ detail: 'Invalid Google user info' }, 401)
     }
 
-    // Try to find existing user by googleId or email
+    // The account this Google login belongs to: the one it is linked to, else the one with its
+    // email, but only an email Google has verified (otherwise anyone could add an admin's address
+    // to a Google account and sign in as that admin).
     type UserRow = typeof users.$inferSelect
-    let resolvedUser: UserRow | undefined = (
-      await db
-        .select()
-        .from(users)
-        .where(or(eq(users.googleId, googlePayload.sub), eq(users.email, googlePayload.email)))
-        .limit(1)
-    )[0]
+    const [byGoogleId] = await db.select().from(users).where(eq(users.googleId, googlePayload.sub)).limit(1)
+    let resolvedUser: UserRow | undefined = byGoogleId
+    if (!resolvedUser) {
+      const [byEmail] = await db.select().from(users).where(eq(users.email, googlePayload.email)).limit(1)
+      if (byEmail && googlePayload.email_verified !== true) {
+        return c.json({ detail: 'Google has not verified this email address, so it cannot be used to sign in.' }, 403)
+      }
+      if (byEmail && byEmail.googleId && byEmail.googleId !== googlePayload.sub) {
+        return c.json({ detail: 'This account is linked to a different Google account.' }, 403)
+      }
+      resolvedUser = byEmail
+    }
 
     if (!resolvedUser) {
-      // Create new user
-      const uname = googlePayload.name
-        ? googlePayload.name.toLowerCase().replace(/\s+/g, '_')
-        : (googlePayload.email.split('@')[0] ?? googlePayload.email)
-
-      resolvedUser = (
-        await db
-          .insert(users)
-          .values({
-            username: uname,
-            email: googlePayload.email,
-            passwordHash: 'google_oauth_no_password',
-            googleId: googlePayload.sub,
-            role: 'business_owner',
-          })
-          .returning()
-      )[0]
-
-      if (!resolvedUser) {
-        return c.json({ detail: 'Failed to create user' }, 500)
-      }
-    } else if (!resolvedUser.googleId) {
-      // Link Google account to existing email user
+      console.warn(`google sign-in refused: no account for an address at ${googlePayload.email.split('@')[1] ?? '?'}`)
+      return c.json({
+        detail: 'There is no EagleEye account for this Google address. Ask your administrator to create one for you.',
+      }, 403)
+    }
+    if (!resolvedUser.googleId) {
+      // First Google sign-in to an account made with this email: link the two
       await db.update(users).set({ googleId: googlePayload.sub }).where(eq(users.userId, resolvedUser.userId))
     }
 
