@@ -5,6 +5,7 @@
     python -m eagleeye listen --seconds 60     passively listen on the network, then print
     python -m eagleeye inventory               collect this machine's inventory, then print
     python -m eagleeye sbom                    list this machine's packages and their CVEs, then print
+    python -m eagleeye netpoll --seed IP       crawl routers and switches over SNMP, then print
     python -m eagleeye check-deps              report missing tools
     python -m eagleeye config init|show        write / print the config file
 """
@@ -23,6 +24,7 @@ from . import VERSION, deps
 from .config import ConfigError, Settings, default_config_path, load_settings, save_settings, sbom_cache_path, state_path
 from .enrol import ConnectionCodeError, parse_connection_code
 from .keychain import Keychain
+from .netagent import command as netpoll
 from .passive import PassiveSuite
 from .pipeline import Pipeline, PipelineContext
 from .schedule import Schedule
@@ -111,6 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     sb = sub.add_parser("sbom", help="build this machine's SBOM and check it with Grype; nothing is uploaded")
     sb.add_argument("--json", type=Path, dest="json_out", help="write the SBOM, folders and findings to this file")
     _add_settings_flags(sb)
+
+    netpoll.add_parser(sub)
 
     chk = sub.add_parser("check-deps", help="check Nmap, Npcap/libpcap, Python modules and privileges")
     chk.add_argument("--json", action="store_true", dest="as_json")
@@ -471,7 +475,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     commands = {
         "run": cmd_run, "scan": cmd_scan, "listen": cmd_listen,
         "check-deps": cmd_check_deps, "config": cmd_config, "inventory": cmd_inventory, "sbom": cmd_sbom,
-        "service": cmd_service,
+        "service": cmd_service, "netpoll": netpoll.run,
     }
     if args.command == "version":
         print(VERSION)

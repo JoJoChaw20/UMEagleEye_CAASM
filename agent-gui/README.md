@@ -48,6 +48,7 @@ python -m eagleeye check-deps
 | `python -m eagleeye config show` | Prints the effective settings, secrets masked |
 | `python -m eagleeye run` | The agent: heartbeat, poll the dashboard, run scans, upload results |
 | `python -m eagleeye gui` | The desktop app (needs PySide6) |
+| `python -m eagleeye netpoll --seed IP --allow RANGE` | The network agent, once: crawls routers and switches over SNMP and prints devices, links, addresses and where each device is plugged in. Nothing is uploaded. See [Network agent](#network-agent-netpoll) |
 
 ## Settings
 Precedence: config file < `EAGLEEYE_*` environment variables < command-line flags. The variable names are the
@@ -232,6 +233,27 @@ curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sud
 ```
 Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
 
+## Network agent (`netpoll`)
+Reads routers and switches over SNMP (read only) with our own client (`eagleeye/netagent/`): v2c, or v3 with
+MD5/SHA/SHA-2 authentication and AES-128 privacy (`pip install cryptography`, the `network` extra). From the seed
+devices it follows CDP/LLDP neighbours, polling only addresses inside `--allow` ranges, at most `--depth` hops (3).
+
+```bash
+export EAGLEEYE_SNMP_USER=eagleeye        # passwords: EAGLEEYE_SNMP_AUTH_KEY / _PRIV_KEY, --credentials FILE, or a prompt
+python3 -m eagleeye netpoll --seed 10.99.0.1 --allow 10.10.0.0/16 --allow 10.99.0.0/24 \
+    --record lab-snmp/ --truth gns3-truth.csv --links gns3-links.csv --json netpoll.json
+```
+Per device it reads the system group, interfaces (name, description, MAC, state), addresses, ARP, routes,
+CDP and LLDP, and on switches the MAC table (Q-BRIDGE, or Cisco's one table per VLAN), trunk state and access
+VLANs. It then reports:
+- **links**: one per cable, seen from one or both ends;
+- **addresses**: every IP and MAC in the routers' ARP tables, with the VLAN, marking the polled devices' own;
+- **locations**: the switch port a device is plugged into, from edge ports only (trunks and ports with a
+  CDP/LLDP neighbour carry many MACs).
+
+`--record DIR` keeps every answer as net-snmp text, one file per device; `--replay DIR` runs on them without a
+network (`tests/fixtures/gns3` is the GNS3 lab). Passwords are never accepted on the command line.
+
 ## Testing against the staging environment
 Use a fresh test tenant, never production.
 
@@ -269,6 +291,7 @@ eagleeye/
   stages/     scan_nmap (Nmap + built-in fallback), snmp_poll, passive, inventory, upload
   collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser; linux.py
   passive/    ARP, mDNS/NetBIOS and DHCP sniffers
+  netagent/   the network agent: own SNMP client, one device's tables, CDP/LLDP crawl, ground-truth scoring
 packaging/    PyInstaller spec, Inno Setup script, build.ps1, third-party notices, eagleeye.service (systemd)
 tests/        pytest suite (recorded Nmap XML, packets built with scapy, fake systems for the collectors)
 ```

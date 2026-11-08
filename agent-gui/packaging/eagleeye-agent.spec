@@ -46,7 +46,10 @@ excludes = ["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", 
             # python-nmap (GPL-3.0) and requests (Apache-2.0, with its helpers). Never bundle them.
             "nmap", "requests", "urllib3", "charset_normalizer", "chardet", "idna", "certifi",
             # Build tooling, not needed at run time; setuptools also vendors Apache-2.0 code.
-            "setuptools", "pkg_resources", "_distutils_hack", "wheel"]
+            "setuptools", "pkg_resources", "_distutils_hack", "wheel",
+            # The network agent's AES (netagent/, the `network` extra): it ships as its own package,
+            # not in the desktop installer.
+            "cryptography", "cffi"]
 if not WITH_SCAPY:
     excludes += ["scapy"]
 

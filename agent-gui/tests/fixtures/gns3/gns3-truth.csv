@@ -1,0 +1,14 @@
+﻿ip,mac,name,device,os,services,vlan,switch,port,notes
+10.99.0.1,0C:59:A9:EF:00:00,R1,network,Cisco IOS 15.9(3)M12 (IOSv),161/udp SNMPv3,,,,"router R1 Gi0/0; agent link (Cloud on VMnet1, no switch); seed device"
+10.10.1.1,0C:59:A9:EF:00:01,R1,network,Cisco IOS 15.9(3)M12 (IOSv),,1,SW1,Gi0/0,R1 Gi0/1 untagged (native VLAN 1) on the trunk to SW1
+10.10.10.1,0C:59:A9:EF:00:01,R1,network,Cisco IOS 15.9(3)M12 (IOSv),,10,SW1,Gi0/0,R1 Gi0/1.10 gateway
+10.10.20.1,0C:59:A9:EF:00:01,R1,network,Cisco IOS 15.9(3)M12 (IOSv),,20,SW1,Gi0/0,R1 Gi0/1.20 gateway
+10.10.99.1,0C:59:A9:EF:00:01,R1,network,Cisco IOS 15.9(3)M12 (IOSv),,99,SW1,Gi0/0,R1 Gi0/1.99 gateway
+10.10.99.2,0C:37:FC:DE:80:63,SW1,network,Cisco IOSvL2,161/udp SNMPv3,99,,,core switch; Vlan99 SVI; trunks Gi0/0 (R1) and Gi0/1 (SW2)
+10.10.99.3,0C:7C:50:61:80:63,SW2,network,Cisco IOSvL2,161/udp SNMPv3,99,SW1,Gi0/1,access switch; Vlan99 SVI; uplink trunk Gi0/0 to SW1 Gi0/1
+10.10.10.11,00:50:79:66:68:00,PC-A,workstation,VPCS,,10,SW1,Gi0/2,port mapping NOT testable over SNMP in this lab (IOSvL2 has no per-VLAN MAC tables)
+10.10.20.21,00:50:79:66:68:01,SRV-1,server,VPCS,,20,SW1,Gi0/3,port mapping NOT testable over SNMP in this lab (IOSvL2 has no per-VLAN MAC tables)
+10.10.10.12,00:50:79:66:68:02,PC-B,workstation,VPCS,,10,SW2,Gi0/1,port mapping NOT testable over SNMP in this lab (IOSvL2 has no per-VLAN MAC tables)
+10.10.20.22,00:50:79:66:68:03,PC-C,workstation,VPCS,,20,SW2,Gi0/2,port mapping NOT testable over SNMP in this lab (IOSvL2 has no per-VLAN MAC tables)
+10.10.1.41,00:50:79:66:68:04,PC-D,workstation,VPCS,,1,SW2,Gi0/3,port mapping testable over SNMP (VLAN 1)
+10.99.0.10,00:0C:29:04:6C:77,lab-ubuntu,server,Ubuntu 26.04.1,,,,,"network agent host (ens33, extra address on VMnet1); not behind the lab switches"
