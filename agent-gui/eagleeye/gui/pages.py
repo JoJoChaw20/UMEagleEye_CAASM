@@ -7,17 +7,17 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from PySide6.QtCore import Qt, QTime, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSpinBox,
+    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QRadioButton, QScrollArea, QSpinBox,
     QTableWidget, QTableWidgetItem, QTextBrowser, QTimeEdit, QVBoxLayout, QWidget,
 )
 
-from .. import deps, installers
+from .. import deps
 from ..api import AgentClient
 from ..enrol import ConnectionCodeError, credentials_from_code
 from ..netinfo import local_ip, local_network
@@ -26,7 +26,7 @@ from ..privacy import NOTICE_HTML
 from ..schedule import Schedule
 from ..stages import InventoryDryRunStage, LocalInventoryStage
 from . import theme
-from .controller import gui_call, run_in_thread
+from .controller import run_in_thread
 from .widgets import FieldGrid, Notice, PageHeader, Panel, TraceLoader, button, divider, label, set_tone
 
 if TYPE_CHECKING:
@@ -189,13 +189,15 @@ def default_subnet() -> str:
 
 # ── Status ────────────────────────────────────────────────────────────────
 class StatusPage(QWidget):
+    """What the agent is doing. Since 2.6 every job starts from the dashboard (New scan, Collect
+    inventory, Run SBOM scan), so this page only shows; nothing here starts a job."""
+
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
         self.win = win
 
         self.banner = Notice()
 
-        # Now: what the agent is doing, and the buttons that make it do something
         now = Panel("Now")
         self.current = label("Idle", "lead")
         self.busy = TraceLoader()
@@ -208,24 +210,8 @@ class StatusPage(QWidget):
         now.add_layout(head)
         self.stage = _hint("")
         now.add(self.stage)
-        now.add(divider())
-        self.subnet = QComboBox()
-        self.subnet.setEditable(True)
-        self.subnet.setProperty("mono", True)
-        self.subnet.setMinimumWidth(220)
-        self.scan_btn = button("Scan now", "primary", "radar", self._scan_now)
-        run = QHBoxLayout()
-        run.setSpacing(10)
-        run.addWidget(label("Network", "field"))
-        run.addWidget(self.subnet, 1)
-        run.addWidget(self.scan_btn)
-        now.add_layout(run)
-        self.inv_btn = button("Collect inventory now", None, "cpu", self._inventory_now)
-        self.sbom_btn = button("Build SBOM now", None, "package", self._sbom_now)
-        now.add_layout(_row(self.inv_btn, self.sbom_btn))
-        now.add(_hint("Scans started here are recorded in the dashboard like the ones started there. "
-                      "Your administrator can turn them off; the dashboard can still ask this agent to scan, "
-                      "to collect this computer's inventory or to build its SBOM. The agent must be running."))
+        now.add(_hint("Scans, inventories and SBOMs are started from your organisation's EagleEye dashboard, "
+                      "on a schedule or by an administrator. This window shows what the agent is doing."))
 
         conn = Panel("Connection")
         grid = FieldGrid(2)
@@ -235,12 +221,10 @@ class StatusPage(QWidget):
         self.agent = label("", "mono", wrap=True, selectable=True)
         self.heartbeat = label("", "value", wrap=True)
         self.passive_on = label("", "value", wrap=True)
-        self.local_scans = label("", "value", wrap=True)
         grid.add("Server", self.server, 0)
         grid.add("Agent ID", self.agent, 0)
         grid.add("Last heartbeat", self.heartbeat, 1)
         grid.add("Passive listening", self.passive_on, 1)
-        grid.add("Scans from here", self.local_scans, 1)
         conn.add_layout(grid)
 
         recent = Panel("Recent activity", flush=True)
@@ -255,43 +239,6 @@ class StatusPage(QWidget):
                                                  "what it finished recently."),
                             self.banner, now, conn, recent))
         self._history_len = -1
-        self.reload_subnets()
-
-    def reload_subnets(self) -> None:
-        current = self.subnet.currentText()
-        options = scan_targets() + [Schedule.from_dict(s).subnet for s in self.win.store.settings.schedules]
-        self.subnet.clear()
-        for opt in dict.fromkeys(o for o in options if o):
-            self.subnet.addItem(opt)
-        if current:
-            self.subnet.setCurrentText(current)
-
-    def _scan_now(self) -> None:
-        target = self.subnet.currentText().strip()
-        problems = Schedule(subnet=target).problems()
-        if problems:
-            QMessageBox.warning(self, "Scan now", problems[0])
-            return
-        svc = self.win.controller.service
-        if svc is not None:
-            svc.request_scan(target)
-            self.stage.setText(f"Asking the server to record a scan of {target}...")
-            self.stage.show()
-
-    def _inventory_now(self) -> None:
-        svc = self.win.controller.service
-        if svc is not None:
-            svc.request_inventory()
-            self.stage.setText("Collecting this computer's inventory...")
-            self.stage.show()
-
-    def _sbom_now(self) -> None:
-        # The button is unavailable while any SBOM runs (refresh), so this always starts one.
-        svc = self.win.controller.service
-        if svc is not None:
-            self.stage.setText("Building this computer's full SBOM (this can take 10-30 minutes)...")
-            self.stage.show()
-            svc.request_sbom()
 
     def on_event(self, event: PipelineEvent) -> None:
         self.stage.show()
@@ -306,11 +253,10 @@ class StatusPage(QWidget):
         s = self.win.store.settings
         ctrl = self.win.controller
         svc = ctrl.service if ctrl.running else None
-        problems = [p for p in s.problems()]
-        if problems:
-            self.banner.setText("Not set up yet: open <b>Settings</b> and paste the connection code from the "
-                                "dashboard's Agents page.")
-            self.banner.set_action("Open Settings", lambda: self.win.show_page(self.win.settings_page))
+        if s.problems():
+            self.banner.setText("Not set up yet: open <b>Connection</b> and paste the code from your administrator "
+                                "(the dashboard's Agents page).")
+            self.banner.set_action("Open Connection", lambda: self.win.show_page(self.win.settings_page))
             self.banner.show()
         elif not ctrl.running:
             self.banner.setText("The agent is stopped. Press <b>Start</b> to connect.")
@@ -329,11 +275,12 @@ class StatusPage(QWidget):
             self.heartbeat.setText(f"{state} at {_fmt(svc.last_heartbeat_at)}")
             set_tone(self.heartbeat, "ok" if svc.last_heartbeat_ok else "error")
         suite = getattr(svc, "suite", None) if svc is not None else None
-        if not s.passive:
-            self.passive_on.setText("off (Settings > Passive listening)")
+        passive = effective_settings(self.win).get("passive", s.passive)
+        if not passive:
+            self.passive_on.setText("off (set on the dashboard)")
             set_tone(self.passive_on, "muted")
         elif suite is None or suite.arp is None:
-            self.passive_on.setText("-" if svc is None else "not running (see Dependencies)")
+            self.passive_on.setText("-" if svc is None else "not running (see Log)")
             set_tone(self.passive_on, None if svc is None else "warn")
         else:
             capture = getattr(suite, "capture", "")
@@ -355,20 +302,6 @@ class StatusPage(QWidget):
         elif not busy_bits and not self.stage.text():
             self.stage.setText("Waiting for the dashboard to ask for a scan, an inventory or an SBOM.")
         self.stage.setVisible(bool(self.stage.text()))
-        local_ok = svc is None or svc.local_scans_allowed
-        self.local_scans.setText("-" if svc is None else "allowed" if local_ok else
-                                 "turned off by your administrator: scans are started from the dashboard")
-        set_tone(self.local_scans, None if local_ok else "muted")
-        self.scan_btn.setEnabled(svc is not None and local_ok and not svc.active_running)
-        self.scan_btn.setToolTip("" if local_ok else "Your administrator has turned off scans started on this "
-                                 "computer. Active scans are started from the EagleEye dashboard.")
-        self.inv_btn.setEnabled(svc is not None and s.inventory and not svc.inventory_running)
-        self.inv_btn.setToolTip("" if s.inventory else "Inventory is switched off on the Privacy page")
-        # Unavailable during any SBOM run, like the dashboard's button and the other actions.
-        sbom_busy = svc is not None and svc.sbom_running
-        self.sbom_btn.setEnabled(svc is not None and s.sbom and not sbom_busy)
-        self.sbom_btn.setToolTip("SBOM is switched off on the Privacy page" if not s.sbom
-                                 else "An SBOM is being built; try again when it finishes" if sbom_busy else "")
 
         if svc is not None and len(svc.history) != self._history_len:
             self._history_len = len(svc.history)
@@ -560,30 +493,15 @@ def managed_now(win: "MainWindow") -> dict[str, Any]:
     return PolicyStore(policy_path()).load()[1]
 
 
-def _lock(widget: QWidget, managed: dict[str, Any], key: str, show: Callable[[Any], None]) -> bool:
-    """Show the administrator's value read-only, or give the control back. True if locked."""
-    from ..policy import MANAGED_NOTE
-    if key in managed:
-        show(managed[key])
-        widget.setEnabled(False)
-        widget.setToolTip(MANAGED_NOTE)
-        return True
-    widget.setToolTip("")
-    return False
 
 
-def _managed_hint(managed: dict[str, Any], keys: tuple[str, ...]) -> str:
-    from ..policy import LABELS, MANAGED_NOTE
-    names = [LABELS[k] for k in keys if k in managed]
-    return f"{MANAGED_NOTE}: {', '.join(names)}." if names else ""
 
 
-def _select(combo: QComboBox, value: Any) -> None:
-    combo.setCurrentIndex(max(0, combo.findData(value)))
 
 
 class SettingsPage(QWidget):
-    MANAGED = ("scan_engine", "scan_ports", "passive", "passive_interval", "passive_backend")
+    """Connection: how this agent reaches the dashboard. Everything the agent does is set on the
+    dashboard (2.6); the Privacy page shows it."""
 
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
@@ -591,11 +509,11 @@ class SettingsPage(QWidget):
         s = win.store.settings
 
         conn = Panel("Server")
-        # One paste instead of three: the code from the dashboard's Agents page fills the
-        # three fields below (nothing is saved until Save).
+        # One paste instead of three: the code from the dashboard (a connection code, or an install
+        # code that registers this computer) fills the three fields below; nothing is saved until Save.
         self.code = QLineEdit()
         self.code.setEchoMode(QLineEdit.EchoMode.Password)          # it contains the API key
-        self.code.setPlaceholderText("paste the code from the dashboard (starts with EE1.)")
+        self.code.setPlaceholderText("paste the code from your administrator (starts with EE1. or EE2.)")
         self.code.returnPressed.connect(self._use_code)
         use_code = button("Use code", None, "clipboard-paste", self._use_code)
         code_row = QWidget()
@@ -631,107 +549,22 @@ class SettingsPage(QWidget):
         tr.addWidget(self.test_result, 1)
         f.add("", test_row)
         conn.add_layout(f)
-
-        timing = Panel("Timing")
-        t = FieldGrid(1)
-        self.poll = self._spin(5, 3600, s.poll_interval, " s")
-        self.heartbeat = self._spin(5, 3600, s.heartbeat_interval, " s")
-        t.add("Check for dashboard scans every", _left(self.poll))
-        t.add("Heartbeat every", _left(self.heartbeat))
-        timing.add_layout(t)
-
-        active = Panel("Active scanning")
-        self.engine = QComboBox()
-        for text, value in (("Nmap (built-in sweep when Nmap is missing)", "auto"),
-                            ("EagleEye engine (no Nmap or Npcap needed)", "own"),
-                            ("Both, and compare (writes a report on this computer)", "compare")):
-            self.engine.addItem(text, value)
-        self.engine.setCurrentIndex(max(0, self.engine.findData("auto" if s.scan_engine == "nmap" else s.scan_engine)))
-        self.scan_ports = QComboBox()
-        for text, value in (("Base: 13 server and remote-access ports", "base"),
-                            ("Consumer: base + phones, TVs, printers, cameras (36)", "consumer"),
-                            ("Wide: consumer + server, directory and industrial ports (90)", "wide")):
-            self.scan_ports.addItem(text, value)
-        self.scan_ports.setCurrentIndex(max(0, self.scan_ports.findData(s.scan_ports)))
-        a = FieldGrid(1)
-        a.add("Scan engine", self.engine)
-        a.add("Ports (EagleEye engine)", self.scan_ports)
-        active.add_layout(a)
-        active.add(_hint("The EagleEye engine finds devices with ARP and names Windows machines from SMB "
-                         "without logging in. Comparison reports go to the 'compare' folder next to the config file."))
-
-        passive = Panel("Passive listening")
-        self.passive = QCheckBox("Listen for ARP, mDNS, NetBIOS and DHCP announcements")
-        self.passive.setChecked(s.passive)
-        self.passive_iface = QLineEdit(s.passive_interface)
-        self.passive_iface.setPlaceholderText("automatic")
-        self.passive_interval = self._spin(10, 3600, s.passive_interval, " s")
-        self.capture = QComboBox()
-        for text, value in (("Automatic (Npcap if installed, otherwise built in)", "auto"),
-                            ("Npcap", "npcap"),
-                            ("Built in (Windows' own capture driver; no Npcap needed)", "native")):
-            self.capture.addItem(text, value)
-        self.capture.setCurrentIndex(max(0, self.capture.findData(s.passive_backend)))
-        self.fingerbank = QLineEdit()
-        self.fingerbank.setEchoMode(QLineEdit.EchoMode.Password)
-        passive.add(self.passive)
-        p = FieldGrid(1)
-        p.add("Network interface", self.passive_iface)
-        p.add("Capture with", self.capture)
-        p.add("Upload what was heard every", _left(self.passive_interval))
-        p.add("Fingerbank API key (optional)", self.fingerbank)
-        passive.add_layout(p)
-        passive.add(_hint("Needs Administrator rights, and Npcap unless the built-in capture is used "
-                          "(see Dependencies)."))
+        conn.add(_hint("What this agent does (scanning, listening, what it collects) is set by your administrator "
+                       "on the EagleEye dashboard. The Privacy page shows it."))
 
         self.save_btn = button("Save", "primary", "check", self._save)
         self.save_result = label("", wrap=True)
-        self.managed_hint = _hint("")
-        _root(self, _scroll(PageHeader("Settings", "How this agent reaches the dashboard, how often it checks in, "
-                                                   "and what it listens for on the network."),
-                            self.managed_hint, conn, timing, active, passive),
+        _root(self, _scroll(PageHeader("Connection", "How this agent reaches your organisation's EagleEye dashboard."),
+                            conn),
               _footer(self.save_btn, self.save_result))
         self._secret_placeholders()
-        self.apply_managed()
-
-    def apply_managed(self) -> None:
-        """Settings the administrator set: shown read-only (their own value stays saved)."""
-        s = self.win.store.settings
-        m = managed_now(self.win)
-        for key, widget, show, local in (
-            ("scan_engine", self.engine, lambda v: _select(self.engine, v),
-             "auto" if s.scan_engine == "nmap" else s.scan_engine),
-            ("scan_ports", self.scan_ports, lambda v: _select(self.scan_ports, v), s.scan_ports),
-            ("passive", self.passive, self.passive.setChecked, s.passive),
-            ("passive_interval", self.passive_interval, self.passive_interval.setValue, s.passive_interval),
-            ("passive_backend", self.capture, lambda v: _select(self.capture, v), s.passive_backend),
-        ):
-            if not _lock(widget, m, key, show):
-                if not widget.isEnabled():          # was the administrator's: back to this computer's own
-                    show(local)
-                widget.setEnabled(True)
-        text = _managed_hint(m, self.MANAGED)
-        self.managed_hint.setText(text)
-        self.managed_hint.setVisible(bool(text))
-
-    @staticmethod
-    def _spin(lo: int, hi: int, value: int, suffix: str) -> QSpinBox:
-        sp = QSpinBox()
-        sp.setRange(lo, hi)
-        sp.setValue(max(lo, min(hi, value)))
-        sp.setSuffix(suffix)
-        sp.setMinimumWidth(120)
-        sp.setMaximumWidth(140)
-        theme.inset(sp)
-        return sp
 
     def _secret_placeholders(self) -> None:
         s = self.win.store.settings
         where = "the Windows Credential Manager" if sys.platform == "win32" else "the system keychain"
         where = where if self.win.store.keychain.available() else "the config file"
-        for field, name in ((self.api_key, "api_key"), (self.fingerbank, "fingerbank_key")):
-            field.clear()
-            field.setPlaceholderText("saved (leave empty to keep)" if getattr(s, name) else "")
+        self.api_key.clear()
+        self.api_key.setPlaceholderText("saved (leave empty to keep)" if s.api_key else "")
         self.key_hint.setText(f"Shown once when the agent was registered. Secrets are kept in {where}.")
 
     def _secret(self, field: QLineEdit, current: str) -> str:
@@ -793,21 +626,6 @@ class SettingsPage(QWidget):
         s.api_url = self.api_url.text().strip()
         s.agent_id = self.agent_id.text().strip()
         s.api_key = self._secret(self.api_key, s.api_key)
-        s.poll_interval = self.poll.value()
-        s.heartbeat_interval = self.heartbeat.value()
-        m = managed_now(self.win)           # the administrator's: this computer's own value stays
-        if "scan_engine" not in m:
-            s.scan_engine = self.engine.currentData()
-        if "scan_ports" not in m:
-            s.scan_ports = self.scan_ports.currentData()
-        if "passive" not in m:
-            s.passive = self.passive.isChecked()
-        s.passive_interface = self.passive_iface.text().strip()
-        if "passive_interval" not in m:
-            s.passive_interval = self.passive_interval.value()
-        if "passive_backend" not in m:
-            s.passive_backend = self.capture.currentData()
-        s.fingerbank_key = self._secret(self.fingerbank, s.fingerbank_key)
         failed = self.win.save_store()
         if failed:
             self.save_result.setText(failed)
@@ -822,11 +640,6 @@ class SettingsPage(QWidget):
             else "Saved.")
         set_tone(self.save_result, "warn" if problems else "ok")
 
-    def reload(self) -> None:
-        s = self.win.store.settings
-        self.passive.setChecked(s.passive)
-        self.apply_managed()
-
 
 def _left(widget: QWidget) -> QWidget:
     """A narrow control kept at its own width inside a stretching grid column."""
@@ -839,12 +652,46 @@ def _left(widget: QWidget) -> QWidget:
 
 
 # ── Privacy ───────────────────────────────────────────────────────────────
+def effective_settings(win: "MainWindow") -> dict[str, Any]:
+    """What this agent does: the dashboard's values (a 2.6 server sends them all), else this
+    computer's settings until the dashboard has answered."""
+    s = win.store.settings
+    managed = managed_now(win)
+    keys = ("inventory", "inventory_interval", "inventory_user_software", "inventory_admin_names", "sbom", "passive")
+    return {k: managed.get(k, getattr(s, k)) for k in keys}
+
+
 class PrivacyPage(QWidget):
-    MANAGED = ("inventory", "inventory_user_software", "inventory_admin_names", "inventory_interval", "sbom")
+    """What this agent collects and does, as set on the dashboard, read-only; the notice; and a
+    preview of the inventory it would send."""
 
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
         self.win = win
+
+        what = Panel("What this agent does")
+        grid = FieldGrid(1)
+        self.values: dict[str, QLabel] = {}
+        for key, title in (("inventory", "Collects this computer's inventory"),
+                           ("inventory_user_software", "Software users installed for themselves (personal data)"),
+                           ("inventory_admin_names", "Names of administrator accounts (personal data)"),
+                           ("sbom", "Lists its software packages and checks them for vulnerabilities (SBOM)"),
+                           ("passive", "Listens for the devices on its network")):
+            value = label("", "value", wrap=True)
+            grid.add(title, value)
+            self.values[key] = value
+        what.add_layout(grid)
+        what.add(_hint("Set by your administrator on the EagleEye dashboard (Agents page). For the SBOM only package "
+                       "names, versions and licences are sent; no files or file paths."))
+        what.add(divider())
+        self.preview_btn = button("Preview what would be sent...", None, "eye", self._preview)
+        self.preview_note = label("", "hint", wrap=True)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self.preview_btn)
+        row.addWidget(self.preview_note, 1)
+        what.add_layout(row)
+        what.add(_hint("The preview collects this computer's inventory here and shows it. Nothing is sent."))
 
         notice = Panel("Notice")
         self.notice_text = QTextBrowser()
@@ -854,62 +701,8 @@ class PrivacyPage(QWidget):
         self.consent = _hint("")
         notice.add(self.consent)
 
-        inv = Panel("This computer's inventory")
-        self.inventory = QCheckBox("Collect this computer's inventory")
-        self.user_software = QCheckBox("Include software installed only for individual users (personal data)")
-        self.admin_names = QCheckBox("Include the names of administrator accounts (personal data)")
-        self.interval = QSpinBox()
-        self.interval.setRange(1, 168)
-        self.interval.setSuffix(" hours")
-        self.interval.setMinimumWidth(120)
-        self.interval.setMaximumWidth(140)
-        theme.inset(self.interval)
-        self.inventory.toggled.connect(self._enable)
-        inv.add(self.inventory, _indent(self.user_software), _indent(self.admin_names))
-        g = FieldGrid(1)
-        g.add("Collect every", _left(self.interval))
-        inv.add_layout(g)
-        inv.add(divider())
-        self.preview_btn = button("Preview what would be sent...", None, "eye", self._preview)
-        self.preview_note = label("", "hint", wrap=True)
-        row = QHBoxLayout()
-        row.setSpacing(12)
-        row.addWidget(self.preview_btn)
-        row.addWidget(self.preview_note, 1)
-        inv.add_layout(row)
-        inv.add(_hint("Also collected when an administrator asks from the dashboard (Collect inventory). A "
-                      "collection that fails, for example before the network is up after start-up, is tried "
-                      "again a few minutes later. The preview collects the inventory on this computer and "
-                      "shows it. Nothing is sent."))
-
-        sb = Panel("Software packages (SBOM)")
-        self.sbom = QCheckBox("List this computer's software packages and check them for known vulnerabilities")
-        self.sbom_extra = QPlainTextEdit()
-        self.sbom_extra.setProperty("mono", True)
-        self.sbom_extra.setPlaceholderText("One folder per line, e.g. D:\\Apps")
-        self.sbom_extra.setMaximumHeight(84)
-        self.sbom_defaults = _hint("")
-        self.sbom_binaries = QCheckBox("Include compiled programs (Go binaries, .exe/.dll, Linux kernel images)")
-        binaries_hint = _hint("Many more findings, mostly ones only the program's vendor can fix.")
-        self.sbom.toggled.connect(self.sbom_extra.setEnabled)
-        self.sbom.toggled.connect(self.sbom_binaries.setEnabled)
-        sb.add(self.sbom, _indent(self.sbom_binaries), _indent(binaries_hint, 52))
-        g2 = FieldGrid(1)
-        g2.add("Also scan", self.sbom_extra)
-        g2.add("", self.sbom_defaults)
-        sb.add_layout(g2)
-        sb.add(_hint("Every day the agent lists again only the folders that changed; once a week, and whenever "
-                     "you or an administrator ask (Build SBOM now, or Run SBOM scan on the dashboard), it lists "
-                     "every folder. Uses Syft and Grype (see Dependencies). Only package names, versions and "
-                     "licences are sent; no files or file paths."))
-
-        save = button("Save", "primary", "check", self._save)
-        self.result = label("", wrap=True)
-        self.managed_hint = _hint("")
         _root(self, _scroll(PageHeader("Privacy", "What this agent collects about this computer and sends to the "
-                                                  "dashboard."),
-                            self.managed_hint, inv, sb, notice),
-              _footer(save, self.result))
+                                                  "dashboard."), what, notice))
         self.restyle()
         self.reload()
 
@@ -917,79 +710,26 @@ class PrivacyPage(QWidget):
         self.notice_text.document().setDefaultStyleSheet(theme.document_css(theme.current()))
         self.notice_text.setHtml(NOTICE_HTML)
 
-    def _enable(self, on: bool) -> None:
-        for w in (self.user_software, self.admin_names, self.interval):
-            w.setEnabled(on)
-
     def reload(self) -> None:
+        e = effective_settings(self.win)
+        yes_no = lambda on: "Yes" if on else "No"          # noqa: E731
+        hours = max(1, round(int(e["inventory_interval"]) / 3600))
+        self.values["inventory"].setText(f"Yes, every {hours} hour{'s' if hours != 1 else ''}" if e["inventory"] else "No")
+        for key in ("inventory_user_software", "inventory_admin_names"):
+            self.values[key].setText(yes_no(e["inventory"] and e[key]))
+        for key in ("sbom", "passive"):
+            self.values[key].setText(yes_no(e[key]))
         s = self.win.store.settings
-        self.inventory.setChecked(s.inventory)
-        self.user_software.setChecked(s.inventory_user_software)
-        self.admin_names.setChecked(s.inventory_admin_names)
-        self.interval.setValue(max(1, min(168, round(s.inventory_interval / 3600))))
-        self._enable(s.inventory)
-        self.sbom.setChecked(s.sbom)
-        self.sbom_extra.setPlainText(s.sbom_extra_paths)
-        self.sbom_extra.setEnabled(s.sbom)
-        self.sbom_binaries.setChecked(s.sbom_include_binaries)
-        self.sbom_binaries.setEnabled(s.sbom)
-        from ..sbom import default_roots
-        self.sbom_defaults.setText("Always scanned: " + ", ".join(default_roots()))
         try:
             accepted = datetime.fromisoformat(s.consent_at).strftime("%d %b %Y at %H:%M") if s.consent_at else ""
         except ValueError:
             accepted = s.consent_at
         self.consent.setText(f"Notice read on {accepted}." if accepted else "Notice not yet read.")
-        m = managed_now(self.win)
-        inventory_on = self.inventory.isChecked()
-        _lock(self.inventory, m, "inventory", self.inventory.setChecked)
-        if "inventory" in m:
-            inventory_on = bool(m["inventory"])
-            self._enable(inventory_on)
-        else:
-            self.inventory.setEnabled(True)
-        for key, widget in (("inventory_user_software", self.user_software), ("inventory_admin_names", self.admin_names)):
-            if not _lock(widget, m, key, widget.setChecked):
-                widget.setEnabled(inventory_on)
-        if not _lock(self.interval, m, "inventory_interval",
-                     lambda v: self.interval.setValue(max(1, min(168, round(v / 3600))))):
-            self.interval.setEnabled(inventory_on)
-        if _lock(self.sbom, m, "sbom", self.sbom.setChecked):
-            self.sbom_extra.setEnabled(bool(m["sbom"]))
-            self.sbom_binaries.setEnabled(bool(m["sbom"]))
-        else:
-            self.sbom.setEnabled(True)
-        text = _managed_hint(m, self.MANAGED)
-        self.managed_hint.setText(text)
-        self.managed_hint.setVisible(bool(text))
-
-    def _save(self) -> None:
-        s = self.win.store.settings
-        m = managed_now(self.win)           # the administrator's: this computer's own value stays
-        if "inventory" not in m:
-            s.inventory = self.inventory.isChecked()
-        if "inventory_user_software" not in m:
-            s.inventory_user_software = s.inventory and self.user_software.isChecked()
-        if "inventory_admin_names" not in m:
-            s.inventory_admin_names = s.inventory and self.admin_names.isChecked()
-        if "inventory_interval" not in m:
-            s.inventory_interval = self.interval.value() * 3600
-        if "sbom" not in m:
-            s.sbom = self.sbom.isChecked()
-        s.sbom_include_binaries = self.sbom_binaries.isChecked()
-        s.sbom_extra_paths = "\n".join(p for p in (line.strip() for line in self.sbom_extra.toPlainText().splitlines()) if p)
-        failed = self.win.save_store()
-        if failed:
-            self.result.setText(failed)
-            set_tone(self.result, "error")
-            return
-        self.result.setText("Saved.")
-        set_tone(self.result, "ok")
-        self.win.settings_changed()
 
     def _preview(self) -> None:
-        options = {"user_software": self.user_software.isChecked() and self.inventory.isChecked(),
-                   "admin_names": self.admin_names.isChecked() and self.inventory.isChecked()}
+        e = effective_settings(self.win)
+        options = {"user_software": bool(e["inventory"] and e["inventory_user_software"]),
+                   "admin_names": bool(e["inventory"] and e["inventory_admin_names"])}
         self.preview_btn.setEnabled(False)
         self.preview_note.setText("Collecting (this takes up to a minute)...")
         set_tone(self.preview_note, None)
@@ -1055,7 +795,14 @@ def _summarise(inv: dict[str, Any]) -> str:
 
 
 # ── Dependencies ──────────────────────────────────────────────────────────
+# Evaluation tools only (2.6): the agent scans with its own engine and listens with the built-in
+# capture; Nmap and Npcap are used only by `eagleeye scan --engine compare` / `listen --compare`.
+EVALUATION_ONLY = ("Nmap", "Packet capture (Npcap/libpcap)", "python: scapy")
+
+
 class DependenciesPage(QWidget):
+    """Tools: what the agent uses (Syft and Grype for the SBOM) and the rights it runs with."""
+
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
         self.win = win
@@ -1067,46 +814,15 @@ class DependenciesPage(QWidget):
         self.table = _table(["Component", "Status", "Details"])
         self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         box.add(self.table)
-
-        get = Panel("Get Nmap and Npcap")
-        get.add(_hint(
-            "These free tools are not included with the agent because their licences do not allow it. "
-            "The buttons below download the official installer from nmap.org or npcap.com, check that it is "
-            "signed by the Nmap project, and open it. You then go through the installer and accept its licence "
-            "yourself. The Nmap installer can also install Npcap."))
-        self.buttons: dict[str, QPushButton] = {}
-        for key, tool in installers.TOOLS.items():
-            b = button(f"Download and install {tool.name}", None, "download")
-            b.clicked.connect(lambda _=False, k=key: self._install(k))
-            self.buttons[key] = b
-            lic = QLabel(f'{tool.purpose}. <a href="{tool.licence}">Licence</a>')
-            lic.setProperty("role", "hint")
-            lic.setOpenExternalLinks(True)
-            lic.setWordWrap(True)
-            r = QHBoxLayout()
-            r.setSpacing(12)
-            r.addWidget(b)
-            r.addWidget(lic, 1)
-            get.add_layout(r)
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.hide()
-        self.progress_text = label("", wrap=True)
-        get.add(self.progress, self.progress_text)
-        if sys.platform != "win32":
-            for b in self.buttons.values():
-                b.setEnabled(False)
-            get.add(_hint("On macOS and Linux, install them with your package manager (see the hints above)."))
-
-        _root(self, _scroll(PageHeader("Dependencies", "The tools this agent uses for scans, passive listening and "
-                                                       "SBOMs, and the rights it runs with."), box, get))
+        _root(self, _scroll(PageHeader("Tools", "What the agent uses for SBOMs, and the rights it runs with. Scanning "
+                                                "and listening are built in."), box))
         self._results: list[Any] = []
         self.refresh()
 
     def refresh(self) -> None:
-        self._results = deps.check_all()
+        self._results = [r for r in deps.check_all() if r.name not in EVALUATION_ONLY]
         self._fill()
-        self.admin_btn.setVisible(not deps.is_admin())
+        self.admin_btn.setVisible(not deps.is_admin() and not getattr(self.win, "service_mode", False))
 
     def restyle(self) -> None:
         self._fill()
@@ -1127,40 +843,6 @@ class DependenciesPage(QWidget):
         for row in range(self.table.rowCount()):
             self.table.setRowHeight(row, max(36, self.table.rowHeight(row) + 6))
         fit_height(self.table)
-
-    def _install(self, key: str) -> None:
-        for b in self.buttons.values():
-            b.setEnabled(False)
-        self.progress.show()
-        self.progress.setRange(0, 0)
-        on_progress = self.on_progress        # looked up on the GUI thread (see controller.gui_call)
-
-        def report(message: str, done: Optional[int], total: Optional[int]) -> None:   # worker thread
-            gui_call(on_progress, message, done if done is not None else -1, total or 0)
-
-        def finished(result: Any, error: Optional[BaseException]) -> None:
-            for b in self.buttons.values():
-                b.setEnabled(sys.platform == "win32")
-            self.progress.hide()
-            if error:
-                self.progress_text.setText(str(error))
-                set_tone(self.progress_text, "error")
-            else:
-                self.progress_text.setText(
-                    f"The {result.tool.name} {result.version} installer is open. Finish it, then press Re-check.")
-                set_tone(self.progress_text, None)
-
-        run_in_thread(lambda: installers.fetch_and_launch(key, report), finished)
-
-    def on_progress(self, message: str, done: int, total: int) -> None:
-        self.progress_text.setText(message)
-        set_tone(self.progress_text, None)
-        if total > 0 and done >= 0:
-            self.progress.setRange(0, 1000)
-            self.progress.setValue(int(done * 1000 / total))
-            self.progress_text.setText(f"{message}: {done / 2**20:.1f} of {total / 2**20:.1f} MB")
-        else:
-            self.progress.setRange(0, 0)
 
 
 # ── Log ───────────────────────────────────────────────────────────────────

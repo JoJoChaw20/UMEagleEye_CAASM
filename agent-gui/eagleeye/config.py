@@ -39,7 +39,7 @@ class Settings:
     passive: bool = False
     passive_interface: str = ""
     passive_interval: int = 300         # seconds between passive uploads (5 min)
-    passive_backend: str = "auto"       # what captures packets: auto, npcap or native (built in)
+    passive_backend: str = "auto"       # auto = built in (NDIS / packet socket); npcap only on the command line
     fingerbank_key: str = ""
     snmp_user: str = ""
     snmp_auth_key: str = ""
@@ -68,9 +68,9 @@ class Settings:
     sbom_interval: int = 86400          # seconds between SBOMs (24 h)
     sbom_extra_paths: str = ""          # extra folders to scan, one per line
     sbom_include_binaries: bool = False # also read compiled programs (Go binaries, .exe/.dll, Linux kernel)
-    # Active scan engine (stages/scan_own.py): auto | nmap (the Nmap stage, as before),
-    # own (the agent's own engine), compare (both, with a local report). Port tier for
-    # the own engine: base | consumer | wide (engine/ports.py).
+    # Active scan engine (stages/scan_own.py): auto = the agent's own engine; nmap (the Nmap
+    # stage) and compare (both, with a local report) are evaluation tools for the command line.
+    # Port tier ("Scan depth" on the dashboard): base | consumer | wide (engine/ports.py).
     scan_engine: str = "auto"
     scan_ports: str = "base"
     # Local scan schedules (see schedule.py); the dashboard can still trigger scans too.

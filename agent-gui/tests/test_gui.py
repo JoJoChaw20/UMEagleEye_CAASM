@@ -102,31 +102,9 @@ def test_saving_new_server_details_starts_the_agent_once(window):
     assert "now running" in page.save_result.text()
     # Someone stops the agent on purpose, then changes another setting: it stays stopped.
     window.controller.running = False
-    page.poll.setValue(page.poll.value() + 5)
     page._save()
     assert started == ["00000000-0000-0000-0000-000000000002"] and page.save_result.text() == "Saved."
     window.controller = real
-
-
-def test_settings_page_saves_the_scan_engine_and_port_tier(window):
-    page = window.settings_page
-    assert page.engine.currentData() == "auto" and page.scan_ports.currentData() == "base"   # old behaviour
-    window.controller.start = lambda settings: None
-    page.engine.setCurrentIndex(page.engine.findData("compare"))
-    page.scan_ports.setCurrentIndex(page.scan_ports.findData("consumer"))
-    page._save()
-    saved = json.loads(window.store.path.read_text())
-    assert (saved["scan_engine"], saved["scan_ports"]) == ("compare", "consumer")
-    assert (window.store.settings.scan_engine, window.store.settings.scan_ports) == ("compare", "consumer")
-
-
-def test_settings_page_saves_the_passive_capture(window):
-    page = window.settings_page
-    assert page.capture.currentData() == "auto"
-    window.controller.start = lambda settings: None
-    page.capture.setCurrentIndex(page.capture.findData("native"))
-    page._save()
-    assert json.loads(window.store.path.read_text())["passive_backend"] == "native"
 
 
 def test_saving_incomplete_server_details_does_not_start(window):
@@ -167,16 +145,6 @@ def test_schedules_page_adds_and_validates(window):
     assert "192.168.50.0/24" in subnets
 
 
-def test_privacy_page_saves_choices(window):
-    page = window.privacy_page
-    page.inventory.setChecked(True)
-    page.user_software.setChecked(True)
-    page.interval.setValue(12)
-    page._save()
-    s = window.store.settings
-    assert s.inventory_user_software and not s.inventory_admin_names and s.inventory_interval == 12 * 3600
-
-
 def test_app_icon_has_sizes(qapp):
     assert len(gui_app.app_icon().availableSizes()) >= 5
 
@@ -190,25 +158,30 @@ def test_quit_button_in_header_quits(window, monkeypatch):
     assert quits == [1] and window._quitting
 
 
-def test_settings_the_administrator_set_are_read_only_and_not_saved_over(window, tmp_path):
+def test_the_app_only_connects_the_agent_and_shows_what_it_does(window):
+    # 2.6: everything the agent does is set on the dashboard; the app has no controls for it
+    page, status = window.settings_page, window.status_page
+    for gone in ("engine", "scan_ports", "capture", "passive", "poll", "fingerbank"):
+        assert not hasattr(page, gone), gone
+    for gone in ("scan_btn", "inv_btn", "sbom_btn", "subnet"):
+        assert not hasattr(status, gone), gone
+    names = [window.nav.item(i).text() for i in range(window.nav.count())]
+    assert "Connection" in names and "Tools" in names and "Settings" not in names and "Dependencies" not in names
+
+
+def test_privacy_page_shows_the_dashboard_values_read_only(window, tmp_path):
     from eagleeye.policy import PolicyStore, policy_path
-    s = window.store.settings
-    s.scan_engine, s.inventory_user_software = "auto", False
-    store = PolicyStore(policy_path())
-    assert store.path.parent == tmp_path                               # beside the test config, not the real one
-    store.save("0a1b2c3d", {"scan_engine": "own", "inventory_user_software": True, "sbom": False})
-    page, privacy = window.settings_page, window.privacy_page
-    page.apply_managed()
+    privacy = window.privacy_page
     privacy.reload()
-    assert page.engine.currentData() == "own" and not page.engine.isEnabled()
-    assert page.scan_ports.isEnabled() and "Scan engine" in page.managed_hint.text()
-    assert privacy.user_software.isChecked() and not privacy.user_software.isEnabled()
-    assert not privacy.sbom.isChecked() and not privacy.sbom.isEnabled()
-    window.controller.start = lambda settings: None
-    page._save()
-    privacy._save()
-    saved = json.loads(window.store.path.read_text())
-    assert (saved["scan_engine"], saved["inventory_user_software"]) == ("auto", False)   # this computer's own
-    store.save("811c9dc5", {})                                         # the administrator cleared them
-    page.apply_managed()
-    assert page.engine.isEnabled() and page.engine.currentData() == "auto" and page.managed_hint.isHidden()
+    assert privacy.values["inventory"].text() == "Yes, every 6 hours"            # this computer's, until the server answers
+    assert privacy.values["passive"].text() == "No"
+    store = PolicyStore(policy_path())
+    assert store.path.parent == tmp_path                                       # beside the test config, not the real one
+    store.save("0a1b2c3d", {"inventory": True, "inventory_interval": 3600, "inventory_user_software": True,
+                            "sbom": False, "passive": True})
+    privacy.reload()
+    assert privacy.values["inventory"].text() == "Yes, every 1 hour"
+    assert privacy.values["inventory_user_software"].text() == "Yes" and privacy.values["sbom"].text() == "No"
+    assert privacy.values["passive"].text() == "Yes"
+    from PySide6.QtWidgets import QCheckBox
+    assert not privacy.findChildren(QCheckBox)                                 # nothing to change here

@@ -352,6 +352,10 @@ is installed, `dist\EagleEyeAgent-Setup-<version>.exe`. The installer can add a 
 Administrator rights (needed for passive listening and the BitLocker/TPM/SMBv1 checks) without a prompt each time.
 `packaging/THIRD-PARTY-NOTICES.txt` lists the bundled components and their licences.
 
+The Linux and network-agent download is the source package: `python packaging/make_source.py` writes
+`dist/eagleeye-agent-<version>.tar.gz` (the package, `pyproject.toml`, this README, the systemd unit and the Docker
+files; no tests). AGENT_SETUP_GUIDE.md, "Publishing a new version", uploads both for the dashboard's Install tab.
+
 ## Layout
 ```
 eagleeye/

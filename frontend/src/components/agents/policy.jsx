@@ -1,7 +1,7 @@
-// Agent settings an admin sets from the dashboard (workers/src/lib/agentPolicy.ts):
-// labels, groups and one input that shows where a value comes from. A setting left at
-// "default" follows the tenant default, or, when the tenant set nothing, stays the
-// agent's own setting (what its user chose on that computer).
+// Agent settings, set only on the dashboard (workers/src/lib/agentPolicy.ts): labels, groups
+// and one input that shows where a value comes from. A setting left at "default" follows the
+// tenant default, or the built-in default when the tenant set none. How an agent scans and
+// listens is not a setting (2.6): its own engine and the built-in packet capture.
 import { useState } from 'react'
 
 export const ROLES = [
@@ -13,21 +13,16 @@ export const ROLES = [
 
 const hours = (s) => (s % 3600 === 0 ? `${s / 3600} h` : s % 60 === 0 ? `${s / 60} min` : `${s} s`)
 
+// `advanced`: shown after "Show advanced settings" (intervals and limits).
 export const GROUPS = [
   {
     title: 'Scanning',
     settings: [
-      { key: 'scanner', label: 'Runs scans sent from the dashboard' },
-      { key: 'local_scans', label: 'May start its own scans', help: 'The "Scan now" button on that computer.' },
+      { key: 'scanner', label: 'Runs the scans sent from the dashboard', help: 'New scan and new-device investigations.' },
       {
-        key: 'scan_engine', label: 'Scan engine', options: {
-          auto: 'Nmap (built-in sweep without it)', own: 'EagleEye engine (no Nmap needed)', compare: 'Both, with a comparison report',
-        },
-      },
-      {
-        key: 'scan_ports', label: 'Ports (EagleEye engine)', options: {
-          base: 'Base: 13 server and remote-access ports', consumer: 'Consumer: + phones, TVs, printers, cameras (36)',
-          wide: 'Wide: + server, directory and industrial ports (90)',
+        key: 'scan_ports', label: 'Scan depth', help: 'Which ports an active scan checks on each device.', options: {
+          base: 'Standard: server and remote-access ports (13)', consumer: 'Extended: + phones, TVs, printers, cameras (36)',
+          wide: 'Full: + server, directory and industrial ports (90)',
         },
       },
     ],
@@ -35,33 +30,28 @@ export const GROUPS = [
   {
     title: 'Passive listening',
     settings: [
-      { key: 'passive', label: 'Listen for devices on its network' },
-      { key: 'passive_interval', label: 'Upload what was heard every', unit: 's', format: hours },
-      {
-        key: 'passive_backend', label: 'Capture with', options: {
-          auto: 'Automatic', npcap: 'Npcap', native: "Built in (Windows' own capture driver)",
-        },
-      },
+      { key: 'passive', label: 'Listen for devices on its network', help: 'ARP, mDNS, NetBIOS, DHCP and SSDP: it sends nothing.' },
+      { key: 'passive_interval', label: 'Upload what was heard every', unit: 's', format: hours, advanced: true },
     ],
   },
   {
     title: 'Inventory',
     settings: [
       { key: 'inventory', label: "Report this computer's inventory" },
-      { key: 'inventory_interval', label: 'Every', unit: 's', format: hours },
       { key: 'inventory_user_software', label: 'Include software users installed for themselves' },
       { key: 'inventory_admin_names', label: 'Include the names of local administrator accounts' },
+      { key: 'inventory_interval', label: 'Inventory every', unit: 's', format: hours, advanced: true },
     ],
   },
   {
     title: 'SBOM',
     settings: [
-      { key: 'sbom', label: "Build the SBOM and check it for CVEs" },
-      { key: 'sbom_interval', label: 'Every', unit: 's', format: hours },
+      { key: 'sbom', label: 'Build the SBOM and check it for CVEs' },
+      { key: 'sbom_interval', label: 'SBOM every', unit: 's', format: hours, advanced: true },
     ],
   },
   {
-    title: 'Network devices (network agents)',
+    title: 'Routers and switches',
     settings: [
       { key: 'network_poll', label: 'Read the routers and switches' },
       {
@@ -72,24 +62,32 @@ export const GROUPS = [
         key: 'network_ranges', label: 'Allowed ranges', placeholder: '10.0.0.0/8',
         help: 'It follows CDP/LLDP neighbours only inside these ranges, one per line. With none, it reads only the seeds.',
       },
-      { key: 'network_depth', label: 'Hops from a seed', unit: 'hops' },
-      { key: 'network_interval', label: 'Every', unit: 's', format: hours },
+      { key: 'network_depth', label: 'Hops from a seed', unit: 'hops', advanced: true },
+      { key: 'network_interval', label: 'Read every', unit: 's', format: hours, advanced: true },
     ],
   },
 ]
 
 export const SOURCE_LABEL = {
-  agent: 'Set for this agent',
-  tenant: 'Tenant default',
-  local: "Agent's own setting",
-  unknown: 'Not reported (agent before 2.4.0)',
+  agent: 'set for this agent',
+  tenant: 'tenant default',
+  default: 'default',
+}
+
+// The label of a setting (for messages and fallbacks).
+export function metaOf(key) {
+  for (const g of GROUPS) {
+    const m = g.settings.find((s) => s.key === key)
+    if (m) return m
+  }
+  return { key, label: key }
 }
 
 export function show(meta, spec, value) {
   if (value === null || value === undefined) return '—'
   if (spec?.type === 'bool') return value ? 'On' : 'Off'
   if (spec?.type === 'list') return value.length ? value.join(', ') : 'none'
-  if (meta.options) return meta.options[value] ?? String(value)
+  if (meta.options) return meta.options[value]?.split(':')[0] ?? String(value)   // "Standard", not its description
   return meta.format ? meta.format(value) : String(value)
 }
 
@@ -105,7 +103,7 @@ export function PolicyInput({ meta, spec, value, onChange, disabled, fallback })
           id={id} type="number" min={spec.min} max={spec.max} step={1} disabled={disabled}
           value={value ?? ''} placeholder={fallback}
           onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-          className="input-field w-32 text-sm" aria-label={meta.label}
+          className="input-field w-40 text-sm" aria-label={meta.label}
         />
         <span className="text-xs text-dark-400">{meta.unit}{value != null && meta.format ? ` (${meta.format(value)})` : ''}</span>
       </div>

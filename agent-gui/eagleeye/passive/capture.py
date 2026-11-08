@@ -52,17 +52,13 @@ def resolve_backend(setting: str, platform: str = sys.platform,
                     has_scapy: Optional[Callable[[], bool]] = None) -> str:
     """"npcap" (scapy's sniff on Npcap/libpcap), "ndis" or "packet" (built-in).
 
-    Automatic keeps Npcap on Windows where it is installed AND the agent has scapy to
-    read it with (the capture the agent has always used); otherwise it uses Microsoft's
-    driver, which is what a package built without scapy always does. Linux uses its
-    packet socket, which needs neither libpcap nor tcpdump. Other systems only have
-    libpcap."""
+    Automatic is the built-in capture (2.6): Microsoft's own capture driver on Windows, the
+    packet socket on Linux; it heard every frame Npcap did, with less CPU and nothing to
+    install. Npcap is used only when asked for (`eagleeye listen --capture npcap`, for
+    comparison) and on systems with no built-in capture (macOS: libpcap). has_npcap and
+    has_scapy are kept for callers that still pass them."""
     native = "ndis" if platform == "win32" else "packet" if platform.startswith("linux") else None
     if setting == "npcap" or native is None:
-        return "npcap"
-    if setting == "native":
-        return native
-    if platform == "win32" and (has_scapy or scapy_available)() and (has_npcap or npcap_installed)():
         return "npcap"
     return native
 

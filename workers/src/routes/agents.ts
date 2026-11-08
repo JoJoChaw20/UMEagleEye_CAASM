@@ -6,7 +6,7 @@ import type { R2Bucket } from '@cloudflare/workers-types'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
-import { POLICY_SPECS, ROLE_KEYS, applyChange, cleanReport, kindKeys, roleChange, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
+import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys, roleChange, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
 import { pendingJobsFor } from '../services/pendingJobs'
 import { getDb } from '../db/client'
@@ -68,7 +68,7 @@ function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy) {
     // The networks it is directly on (2.5.1+; scans of them go to it: lib/agentRouting.ts).
     networks: Array.isArray((reportedOf(a) as { networks?: unknown }).networks)
       ? (reportedOf(a) as { networks: string[] }).networks : [],
-    // Roles read from the settings (lib/agentPolicy.ts); null = not known yet.
+    // Roles read from the settings (lib/agentPolicy.ts).
     roles: resolved?.roles ?? null,
     // Whether the agent runs the settings set for it: it reports the version it applied
     // (2.4.0+; null for older agents, which only know the agent-started scans switch).
@@ -140,49 +140,58 @@ router.post(
   }
 )
 
-// ── The Windows installer ─────────────────────────────────────────
-// Uploaded to R2 as agent-installer/EagleEyeAgent-Setup-<version>.exe (see AGENT_SETUP_GUIDE.md);
-// the newest version is offered. Any signed-in user may download it: it holds no secrets, the
-// connection code is what ties an agent to a tenant. Declared before /:agentId.
+// ── The agent's downloads ────────────────────────────────────────
+// Uploaded to R2 under agent-installer/ (AGENT_SETUP_GUIDE.md, "Publishing a new version"): the
+// Windows installer EagleEyeAgent-Setup-<version>.exe, and the source package for Linux and the
+// network agent, eagleeye-agent-<version>.tar.gz. The newest UPLOAD of each is offered, not the
+// highest number, so a release renumbered to 1.0 replaces the 2.x development builds. Any signed-in
+// user may download them: they hold no secrets, the connection code is what ties an agent to a
+// tenant. Declared before /:agentId.
 const INSTALLER_PREFIX = 'agent-installer/'
-const INSTALLER_NAME = /^agent-installer\/(EagleEyeAgent-Setup-(\d+(?:\.\d+){1,3})\.exe)$/
+const VERSION_RE = String.raw`(\d+(?:\.\d+){1,3})`
+const PACKAGES = {
+  windows: { name: new RegExp(String.raw`^agent-installer/(EagleEyeAgent-Setup-${VERSION_RE}\.exe)$`), type: 'application/vnd.microsoft.portable-executable' },
+  source: { name: new RegExp(String.raw`^agent-installer/(eagleeye-agent-${VERSION_RE}\.tar\.gz)$`), type: 'application/gzip' },
+} as const
+type PackageKind = keyof typeof PACKAGES
+type Package = { key: string; filename: string; version: string; size: number; uploaded: Date }
 
-function compareVersions(a: string, b: string): number {
-  const x = a.split('.').map(Number), y = b.split('.').map(Number)
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0)
-    if (d) return d
-  }
-  return 0
-}
-
-async function latestInstaller(bucket: R2Bucket) {
+async function latestPackages(bucket: R2Bucket): Promise<Record<PackageKind, Package | null>> {
+  const latest: Record<PackageKind, Package | null> = { windows: null, source: null }
   const listed = await bucket.list({ prefix: INSTALLER_PREFIX })
-  let best: { key: string; filename: string; version: string; size: number; uploaded: Date } | null = null
   for (const o of listed.objects) {
-    const m = INSTALLER_NAME.exec(o.key)
-    const filename = m?.[1], version = m?.[2]
-    if (filename && version && (!best || compareVersions(version, best.version) > 0)) {
-      best = { key: o.key, filename, version, size: o.size, uploaded: o.uploaded }
+    for (const kind of Object.keys(PACKAGES) as PackageKind[]) {
+      const m = PACKAGES[kind].name.exec(o.key)
+      if (!m) continue
+      const best = latest[kind]
+      if (!best || o.uploaded.getTime() > best.uploaded.getTime()) {
+        latest[kind] = { key: o.key, filename: m[1]!, version: m[2]!, size: o.size, uploaded: o.uploaded }
+      }
     }
   }
-  return best
+  return latest
 }
 
+const packageOut = (p: Package | null) => p && ({ filename: p.filename, version: p.version, size: p.size, uploaded_at: p.uploaded })
+
 router.get('/installer', authMiddleware, async (c) => {
-  const inst = await latestInstaller(c.env.REPORTS_BUCKET)
-  if (!inst) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
-  return c.json({ filename: inst.filename, version: inst.version, size: inst.size, uploaded_at: inst.uploaded })
+  const latest = await latestPackages(c.env.REPORTS_BUCKET)
+  if (!latest.windows && !latest.source) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
+  // The Windows installer's fields at the top level, as before; `packages` has each download.
+  return c.json({ ...packageOut(latest.windows), packages: { windows: packageOut(latest.windows), source: packageOut(latest.source) } })
 })
 
+// ?package=windows (default) | source
 router.get('/installer/download', authMiddleware, async (c) => {
-  const inst = await latestInstaller(c.env.REPORTS_BUCKET)
-  const obj = inst ? await c.env.REPORTS_BUCKET.get(inst.key) : null
-  if (!inst || !obj) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
+  const kind = (c.req.query('package') ?? 'windows') as PackageKind
+  if (!(kind in PACKAGES)) return c.json({ detail: 'package must be windows or source' }, 400)
+  const pkg = (await latestPackages(c.env.REPORTS_BUCKET))[kind]
+  const obj = pkg ? await c.env.REPORTS_BUCKET.get(pkg.key) : null
+  if (!pkg || !obj) return c.json({ detail: 'That download has not been uploaded yet' }, 404)
   // Streamed: the installer is tens of MB, more than a Worker should hold in memory.
   return c.body(obj.body as unknown as ReadableStream, 200, {
-    'Content-Type': 'application/vnd.microsoft.portable-executable',
-    'Content-Disposition': `attachment; filename="${inst.filename}"`,
+    'Content-Type': PACKAGES[kind].type,
+    'Content-Disposition': `attachment; filename="${pkg.filename}"`,
     'Content-Length': String(obj.size),
     'Cache-Control': 'private, max-age=300',
   })
@@ -211,7 +220,7 @@ router.get('/:agentId', authMiddleware, async (c) => {
 
 // ── GET /:agentId/policy — this agent's settings and where each comes from ──
 // value + source per setting: 'agent' (this agent's override), 'tenant' (the tenant
-// default), 'local' (the agent's own setting, as it reported it), 'unknown'.
+// default), 'default' (the built-in default, DEFAULTS).
 function policyOut(agent: AgentRow, resolved: ResolvedPolicy, canEdit: boolean) {
   const reported = reportedOf(agent)
   return {
@@ -242,8 +251,8 @@ router.get('/:agentId/policy', authMiddleware, requireRoles(...AGENT_READ_ROLES)
 })
 
 // ── PATCH /:agentId/policy — change this agent's overrides ──
-// {settings: {setting: value | null}} (null = back to the tenant default / the agent's
-// own), and/or {roles: {inventory|sensor|scanner: true|false}}, which sets the role's
+// {settings: {setting: value | null}} (null = back to the tenant default / the built-in
+// default), and/or {roles: {inventory|sensor|scanner: true|false}}, which sets the role's
 // settings. Applied by the agent at its next heartbeat, between jobs.
 router.patch(
   '/:agentId/policy',
@@ -429,15 +438,24 @@ router.post(
     }
     if (report.kind && report.kind !== agent.kind) updateData.kind = report.kind
 
+    // Its first report: what it was set up with on its computer becomes its settings on the
+    // dashboard (lib/agentPolicy.ts adoptLocal), once; the dashboard decides from then on.
+    const policies = await tenantPolicies(db, [agent.tenantId])
+    const config = ((updateData.config ?? agent.config ?? {}) as Record<string, unknown>)
+    if (body.settings !== undefined && config.adopted_local !== true) {
+      updateData.policy = adoptLocal(report.kind ?? agent.kind, report.settings, agent.policy,
+        policies.get(agent.tenantId ?? '')?.agentPolicy)
+      updateData.config = { ...config, adopted_local: true }
+    }
+
     const [current] = await db.update(agents).set(updateData).where(eq(agents.agentId, agentId)).returning()
 
-    // The settings the admin set for this agent (managed), for the agent to apply between
-    // jobs (2.4.0+), and the agent-started scans switch every agent since 2.3.0 reads.
-    const policies = await tenantPolicies(db, [agent.tenantId])
+    // Every setting of this agent (managed), for it to apply between jobs (2.4.0+).
     const resolved = policyOf(current ?? agent, policies.get(agent.tenantId ?? '') ?? null)
     return c.json({
       ok: true,
-      policy: { local_scans: resolved.effective.local_scans === true, managed: resolved.managed, version: resolved.version },
+      // local_scans: agents before 2.6 grey out their own "Scan now"; scans start from the dashboard.
+      policy: { local_scans: false, managed: resolved.managed, version: resolved.version },
       ...(body.want_jobs === true ? { scans: await pendingJobsFor(db, agentId) } : {}),
     })
   }

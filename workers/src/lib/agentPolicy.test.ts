@@ -1,47 +1,39 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  applyChange, cleanPolicy, cleanReport, jobRefusal, kindKeys, policyVersion, resolvePolicy, roleChange,
+  DEFAULTS, adoptLocal, applyChange, cleanPolicy, cleanReport, jobRefusal, kindKeys, policyVersion, resolvePolicy, roleChange,
 } from './agentPolicy'
 
-test('a setting nobody set stays the agent own setting', () => {
-  const r = resolvePolicy({ reported: { passive: true, inventory: false } })
+const DEFAULTS_HOST = Object.fromEntries(kindKeys('host').map((k) => [k, DEFAULTS[k]]))
+
+test('a setting nobody set is the built-in default, and every value is delivered', () => {
+  const r = resolvePolicy({})
   const passive = r.entries.find((e) => e.key === 'passive')!
-  assert.deepEqual([passive.value, passive.source], [true, 'local'])
-  assert.deepEqual(r.managed, {})
-  assert.equal(r.version, policyVersion({}))
+  assert.deepEqual([passive.value, passive.source, passive.inherited], [false, 'default', false])
+  assert.deepEqual(r.managed, { ...DEFAULTS_HOST })                          // the agent applies all of them
+  assert.equal(r.version, policyVersion(r.managed))
 })
 
-test('agent override beats tenant default beats the agent own setting', () => {
-  const r = resolvePolicy({
-    overrides: { passive: false },
-    tenantDefaults: { passive: true, sbom: false },
-    reported: { passive: true, sbom: true, inventory: true },
-  })
+test('agent override beats tenant default beats the built-in default', () => {
+  const r = resolvePolicy({ overrides: { passive: false }, tenantDefaults: { passive: true, sbom: false } })
   const by = Object.fromEntries(r.entries.map((e) => [e.key, e]))
   assert.deepEqual([by.passive!.value, by.passive!.source, by.passive!.tenant_default], [false, 'agent', true])
   assert.deepEqual([by.sbom!.value, by.sbom!.source], [false, 'tenant'])
-  assert.deepEqual([by.inventory!.value, by.inventory!.source], [true, 'local'])
-  assert.deepEqual(r.managed, { passive: false, sbom: false })
+  assert.deepEqual([by.inventory!.value, by.inventory!.source], [true, 'default'])
+  assert.deepEqual([r.managed.passive, r.managed.sbom, r.managed.inventory], [false, false, true])
 })
 
-test('the tenant scan policy column is the default of local_scans', () => {
-  const r = resolvePolicy({ allowLocalScans: false, reported: { local_scans: true } })
-  assert.equal(r.managed.local_scans, false)
-  const overridden = resolvePolicy({ allowLocalScans: false, overrides: { local_scans: true } })
-  assert.equal(overridden.managed.local_scans, true)
-})
-
-test('an older agent that reports nothing: unknown, except that it runs dashboard scans', () => {
-  const r = resolvePolicy({})
-  assert.equal(r.entries.find((e) => e.key === 'passive')!.source, 'unknown')
-  assert.deepEqual(r.roles, { inventory: null, sensor: null, scanner: true })
-  assert.equal(jobRefusal(r.effective, 'inventory'), null)        // unknown never blocks
+test('engine, capture and agent-started scans are no longer settings', () => {
+  for (const gone of ['scan_engine', 'passive_backend', 'local_scans']) {
+    assert.ok(!(kindKeys('host') as readonly string[]).includes(gone), gone)
+  }
+  assert.deepEqual(cleanPolicy({ scan_engine: 'compare', passive_backend: 'npcap', local_scans: true, passive: true }), { passive: true })
 })
 
 test('roles are read from the settings', () => {
-  const r = resolvePolicy({ reported: { inventory: false, sbom: true, passive: false, scanner: false } })
+  const r = resolvePolicy({ overrides: { inventory: false, sbom: true, passive: false, scanner: false } })
   assert.deepEqual(r.roles, { inventory: true, sensor: false, scanner: false })
+  assert.deepEqual(resolvePolicy({}).roles, { inventory: true, sensor: false, scanner: true })
   assert.deepEqual(roleChange('inventory', false), { inventory: false, sbom: false })
 })
 
@@ -54,10 +46,11 @@ test('stored policy is cleaned: unknown keys and bad values are dropped', () => 
 test('changes are validated and null removes an override', () => {
   const ok = applyChange({ passive: true, sbom: false }, { passive: null, sbom_interval: 86400 }, kindKeys('host'))
   assert.deepEqual([ok.policy, ok.errors], [{ sbom: false, sbom_interval: 86400 }, []])
-  const bad = applyChange({}, { sbom_interval: 60, scan_engine: 'nmap', nope: true }, kindKeys('host'))
+  const bad = applyChange({}, { sbom_interval: 60, scan_ports: 'all', scan_engine: 'own', nope: true }, kindKeys('host'))
   assert.deepEqual(bad.errors, [
     'sbom_interval: must be a whole number from 3600 to 2592000',
-    'scan_engine: must be one of auto, own, compare',
+    'scan_ports: must be one of base, consumer, wide',
+    'scan_engine: not a setting of this agent',
     'nope: not a setting of this agent',
   ])
 })
@@ -86,12 +79,10 @@ test('what an agent reports is kept within limits', () => {
 })
 
 test('each setting says what it inherits without this agent override', () => {
-  const r = resolvePolicy({ overrides: { passive: false }, tenantDefaults: { passive: true }, reported: { sbom: true } })
+  const r = resolvePolicy({ overrides: { passive: false }, tenantDefaults: { passive: true } })
   const by = Object.fromEntries(r.entries.map((e) => [e.key, e]))
   assert.deepEqual([by.passive!.value, by.passive!.inherited], [false, true])     // the tenant default underneath
-  assert.deepEqual([by.sbom!.value, by.sbom!.inherited], [true, true])
-  assert.deepEqual([by.scanner!.value, by.scanner!.inherited, by.scanner!.source], [true, true, 'local'])  // every agent runs them
-  assert.equal(by.inventory!.inherited, null)                                     // not reported: unknown
+  assert.deepEqual([by.scanner!.value, by.scanner!.inherited, by.scanner!.source], [true, true, 'default'])
 })
 
 test('the networks an agent reports are kept only when they look like IPv4 ranges', () => {
@@ -103,10 +94,10 @@ test('the networks an agent reports are kept only when they look like IPv4 range
 test('a network agent has its own settings and the Collector role', () => {
   assert.ok(kindKeys('network').includes('network_ranges') && !kindKeys('network').includes('passive'))
   assert.ok(!kindKeys('host').includes('network_seeds'))
-  const r = resolvePolicy({ kind: 'network', overrides: { network_seeds: ['10.99.0.1'] }, reported: { network_poll: true } })
+  const r = resolvePolicy({ kind: 'network', overrides: { network_seeds: ['10.99.0.1'] } })
   assert.deepEqual(r.roles, { collector: true })
-  assert.deepEqual(r.managed, { network_seeds: ['10.99.0.1'] })
-  assert.deepEqual(Object.keys(resolvePolicy({ reported: {} }).roles).sort(), ['inventory', 'scanner', 'sensor'])
+  assert.deepEqual(r.managed, { network_poll: true, network_seeds: ['10.99.0.1'], network_ranges: [], network_depth: 3, network_interval: 900 })
+  assert.deepEqual(Object.keys(resolvePolicy({}).roles).sort(), ['inventory', 'scanner', 'sensor'])
   assert.match(jobRefusal({ network_poll: false }, 'snmp')!, /Collector role/)
   assert.equal(jobRefusal({ network_poll: true }, 'snmp'), null)
 })
@@ -125,4 +116,14 @@ test('address and range lists are checked and written the same way', () => {
   }
   assert.deepEqual(cleanPolicy({ network_ranges: ['10.0.0.0/8', 'nope'] }, keys), {})   // a stored bad list is dropped
   assert.deepEqual(cleanReport({ kind: 'network', settings: { network_depth: 3, passive: true } }).settings, { network_depth: 3 })
+})
+
+test('an agent own choices become its settings once, without overriding the admin', () => {
+  const adopted = adoptLocal('host', { passive: true, inventory: true, sbom_interval: 3600, scan_engine: 'compare' },
+    { scanner: false }, { sbom_interval: 7200 })
+  // passive differs from the default: adopted; inventory equals the default: left to the default;
+  // sbom_interval is the tenant's; scanner was the admin's; scan_engine is no longer a setting
+  assert.deepEqual(adopted, { scanner: false, passive: true })
+  const net = adoptLocal('network', { network_seeds: ['10.99.0.1'], network_depth: 3 }, {}, {})
+  assert.deepEqual(net, { network_seeds: ['10.99.0.1'] })
 })

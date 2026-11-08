@@ -210,7 +210,7 @@ def test_compare_stage_keeps_the_own_hosts_and_writes_a_report(monkeypatch, tmp_
     assert report["ref"]["scanner"] == "nmap" and report["ports"]["agreement"] == 0.5
 
 
-@pytest.mark.parametrize("engine, kind", [("auto", "NmapScanStage"), ("nmap", "NmapScanStage"),
+@pytest.mark.parametrize("engine, kind", [("auto", "OwnScanStage"), ("nmap", "NmapScanStage"),
                                           ("own", "OwnScanStage"), ("compare", "CompareScanStage")])
 def test_active_scan_stage_follows_the_setting(engine, kind):
     stage = active_scan_stage("192.168.36.0/24", Settings(scan_engine=engine, scan_ports="consumer"))

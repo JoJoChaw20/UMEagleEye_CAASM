@@ -244,11 +244,13 @@ class CompareScanStage(Stage):
 
 
 def active_scan_stage(subnet: str, settings: Any, truth: Optional[Path] = None) -> Stage:
-    """The scan stage Settings.scan_engine asks for (`truth`: a ground-truth CSV for compare)."""
+    """The scan stage Settings.scan_engine asks for (`truth`: a ground-truth CSV for compare).
+    The agent's own engine unless the command line asks for Nmap (2.6: nmap and compare are
+    evaluation tools, `eagleeye scan --engine nmap|compare`)."""
     engine = getattr(settings, "scan_engine", "auto") or "auto"
     tier = getattr(settings, "scan_ports", "base") or "base"
-    if engine == "own":
-        return OwnScanStage(subnet, tier)
+    if engine == "nmap":
+        return NmapScanStage(subnet)
     if engine == "compare":
         return CompareScanStage(subnet, tier, truth=truth)
-    return NmapScanStage(subnet)
+    return OwnScanStage(subnet, tier)

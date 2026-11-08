@@ -1,5 +1,5 @@
 // The database side of agent policy (lib/agentPolicy.ts has the rules): an agent's
-// resolved policy from its overrides, its tenant's defaults and what it reported.
+// resolved policy from its overrides and its tenant's defaults.
 
 import { eq, inArray } from 'drizzle-orm'
 import type { getDb } from '../db/client'
@@ -18,14 +18,7 @@ export function reportedOf(agent: Pick<AgentRow, 'reported'>): {
 }
 
 export function policyOf(agent: Pick<AgentRow, 'kind' | 'policy' | 'reported'>, tenant: TenantPolicyRow | null): ResolvedPolicy {
-  return resolvePolicy({
-    kind: agent.kind,
-    overrides: agent.policy,
-    tenantDefaults: tenant?.agentPolicy,
-    // An agent without a tenant: agent-started scans stay off (the database default).
-    allowLocalScans: tenant ? tenant.allowLocalScans : false,
-    reported: reportedOf(agent).settings,
-  })
+  return resolvePolicy({ kind: agent.kind, overrides: agent.policy, tenantDefaults: tenant?.agentPolicy })
 }
 
 export async function tenantPolicies(db: Db, tenantIds: (string | null)[]): Promise<Map<string, TenantPolicyRow>> {

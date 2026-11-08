@@ -179,7 +179,7 @@ def test_a_frame_sent_by_this_computer_over_wifi_takes_the_sender_from_addr2():
 # ── which capture ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("setting, platform, npcap, expected", [
-    ("auto", "win32", True, "npcap"),          # what the agent always used, where installed
+    ("auto", "win32", True, "ndis"),           # built in even where Npcap is installed (2.6)
     ("auto", "win32", False, "ndis"),
     ("native", "win32", True, "ndis"),
     ("npcap", "win32", False, "npcap"),
@@ -441,9 +441,9 @@ def test_the_capture_stops_when_no_sniffer_could_start(monkeypatch):
 
 # ── without scapy (the default package) ──────────────────────────────────────
 
-def test_automatic_needs_scapy_to_use_npcap():
-    assert resolve_backend("auto", "win32", lambda: True, lambda: False) == "ndis"
-    assert resolve_backend("auto", "win32", lambda: True, lambda: True) == "npcap"
+def test_npcap_only_when_asked_for():
+    assert resolve_backend("auto", "win32", lambda: True, lambda: True) == "ndis"
+    assert resolve_backend("npcap", "win32", lambda: True, lambda: True) == "npcap"
 
 
 def test_the_built_in_path_runs_with_scapy_missing():

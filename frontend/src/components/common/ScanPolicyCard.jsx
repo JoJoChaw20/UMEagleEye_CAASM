@@ -15,8 +15,8 @@ const SCAN_POLICY = [
       + 'detection, so turn this on only where your security team allows probing.',
   },
 ]
-// Whether agents may start scans themselves is now one of the agent settings ("May start
-// its own scans", AgentDefaultsCard), still stored in tenants.allow_local_scans.
+// Agents no longer start scans themselves (2.6): every scan starts from the dashboard, so
+// tenants.allow_local_scans is unused.
 
 export default function ScanPolicyCard({ tenantId, canEdit }) {
   const [tenant, setTenant] = useState(null)

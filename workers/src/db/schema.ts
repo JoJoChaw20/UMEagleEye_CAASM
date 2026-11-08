@@ -72,13 +72,10 @@ export const tenants = pgTable('tenants', {
   // agent that heard it (services/autoInvestigate.ts). Off by default: active probing of a
   // company network is the admin's call.
   autoInvestigateNewDevices: boolean('auto_investigate_new_devices').notNull().default(false),
-  // Agents may start active scans themselves (their own "Scan now" and schedules). When
-  // off, only the dashboard starts them (scans POST /agent-start refuses). Off for new
-  // tenants: probing the network is the admin's decision (tenants created before keep theirs).
+  // Unused since 2.6 (every scan starts from the dashboard; scans POST /agent-start refuses).
   allowLocalScans: boolean('allow_local_scans').notNull().default(false),
   // Default agent settings of this tenant ({setting: value}, lib/agentPolicy.ts). A
-  // setting not here is the agent's own unless the agent has an override. local_scans
-  // stays in allow_local_scans.
+  // setting not here is the built-in default (DEFAULTS) unless the agent has an override.
   agentPolicy: jsonb('agent_policy').notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])

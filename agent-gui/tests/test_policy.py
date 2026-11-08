@@ -29,7 +29,7 @@ def test_managed_values_are_checked_and_applied_over_a_copy():
 
 def test_the_report_has_this_computers_own_values():
     report = policy.local_report(settings(passive=True, scan_engine="nmap", inventory_interval=7200))
-    assert report["passive"] is True and report["scan_engine"] == "auto" and report["inventory_interval"] == 7200
+    assert report["passive"] is True and report["inventory_interval"] == 7200 and "scan_engine" not in report
     assert set(report) == set(policy.FIELDS)
 
 
@@ -130,16 +130,16 @@ def test_passive_listening_follows_the_administrator(tmp_path, monkeypatch):
 
     monkeypatch.setattr("eagleeye.service.PassiveSuite", Suite)
     svc, c = make(tmp_path, passive=False)
-    c.policy_managed, c.policy_version = {"passive": True, "passive_backend": "native"}, "0a1b2c3d"
+    c.policy_managed, c.policy_version = {"passive": True, "passive_backend": "npcap"}, "0a1b2c3d"
     svc._maybe_apply_policy()
-    assert started == ["native"] and svc.suite is not None
-    c.policy_managed, c.policy_version = {"passive": True, "passive_backend": "native", "passive_interval": 60}, "1a1b2c3d"
+    assert started == ["auto"] and svc.suite is not None               # the built-in capture, whatever was sent
+    c.policy_managed, c.policy_version = {"passive": True, "passive_interval": 60}, "1a1b2c3d"
     svc._maybe_apply_policy()
-    assert started == ["native"] and stopped == []                     # an interval change needs no restart
+    assert started == ["auto"] and stopped == []                       # an interval change needs no restart
     assert svc.settings.passive_interval == 60
     c.policy_managed, c.policy_version = {"passive": False}, "2a1b2c3d"
     svc._maybe_apply_policy()
-    assert stopped == ["native"] and svc.suite is None
+    assert stopped == ["auto"] and svc.suite is None
 
 
 def test_jobs_come_with_the_heartbeat_and_are_handed_out_once(monkeypatch):

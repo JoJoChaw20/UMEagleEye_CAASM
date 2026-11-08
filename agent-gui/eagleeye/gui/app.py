@@ -98,8 +98,8 @@ class MainWindow(QMainWindow):
         if self.schedules_page is not None:
             doing.append(("Schedules", "calendar-clock", self.schedules_page))
         doing.append(("Log", "scroll-text", self.log_page))
-        setup = [("Settings", "settings", self.settings_page), ("Privacy", "shield-check", self.privacy_page),
-                 ("Dependencies", "package", self.deps_page)]
+        setup = [("Connection", "settings", self.settings_page), ("Privacy", "shield-check", self.privacy_page),
+                 ("Tools", "package", self.deps_page)]
         self.nav = RailNav()
         for group, pages in (("Agent", doing), ("Setup", setup)):
             self.nav.add_group(group)
@@ -335,14 +335,14 @@ class MainWindow(QMainWindow):
             return
         reason = self.controller.start(s)
         if reason:
-            # Said where it is fixed, not in a box: the Settings page, next to Test connection.
+            # Said where it is fixed, not in a box: the Connection page, next to Test connection.
             self.show_page(self.settings_page)
             self.settings_page.show_problem(f"The agent cannot start yet: {reason}.")
             return
         log.info("EagleEye Agent v%s started (server %s, agent %s)", VERSION, s.api_url, s.agent_id)
         if s.passive and not deps.is_admin():
-            log.info("Not running as Administrator: passive listening works only if Npcap allows "
-                     "non-admin capture (otherwise use Dependencies > Restart as Administrator)")
+            log.info("Not running as Administrator: passive listening works only if the capture allows "
+                     "non-admin capture (otherwise use Tools > Restart as Administrator)")
 
     def settings_changed(self, connection_changed: bool = False) -> bool:
         """Called after a page saved settings: restart the agent so they take effect.
@@ -351,7 +351,6 @@ class MainWindow(QMainWindow):
         (first setup), start it, so Save is the last step. An agent someone stopped on
         purpose stays stopped when other settings change. Returns True if it started it.
         """
-        self.status_page.reload_subnets()
         self.privacy_page.reload()
         started = False
         if getattr(self.controller, "applies_settings_itself", False):
@@ -421,7 +420,6 @@ class MainWindow(QMainWindow):
             managed = managed_now(self)
             if managed != getattr(self, "_managed_shown", None):
                 self._managed_shown = managed
-                self.settings_page.apply_managed()
                 self.privacy_page.reload()
             if self.schedules_page is not None:
                 self.schedules_page.refresh()

@@ -32,16 +32,18 @@ KIND = "host"
 FIELDS: dict[str, tuple[str, Any]] = {
     "passive": ("bool", None),
     "passive_interval": ("int", (10, 3600)),
-    "passive_backend": ("enum", ("auto", "npcap", "native")),
     "inventory": ("bool", None),
     "inventory_interval": ("int", (300, 7 * 86400)),
     "inventory_user_software": ("bool", None),
     "inventory_admin_names": ("bool", None),
     "sbom": ("bool", None),
     "sbom_interval": ("int", (3600, 30 * 86400)),
-    "scan_engine": ("enum", ("auto", "own", "compare")),
     "scan_ports": ("enum", ("base", "consumer", "wide")),
 }
+
+# Not settings any more (2.6): the service always scans with the agent's own engine and listens
+# with the built-in capture; the command line can still choose others for evaluation.
+PRODUCT = {"scan_engine": "auto", "passive_backend": "auto"}
 
 # The network agent's settings (kind "network", netagent/service.py): what it reads.
 NETWORK_FIELDS: dict[str, tuple[str, Any]] = {
@@ -104,8 +106,11 @@ def clean(managed: Any, kind: str = "host") -> dict[str, Any]:
 
 
 def apply(settings: Settings, managed: Mapping[str, Any], kind: str = "host") -> Settings:
-    """A copy of `settings` with the managed values in place."""
-    return dataclasses.replace(settings, **clean(managed, kind))
+    """What the service runs: the dashboard's values over this computer's settings, with the
+    product's engine and capture. A 2.6 server sends every setting, so once it has answered the
+    dashboard decides them all; this computer's own values only count until then (and the server
+    adopted them as this agent's settings at its first heartbeat: workers/src/lib/agentPolicy.ts)."""
+    return dataclasses.replace(settings, **PRODUCT, **clean(managed, kind))
 
 
 def local_report(settings: Settings, kind: str = "host") -> dict[str, Any]:

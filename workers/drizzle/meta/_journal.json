@@ -176,6 +176,13 @@
       "when": 1794148697480,
       "tag": "0024_enrolment_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794158624514,
+      "tag": "0025_preserve_agent_settings",
+      "breakpoints": true
     }
   ]
 }

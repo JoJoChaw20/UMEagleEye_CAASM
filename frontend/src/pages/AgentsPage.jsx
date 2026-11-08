@@ -1,138 +1,23 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import {
-  Plus, Trash2, Copy, Check, X, RefreshCw, Radio, AlertCircle, KeyRound, Pencil, ChevronDown, ChevronRight, Monitor,
-  Download, SlidersHorizontal, Network, Play,
+  Plus, X, RefreshCw, Radio, AlertCircle, ChevronDown, ChevronRight, Monitor, Download,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import ScanPolicyCard from '../components/common/ScanPolicyCard'
-import AgentPolicyModal from '../components/agents/AgentPolicyModal'
+import AgentPanel from '../components/agents/AgentPanel'
 import AgentDefaultsCard from '../components/agents/AgentDefaultsCard'
-import InstallCodesCard from '../components/agents/InstallCodesCard'
+import InstallTab, { DownloadButton, useDownloads } from '../components/agents/InstallTab'
 import { ROLES } from '../components/agents/policy'
-import { formatSeen } from '../utils/time'
+import { CopyButton, NetworkBadge, Seen, StatusBadge } from '../components/agents/parts'
 import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
 
-// Agents: one EagleEye Agent per computer. It scans the computer's network and reports
-// the computer's own inventory and security settings. The 1.x agents (eagleeye_agent.py)
-// are retired: their keys are revoked and they are listed apart, with their history.
-
-// The Windows installer is served by the API from R2 (GET /agents/installer, /installer/download);
-// any signed-in user can download it. It carries no secrets: the connection code does.
-function useInstaller() {
-  const [installer, setInstaller] = useState(undefined)      // undefined = loading, null = none uploaded
-  useEffect(() => {
-    let live = true
-    client.get('/agents/installer')
-      .then((r) => live && setInstaller(r.data))
-      .catch(() => live && setInstaller(null))
-    return () => { live = false }
-  }, [])
-  return installer
-}
-
-function formatMB(bytes) {
-  return `${(bytes / 2 ** 20).toFixed(0)} MB`
-}
-
-function DownloadInstallerButton({ installer, className = 'btn-secondary', label }) {
-  const [state, setState] = useState(null)                   // null | 'downloading' | error text
-  if (installer === undefined) return null
-  if (installer === null) {
-    return (
-      <span className="text-xs text-dark-400" title="Ask the platform administrator to upload the installer">
-        Installer not available yet
-      </span>
-    )
-  }
-  const download = async () => {
-    setState('downloading')
-    try {
-      const res = await client.get('/agents/installer/download', { responseType: 'blob', timeout: 0 })
-      const url = URL.createObjectURL(res.data)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = installer.filename
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 10_000)
-      setState(null)
-    } catch {
-      setState('Download failed. Try again.')
-    }
-  }
-  return (
-    <span className="inline-flex items-center gap-2">
-      <button type="button" onClick={download} disabled={state === 'downloading'}
-        title={`${installer.filename}, ${formatMB(installer.size)}`}
-        className={`${className} inline-flex items-center gap-2 text-sm`}>
-        <Download className={`w-4 h-4 ${state === 'downloading' ? 'animate-pulse' : ''}`} />
-        {state === 'downloading' ? 'Downloading...' : (label ?? `Download agent ${installer.version}`)}
-      </button>
-      {state && state !== 'downloading' && <span className="text-xs text-red-400">{state}</span>}
-    </span>
-  )
-}
-
-// ── Small parts ───────────────────────────────────────────────────
-const STATUS_META = {
-  online:   { label: 'Online',   cls: 'bg-green-500/20 text-green-400 border-green-500/30',   dot: 'bg-green-400 animate-pulse' },
-  degraded: { label: 'Late',     cls: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30', dot: 'bg-yellow-400' },
-  offline:  { label: 'Offline',  cls: 'bg-red-500/20 text-red-400 border-red-500/30',          dot: 'bg-red-400' },
-  retired:  { label: 'Retired',  cls: 'bg-dark-600/40 text-dark-400 border-dark-500/30',       dot: 'bg-dark-500' },
-}
-
-function StatusBadge({ status }) {
-  const m = STATUS_META[status] ?? STATUS_META.offline
-  return (
-    <span
-      className={`text-xs px-2 py-0.5 rounded-md border font-medium inline-flex items-center gap-1.5 ${m.cls}`}
-      title={status === 'degraded' ? 'No heartbeat for 2 to 10 minutes' : undefined}
-    >
-      <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
-      {m.label}
-    </span>
-  )
-}
-
-function CopyButton({ text, label = 'Copy' }) {
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1800) } catch { /* select by hand */ }
-  }
-  return (
-    <button type="button" onClick={copy} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors flex-shrink-0" title={label} aria-label={label}>
-      {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-    </button>
-  )
-}
-
-function Seen({ value, nullText }) {
-  const s = formatSeen(value, { nullText })
-  return <span title={s.title || ''} className={s.stale ? 'text-amber-400' : 'text-dark-300'}>{s.text}</span>
-}
-
-function Modal({ title, onClose, children, wide = false }) {
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={title}>
-      <div className={`glass-card w-full ${wide ? 'max-w-xl' : 'max-w-md'} p-6 space-y-4 my-auto`}>
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-dark-50">{title}</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-dark-50" aria-label="Close"><X className="w-5 h-5" /></button>
-        </div>
-        {children}
-      </div>
-    </div>
-  )
-}
+// Agents, in three tabs: the agents (a row opens its panel: settings and actions), Install
+// (downloads and guides per OS, connection code for one computer, install codes for many) and Defaults (the
+// tenant's default settings). Settings are set only here (2.6); the agent's app shows them.
+// The 1.x agents (eagleeye_agent.py) are retired: listed apart, with their history.
 
 function ValueRow({ label, value, mono = true }) {
   return (
@@ -185,7 +70,7 @@ function RegisterModal({ onClose, onSubmit }) {
 }
 
 // ── Connection details (after Register or Rotate key) ─────────────
-function ConnectionModal({ agentName, agentId, apiKey, rotated, installer, onClose }) {
+function ConnectionModal({ agentName, agentId, apiKey, rotated, installer, onClose }) {   // installer: the Windows download
   const apiUrl = agentApiUrl(client.defaults.baseURL)
   const code = makeConnectionCode({ apiUrl, agentId, apiKey })
   const [showValues, setShowValues] = useState(false)
@@ -210,13 +95,13 @@ function ConnectionModal({ agentName, agentId, apiKey, rotated, installer, onClo
               <code className="font-mono text-xs">{installer?.filename ?? 'EagleEyeAgent-Setup-<version>.exe'}</code>
               {installer && (
                 <span className="ml-2 align-middle">
-                  <DownloadInstallerButton installer={installer} className="btn-secondary !py-1 !px-2" label="Download" />
+                  <DownloadButton pkg={installer} package="windows" className="btn-secondary !py-1 !px-2" label="Download" details={false} />
                 </span>
               )}
               . It needs administrator rights on that computer.
             </li>
           )}
-          <li>Open <strong>Settings</strong> in the agent, paste the code into <strong>Connection code</strong> and choose <strong>Use code</strong>.</li>
+          <li>Open <strong>Connection</strong> in the agent, paste the code into <strong>Connection code</strong> and choose <strong>Use code</strong>.</li>
           <li>Choose <strong>Test connection</strong>, then <strong>Save</strong>.</li>
         </ol>
         <p className="text-xs text-dark-400">Send the code over a private channel: anyone with it can report as this agent.</p>
@@ -274,18 +159,12 @@ function RenameModal({ agent, onClose, onSave }) {
 function Roles({ a }) {
   if (!a.roles) return <span className="text-dark-500">—</span>
   const on = ROLES.filter((r) => a.roles[r.key])
-  const unknown = ROLES.filter((r) => a.roles[r.key] === null)
   return (
     <div className="flex flex-wrap items-center gap-1">
       {on.map((r) => (
         <span key={r.key} title={r.help} className="px-2 py-0.5 rounded-full text-[11px] border border-eagle-500/30 bg-eagle-500/10 text-eagle-300">{r.label}</span>
       ))}
-      {on.length === 0 && unknown.length === 0 && <span className="text-xs text-dark-500">None</span>}
-      {unknown.length > 0 && (
-        <span className="text-[11px] text-dark-500" title="Agents before 2.4.0 do not report their settings">
-          {unknown.map((r) => r.label).join(', ')} unknown
-        </span>
-      )}
+      {on.length === 0 && <span className="text-xs text-dark-500">None</span>}
       {a.policy?.in_sync === false && (
         <span className="text-[11px] text-yellow-400" title="The agent applies the latest settings at its next heartbeat">applying…</span>
       )}
@@ -293,92 +172,60 @@ function Roles({ a }) {
   )
 }
 
-function AgentRow({ a, canManage, showTenant, tenantName, onRename, onRotate, onDelete, onSettings, onRunNow, busy }) {
+// What the agent looks after: its computer, or (a network agent) the routers and switches.
+function Where({ a }) {
+  if (a.kind === 'network') return <span className="text-[11px] text-dark-500">routers and switches{a.host ? ` · from ${a.host.hostname || a.host.ip_address}` : ''}</span>
+  if (a.host) {
+    return (
+      <span className="text-[11px] text-dark-400 inline-flex items-center gap-1">
+        <Monitor className="w-3 h-3" /> {a.host.hostname || a.host.ip_address}
+        {a.networks?.length > 0 && <span className="font-mono text-dark-500"> · {a.networks.join(', ')}</span>}
+      </span>
+    )
+  }
+  return <span className="text-[11px] text-dark-500">{a.local_ip ? <span className="font-mono">{a.local_ip}</span> : a.status === 'retired' ? '' : 'Not reported yet'}</span>
+}
+
+function AgentRow({ a, showTenant, tenantName, onOpen }) {
   const retired = a.status === 'retired'
-  const network = a.kind === 'network'
   return (
-    <tr className={retired ? 'opacity-70' : ''}>
+    <tr
+      className={`cursor-pointer hover:bg-dark-800/50 ${retired ? 'opacity-70' : ''}`} tabIndex={0}
+      onClick={() => onOpen(a)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(a) } }}
+      aria-label={`Open ${a.name}`}
+    >
       <td>
-        <p className="font-medium text-dark-50 flex items-center gap-1.5">
+        <p className="font-medium text-dark-50 flex items-center gap-1.5 flex-wrap">
           {a.name}
-          {network && (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan"
-              title="Reads the routers and switches over SNMP instead of looking after one computer">
-              <Network className="w-3 h-3" /> Network agent
-            </span>
-          )}
+          {a.kind === 'network' && <NetworkBadge />}
         </p>
-        <div className="flex items-center gap-1 mt-0.5">
-          <p className="text-[11px] text-dark-500 font-mono truncate max-w-[16rem]" title={a.agent_id}>{a.agent_id}</p>
-          <CopyButton text={a.agent_id} label="Copy agent ID" />
+        <Where a={a} />
+      </td>
+      <td>
+        <div className="flex flex-col items-start gap-0.5">
+          <StatusBadge status={a.status} />
+          {!retired && <span className="text-[11px]"><Seen value={a.last_heartbeat} nullText="never seen" /></span>}
         </div>
       </td>
-      <td><StatusBadge status={a.status} /></td>
       <td>{retired ? <span className="text-dark-500">—</span> : <Roles a={a} />}</td>
-      <td>
-        {a.host ? (
-          <Link to={`/inventory/${a.host.asset_id}`} className="group inline-flex items-start gap-2">
-            <Monitor className="w-4 h-4 mt-0.5 text-dark-400 group-hover:text-eagle-400" />
-            <span>
-              <span className="block text-sm text-dark-100 group-hover:text-eagle-400">{a.host.hostname || a.host.ip_address}</span>
-              <span className="block text-[11px] font-mono text-dark-400">{a.host.ip_address}</span>
-            </span>
-          </Link>
-        ) : (
-          <span className="text-xs text-dark-500" title="Shown after the agent's first inventory report">
-            {retired ? '—' : (a.local_ip ? <span className="font-mono">{a.local_ip}</span> : 'Not reported yet')}
-          </span>
-        )}
-        {network && !retired && (
-          <span className="block text-[11px] text-dark-500 mt-0.5">reads routers and switches (Settings: what it starts from)</span>
-        )}
-        {/* the networks it is on (2.5.1+): New scan sends scans of them to it automatically */}
-        {!retired && !network && a.networks?.length > 0 && (
-          <span className="block text-[11px] text-dark-500 mt-0.5" title="Networks this agent is directly on">
-            on <span className="font-mono">{a.networks.join(', ')}</span>
-          </span>
-        )}
-      </td>
-      <td className="text-sm"><Seen value={a.last_heartbeat} nullText="Never" /></td>
-      <td className="text-sm">{a.host ? <Seen value={a.host.inventory_collected_at} nullText="—" /> : <span className="text-dark-500">—</span>}</td>
       <td className="text-sm whitespace-nowrap">
         {a.version
-          ? <span className={a.legacy ? 'text-dark-400' : 'text-dark-200'}>{a.version}{a.legacy && <span className="text-dark-500"> · old agent</span>}</span>
+          ? <span className={a.legacy ? 'text-dark-400' : 'text-dark-200'}>{a.version}{a.legacy && <span className="text-dark-500"> · old</span>}</span>
           : <span className="text-dark-500">—</span>}
       </td>
       {showTenant && <td className="text-sm text-dark-300">{tenantName ?? <span className="text-dark-500">—</span>}</td>}
-      {canManage && (
-        <td>
-          <div className="flex items-center gap-1">
-            {!retired && (
-              <>
-                <button onClick={() => onSettings(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Settings and roles" aria-label={`Settings of ${a.name}`}>
-                  <SlidersHorizontal className="w-4 h-4" />
-                </button>
-                {network && (
-                  <button onClick={() => onRunNow(a)} disabled={busy === a.agent_id} className="p-1.5 hover:bg-accent-cyan/10 rounded text-dark-400 hover:text-accent-cyan transition-colors" title="Read the network now (at the agent's next heartbeat)" aria-label={`Run ${a.name} now`}>
-                    <Play className="w-4 h-4" />
-                  </button>
-                )}
-                <button onClick={() => onRename(a)} className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors" title="Rename" aria-label={`Rename ${a.name}`}>
-                  <Pencil className="w-4 h-4" />
-                </button>
-                <button onClick={() => onRotate(a)} disabled={busy === a.agent_id} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="New connection code (rotate the API key)" aria-label={`Rotate the key of ${a.name}`}>
-                  <KeyRound className="w-4 h-4" />
-                </button>
-              </>
-            )}
-            <button onClick={() => onDelete(a)} disabled={busy === a.agent_id} className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors" title="Delete" aria-label={`Delete ${a.name}`}>
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </div>
-        </td>
-      )}
+      <td className="w-8 text-dark-500"><ChevronRight className="w-4 h-4" /></td>
     </tr>
   )
 }
 
 // ── Main page ─────────────────────────────────────────────────────
+const TABS = [
+  { key: 'agents', label: 'Agents' },
+  { key: 'install', label: 'Install' },
+  { key: 'defaults', label: 'Defaults' },
+]
+
 export default function AgentsPage() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -390,14 +237,22 @@ export default function AgentsPage() {
   const [showRegister, setShowRegister] = useState(false)
   const [connection, setConnection] = useState(null)     // { agentName, agentId, apiKey, rotated }
   const [renaming, setRenaming] = useState(null)
-  const [settingsOf, setSettingsOf] = useState(null)
+  const [openId, setOpenId] = useState(null)             // the agent whose panel is open
   const [showRetired, setShowRetired] = useState(false)
   const [tenants, setTenants] = useState([])
   const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
 
+  const tab = TABS.some((t) => t.key === searchParams.get('tab')) ? searchParams.get('tab') : 'agents'
+  const setParam = (key, value) => {
+    const next = new URLSearchParams(searchParams)
+    if (value) next.set(key, value)
+    else next.delete(key)
+    setSearchParams(next, { replace: true })
+  }
+
   const isSuperadmin = user?.role === 'superadmin'
   const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
-  const installer = useInstaller()
+  const downloads = useDownloads()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -476,6 +331,7 @@ export default function AgentsPage() {
     try {
       await client.delete(`/agents/${agent.agent_id}`)
       setAgents((prev) => prev.filter((a) => a.agent_id !== agent.agent_id))
+      setOpenId(null)
       setNotice(`${agent.name} deleted.`)
     } catch (err) {
       alert(err?.response?.data?.detail || 'Could not delete the agent')
@@ -494,26 +350,9 @@ export default function AgentsPage() {
     offline: active.filter((a) => a.status === 'offline').length,
   }), [active])
   const tenantName = (id) => tenants.find((t) => t.tenant_id === id)?.name
-
-  const head = (
-    <thead>
-      <tr>
-        <th>Agent</th>
-        <th>Status</th>
-        <th>Roles</th>
-        <th>Computer</th>
-        <th>Last heartbeat</th>
-        <th>Last inventory</th>
-        <th>Version</th>
-        {isSuperadmin && <th>Tenant</th>}
-        {canManage && <th>Actions</th>}
-      </tr>
-    </thead>
-  )
-  const row = (a) => (
-    <AgentRow key={a.agent_id} a={a} canManage={canManage} showTenant={isSuperadmin} tenantName={tenantName(a.tenant_id)}
-      onRename={setRenaming} onRotate={rotate} onDelete={remove} onSettings={setSettingsOf} onRunNow={runNow} busy={busy} />
-  )
+  const opened = agents.find((a) => a.agent_id === openId)
+  const listed = showRetired ? retired : active
+  const policyTenant = isSuperadmin ? tenantFilter : user?.tenantId
 
   return (
     <div className="space-y-6">
@@ -521,89 +360,112 @@ export default function AgentsPage() {
         <div>
           <h1 className="page-title">Agents</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">
-            One EagleEye Agent per computer. It scans that computer's network and reports the computer's security settings.
+            An EagleEye Agent on each computer reports it and scans its network; network agents read the routers and switches.
+            Their settings are set here.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <TenantSelector value={tenantFilter} onChange={(tenantId) => {
-            setTenantFilter(tenantId)
-            const next = new URLSearchParams(searchParams)
-            if (tenantId) next.set('tenant_id', tenantId)
-            else next.delete('tenant_id')
-            setSearchParams(next, { replace: true })
-          }} />
+          <TenantSelector value={tenantFilter} onChange={(tenantId) => { setTenantFilter(tenantId); setParam('tenant_id', tenantId) }} />
           <button onClick={load} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
-          <DownloadInstallerButton installer={installer} />
-          {canManage && (
-            <button onClick={() => setShowRegister(true)} className="btn-primary flex items-center gap-2 text-sm">
-              <Plus className="w-4 h-4" /> Register agent
-            </button>
-          )}
         </div>
+      </div>
+
+      <div className="flex gap-1 border-b border-dark-700/60" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setParam('tab', t.key === 'agents' ? '' : t.key)}
+            className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${tab === t.key
+              ? 'border-eagle-500 text-dark-50' : 'border-transparent text-dark-400 hover:text-dark-200'}`}
+          >
+            {t.label}
+            {t.key === 'agents' && !loading && <span className="ml-1.5 text-xs text-dark-500">{active.length}</span>}
+          </button>
+        ))}
       </div>
 
       {error && <div className="glass-card p-4 border border-red-500/30"><p className="text-red-400 text-sm">{error}</p></div>}
       {notice && <div className="glass-card px-4 py-3 text-sm text-dark-200 border border-green-500/30">{notice}</div>}
 
-      {!loading && active.length > 0 && (
-        <div className="flex flex-wrap gap-2 text-sm" aria-label="Agent status summary">
-          <span className="px-3 py-1 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">{counts.online} online</span>
-          {counts.late > 0 && <span className="px-3 py-1 rounded-full border border-yellow-500/30 bg-yellow-500/10 text-yellow-400">{counts.late} late</span>}
-          <span className={`px-3 py-1 rounded-full border ${counts.offline ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-dark-600/40 text-dark-400'}`}>{counts.offline} offline</span>
-        </div>
-      )}
-
-      <div className="glass-card overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
-          </div>
-        ) : active.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="data-table">{head}<tbody>{active.map(row)}</tbody></table>
-          </div>
-        ) : (
-          <div className="text-center py-16 text-dark-400 px-4">
-            <Radio className="w-14 h-14 mx-auto mb-4 opacity-20" />
-            <p className="text-lg font-medium mb-2 text-dark-200">No agents yet</p>
-            <p className="text-sm max-w-md mx-auto">Register an agent, install EagleEye Agent on the computer, and paste the connection code you get into its Settings.</p>
-            {canManage && (
-              <button onClick={() => setShowRegister(true)} className="btn-primary mt-4 inline-flex items-center gap-2">
-                <Plus className="w-4 h-4" /> Register agent
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Platform superadmin: the policy of the tenant picked in the filter */}
-      <ScanPolicyCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId}
-        canEdit={isSuperadmin || user?.role === 'tenant_superadmin'} />
-      <AgentDefaultsCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId} onSaved={load} />
-      {/* Install codes are per tenant: for the tenant's own admins (the platform superadmin has none) */}
-      <InstallCodesCard enabled={canManage && !isSuperadmin} />
-
-      {retired.length > 0 && (
-        <div className="glass-card overflow-hidden">
-          <button onClick={() => setShowRetired((v) => !v)} className="w-full flex items-center gap-2 px-4 py-3 text-sm text-dark-200 hover:bg-dark-800/40" aria-expanded={showRetired}>
-            {showRetired ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            Retired agents ({retired.length})
-            <span className="text-xs text-dark-400">old 1.x agents that can no longer connect; their Discovery history is kept</span>
-          </button>
-          {showRetired && (
-            <div className="overflow-x-auto border-t border-dark-700/50">
-              <table className="data-table">{head}<tbody>{retired.map(row)}</tbody></table>
+      {tab === 'agents' && (
+        <>
+          {!loading && (active.length > 0 || retired.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2 text-sm" aria-label="Agent status summary">
+              <span className="px-3 py-1 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">{counts.online} online</span>
+              {counts.late > 0 && <span className="px-3 py-1 rounded-full border border-yellow-500/30 bg-yellow-500/10 text-yellow-400">{counts.late} late</span>}
+              <span className={`px-3 py-1 rounded-full border ${counts.offline ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-dark-600/40 text-dark-400'}`}>{counts.offline} offline</span>
+              {retired.length > 0 && (
+                <button type="button" onClick={() => setShowRetired((v) => !v)} aria-pressed={showRetired}
+                  title="Old 1.x agents that can no longer connect; their Discovery history is kept"
+                  className={`ml-auto px-3 py-1 rounded-full border text-xs ${showRetired ? 'border-eagle-500/40 text-eagle-300' : 'border-dark-600/40 text-dark-400 hover:text-dark-200'}`}>
+                  {showRetired ? 'Show current agents' : `Show retired (${retired.length})`}
+                </button>
+              )}
             </div>
           )}
+
+          <div className="glass-card overflow-hidden">
+            {loading ? (
+              <div className="flex items-center justify-center py-20">
+                <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+              </div>
+            ) : listed.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Agent</th>
+                      <th>Status</th>
+                      <th>Roles</th>
+                      <th>Version</th>
+                      {isSuperadmin && <th>Tenant</th>}
+                      <th aria-label="Open" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {listed.map((a) => (
+                      <AgentRow key={a.agent_id} a={a} showTenant={isSuperadmin} tenantName={tenantName(a.tenant_id)} onOpen={(x) => setOpenId(x.agent_id)} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center py-16 text-dark-400 px-4">
+                <Radio className="w-14 h-14 mx-auto mb-4 opacity-20" />
+                <p className="text-lg font-medium mb-2 text-dark-200">No agents yet</p>
+                <p className="text-sm max-w-md mx-auto">Install EagleEye Agent on a computer and connect it with a connection code, or use an install code for many computers.</p>
+                <button onClick={() => setParam('tab', 'install')} className="btn-primary mt-4 inline-flex items-center gap-2">
+                  <Download className="w-4 h-4" /> Install agents
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === 'install' && (
+        <InstallTab downloads={downloads} canManage={canManage} isSuperadmin={isSuperadmin} onRegister={() => setShowRegister(true)} />
+      )}
+
+      {tab === 'defaults' && (
+        <div className="space-y-6">
+          <AgentDefaultsCard tenantId={policyTenant} onSaved={load} />
+          {/* Platform superadmin: the policy of the tenant picked in the filter */}
+          <ScanPolicyCard tenantId={policyTenant} canEdit={isSuperadmin || user?.role === 'tenant_superadmin'} />
         </div>
       )}
 
+      {opened && (
+        <AgentPanel
+          agent={opened} tenantName={isSuperadmin ? tenantName(opened.tenant_id) : null} canManage={canManage}
+          busy={busy === opened.agent_id} onClose={() => setOpenId(null)} onSaved={load}
+          onRename={setRenaming} onRotate={rotate} onDelete={remove} onRunNow={runNow}
+        />
+      )}
       {showRegister && <RegisterModal onClose={() => setShowRegister(false)} onSubmit={register} />}
-      {connection && <ConnectionModal {...connection} installer={installer} onClose={() => setConnection(null)} />}
+      {connection && <ConnectionModal {...connection} installer={downloads?.windows} onClose={() => setConnection(null)} />}
       {renaming && <RenameModal agent={renaming} onClose={() => setRenaming(null)} onSave={rename} />}
-      {settingsOf && <AgentPolicyModal agent={settingsOf} onClose={() => setSettingsOf(null)} onSaved={load} />}
     </div>
   )
 }

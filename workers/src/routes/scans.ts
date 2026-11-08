@@ -821,38 +821,10 @@ app.post('/agent-start', zValidator('json', agentStartSchema, (result, c) => {
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent || incomingKeyHash !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
 
-    const { subnet, trigger } = c.req.valid('json')
-
-    // The tenant may keep active scanning to the dashboard (Tenant settings → Scan policy).
-    if (agent.tenantId) {
-      const [tenant] = await db.select({ allowLocalScans: tenants.allowLocalScans }).from(tenants)
-        .where(eq(tenants.tenantId, agent.tenantId)).limit(1)
-      if (tenant && !tenant.allowLocalScans) {
-        return c.json({ detail: 'Your administrator has turned off scans started on this computer. '
-          + 'Active scans are started from the EagleEye dashboard.' }, 403)
-      }
-    }
-
-    // The agent runs one active scan at a time and only asks when it is idle, so
-    // any of its scans still 'running' here was interrupted (app closed or crashed).
-    await failInterruptedScans(db, agentId)
-
-    const [scan] = await db
-      .insert(scanResults)
-      .values({
-        agentId,
-        tenantId: agent.tenantId ?? null,
-        scanType: 'active',
-        subnet: subnet.trim(),
-        status: 'running',
-        hostsDiscovered: 0,
-        rawResults: [],
-      })
-      .returning({ scanId: scanResults.scanId })
-    if (!scan) return c.json({ detail: 'Failed to create scan record' }, 500)
-
-    console.log(`agent ${agentId} started scan ${scan.scanId} of ${subnet} (${trigger})`)
-    return c.json({ scan_id: scan.scanId, status: 'running' }, 201)
+    // Since 2.6 every scan starts from the dashboard (New scan, new-device checks): an agent
+    // before 2.6 asking to start one itself (its "Scan now", its schedules) is told so.
+    console.log(`agent ${agentId} asked to start a scan itself; refused (scans start from the dashboard)`)
+    return c.json({ detail: 'Scans are started from the EagleEye dashboard (New scan), not on this computer.' }, 403)
   } catch (err) {
     console.error('scans POST /agent-start error:', err)
     return c.json({ detail: 'Failed to start scan' }, 500)

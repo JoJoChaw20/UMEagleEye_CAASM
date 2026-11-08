@@ -9,7 +9,7 @@ from eagleeye.api import IngestResult
 from eagleeye.config import Settings
 from eagleeye.pipeline.record import HostRecord
 from eagleeye.service import AgentService, throttled
-from eagleeye.stages import scan_nmap, upload
+from eagleeye.stages import scan_nmap, scan_own, upload
 
 
 class FakeClient:
@@ -57,11 +57,11 @@ def no_network_lookups(monkeypatch):
 
 @pytest.fixture
 def fake_scan(monkeypatch):
-    """Active scans return two hosts instead of running Nmap."""
+    """Active scans return two hosts instead of scanning (the agent's own engine, 2.6)."""
     def run(self, ctx):
         ctx.hosts = [HostRecord(ip="192.168.1.10", hostname="a"), HostRecord(ip="192.168.1.11")]
         ctx.summary["scanner"] = "nmap"
-    monkeypatch.setattr(scan_nmap.NmapScanStage, "run", run)
+    monkeypatch.setattr(scan_own.OwnScanStage, "run", run)
 
 
 def service(client, **settings):
@@ -261,7 +261,7 @@ def test_second_active_scan_waits_while_one_is_running(monkeypatch):
         while not release:
             time.sleep(0.01)
         ctx.hosts = []
-    monkeypatch.setattr(scan_nmap.NmapScanStage, "run", slow_run)
+    monkeypatch.setattr(scan_own.OwnScanStage, "run", slow_run)
 
     client = FakeClient(pending=[
         {"scanId": "a1", "scanType": "active", "subnet": "10.0.0.0/24"},

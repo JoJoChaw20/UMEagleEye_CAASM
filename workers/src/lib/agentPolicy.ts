@@ -2,11 +2,12 @@
 // and per agent (overrides). Pure functions; routes/agents.ts and routes/tenants.ts store
 // and serve it, the heartbeat delivers it, and job creation checks it.
 //
-// A setting resolves as: this agent's override > the tenant's default > the agent's own
-// setting (what it reports in its heartbeat). Only overrides and defaults are stored, so
-// a setting nobody set stays the agent's own: upgrading changes nothing until an admin
-// sets something. A set value is "managed": the agent applies it and its app shows it
-// read-only.
+// A setting resolves as: this agent's override > the tenant's default > the built-in default
+// (DEFAULTS). The dashboard is the only place settings are changed (2.6): the agent applies
+// every resolved value (`managed` is the full set) and its app only shows them. Migration 0025
+// turned what agents had chosen on their own computers into overrides, so nothing changed for
+// them. How the agent scans and listens is not a setting: its own engine and the built-in
+// capture (Nmap and Npcap remain command-line tools for evaluation).
 //
 // Roles are not stored; they are read from the settings: Inventory (inventory + SBOM of
 // its own computer), Sensor (passive listening on its network), Scanner (runs scans the
@@ -22,12 +23,9 @@ type Spec =
 
 export const POLICY_SPECS = {
   scanner: { type: 'bool' },
-  local_scans: { type: 'bool' },
-  scan_engine: { type: 'enum', values: ['auto', 'own', 'compare'] },
-  scan_ports: { type: 'enum', values: ['base', 'consumer', 'wide'] },
+  scan_ports: { type: 'enum', values: ['base', 'consumer', 'wide'] },   // Scan depth
   passive: { type: 'bool' },
   passive_interval: { type: 'int', min: 10, max: 3600 },
-  passive_backend: { type: 'enum', values: ['auto', 'npcap', 'native'] },
   inventory: { type: 'bool' },
   inventory_interval: { type: 'int', min: 300, max: 7 * 86400 },
   inventory_user_software: { type: 'bool' },
@@ -68,9 +66,13 @@ export const ROLE_KEYS = {
 } as const satisfies Record<string, readonly PolicyKey[]>
 export type Role = keyof typeof ROLE_KEYS
 
-// A setting an agent does not report (an agent before 2.4.0) whose behaviour is known:
-// every agent runs the scans the dashboard sends it.
-const ASSUMED: Partial<Record<PolicyKey, PolicyValue>> = { scanner: true }
+// What an agent does when nobody set a value (the agent's own built-in defaults, config.py).
+export const DEFAULTS: Record<PolicyKey, PolicyValue> = {
+  scanner: true, scan_ports: 'base', passive: false, passive_interval: 300,
+  inventory: true, inventory_interval: 21600, inventory_user_software: false, inventory_admin_names: false,
+  sbom: true, sbom_interval: 86400,
+  network_poll: true, network_seeds: [], network_ranges: [], network_depth: 3, network_interval: 900,
+}
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
 
@@ -89,15 +91,14 @@ function listItem(item: 'ip' | 'cidr', raw: unknown): string | undefined {
   return [16777216, 65536, 256, 1].map((d) => Math.floor(base / d) % 256).join('.') + '/' + prefix
 }
 
-export type Source = 'agent' | 'tenant' | 'local' | 'unknown'
+export type Source = 'agent' | 'tenant' | 'default'
 export interface PolicyEntry {
   key: PolicyKey
-  value: PolicyValue | null        // null: not known (the agent has not reported it)
+  value: PolicyValue
   source: Source
   override: PolicyValue | null     // this agent's override
   tenant_default: PolicyValue | null
-  local: PolicyValue | null        // the agent's own setting
-  inherited: PolicyValue | null    // the value without this agent's override
+  inherited: PolicyValue           // the value without this agent's override
 }
 
 export function kindKeys(kind: string | null | undefined): readonly PolicyKey[] {
@@ -170,15 +171,13 @@ export interface ResolveInput {
   kind?: string | null
   overrides?: unknown                 // agents.policy
   tenantDefaults?: unknown            // tenants.agent_policy
-  allowLocalScans?: boolean | null    // tenants.allow_local_scans: the tenant default of local_scans
-  reported?: unknown                  // agents.reported.settings: the agent's own settings
 }
 
 export interface ResolvedPolicy {
   entries: PolicyEntry[]
-  managed: Partial<Record<PolicyKey, PolicyValue>>   // what the agent must apply
-  effective: Partial<Record<PolicyKey, PolicyValue>> // every known value
-  roles: Partial<Record<Role, boolean | null>>       // this kind's roles; null: not known
+  managed: Partial<Record<PolicyKey, PolicyValue>>   // what the agent applies: every setting of its kind
+  effective: Partial<Record<PolicyKey, PolicyValue>> // the same values (kept for the job checks)
+  roles: Partial<Record<Role, boolean>>              // this kind's roles
   version: string                                    // changes when `managed` changes
 }
 
@@ -186,42 +185,47 @@ export function resolvePolicy(input: ResolveInput): ResolvedPolicy {
   const keys = kindKeys(input.kind)
   const overrides = cleanPolicy(input.overrides, keys)
   const defaults = cleanPolicy(input.tenantDefaults, keys)
-  if (keys.includes('local_scans') && typeof input.allowLocalScans === 'boolean') {
-    defaults.local_scans = input.allowLocalScans      // kept in its own column (ScanPolicy, 2.3.0)
-  }
-  const local = cleanPolicy(input.reported, keys)
   const entries: PolicyEntry[] = []
-  const managed: Partial<Record<PolicyKey, PolicyValue>> = {}
   const effective: Partial<Record<PolicyKey, PolicyValue>> = {}
   for (const key of keys) {
-    // Without this agent's override: the tenant default, the agent's own, or what every
-    // agent does (ASSUMED).
-    let inherited: PolicyValue | null = null
-    let inheritedFrom: Source = 'unknown'
-    if (defaults[key] !== undefined) {
-      inherited = defaults[key]!; inheritedFrom = 'tenant'
-    } else if (local[key] !== undefined) {
-      inherited = local[key]!; inheritedFrom = 'local'
-    } else if (ASSUMED[key] !== undefined) {
-      inherited = ASSUMED[key]!; inheritedFrom = 'local'
-    }
+    const fromTenant = defaults[key] !== undefined
+    const inherited = fromTenant ? defaults[key]! : DEFAULTS[key]
     const overridden = overrides[key] !== undefined
-    const value: PolicyValue | null = overridden ? overrides[key]! : inherited
-    const source: Source = overridden ? 'agent' : inheritedFrom
-    if (source === 'agent' || source === 'tenant') managed[key] = value!
-    if (value !== null) effective[key] = value
+    const value = overridden ? overrides[key]! : inherited
+    effective[key] = value
     entries.push({
-      key, value, source,
-      override: overrides[key] ?? null, tenant_default: defaults[key] ?? null, local: local[key] ?? null, inherited,
+      key, value, source: overridden ? 'agent' : fromTenant ? 'tenant' : 'default',
+      override: overrides[key] ?? null, tenant_default: defaults[key] ?? null, inherited,
     })
   }
-  const roles: Partial<Record<Role, boolean | null>> = {}
+  const managed = { ...effective }
+  const roles: Partial<Record<Role, boolean>> = {}
   for (const [role, roleKeys] of Object.entries(ROLE_KEYS) as [Role, readonly PolicyKey[]][]) {
     const values = roleKeys.filter((k) => keys.includes(k)).map((k) => effective[k])
     if (values.length === 0) continue                 // not a role of this kind of agent
-    roles[role] = values.some((v) => v === undefined) ? null : values.some((v) => v === true)
+    roles[role] = values.some((v) => v === true)
   }
   return { entries, managed, effective, roles, version: policyVersion(managed) }
+}
+
+/** An agent's own choices, adopted once at its first report (2.6): each one that differs from
+ *  the built-in default becomes this agent's override, unless the agent or its tenant already
+ *  set it. Install-time settings (EAGLEEYE_NETWORK_SEEDS, `config init --network-seed`, a value
+ *  chosen in an older app) thus show on the dashboard and are changed there from then on.
+ *  Migration 0025 did the same for the agents that existed. Returns the new overrides. */
+export function adoptLocal(
+  kind: string | null | undefined, reported: unknown, overrides: unknown, tenantDefaults: unknown,
+): Partial<Record<PolicyKey, PolicyValue>> {
+  const keys = kindKeys(kind)
+  const local = cleanPolicy(reported, keys)
+  const current = cleanPolicy(overrides, keys)
+  const defaults = cleanPolicy(tenantDefaults, keys)
+  for (const key of keys) {
+    const value = local[key]
+    if (value === undefined || current[key] !== undefined || defaults[key] !== undefined) continue
+    if (JSON.stringify(value) !== JSON.stringify(DEFAULTS[key])) current[key] = value
+  }
+  return current
 }
 
 /** The settings a role sets: on switches them all on, off all off. */

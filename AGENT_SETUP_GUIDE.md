@@ -14,7 +14,7 @@ to it with the installer.
 One agent runs on each computer. It:
 
 1. sends a heartbeat every 30 seconds, so the dashboard shows it as online;
-2. runs the network scans you start from **Discovery** (Nmap, or a simpler built-in scan when Nmap is missing);
+2. runs the network scans you start from the dashboard (**New scan**), with its own scan engine;
 3. optionally listens passively for device announcements (ARP, mDNS, NetBIOS, DHCP) on the network the computer
    uses, and reports what it heard once an hour per agent in the Discovery log;
 4. reports its own computer's **endpoint inventory** every 6 hours: hardware, Windows/Linux version and updates,
@@ -43,40 +43,59 @@ The old key stops working at once; paste the new code into the agent.
 
 ## 2. Install on Windows
 
-1. Run `EagleEyeAgent-Setup-<version>.exe` (it needs administrator rights). Keep
-   **Start EagleEye Agent when I sign in** ticked: the agent then starts with the rights it needs for passive
-   listening and the full security checks, without a prompt each time.
-2. On first start the agent shows what it collects. The personal-data options are off by default.
-3. In **Settings**, paste the code into **Connection code**, choose **Use code**, then **Test connection** and
-   **Save**. Saving starts the agent.
-4. On **Dependencies**, install Nmap (and Npcap from the Nmap installer). They are free but cannot be bundled with
-   the agent because of their licences; the agent downloads the official, signed installers.
+1. Download it from the dashboard: Agents → Install → Windows (always the latest version), and run
+   `EagleEyeAgent-Setup-<version>.exe` (it needs administrator rights). It installs the agent as a Windows service
+   that starts with the computer.
+2. Open **EagleEye Agent**, go to **Connection**, paste the code into **Connection code**, choose **Use code**, then
+   **Test connection** and **Save**.
+3. Everything the agent does (scanning, passive listening, inventory, SBOM) is set on the dashboard: Agents → the
+   agent's panel, or Defaults for every agent. The agent's app only shows it. Nmap and Npcap are not needed.
 
-Updating: run the newer installer over the old one. It closes the running agent and keeps its settings.
+Many computers (Intune, Group Policy, scripts): see the agent README, "Installing on many computers", or Agents →
+Install → Windows.
 
-Publishing a new installer (maintainers): build it with `agent-gui\packaging\build.ps1` (needs Inno Setup 6), then
-upload it to the environment's R2 bucket under `agent-installer/`. The Agents page offers the highest version there.
+Updating: run the newer installer over the old one. It keeps the agent's connection and settings.
+
+### Publishing a new version (maintainers)
+
+The dashboard's Agents → Install tab offers two downloads, each the **most recently uploaded** file of its kind
+in the environment's R2 bucket under `agent-installer/` (not the highest version number, so a release renumbered
+to 1.0 replaces the 2.x development builds):
+
+| Download | File | Built with |
+|---|---|---|
+| Windows | `EagleEyeAgent-Setup-<version>.exe` | `agent-gui\packaging\build.ps1` (needs Inno Setup 6) |
+| Linux and the network agent | `eagleeye-agent-<version>.tar.gz` | `python agent-gui\packaging\make_source.py` |
 
 ```powershell
 cd workers
-npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAgent-Setup-2.3.2.exe `
-  --file ..\agent-gui\dist\EagleEyeAgent-Setup-2.3.2.exe --content-type application/vnd.microsoft.portable-executable --remote
-# production: the same into umeagleeye-reports/agent-installer/
+# staging; production: the same into umeagleeye-reports/agent-installer/
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAgent-Setup-2.5.1.exe `
+  --file ..\agent-gui\dist\EagleEyeAgent-Setup-2.5.1.exe --content-type application/vnd.microsoft.portable-executable --remote
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/eagleeye-agent-2.5.1.tar.gz `
+  --file ..\agent-gui\dist\eagleeye-agent-2.5.1.tar.gz --content-type application/gzip --remote
 ```
+
+Uploading the same file name again replaces it (and makes it the newest). To go back to an older build, upload it
+again or delete the newer file (`npx wrangler r2 object delete <bucket>/agent-installer/<file> --remote`).
 
 ---
 
 ## 3. Install on Linux (servers, no desktop)
 
+Download the Linux package from Agents → Install → Linux (`eagleeye-agent-<version>.tar.gz`; Python 3.12+ and
+systemd needed), then, as root:
+
 ```bash
-cd agent-gui
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m eagleeye config init --connection-code '<code from the Agents page>'
-sudo .venv/bin/python -m eagleeye run --passive     # root for passive listening; omit --passive otherwise
+sudo tar xzf eagleeye-agent-<version>.tar.gz -C /opt && cd /opt/eagleeye-agent-<version>
+sudo python3 -m venv .venv && sudo .venv/bin/pip install .
+sudo .venv/bin/python -m eagleeye service enrol --connection-code 'EE...'   # or --connection-code-file
+sudo .venv/bin/python -m eagleeye service install
+sudo .venv/bin/python -m eagleeye service status
 ```
 
-Install Nmap with the system package manager (`sudo apt install nmap`). Run `python -m eagleeye --help` for every
-option; `python -m eagleeye inventory` shows what would be sent without sending it.
+The network agent comes from the same package (its Docker image is built from it): see Agents → Install →
+Network agent, or the agent README, "Network agent".
 
 ---
 
@@ -90,10 +109,10 @@ it listens on (for example *Wi-Fi (192.168.1.20)*).
 
 | Problem | What to do |
 |---|---|
-| Agent stays **Offline** | Open the agent: if it says *Stopped*, choose **Start**; check Settings > Test connection |
+| Agent stays **Offline** | Open the agent: if it says *Stopped*, choose **Start**; check Connection > Test connection |
 | *The server rejected the agent ID or API key* | The key was rotated or mistyped: issue a new connection code |
-| *needs Administrator* on passive listening | Start it through the sign-in task (sign out and in) or Dependencies > **Restart as Administrator** |
-| Passive listening on the wrong network | Leave **Network interface** empty in Settings (automatic follows the network the computer uses) |
+| *needs Administrator* on passive listening | The service runs with the rights it needs: check it is running (`Get-Service EagleEyeAgent`), or Tools > **Restart as Administrator** |
+| Passive listening on the wrong network | The agent listens on the network the computer uses; check the Status page shows the right one |
 
 ---
 

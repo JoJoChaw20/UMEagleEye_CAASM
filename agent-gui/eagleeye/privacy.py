@@ -18,8 +18,7 @@ EagleEye server only, where your organisation's administrators can see it. Nothi
 sent to anyone else.</p>
 
 <h3>Network discovery</h3>
-<p>When an administrator starts a scan from the dashboard, or you start one here (if your
-administrator allows scans started on this computer), the agent scans the chosen network
+<p>When an administrator starts a scan from the dashboard, the agent scans the chosen network
 range and records the devices it finds: IP and MAC addresses, device names, open ports, the
 services behind them, and an operating-system guess.</p>
 <p>If your organisation has turned it on, a device that passive listening hears for the
@@ -54,8 +53,7 @@ screenshots, email or messages, location, or the contents of network traffic.</p
 
 <h3>Who decides</h3>
 <p>Your organisation's administrator sets what this agent collects from the EagleEye
-dashboard; the Privacy and Settings pages show those settings as set by the administrator.
-What the administrator has not set, you can change on those pages. You can preview exactly
+dashboard; the Privacy page shows them. They are not changed on this computer. You can preview exactly
 what would be sent at any time. An administrator can ask for a fresh inventory from the
 dashboard, and can delete this computer's inventory from the server with <i>Clear
 inventory</i> on its asset page. Only the latest inventory is kept; each collection
