@@ -10,6 +10,7 @@ import TenantSelector from '../components/common/TenantSelector'
 import ScanPolicyCard from '../components/common/ScanPolicyCard'
 import AgentPolicyModal from '../components/agents/AgentPolicyModal'
 import AgentDefaultsCard from '../components/agents/AgentDefaultsCard'
+import InstallCodesCard from '../components/agents/InstallCodesCard'
 import { ROLES } from '../components/agents/policy'
 import { formatSeen } from '../utils/time'
 import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
@@ -581,6 +582,8 @@ export default function AgentsPage() {
       <ScanPolicyCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId}
         canEdit={isSuperadmin || user?.role === 'tenant_superadmin'} />
       <AgentDefaultsCard tenantId={isSuperadmin ? tenantFilter : user?.tenantId} onSaved={load} />
+      {/* Install codes are per tenant: for the tenant's own admins (the platform superadmin has none) */}
+      <InstallCodesCard enabled={canManage && !isSuperadmin} />
 
       {retired.length > 0 && (
         <div className="glass-card overflow-hidden">

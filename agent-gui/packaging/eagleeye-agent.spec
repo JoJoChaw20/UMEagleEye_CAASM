@@ -29,12 +29,10 @@ datas = [
     (str(ROOT / "eagleeye" / "gui" / "assets"), "eagleeye/gui/assets"),   # logo, fonts (OFL)
     (str(ROOT / "eagleeye" / "data" / "ieee_oui.tsv.gz"), "eagleeye/data"),   # MAC vendors (IEEE registry)
 ]
-datas += collect_data_files("pysnmp")            # MIB modules are loaded from files at run time
 datas += copy_metadata("keyring")                # keyring finds its backends through package metadata
 
 hiddenimports = (
     collect_submodules("keyring.backends")
-    + collect_submodules("pysnmp.smi.mibs")
     + ["win32ctypes.core", "truststore"]       # truststore: imported inside httpclient.tls_context
 )
 if WITH_SCAPY:
@@ -49,7 +47,9 @@ excludes = ["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", 
             "setuptools", "pkg_resources", "_distutils_hack", "wheel",
             # The network agent's AES (netagent/, the `network` extra): it ships as its own package,
             # not in the desktop installer.
-            "cryptography", "cffi"]
+            "cryptography", "cffi",
+            # SNMP moved to the network agent (its own client); pysnmp is only a test dependency.
+            "pysnmp", "pyasn1"]
 if not WITH_SCAPY:
     excludes += ["scapy"]
 

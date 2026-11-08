@@ -141,7 +141,6 @@ def check_all() -> list[DepStatus]:
 
     results.append(_module("scapy", "scapy", False, "needed for passive listening with Npcap/libpcap "
                                                        "(the built-in capture does not use it)"))
-    results.append(_module("pysnmp", "pysnmp", False, "needed for SNMPv3 polling"))
 
     admin = is_admin()
     results.append(DepStatus(

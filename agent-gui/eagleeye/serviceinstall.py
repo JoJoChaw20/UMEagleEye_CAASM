@@ -186,6 +186,41 @@ def environment_note() -> str:
         "Note: EAGLEEYE_CONFIG is set; the service uses its own settings in the machine folder."
 
 
+def agent_name() -> str:
+    """The name a new agent gets on the dashboard: EAGLEEYE_AGENT_NAME, else this computer's name."""
+    import socket
+    from .config import env_value
+    return (env_value("EAGLEEYE_AGENT_NAME") or socket.gethostname() or "New agent").strip()[:100]
+
+
+def enrol(code: str, instance: str = "", kind: Optional[str] = None) -> str:
+    """`eagleeye service enrol` (as an administrator; the installer's /CONNECTIONCODE=): connect
+    the service with a connection code (one agent) or an install code (registers this computer
+    as an agent of its own; one it already has for that server is kept)."""
+    from . import ipc
+    from .config import Settings
+    from .enrol import credentials_from_code
+    store = MachineSecrets()
+    target = machine_config_path(instance)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = load_settings(target, env={}, keychain=store) if target.exists() else Settings()
+    except ConfigError:
+        current = Settings()
+    if kind:
+        current.kind = kind
+    url, agent_id, key, new = credentials_from_code(code, agent_name(), current.kind, current)
+    current.api_url, current.agent_id, current.api_key = url, agent_id, key
+    save_settings(current, target, keychain=store)
+    secure(target)
+    try:
+        ipc.call({"cmd": "reload"}, ipc.address(instance), timeout=3)
+    except Exception:  # noqa: BLE001 - the service picks the settings up when it starts
+        pass
+    return (f"registered this computer as a new agent ({agent_id}) at {url}" if new
+            else f"connected as agent {agent_id} at {url}")
+
+
 def apply_settings_file(path: Path, instance: str = "") -> str:
     """`eagleeye service apply` (as an administrator): settings the app saved -> the
     service's settings and secrets; a secret left as SAVED_SECRET or empty is kept."""

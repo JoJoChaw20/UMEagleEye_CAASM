@@ -46,7 +46,7 @@ from .stages.scan_nmap import validate_target
 from .stages.scan_own import active_scan_stage
 from .stages import (
     CveCheckStage, InventoryUploadStage, LocalInventoryStage, PassiveCollectStage,
-    PassiveEnrichStage, SbomBuildStage, SbomUploadStage, SnmpPollStage, UploadStage,
+    PassiveEnrichStage, SbomBuildStage, SbomUploadStage, UploadStage,
 )
 
 LOCAL_SCANS_OFF = ("your administrator has turned off scans started on this computer; "
@@ -167,10 +167,8 @@ class AgentService:
 
     # ── pipelines ──
     def _active_pipeline(self, subnet: str) -> Pipeline:
-        stages: list[Any] = [active_scan_stage(subnet, self.settings)]
-        if self.settings.snmp_enabled:
-            stages.append(SnmpPollStage(self.settings))
-        stages.append(UploadStage(self.client, "active"))
+        # Routers and switches are read by the network agent (netagent/), not here.
+        stages: list[Any] = [active_scan_stage(subnet, self.settings), UploadStage(self.client, "active")]
         return Pipeline("active", stages, self.on_event)
 
     def _passive_pipeline(self, batch: Optional[tuple[Any, list[Any]]] = None) -> Pipeline:

@@ -84,11 +84,6 @@ class Settings:
     def inventory_options(self) -> dict[str, bool]:
         return {"user_software": self.inventory_user_software, "admin_names": self.inventory_admin_names}
 
-    @property
-    def snmp_enabled(self) -> bool:
-        """SNMPv3 polling needs the full authPriv credential set."""
-        return bool(self.snmp_user and self.snmp_auth_key and self.snmp_priv_key)
-
     def problems(self) -> list[str]:
         """Reasons the agent cannot talk to the server yet (empty list = ready)."""
         out: list[str] = []

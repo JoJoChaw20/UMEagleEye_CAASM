@@ -23,3 +23,12 @@ export function agentApiUrl(baseURL) {
 export function makeConnectionCode({ apiUrl, agentId, apiKey }) {
   return CONNECTION_CODE_PREFIX + base64url(JSON.stringify({ u: apiUrl, i: agentId, k: apiKey }))
 }
+
+// An install code: one code for many computers (Intune, GPO, a script, a container); each
+// registers an agent of its own at POST /enrolment/enrol. Format: "EE2." + base64url(JSON {u, t}),
+// parsed by eagleeye/enrol.py parse_install_code.
+export const INSTALL_CODE_PREFIX = 'EE2.'
+
+export function makeInstallCode({ apiUrl, token }) {
+  return INSTALL_CODE_PREFIX + base64url(JSON.stringify({ u: apiUrl, t: token }))
+}

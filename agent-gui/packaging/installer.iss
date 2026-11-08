@@ -14,7 +14,14 @@
 ;  - the app opens in the tray when anyone signs in (ON by default), as that user: it
 ;    shows the service and changes its settings after a Windows administrator prompt;
 ;  - an upgrade stops the service and closes the app first, keeps the settings, and
-;    starts both again; it removes the elevated logon task earlier versions created.
+;    starts both again; it removes the elevated logon task earlier versions created;
+;  - a company installs it silently (Intune, GPO, a script) and connects it at once:
+;      EagleEyeAgent-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+;          /CONNECTIONCODEFILE=\\server\share\eagleeye-code.txt   (or /CONNECTIONCODE=<code>)
+;    with a connection code (one computer) or an install code from the Agents page (many
+;    computers: each registers an agent of its own). Add /MERGETASKS="!autostart" to leave
+;    the tray app out. Exit code 10 = installed, but it could not connect (see the log:
+;    /LOG="C:\Windows\Temp\eagleeye-setup.log").
 
 #ifndef AppVersion
   #define AppVersion "2.0.0"
@@ -88,6 +95,64 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""EagleEye Agent""";
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM EagleEyeAgent.exe /F"; Flags: runhidden; RunOnceId: "StopAgent"
 
 [Code]
+var
+  EnrolFailed: Boolean;
+  CodeFileName: String;
+
+function HasCode: Boolean;
+begin
+  Result := (ExpandConstant('{param:CONNECTIONCODE|}') <> '') or (ExpandConstant('{param:CONNECTIONCODEFILE|}') <> '');
+end;
+
+// The code goes to the agent in a file, never on its command line (process lists, logs);
+// one given with /CONNECTIONCODE= is written to Setup's own temporary folder, removed at the end.
+function CodeFile: String;
+begin
+  if CodeFileName = '' then
+  begin
+    CodeFileName := ExpandConstant('{param:CONNECTIONCODEFILE|}');
+    if CodeFileName = '' then
+    begin
+      CodeFileName := ExpandConstant('{tmp}\connection-code.txt');
+      SaveStringToFile(CodeFileName, ExpandConstant('{param:CONNECTIONCODE|}'), False);
+    end;
+  end;
+  Result := CodeFileName;
+end;
+
+// Connect the service when a code was given (`eagleeye.exe service enrol`). Its order with the
+// [Run] section does not matter: `service install` keeps settings that already exist, and a
+// running service is told to reload them.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Code: Integer;
+begin
+  if (CurStep = ssPostInstall) and HasCode then
+  begin
+    WizardForm.StatusLabel.Caption := 'Connecting the agent to your EagleEye dashboard...';
+    if (not Exec(ExpandConstant('{app}\eagleeye.exe'), 'service enrol --connection-code-file "' + CodeFile + '"', '',
+                 SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then
+    begin
+      EnrolFailed := True;
+      Log('eagleeye.exe service enrol failed, exit code ' + IntToStr(Code));
+      if not WizardSilent then
+        MsgBox('EagleEye Agent is installed, but it could not connect with that code. Open the app and paste '
+               + 'a connection code in Settings, or run setup again with a valid code.', mbError, MB_OK);
+    end
+    else
+      Log('eagleeye.exe service enrol: connected');
+  end;
+end;
+
+// 10: installed, but not connected (Intune and scripts see the install as failed).
+function GetCustomSetupExitCode: Integer;
+begin
+  if EnrolFailed then
+    Result := 10
+  else
+    Result := 0;
+end;
+
 // Stop the running service before its files are replaced (sc.exe exits with the Windows
 // error: 0 = stop requested, 1060 = no such service, 1062 = not running), and end the app:
 // asked to close, it only hides in the tray, so its EagleEyeAgent.exe stayed in use

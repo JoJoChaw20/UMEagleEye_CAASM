@@ -25,7 +25,7 @@ from . import VERSION, deps
 from .config import (
     ConfigError, Settings, default_config_path, env_value, load_settings, save_settings, sbom_cache_path, state_path,
 )
-from .enrol import ConnectionCodeError, parse_connection_code
+from .enrol import ConnectionCodeError, credentials_from_code, is_install_code, parse_connection_code
 from .keychain import Keychain
 from .netagent import command as netpoll
 from .passive import PassiveSuite
@@ -34,7 +34,7 @@ from .schedule import Schedule
 from .service import SCHEDULES_ENABLED, AgentService, log_event
 from .stages import (
     CveCheckStage, InventoryDryRunStage, LocalInventoryStage, SbomBuildStage, SbomDryRunStage,
-    DryRunUploadStage, PassiveCollectStage, PassiveEnrichStage, SnmpPollStage,
+    DryRunUploadStage, PassiveCollectStage, PassiveEnrichStage,
 )
 from .stages.scan_own import active_scan_stage
 
@@ -143,13 +143,18 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument("--minimized", action="store_true", help="start in the system tray")
 
     svc = sub.add_parser("service", help="the agent as a system service: install, uninstall, start, stop, status, run")
-    svc.add_argument("action", choices=("install", "uninstall", "start", "stop", "status", "run", "scm", "apply"))
+    svc.add_argument("action", choices=("install", "uninstall", "start", "stop", "status", "run", "scm", "apply", "enrol"))
     svc.add_argument("--instance", default="", help="a second agent on this computer, e.g. production")
     svc.add_argument("--from-config", type=Path, dest="from_config",
                      help="install: the settings to move into the service (default: this user's); "
                           "apply: the settings the agent app saved")
     svc.add_argument("--no-start", action="store_true", help="install: do not start it yet")
     svc.add_argument("--purge", action="store_true", help="uninstall: also delete its settings, state and logs")
+    svc.add_argument("--connection-code", dest="connection_code",
+                     help="enrol: a connection code (one agent) or an install code (many computers)")
+    svc.add_argument("--connection-code-file", dest="connection_code_file", type=Path,
+                     help="enrol: read the code from this file (keeps it out of process lists)")
+    svc.add_argument("--kind", choices=("host", "network"), help="enrol: what kind of agent this is (default host)")
 
     sub.add_parser("version", help="print the version")
     return parser
@@ -197,6 +202,18 @@ def cmd_service(args: argparse.Namespace) -> int:
     elif args.action == "uninstall":
         for line in serviceinstall.uninstall(instance, purge=args.purge):
             print(line)
+    elif args.action == "enrol":                   # the installer's /CONNECTIONCODE=, or by hand
+        code = args.connection_code or ""
+        if args.connection_code_file:
+            code = args.connection_code_file.read_text(encoding="utf-8-sig").strip()
+        if not code:
+            print("enrol needs --connection-code or --connection-code-file", file=sys.stderr)
+            return 2
+        try:
+            print(serviceinstall.enrol(code, instance, args.kind))
+        except ConnectionCodeError as exc:
+            print(f"Could not connect: {exc}", file=sys.stderr)
+            return 1
     elif args.action == "apply":                   # run elevated by the agent app (gui/remote.py)
         if not args.from_config:
             print("apply needs --from-config", file=sys.stderr)
@@ -207,11 +224,16 @@ def cmd_service(args: argparse.Namespace) -> int:
     return 0
 
 
-def _settings_from(args: argparse.Namespace) -> Settings:
+def _settings_from(args: argparse.Namespace, enrol: bool = False) -> Settings:
     overrides = {k: v for k, v in vars(args).items() if k in Settings.__dataclass_fields__ and v is not None}
     # The code can also come from the environment (a container: EAGLEEYE_CONNECTION_CODE or
     # EAGLEEYE_CONNECTION_CODE_FILE), so it never shows in a process list.
     code = getattr(args, "connection_code", None) or env_value("EAGLEEYE_CONNECTION_CODE")
+    if code and is_install_code(code):
+        if not enrol:
+            raise ConfigError("an install code registers this computer as a new agent: use it with "
+                              "`eagleeye config init`, `eagleeye run` or `eagleeye service enrol`")
+        return _enrol_settings(args, code, overrides)
     if code:
         try:
             url, agent_id, key = parse_connection_code(code)
@@ -221,6 +243,26 @@ def _settings_from(args: argparse.Namespace) -> Settings:
         for name, value in (("api_url", url), ("agent_id", agent_id), ("api_key", key)):
             overrides.setdefault(name, value)
     return load_settings(getattr(args, "config", None), overrides=overrides)
+
+
+def _enrol_settings(args: argparse.Namespace, code: str, overrides: dict[str, Any]) -> Settings:
+    """Settings with the credentials an install code gives. The first time, this computer is
+    registered and only the credentials are written to its config file (not settings that came
+    from the environment); after that the saved ones are kept (credentials_from_code)."""
+    from .serviceinstall import agent_name
+    path = getattr(args, "config", None)
+    settings = load_settings(path, overrides=overrides)
+    try:
+        url, agent_id, key, new = credentials_from_code(code, agent_name(), settings.kind, settings)
+    except ConnectionCodeError as exc:
+        raise ConfigError(str(exc)) from None
+    if new:
+        saved = load_settings(path, env={})
+        saved.api_url, saved.agent_id, saved.api_key, saved.kind = url, agent_id, key, settings.kind
+        save_settings(saved, path, keychain=Keychain())
+        log.info("Registered this computer as a new agent %s at %s", agent_id, url)
+    settings.api_url, settings.agent_id, settings.api_key = url, agent_id, key
+    return settings
 
 
 def _print_hosts(hosts: list[Any]) -> None:
@@ -250,7 +292,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Its state and applied policy live next to this config (config.py instance_name), not
         # next to the default one: a second agent on this computer must not share them.
         os.environ["EAGLEEYE_CONFIG"] = str(args.config)
-    settings = _settings_from(args)
+    settings = _settings_from(args, enrol=True)
     problems = settings.problems()
     if problems:
         print("Cannot start:", *[f"  - {p}" for p in problems], sep="\n", file=sys.stderr)
@@ -276,7 +318,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     log.info("Hostname     : %s", socket.gethostname())
     log.info("Active poll  : %ss   Heartbeat: %ss", settings.poll_interval, settings.heartbeat_interval)
     log.info("Passive mode : %s", "enabled" if settings.passive else "disabled")
-    log.info("SNMPv3 poll  : %s", "enabled" if settings.snmp_enabled else "disabled")
     log.info("Inventory    : %s", f"every {settings.inventory_interval}s" if settings.inventory else "disabled")
     log.info("SBOM         : %s", f"every {settings.sbom_interval}s" if settings.sbom else "disabled")
     missing = [d for d in deps.check_all() if not d.ok and d.name in ("Nmap",)]
@@ -298,8 +339,6 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_scan(args: argparse.Namespace) -> int:
     settings = _settings_from(args)
     stages: list[Any] = [active_scan_stage(args.target, settings, getattr(args, "truth", None))]
-    if settings.snmp_enabled:
-        stages.append(SnmpPollStage(settings))
     holder: dict[str, Any] = {}
     stages.append(DryRunUploadStage("active", holder.update))
     ctx = PipelineContext("active", subnet=args.target, scan_type="active")
@@ -487,7 +526,7 @@ def _ask_snmp_secrets(settings: Settings) -> None:
 
 
 def cmd_config(args: argparse.Namespace) -> int:
-    settings = _settings_from(args)
+    settings = _settings_from(args, enrol=args.config_command == "init")
     if args.config_command == "show":
         print(json.dumps(settings.redacted(), indent=2))
         problems = settings.problems()

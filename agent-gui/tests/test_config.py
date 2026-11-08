@@ -10,7 +10,7 @@ from eagleeye.config import ConfigError, Settings, load_settings, save_settings
 def test_defaults(tmp_path):
     s = load_settings(tmp_path / "missing.json", env={})
     assert (s.poll_interval, s.heartbeat_interval, s.passive_interval) == (30, 30, 300)
-    assert s.passive is False and not s.snmp_enabled
+    assert s.passive is False and s.kind == "host"
     assert s.problems() == ["api_url is not set", "api_key is not set", "agent_id is not set"]
 
 
@@ -70,9 +70,6 @@ def test_unknown_keys_in_file_are_ignored(tmp_path):
     assert load_settings(cfg, env={}).api_url == "http://x"
 
 
-def test_snmp_needs_the_full_credential_set():
-    assert not Settings(snmp_user="u", snmp_auth_key="a").snmp_enabled
-    assert Settings(snmp_user="u", snmp_auth_key="a", snmp_priv_key="p").snmp_enabled
 
 
 def test_problems_flags_bad_url_and_short_intervals():

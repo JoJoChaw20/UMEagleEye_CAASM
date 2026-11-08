@@ -6,11 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Router, Network, Monitor, Server, Smartphone, Cpu, HelpCircle, Layers, CircleDashed, Search,
-  ZoomIn, ZoomOut, Maximize2, RefreshCw, X, ExternalLink, Share2,
+  ZoomIn, ZoomOut, Maximize2, RefreshCw, X, ExternalLink, Share2, Zap,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
+import BlastRadiusModal from '../components/common/BlastRadiusModal'
 import { layoutNetworkMap, NODE_W, NODE_H } from '../utils/networkMapLayout'
 import { formatSeen } from '../utils/time'
 
@@ -60,6 +61,7 @@ export default function NetworkMapPage() {
   const [selected, setSelected] = useState(null)
   const [query, setQuery] = useState('')
   const [vlan, setVlan] = useState('')
+  const [blastOf, setBlastOf] = useState(null)
 
   const map = data ?? { nodes: [], edges: [], agents: [] }
   const vlans = useMemo(() => [...new Set(map.nodes.map((n) => n.vlan).filter((v) => v != null))].sort((a, b) => a - b), [map])
@@ -154,11 +156,12 @@ export default function NetworkMapPage() {
 
           <div className="relative">
             <MapCanvas layout={layout} selectedId={selected?.id} matches={matches} dimmed={dimmed} onClickNode={clickNode} />
-            {selected && <Details node={selected} map={map} onClose={() => setSelected(null)} />}
+            {selected && <Details node={selected} map={map} onClose={() => setSelected(null)} onBlast={setBlastOf} />}
           </div>
           <Legend />
         </>
       )}
+      {blastOf && <BlastRadiusModal assetId={blastOf} onClose={() => setBlastOf(null)} />}
     </div>
   )
 }
@@ -304,7 +307,7 @@ function IconButton({ onClick, label, children }) {
   )
 }
 
-function Details({ node, map, onClose }) {
+function Details({ node, map, onClose, onBlast }) {
   const byId = new Map(map.nodes.map((n) => [n.id, n]))
   const connections = map.edges.filter((e) => e.from === node.id || e.to === node.id).map((e) => {
     const mine = e.from === node.id
@@ -346,9 +349,16 @@ function Details({ node, map, onClose }) {
         </div>
       )}
       {node.asset_id && (
-        <Link to={`/inventory/${node.asset_id}`} className="btn-secondary text-sm inline-flex items-center gap-2">
-          Open asset <ExternalLink className="w-3.5 h-3.5" />
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link to={`/inventory/${node.asset_id}`} className="btn-secondary text-sm inline-flex items-center gap-2">
+            Open asset <ExternalLink className="w-3.5 h-3.5" />
+          </Link>
+          {/* what depends on this device (relationships, measured links first; My Assets only) */}
+          <button type="button" onClick={() => onBlast(node.asset_id)} className="btn-secondary text-sm inline-flex items-center gap-2"
+            title="What would be affected if this device were compromised or went down (assets in My Assets)">
+            <Zap className="w-3.5 h-3.5" /> Blast radius
+          </button>
+        </div>
       )}
     </aside>
   )

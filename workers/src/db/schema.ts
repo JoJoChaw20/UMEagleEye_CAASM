@@ -454,6 +454,28 @@ export const topologyNodes = pgTable('topology_nodes', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_topology_tenant').on(t.tenantId)])
 
+// ─── Install codes (enrolment tokens) ─────────────────────────────
+// One code for many computers (Intune, GPO, a script, a container): each computer exchanges
+// it once at POST /enrolment/enrol for an agent of its own (ID + API key), so no two
+// computers share an agent. Only the token's SHA-256 is stored (routes/enrolment.ts).
+export const enrolmentTokens = pgTable('enrolment_tokens', {
+  tokenId: uuid('token_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 100 }).notNull(),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  kind: varchar('kind', { length: 20 }).notNull().default('host'),   // the agents it makes: host | network
+  maxUses: integer('max_uses'),                                        // null: any number until it expires
+  uses: integer('uses').notNull().default(0),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  createdBy: uuid('created_by').references(() => users.userId, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  uniqueIndex('idx_enrol_token_hash').on(t.tokenHash),
+  index('idx_enrol_tenant').on(t.tenantId),
+])
+
 // ─── Network links (network agent: CDP/LLDP) ─────────────────────
 // One row per cable between two devices, as a network agent's crawl saw it. The ends are
 // kept by device name and port (the far device may not be an asset: a neighbour outside the

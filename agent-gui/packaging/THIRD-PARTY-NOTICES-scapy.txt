@@ -14,7 +14,6 @@ PySide6 / Qt 6 (Qt for Python)  LGPL-3.0                      https://www.qt.io/
 keyring, pywin32-ctypes         MIT / BSD-3-Clause            https://github.com/jaraco/keyring
 truststore                      MIT                           https://github.com/sethmlarson/truststore
 scapy                           GPL-2.0-only                  https://github.com/secdev/scapy
-pysnmp, pyasn1                  BSD-2-Clause                  https://github.com/lextudio/pysnmp
 Chakra Petch (font)             SIL Open Font License 1.1     https://github.com/m4rc1e/Chakra-Petch
 Geist, Geist Mono (fonts)       SIL Open Font License 1.1     https://github.com/vercel/geist-font
     Static instances of the fonts, renamed only in their name tables; the licence

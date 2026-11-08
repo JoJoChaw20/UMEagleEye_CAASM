@@ -169,6 +169,13 @@
       "when": 1794141242833,
       "tag": "0023_asset_source_network",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794148697480,
+      "tag": "0024_enrolment_tokens",
+      "breakpoints": true
     }
   ]
 }

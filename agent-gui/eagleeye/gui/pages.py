@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from .. import deps, installers
 from ..api import AgentClient
-from ..enrol import ConnectionCodeError, parse_connection_code
+from ..enrol import ConnectionCodeError, credentials_from_code
 from ..netinfo import local_ip, local_network
 from ..pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent
 from ..privacy import NOTICE_HTML
@@ -684,33 +684,12 @@ class SettingsPage(QWidget):
         passive.add(_hint("Needs Administrator rights, and Npcap unless the built-in capture is used "
                           "(see Dependencies)."))
 
-        snmp = Panel("SNMPv3 polling of network devices (optional)")
-        self.snmp_user = QLineEdit(s.snmp_user)
-        self.snmp_auth = QLineEdit()
-        self.snmp_auth.setEchoMode(QLineEdit.EchoMode.Password)
-        self.snmp_priv = QLineEdit()
-        self.snmp_priv.setEchoMode(QLineEdit.EchoMode.Password)
-        self.snmp_auth_proto = QComboBox()
-        self.snmp_auth_proto.addItems(["SHA", "SHA256", "SHA384", "SHA512", "SHA224", "MD5"])
-        self.snmp_auth_proto.setCurrentText(s.snmp_auth_protocol)
-        self.snmp_priv_proto = QComboBox()
-        self.snmp_priv_proto.addItems(["AES", "AES192", "AES256", "3DES", "DES"])
-        self.snmp_priv_proto.setCurrentText(s.snmp_priv_protocol)
-        n = FieldGrid(2)
-        n.add("User", self.snmp_user, 0)
-        n.add("Auth key", self.snmp_auth, 0)
-        n.add("Privacy key", self.snmp_priv, 0)
-        n.add("", QWidget(), 1)
-        n.add("Auth protocol", self.snmp_auth_proto, 1)
-        n.add("Privacy protocol", self.snmp_priv_proto, 1)
-        snmp.add_layout(n)
-
         self.save_btn = button("Save", "primary", "check", self._save)
         self.save_result = label("", wrap=True)
         self.managed_hint = _hint("")
         _root(self, _scroll(PageHeader("Settings", "How this agent reaches the dashboard, how often it checks in, "
                                                    "and what it listens for on the network."),
-                            self.managed_hint, conn, timing, active, passive, snmp),
+                            self.managed_hint, conn, timing, active, passive),
               _footer(self.save_btn, self.save_result))
         self._secret_placeholders()
         self.apply_managed()
@@ -750,8 +729,7 @@ class SettingsPage(QWidget):
         s = self.win.store.settings
         where = "the Windows Credential Manager" if sys.platform == "win32" else "the system keychain"
         where = where if self.win.store.keychain.available() else "the config file"
-        for field, name in ((self.api_key, "api_key"), (self.fingerbank, "fingerbank_key"),
-                            (self.snmp_auth, "snmp_auth_key"), (self.snmp_priv, "snmp_priv_key")):
+        for field, name in ((self.api_key, "api_key"), (self.fingerbank, "fingerbank_key")):
             field.clear()
             field.setPlaceholderText("saved (leave empty to keep)" if getattr(s, name) else "")
         self.key_hint.setText(f"Shown once when the agent was registered. Secrets are kept in {where}.")
@@ -767,8 +745,12 @@ class SettingsPage(QWidget):
         set_tone(self.test_result, tone)
 
     def _use_code(self) -> None:
+        """A connection code (this agent), or an install code: it registers this computer as an
+        agent of its own, unless it already has one with that server."""
+        from ..serviceinstall import agent_name
+        s = self.win.store.settings
         try:
-            url, agent_id, key = parse_connection_code(self.code.text())
+            url, agent_id, key, new = credentials_from_code(self.code.text(), agent_name(), s.kind, s)
         except ConnectionCodeError as exc:
             self._result(str(exc), "error")
             return
@@ -776,7 +758,8 @@ class SettingsPage(QWidget):
         self.agent_id.setText(agent_id)
         self.api_key.setText(key)
         self.code.clear()
-        self._result("Filled in from the code. Choose Test connection, then Save.", None)
+        self._result(("Registered this computer as a new agent. " if new else "Filled in from the code. ")
+                     + "Choose Test connection, then Save.", None)
 
     def _test(self) -> None:
         s = self.win.store.settings
@@ -825,11 +808,6 @@ class SettingsPage(QWidget):
         if "passive_backend" not in m:
             s.passive_backend = self.capture.currentData()
         s.fingerbank_key = self._secret(self.fingerbank, s.fingerbank_key)
-        s.snmp_user = self.snmp_user.text().strip()
-        s.snmp_auth_key = self._secret(self.snmp_auth, s.snmp_auth_key)
-        s.snmp_priv_key = self._secret(self.snmp_priv, s.snmp_priv_key)
-        s.snmp_auth_protocol = self.snmp_auth_proto.currentText()
-        s.snmp_priv_protocol = self.snmp_priv_proto.currentText()
         failed = self.win.save_store()
         if failed:
             self.save_result.setText(failed)

@@ -1,7 +1,7 @@
 # EagleEye Agent 2 (pipeline agent)
 
 The EagleEye agent, as a Windows desktop app (`EagleEyeAgent.exe`) and a command line (`eagleeye`): network
-discovery and fingerprinting, passive sniffing, SNMPv3 polling and upload to the API, as a pipeline of stages
+discovery and fingerprinting, passive sniffing and upload to the API, as a pipeline of stages
 that report progress, plus an **endpoint inventory** of the machine it runs on (hardware, OS, patches, security
 posture, interfaces, listening services, installed software) and, from 2.1.0, its **SBOM**: the software
 packages found by Syft, checked for known CVEs by Grype, daily and when the dashboard asks.
@@ -116,7 +116,7 @@ dark / light / system theme switch (saved per Windows user; system follows the W
 |---|---|
 | (first start) | Shows the data-collection notice with the choices below; the agent does not run until it is accepted. The acceptance date and notice version are saved (`consent_version`, `consent_at`); a new notice version is shown again |
 | Status | Connection, last heartbeat, where passive listening listens (or why it is waiting), whether scans from this computer are allowed, what is running now, **Scan now** for a network, **Collect inventory now**, **Build SBOM now**, recent activity (with who started each run: dashboard, this computer, automatic, or "New device found") |
-| Settings | Server URL, agent ID, API key (with **Test connection**), timing, passive listening, SNMPv3. Saving restarts the agent; saving new server details starts it |
+| Settings | Server URL, agent ID, API key (with **Test connection**), timing, active scanning, passive listening. Saving restarts the agent; saving new server details starts it |
 | Privacy | Inventory on/off, interval, the two personal-data options, **Preview what would be sent** (collects and shows the inventory without sending it), SBOM on/off and extra folders, the notice |
 | Dependencies | Nmap, Npcap, Python modules and Administrator rights; download buttons for Nmap and Npcap; **Restart as Administrator** |
 | Log | Live log; also written to `%APPDATA%\EagleEye\logs\agent.log` (rotated, 5 x 1 MB) |
@@ -134,7 +134,7 @@ unavailable while that kind of run is busy, so repeated clicks start one run.
 kind at a time:
 | Job | Started by | What the agent does |
 |---|---|---|
-| active scan | **New scan** on the dashboard | Nmap (or the built-in sweep) on the range, SNMPv3 if set, upload |
+| active scan | **New scan** on the dashboard | Nmap (or the built-in sweep) on the range, upload |
 | active scan of one IP | the server, when passive listening heard a device for the first time and the tenant turned on **Investigate new devices automatically** | the same scan on that address only, a few minutes later; the server puts the open ports and OS guess on the device's new-device alert; recent activity shows "New device found" |
 | inventory | **Collect inventory** on the asset page | collects and uploads this computer's inventory now; any inventory upload completes the job |
 | SBOM | **Run SBOM scan** on the asset or SBOM page | a full SBOM run |
@@ -232,6 +232,29 @@ curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo
 curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
 ```
 Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
+
+## Installing on many computers (Intune, Group Policy, scripts)
+A connection code belongs to one agent: every computer installed with it would be that same agent. For many
+computers, make an **install code** on the dashboard (Agents → Install codes: valid 1–90 days, optionally for at
+most N computers). Each computer exchanges it once, at `POST /enrolment/enrol`, for an agent of its own, named
+after the computer. Only the code's SHA-256 is stored; withdrawing it stops new installs, not the agents it made.
+
+```powershell
+# Intune (Win32 app) or a script: silent, connected at once, no tray app
+EagleEyeAgent-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS="!autostart" /CONNECTIONCODE=EE2...
+# Group Policy startup script: the code in a file on a share, so it is not on the command line
+EagleEyeAgent-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CONNECTIONCODEFILE=\\server\share\eagleeye-code.txt
+```
+- **Exit code 10:** installed, but it could not register (an expired, withdrawn or used-up code, or no connection
+  to the server); add `/LOG="C:\Windows\Temp\eagleeye-setup.log"` to see why. 0 = installed and connected.
+- **Intune detection rule:** the service `EagleEyeAgent` exists (or the file
+  `%ProgramFiles%\EagleEye Agent\eagleeye.exe`). Uninstall: `"%ProgramFiles%\EagleEye Agent\unins000.exe" /VERYSILENT`.
+- **Reinstalls and upgrades** keep the agent the computer already has (same server: its saved ID and key are
+  reused), so the code can stay in the deployment.
+- **By hand / Linux:** `eagleeye service enrol --connection-code-file code.txt` (as administrator / root) connects
+  an installed service with either kind of code; `eagleeye config init --connection-code EE2...` and
+  `eagleeye run` accept an install code too (a container registers once and keeps its agent in `/data`).
+  `EAGLEEYE_AGENT_NAME` names the new agent instead of the computer name.
 
 ## Network agent
 The network agent reads the routers and switches instead of looking after one computer: from their ARP
@@ -336,7 +359,7 @@ eagleeye/
   keychain.py, schedule.py, installers.py, privacy.py
   gui/        desktop app: app (window, tray, single instance), pages, consent, controller
   pipeline/   HostRecord, events, runner (stages, optional stages, cancellation)
-  stages/     scan_nmap (Nmap + built-in fallback), snmp_poll, passive, inventory, upload
+  stages/     scan_nmap (Nmap + built-in fallback), scan_own, passive, inventory, sbom, upload
   collectors/ endpoint inventory: windows_inventory.ps1 + windows.py normaliser; linux.py
   passive/    ARP, mDNS/NetBIOS and DHCP sniffers
   netagent/   the network agent: own SNMP client, one device's tables, CDP/LLDP crawl, ground-truth scoring
@@ -384,5 +407,6 @@ they matched, so the Nmap parser tests in `tests/test_scan.py` now carry that gu
 - Failed scans always carry a reason, including passive scans on an agent that is not in passive mode.
 - Uploads are retried (network errors and 5xx) before a scan is marked failed. When the server answered 5xx every
   time, the reason says "server error (HTTP 500) after 3 tries", not "could not reach the server".
-- SNMP polling runs up to 8 hosts in parallel; sniffers can be stopped cleanly.
+- Sniffers can be stopped cleanly. SNMP left the computer's agent (2.5.x): routers and switches are read by the
+  network agent ([Network agent](#network-agent)), with its own SNMP client.
 - The default gateway lookup also works on macOS.
