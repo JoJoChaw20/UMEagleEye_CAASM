@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Bell, FileSearch, Globe, FileText,
-  Settings, Radar, Bot, Building2, MessageCircle, Package, Boxes, Users,
+  Settings, Radar, Bot, Building2, MessageCircle, Package, Boxes, Users, Share2,
 } from 'lucide-react'
 
 // One source for the sidebar and the command palette, filtered by role the same way
@@ -18,6 +18,7 @@ export function buildNavSections(role) {
     { label: 'Assets', items: [
       { to: '/inventory', icon: Boxes, label: 'Inventory', keywords: 'assets my assets discovered devices graph' },
       ...(canSeeOps ? [{ to: '/discovery', icon: Radar, label: 'Discovery', keywords: 'scan networks nmap passive' }] : []),
+      { to: '/network-map', icon: Share2, label: 'Network map', keywords: 'topology routers switches ports cables vlan cdp lldp' },
     ]},
     { label: 'Security', items: [
       { to: '/alerts', icon: Bell, label: 'Alerts', keywords: 'events findings cve drift' },

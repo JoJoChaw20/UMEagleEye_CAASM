@@ -4,6 +4,7 @@ import ProtectedRoute from './components/common/ProtectedRoute'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import InventoryPage from './pages/InventoryPage'
+import NetworkMapPage from './pages/NetworkMapPage'
 import AssetDetailPage from './pages/AssetDetailPage'
 import DiscoveryPage from './pages/DiscoveryPage'
 import AlertsPage from './pages/AlertsPage'
@@ -56,6 +57,7 @@ export default function App() {
 
         {/* DISCOVERY / NETWORK — business_owner excluded */}
         <Route path="discovery" element={<ProtectedRoute allowedRoles={OPS_ROLES}><DiscoveryPage /></ProtectedRoute>} />
+        <Route path="network-map" element={<ProtectedRoute allowedRoles={ALL_ROLES}><NetworkMapPage /></ProtectedRoute>} />
 
         {/* SECURITY — all roles */}
         <Route path="alerts"       element={<ProtectedRoute allowedRoles={ALL_ROLES}><AlertsPage /></ProtectedRoute>} />

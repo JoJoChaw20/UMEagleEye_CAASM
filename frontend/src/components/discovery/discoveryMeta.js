@@ -8,6 +8,15 @@ export const KIND_LABEL = {
   snmp:          'Network devices (SNMP)',
 }
 
+// What a network agent's crawl found ("3 devices · 2 links"), from its record's network_info
+// (workers/src/routes/network.ts POST /topology).
+export function crawlSummary(scan) {
+  const c = scan?.networkInfo?.crawl
+  if (!c) return null
+  const located = c.located ? ` · ${c.located} on switch ports` : ''
+  return `${c.devices} device${c.devices === 1 ? '' : 's'} · ${c.links} link${c.links === 1 ? '' : 's'}${located}`
+}
+
 export const KIND_HINT = {
   passive:       'The agent listened to its network (ARP, mDNS, NetBIOS, DHCP, SSDP). One record per agent per hour.',
   network:       'An active Nmap scan of a whole range',

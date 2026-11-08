@@ -8,6 +8,8 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema'
 import { inferForTenant, resolveParents } from './topology'
+import { measuredEdges } from '../lib/networkMap'
+import { loadNetworkMap } from '../services/networkMap'
 import { computeBlastRadius, clampDepth, normalizeDirection, type BlastNodeInput, type BlastEdgeInput } from '../lib/blastRadius'
 
 // Chunk size for the relationship rebuild INSERT, so one statement never grows without
@@ -363,8 +365,6 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
     )
   )
 
-  if (topoNodes.length === 0) return 0
-
   // nodeId → { assetId, nodeType } lookup
   const nodeToInfo = new Map<string, { assetId: string; nodeType: string }>()
   for (const n of topoNodes) {
@@ -382,10 +382,18 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
     .filter(n => n.assetId)
     .map(n => ({ nodeId: n.nodeId, nodeType: n.nodeType, layer: n.layer, ip: ipOf(n), subnet: ipOf(n).split('.').slice(0, 3).join('.') }))
 
-  const newRels: (typeof assetRelationships.$inferInsert)[] = []
+  // What a network agent measured (its cables and switch ports) beats the guess: a device
+  // it placed gets its measured parent only (services/networkMap.ts).
+  const measured = measuredEdges(await loadNetworkMap(db, tenantId))
+  const placed = new Set(measured.map(e => e.target))
+
+  const newRels: (typeof assetRelationships.$inferInsert)[] = measured.map(e => ({
+    sourceAssetId: e.source, targetAssetId: e.target, relationshipType: 'connects_to' as const, confidence: '1.00',
+    metadataJson: { source: 'network_agent' },
+  }))
   for (const node of flat) {
     const child = nodeToInfo.get(node.nodeId)
-    if (!child) continue
+    if (!child || placed.has(child.assetId)) continue
     for (const parentNodeId of resolveParents(node, flat.filter(f => f.nodeId !== node.nodeId)).all) {
       const parent = nodeToInfo.get(parentNodeId)
       if (!parent) continue

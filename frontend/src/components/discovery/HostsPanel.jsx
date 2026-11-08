@@ -5,7 +5,7 @@ import client from '../../api/client'
 import AdoptMatchModal from '../assets/AdoptMatchModal'
 import { buildMatchIndex } from '../assets/assetMeta'
 import { SidePanel, Spinner } from '../common/PageParts'
-import { KIND_LABEL } from './discoveryMeta'
+import { KIND_LABEL, crawlSummary } from './discoveryMeta'
 
 function formatOs(os) {
   if (!os) return null
@@ -76,7 +76,9 @@ export default function HostsPanel({ scanId, agentName, canAdopt, onClose }) {
   const hosts = data?.hosts ?? []
   return (
     <SidePanel onClose={onClose}
-      title={scan ? `${KIND_LABEL[scan.kind] ?? 'Scan'} · ${scan.kind === 'passive' || scan.kind === 'investigation' ? (scan.network ?? scan.subnet) : scan.subnet}` : 'Hosts'}
+      title={scan ? (scan.kind === 'snmp'
+        ? `${KIND_LABEL.snmp}${crawlSummary(scan) ? ` · ${crawlSummary(scan)}` : ''}`
+        : `${KIND_LABEL[scan.kind] ?? 'Scan'} · ${scan.kind === 'passive' || scan.kind === 'investigation' ? (scan.network ?? scan.subnet) : scan.subnet}`) : 'Hosts'}
       subtitle={scan && <>
         {hosts.length} host{hosts.length === 1 ? '' : 's'}{agentName ? ` · ${agentName}` : ''}
         {scan.completed_at && ` · ${new Date(scan.completed_at).toLocaleString()}`}

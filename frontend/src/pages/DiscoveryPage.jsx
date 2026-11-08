@@ -7,7 +7,7 @@ import TenantSelector from '../components/common/TenantSelector'
 import { Tabs, Toast, useToast, Spinner, Pager, ago } from '../components/common/PageParts'
 import HostsPanel from '../components/discovery/HostsPanel'
 import NewScanModal from '../components/discovery/NewScanModal'
-import { KIND_LABEL, KIND_HINT } from '../components/discovery/discoveryMeta'
+import { KIND_LABEL, KIND_HINT, crawlSummary } from '../components/discovery/discoveryMeta'
 
 // Asset Discovery: the networks the agents have been on (and whether each has been
 // fully scanned), the history of every scan, and an active-vs-passive comparison.
@@ -296,8 +296,12 @@ export default function DiscoveryPage() {
                               {KIND_LABEL[s.kind] ?? s.kind}
                             </span>
                           </td>
-                          <td className="font-mono text-xs text-accent-cyan">{s.kind === 'passive' || s.kind === 'snmp' ? '—' : s.subnet}</td>
-                          <td className="font-mono text-xs text-dark-300">{s.network ?? <span className="text-dark-500">unknown</span>}</td>
+                          <td className={`text-xs ${s.kind === 'snmp' ? 'text-dark-300' : 'font-mono text-accent-cyan'}`}>
+                            {s.kind === 'snmp' ? (crawlSummary(s) ?? '—') : s.kind === 'passive' ? '—' : s.subnet}
+                          </td>
+                          <td className="font-mono text-xs text-dark-300">
+                            {s.network ?? <span className="text-dark-500" title={s.kind === 'snmp' ? 'A crawl reads every network its routers know' : undefined}>{s.kind === 'snmp' ? 'all it reached' : 'unknown'}</span>}
+                          </td>
                           <td className="text-xs text-dark-300">{agentName(s.agentId)}</td>
                           <td>
                             <StatusBadge status={s.status} />
