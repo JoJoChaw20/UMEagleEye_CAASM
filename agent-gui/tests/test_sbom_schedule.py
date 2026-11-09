@@ -59,7 +59,7 @@ def test_the_first_daily_run_is_full_and_the_week_counts_from_it_then_daily_runs
     wait_sbom(svc)
     assert runs["modes"] == ["full"] and client.sbom_modes == ["full"]
     assert svc.sbom_cache.last_full is not None and svc._next_sbom > time.time() + DAY - 60
-    svc._next_sbom = 0
+    svc._next_sbom, svc._sbom_full_ok_at = 0, None                  # a day later
     svc.poll_once()
     wait_sbom(svc)
     assert runs["modes"] == ["full", "quick"] and client.sbom_modes[-1] == "quick"
@@ -144,6 +144,26 @@ def test_build_sbom_now_during_a_full_run_that_fails_still_runs(runs):
     svc.poll_once()
     wait_sbom(svc)
     assert runs["modes"] == ["full", "full"]
+
+
+def test_a_daily_run_due_soon_after_a_full_run_is_answered_by_it_and_keeps_its_own_time(runs):
+    # Ubuntu VM, 9 Nov: a dashboard SBOM ended, and the first daily run (15 min after a restart)
+    # came due a minute later and listed everything again.
+    client = SbomClient(pending=[{"scanId": "sb1", "scanType": "sbom", "subnet": "asset-id"}])
+    svc = service(client)
+    svc.poll_once()
+    wait_sbom(svc)
+    client.pending = []                                            # the job is done
+    due = time.time() - 5
+    svc._next_sbom = due                                           # comes due after it finished
+    svc.poll_once()
+    wait_sbom(svc)
+    assert runs["modes"] == ["full"] and svc._next_sbom == due + DAY
+    svc._sbom_full_ok_at = time.time() - 2 * 3600                   # long after: the daily run runs
+    svc._next_sbom = time.time() - 5
+    svc.poll_once()
+    wait_sbom(svc)
+    assert len(runs["modes"]) == 2
 
 
 def test_a_daily_run_due_during_a_full_run_is_answered_by_it_and_keeps_its_own_time(runs):

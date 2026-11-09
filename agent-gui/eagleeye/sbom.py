@@ -839,8 +839,9 @@ def grype_db_dir() -> Optional[Path]:
 def _default_grype_dbs() -> list[Path]:
     """Where Grype put its database before the agent chose (to move it instead of downloading again)."""
     if sys.platform == "win32":
+        # %LOCALAPPDATA%\cache\grype\db (`grype db status` on a Windows VM, 9 Nov); \grype\db kept for older Grype
         local = os.environ.get("LOCALAPPDATA")
-        return [Path(local) / "grype" / "db"] if local else []
+        return [Path(local) / "cache" / "grype" / "db", Path(local) / "grype" / "db"] if local else []
     xdg = os.environ.get("XDG_CACHE_HOME")
     home = os.environ.get("HOME")
     paths = [Path(xdg) / "grype" / "db"] if xdg else []
