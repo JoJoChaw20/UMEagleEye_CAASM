@@ -26,6 +26,8 @@ class UploadStage(Stage):
     def run(self, ctx: PipelineContext) -> None:
         if self.scan_type == "active":
             ctx.network = build_network_info(ctx.subnet, ctx.hosts)
+            if ctx.summary.get("scanned_ports") and isinstance(ctx.network, dict):
+                ctx.network = {**ctx.network, "scanned_ports": ctx.summary["scanned_ports"]}
         else:   # passive: the collect stage left the network the hosts were heard on
             ctx.network = build_network_info(None, ctx.hosts, ctx.network)
         ctx.progress(f"Uploading {len(ctx.hosts)} host(s)")

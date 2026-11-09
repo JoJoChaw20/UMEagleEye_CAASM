@@ -592,3 +592,44 @@ def test_samba_is_recognised_by_its_ntlm_version():
     assert r["samba"] is True and "name" not in r
     f = probes.smb_finding(r, "netbios-ssn")
     assert (f.service, f.product, f.version) == ("netbios-ssn", "Samba smbd", "") and "samba" not in f.extra
+
+
+def test_port_facts_carry_what_the_exposure_rules_need():
+    https = probes.Finding("https", "nginx", "1.24", extra={
+        "status": 401, "server": "nginx", "realm": "NAS admin", "title": "", "tls_version": "TLSv1.3",
+        "certificate": {"subject": {"CN": "nas.lab"}, "issuer": {"CN": "nas.lab"}, "not_before": "2025-01-01T00:00:00+00:00",
+                        "not_after": "2026-11-01T00:00:00+00:00", "self_signed": True, "san": []}})
+    entry = https.port_entry(443)
+    assert entry["facts"] == {
+        "tls": {"version": "TLSv1.3", "not_before": "2025-01-01T00:00:00+00:00", "not_after": "2026-11-01T00:00:00+00:00",
+                "self_signed": True, "subject_cn": "nas.lab"},
+        "http": {"status": 401, "server": "nginx", "realm": "NAS admin"},
+    }
+    smb = probes.Finding("microsoft-ds", extra={"smb_dialect": "SMB 3.1.1", "signing_required": False})
+    assert smb.port_entry(445)["facts"] == {"smb": {"dialect": "SMB 3.1.1", "signing_required": False}}
+    rdp = probes.rdp_finding({"selected": "credssp", "nla_required": False, "certificate": {"subject": {}}})
+    assert rdp.port_entry(3389)["facts"] == {"rdp": {"security": "credssp", "nla_required": False}}   # an RDP certificate is not TLS facts
+    assert "facts" not in probes.Finding("ssh", "OpenSSH", "9.6").port_entry(22)
+
+
+def test_redis_says_whether_it_needs_a_password():
+    assert probes.parse_redis(b"$100\r\n# Server\r\nredis_version:7.2.4\r\nos:Linux\r\n").port_entry(6379)["facts"] == {"auth": "none"}
+    assert probes.parse_redis(b"-NOAUTH Authentication required.\r\n").port_entry(6379)["facts"] == {"auth": "required"}
+
+
+def test_an_active_scan_upload_says_which_ports_it_checked():
+    from eagleeye.pipeline import PipelineContext
+    from eagleeye.pipeline.record import HostRecord
+    from eagleeye.stages.upload import UploadStage
+
+    class Client:
+        def ingest(self, scan_type, hosts, scan_id=None, network=None):
+            self.network = network
+            from types import SimpleNamespace
+            return SimpleNamespace(ok=True, error=None, assets_upserted=1, hosts_discovered=1)
+    client = Client()
+    ctx = PipelineContext("scan", subnet="192.0.2.0/24", scan_type="active")
+    ctx.hosts = [HostRecord(ip="192.0.2.10", ports=[{"port": 23, "protocol": "tcp", "service": "telnet"}])]
+    ctx.summary["scanned_ports"] = [22, 23, 80]
+    UploadStage(client, "active").run(ctx)
+    assert client.network["scanned_ports"] == [22, 23, 80] and client.network["subnet"] == "192.0.2.0/24"

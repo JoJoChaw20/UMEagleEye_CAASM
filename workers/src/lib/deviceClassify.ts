@@ -13,7 +13,7 @@
 import { deviceTypeFor, type InventoryPayload } from './endpointInventory'
 import { applyHint, deviceTypeHint, type DeviceTypeHint } from './deviceHints'
 
-export type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string }
+export type NmapPort = { port: number; protocol?: string; service?: string; product?: string; version?: string; facts?: unknown }
 export type InferredDeviceType = 'server' | 'workstation' | 'network' | 'iot' | 'mobile' | 'unknown'
 
 // SNMP sysDescr substrings that identify a host as a router/switch/network device.

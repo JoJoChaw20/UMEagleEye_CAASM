@@ -170,9 +170,17 @@ export type MatchDecision =
 export function matchAsset(input: MatcherInput, cand: MatcherCandidates): MatchDecision {
   const usableMac = input.macClass === 'global' || input.macClass === 'local'
 
-  // Rule 1 — global MAC, any network.
+  // Rule 1 — global MAC, any network. When the agent on a machine reported this MAC as one of its
+  // own NICs, that machine is the device, even if another asset (made earlier by a scan or the
+  // network agent) has the MAC on a more recent address: lab VM, 9 Nov — its second NIC, first
+  // seen in a router's ARP table as a separate device, kept winning over the VM's own asset.
+  const vouched = cand.agentMacAssetIds ?? []
+  if (input.macClass === 'global' && vouched.length > 0
+    && !cand.macAddresses.some((a) => vouched.includes(a.assetId))) {
+    return { rule: '1-agent', assetId: vouched[0]!, matchedAddressId: null }
+  }
   if (input.macClass === 'global' && cand.macAddresses.length > 0) {
-    const hit = cand.macAddresses[0]!
+    const hit = cand.macAddresses.find((a) => vouched.includes(a.assetId)) ?? cand.macAddresses[0]!
     // The "network/server device on a different network" exception applies ONLY
     // when BOTH keys are non-null and differ. An unscoped matched address
     // (network_key NULL, e.g. a manual asset) counts as compatible → still merge

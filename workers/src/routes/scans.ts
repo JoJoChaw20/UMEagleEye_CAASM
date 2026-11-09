@@ -26,6 +26,8 @@ import { expireStaleActiveScans, pendingJobsFor } from '../services/pendingJobs'
 import { chooseAgent, countIn, coverageOf } from '../lib/agentRouting'
 import { bodyLimit } from 'hono/body-limit'
 import { scanTargetRefusal } from '../lib/scanTarget'
+import { cleanFacts } from '../lib/exposureRules'
+import { applyExposures } from '../services/exposure'
 import { routeAgents, unmanagedHostIps } from '../services/agentRouting'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
@@ -75,10 +77,14 @@ function buildOsInfo(os: Record<string, unknown> | null | undefined, ports: Nmap
     info.ports    = ports.map(p => `${p.port}/${p.protocol ?? 'tcp'}`)
     info.products = [...new Set(ports.map(p => p.product).filter(Boolean))]
     info.versions = [...new Set(ports.map(p => p.version).filter(Boolean))]
-    info.services = ports.map(p => ({
-      port: p.port, protocol: p.protocol ?? 'tcp',
-      service: p.service ?? null, product: p.product ?? null, version: p.version ?? null,
-    }))
+    info.services = ports.map(p => {
+      const facts = cleanFacts(p.facts)          // agent 2.6+: what the port showed (lib/exposureRules.ts)
+      return {
+        port: p.port, protocol: p.protocol ?? 'tcp',
+        service: p.service ?? null, product: p.product ?? null, version: p.version ?? null,
+        ...(facts ? { facts } : {}),
+      }
+    })
   }
   return info
 }
@@ -880,6 +886,9 @@ const ingestSchema = z.object({
     lan_subnet: z.string().max(64).nullish(),
     gateway_ip: z.string().max(45).nullish(),
     gateway_mac: z.string().max(17).nullish(),
+    // Agent 2.6+, active scans: the TCP ports it checked. An exposure alert closes only when its
+    // port was checked and the problem is gone (services/exposure.ts).
+    scanned_ports: z.array(z.number().int().min(1).max(65535)).max(2048).nullish(),
   }).nullish(),
 })
 
@@ -1389,6 +1398,19 @@ Example:
       }
     } catch (err) {
       console.error(`scan ingest: queueing drift checks failed (${driftIds.length} assets; the drift audit covers them):`, err)
+    }
+
+    // Risky configurations the scan saw (lib/exposureRules.ts): raised, refreshed or closed. Only an
+    // active scan sees ports; a failure here never fails the upload.
+    if (scan_type === 'active') {
+      try {
+        const ex = await applyExposures(db, upsertedAssetIds, network?.scanned_ports ?? null)
+        if (ex.created || ex.resolved || ex.reopened) {
+          console.log(`[scans] exposures: ${ex.created} new, ${ex.refreshed} still seen (${ex.reopened} reopened), ${ex.resolved} closed`)
+        }
+      } catch (err) {
+        console.error('scan ingest: exposure rules failed:', err)
+      }
     }
 
     // A device whose new-device alert was closed unreviewed (not seen for 14 days) is back.

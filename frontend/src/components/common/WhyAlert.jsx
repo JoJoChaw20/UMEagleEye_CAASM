@@ -52,6 +52,21 @@ function chain(e) {
         rule: 'R5 · An address or name of your own asset is in threat intel: treat as a possible compromise',
       }
     }
+    case 'exposure': {
+      const ev = d.evidence ?? {}
+      const seen = [
+        ev.product && `${ev.product}${ev.version ? ` ${ev.version}` : ''}`,
+        ev.realm && `a login prompt (realm "${ev.realm}")`, ev.title && `a page titled "${ev.title}"`,
+        ev.http_status && `HTTP ${ev.http_status}`, ev.not_after && `a certificate valid until ${new Date(ev.not_after).toLocaleDateString()}`,
+        ev.security && `RDP security "${ev.security}"`, ev.dialect && `SMB ${ev.dialect} without required signing`,
+        ev.checked, ev.what && `${ev.what}, and the asset is internet-facing`,
+      ].filter(Boolean)
+      return {
+        evidence: `An active scan of ${where} found port ${d.port} open${seen.length ? `: ${seen.join(', ')}` : ''}`,
+        knowledge: [d.fix ?? 'This configuration is a known risk'],
+        rule: `Exposure · ${d.title ?? 'A risky configuration seen now'} (stays open while scans still see it)`,
+      }
+    }
     case 'port_opened':
     case 'port_closed':
       return {

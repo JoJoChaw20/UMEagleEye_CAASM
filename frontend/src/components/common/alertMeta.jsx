@@ -30,6 +30,7 @@ export const EVENT_TYPE_LABELS = {
   removed_package:   'Removed Package',
   new_device:        'New Device',
   os_patch_missing:  'Windows Updates Missing',
+  exposure:          'Exposure',
 }
 
 const CONFIG_CHANGE_LABELS = {
@@ -54,6 +55,7 @@ export function alertLabel(e) {
   if (e.event_type === 'cti_match' && e.details?.match_kind === 'watchlist') return 'Watched Software Found'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
   if (e.event_type === 'os_patch_missing' && e.details?.patch_status === 'unsupported') return 'Windows Out of Support'
+  if (e.event_type === 'exposure') return e.details?.title ?? 'Exposure'
   return EVENT_TYPE_LABELS[e.event_type] || e.event_type
 }
 
@@ -80,7 +82,20 @@ export function renderDetail(e) {
   if (e.event_type === 'removed_package') return `-${d.package ?? ''}`
   if (e.event_type === 'new_device')      return `New: ${d.ip ?? ''}${d.mac ? ` (${d.mac})` : ''}`
   if (e.event_type === 'os_patch_missing') return windowsPatchSummary(d)
+  if (e.event_type === 'exposure') return exposureSummary(d)
   return d.changed_attribute ?? '—'
+}
+
+// "Port 80 · realm "Router"" / "Port 443 · expired 8 days ago (nas.lab)" (workers/src/lib/exposureRules.ts)
+export function exposureSummary(d) {
+  const ev = d.evidence ?? {}
+  const what = ev.product ? ` ${ev.product}${ev.version ? ` ${ev.version}` : ''}` : RISKY_PORTS[d.port] ? ` ${RISKY_PORTS[d.port]}` : ''
+  const extra = ev.realm ? `login realm "${ev.realm}"`
+    : ev.title ? `page "${ev.title}"`
+    : ev.days_left != null ? (ev.days_left < 0 ? `expired ${-ev.days_left} day${ev.days_left === -1 ? '' : 's'} ago` : `expires in ${ev.days_left} day${ev.days_left === 1 ? '' : 's'}`) + (ev.subject ? ` (${ev.subject})` : '')
+    : ev.security ? `security: ${ev.security}`
+    : ev.what ?? null
+  return [`Port ${d.port}${what}`, extra].filter(Boolean).join(' · ')
 }
 
 // "1,009 missing fixes (25 critical, 1 exploited) · install KB5127648"
@@ -241,6 +256,10 @@ function basePlaybook(e) {
       return d.exploited || exposed
         ? { urgency: '≤72h', text: `Install ${kb} through Windows Update and restart. It fixes ${d.exploited ? 'a CVE attackers are already using' : 'CVEs on an internet-facing machine'}, so do not wait for the patch cycle.` }
         : { urgency: 'Patch cycle', text: `Install ${kb} through Windows Update and restart in the next patch window. One cumulative update fixes every CVE listed; the alert closes itself at the next inventory.` }
+    }
+    case 'exposure': {
+      const urgency = e.severity === 'critical' ? '≤24h' : e.severity === 'high' ? '≤72h' : 'Patch cycle'
+      return { urgency, text: `${d.fix ?? 'Remove the risky configuration.'} The alert closes itself when the next active scan of this device no longer sees it; if it is intended, mark it accepted risk.` }
     }
     case 'port_opened': {
       const svc = RISKY_PORTS[d.port]
