@@ -13,6 +13,20 @@ test('Recog identifies the lab banners and gives NVD a CPE with the version', ()
   assert.equal(cpe23('cpe:/a:f5:nginx:-'), null)                  // no version: not looked up
 })
 
+test("the lab routers' SNMP descriptions: IOS version escaped for NVD, the switches' run-on version cut to one word", () => {
+  const [r1] = identifyServices([], 'Cisco IOS Software, IOSv Software (VIOS-ADVENTERPRISEK9-M), Version 15.9(3)M12, RELEASE SOFTWARE (fc1)\r\n'
+    + 'Technical Support: http://www.cisco.com/techsupport\r\nCopyright (c) 1986-2024 by Cisco Systems, Inc.')
+  assert.deepEqual([r1!.port, r1!.product, r1!.version], [161, 'IOS', '15.9(3)M12'])
+  assert.equal(r1!.cpe, 'cpe:2.3:o:cisco:ios:15.9\\(3\\)m12:*:*:*:*:*:*:*')
+  const [sw] = identifyServices([], 'Cisco IOS Software, vios_l2 Software (vios_l2-ADVENTERPRISEK9-M), Experimental Version '
+    + '15.2(20200924:215240) [sweickge-sep24-2020-l2iol-release 135]\r\nCopyright (c) 1986-2020 by Cisco Systems, Inc.')
+  assert.equal(sw!.version, '15.2(20200924:215240)')
+  assert.equal(sw!.cpe, null)                                       // experimental build: not looked up
+  const existing = [{ eventId: 'sw', status: 'open', key: productKey(sw!) }]
+  const plan = planServices([], existing, { onAlertPort: () => 'build', checkedPortsOf: () => false })
+  assert.match(plan.resolve[0]!.why, /build stamp/)
+})
+
 test('services are identified from the SSH banner and the HTTP Server header, with the distribution noted', () => {
   const ids = identifyServices([
     { port: 22, protocol: 'tcp', service: 'ssh', product: 'OpenSSH', version: '8.9p1', banner: 'SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10' },

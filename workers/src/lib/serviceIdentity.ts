@@ -48,15 +48,25 @@ function fromRecog(port: number, seen: string, r: Record<string, string> | null)
   const product = r?.['service.product'] ?? r?.['os.product']
   if (!r || !product) return null
   const svc = !!r['service.product']
-  const version = (svc ? r['service.version'] : r['os.version']) ?? null
+  // Its first word: some patterns run on into the next lines of a multi-line SNMP description
+  // (the lab's IOSvL2: "15.2(20200924:215240) [sweickge-…]\r\nCopyright (c) …")
+  const version = ((svc ? r['service.version'] : r['os.version']) ?? '').trim().split(/\s+/)[0] || null
   return {
     port, product, version,
     vendor: (svc ? r['service.vendor'] : r['os.vendor']) ?? null,
     family: (svc ? r['service.family'] : r['os.family']) ?? null,
-    cpe: cpe23(svc ? r['service.cpe23'] : r['os.cpe23']),
+    // A build stamp is not a release (the lab switches' IOSvL2 "Experimental Version
+    // 15.2(20200924:215240)"): NVD compares it against release ranges and lists every 15.2
+    // CVE (45, 9 Nov), so it is not looked up
+    cpe: isBuildStamp(version, seen) ? null : cpe23(svc ? r['service.cpe23'] : r['os.cpe23'], version),
     seen: seen.slice(0, 200),
     distro: DISTRO.exec(seen)?.[1] ?? null,
   }
+}
+
+/** An experimental or engineering build: a date/time stamp in the version, or so described. */
+export function isBuildStamp(version: string | null, seen: string): boolean {
+  return !!version && (/:|\(\d{8}/.test(version) || /\bexperimental\b/i.test(seen))
 }
 
 /** What runs on each open TCP port (and, from the SNMP description, the device's own OS). */
@@ -149,8 +159,9 @@ export interface ServicePlan {
 }
 
 /** What answers on an open alert's own port now: the same product at the version the device's SBOM
- *  lists ('sbom'), the same product at a version without CVEs ('no_cve'), or neither (null). */
-export type OnAlertPort = 'sbom' | 'no_cve' | null
+ *  lists ('sbom'), at a version without CVEs ('no_cve'), at a build stamp that is not looked up
+ *  ('build'), or neither (null). */
+export type OnAlertPort = 'sbom' | 'no_cve' | 'build' | null
 
 /** A device's vulnerable-service alerts after a scan: one per product. One closes when its port now
  *  runs a version without CVEs, or the version the SBOM lists (its CVEs come from the package list),
@@ -175,6 +186,7 @@ export function planServices(findings: ServiceFinding[], existing: OpenServiceAl
     const now = opts.onAlertPort(e.key)
     if (now === 'sbom') plan.resolve.push({ eventId: e.eventId, why: "The version now running is the one in this device's SBOM, whose CVEs come from its package list." })
     else if (now === 'no_cve') plan.resolve.push({ eventId: e.eventId, why: 'The version now running has no known CVE.' })
+    else if (now === 'build') plan.resolve.push({ eventId: e.eventId, why: 'Its version is a build stamp (an experimental or engineering build) that NVD cannot compare with releases, so its CVEs are not looked up.' })
     else if (opts.checkedPortsOf(e.key)) plan.resolve.push({ eventId: e.eventId, why: 'No longer seen: an active scan checked the port and the product is gone.' })
   }
   return plan

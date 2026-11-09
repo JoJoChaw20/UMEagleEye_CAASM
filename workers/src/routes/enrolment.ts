@@ -45,7 +45,7 @@ app.get('/tokens', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), async (c
 
 app.post('/tokens', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), zValidator('json', z.object({
   name: z.string().trim().min(1).max(100),
-  kind: z.enum(['host', 'network']).default('host'),
+  kind: z.enum(['host', 'network', 'mobile']).default('host'),
   days: z.number().int().min(1).max(90).default(14),
   max_uses: z.number().int().min(1).max(100000).nullable().default(null),
 }), (result, c) => {
@@ -90,7 +90,7 @@ app.delete('/tokens/:id', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), a
 app.post('/enrol', zValidator('json', z.object({
   token: z.string().regex(/^[0-9a-f]{64}$/),
   name: z.string().max(255).optional(),
-  kind: z.enum(['host', 'network']).optional(),
+  kind: z.enum(['host', 'network', 'mobile']).optional(),
 }), (result, c) => {
   if (!result.success) return c.json({ detail: 'This is not a valid install code' }, 400)
 }), async (c) => {
@@ -103,7 +103,7 @@ app.post('/enrol', zValidator('json', z.object({
     const state = tokenState(token)
     if (state !== 'active') return c.json({ detail: REFUSAL[state] }, 403)
     if (body.kind && body.kind !== token.kind) {
-      return c.json({ detail: `This install code is for ${token.kind === 'network' ? 'network agents' : "computers' agents"}` }, 403)
+      return c.json({ detail: `This install code is for ${token.kind === 'network' ? 'network agents' : token.kind === 'mobile' ? 'phones' : "computers' agents"}` }, 403)
     }
     // Count the use first, atomically, so a limited code never makes more agents than allowed.
     const [counted] = await db.update(enrolmentTokens)

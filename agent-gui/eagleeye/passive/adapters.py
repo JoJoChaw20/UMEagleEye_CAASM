@@ -53,6 +53,45 @@ def _linux_adapters() -> list[dict[str, Any]]:
     return parse_ip_addr(ip_json("addr"), ip_json("-4", "route", "show", "default"))
 
 
+# ── macOS ────────────────────────────────────────────────────────────────────
+
+def parse_netstat_default(text: str) -> dict[str, str]:
+    """`netstat -rn -f inet` -> {interface: default gateway} ("default 192.168.1.1 UGScg en0")."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "default" and parts[1].count(".") == 3:
+            out.setdefault(parts[3], parts[1])
+    return out
+
+
+def darwin_adapters(ifconfig: str, netstat: str, index: Any = None) -> list[dict[str, Any]]:
+    """`ifconfig -a` and `netstat -rn -f inet` -> adapters (the same shape as Linux's)."""
+    from ..collectors.macos import parse_ifconfig
+    gateways = parse_netstat_default(netstat)
+    out = []
+    for n in parse_ifconfig(ifconfig):
+        idx = None
+        if index is not None:
+            try:
+                idx = index(n["name"])
+            except OSError:
+                idx = None
+        mac = n["mac"]
+        out.append({"name": n["name"], "description": n["name"], "index": idx,
+                    "mac": mac if mac and mac != "00:00:00:00:00:00" else None,
+                    "ips": list(n["ipv4"]), "prefixes": dict(n["prefixes"]), "gateway": gateways.get(n["name"])})
+    return out
+
+
+def _darwin_adapters() -> list[dict[str, Any]]:
+    import socket
+
+    def run(*argv: str) -> str:
+        return subprocess.run(list(argv), capture_output=True, text=True, timeout=5).stdout
+    return darwin_adapters(run("ifconfig", "-a"), run("netstat", "-rn", "-f", "inet"), socket.if_nametoindex)
+
+
 # ── Windows ──────────────────────────────────────────────────────────────────
 
 if sys.platform == "win32":  # pragma: no cover - the ctypes layer runs on Windows only
@@ -153,6 +192,8 @@ if sys.platform == "win32":  # pragma: no cover - the ctypes layer runs on Windo
 def list_adapters() -> list[dict[str, Any]]:
     if sys.platform == "win32":
         return _windows_adapters()
+    if sys.platform == "darwin":
+        return _darwin_adapters()
     return _linux_adapters()
 
 

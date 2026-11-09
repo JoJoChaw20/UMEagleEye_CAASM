@@ -222,8 +222,10 @@ _VIRTUAL_ADAPTER_WORDS = ("loopback", "km-test", "vmware virtual", "vmware netwo
                           "hyper-v virtual", "vethernet", "wsl", "docker", "npcap loopback")
 
 
-# Linux bridges and links of containers and local VMs (Docker, libvirt, LXD, Kubernetes).
-_VIRTUAL_LINUX_PREFIXES = ("br-", "veth", "virbr", "lxdbr", "cni", "flannel")
+# Linux bridges and links of containers and local VMs (Docker, libvirt, LXD, Kubernetes), and
+# macOS's own: tunnels (VPN, iCloud Private Relay), AirDrop/AWDL, bridges, VMs' NICs.
+_VIRTUAL_LINUX_PREFIXES = ("br-", "veth", "virbr", "lxdbr", "cni", "flannel",
+                           "utun", "awdl", "llw", "bridge", "gif", "stf", "anpi", "vmenet", "feth", "ipsec")
 
 
 def _is_virtual_adapter(adapter: dict[str, Any]) -> bool:

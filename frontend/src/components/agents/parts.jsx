@@ -1,6 +1,6 @@
 // Small parts the Agents page and the agent panel share.
 import { useState } from 'react'
-import { Check, Copy, Network } from 'lucide-react'
+import { Check, Copy, Network, Smartphone } from 'lucide-react'
 import { formatSeen } from '../../utils/time'
 
 const STATUS_META = {
@@ -19,6 +19,15 @@ export function StatusBadge({ status }) {
     >
       <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
       {m.label}
+    </span>
+  )
+}
+
+export function MobileBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border border-violet-500/30 bg-violet-500/10 text-violet-300"
+      title="The EagleEye app on a phone or tablet: it reports that device's own inventory and security settings">
+      <Smartphone className="w-3 h-3" /> Phone
     </span>
   )
 }

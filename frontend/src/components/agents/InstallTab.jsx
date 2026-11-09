@@ -4,7 +4,7 @@
 // always the newest upload of each, so the buttons name no version (it is shown beside them).
 // They carry no secrets: the connection code does.
 import { useEffect, useState } from 'react'
-import { Apple, Download, Monitor, Plus, Server, Terminal } from 'lucide-react'
+import { Apple, Download, Monitor, Plus, Server, Smartphone, Terminal } from 'lucide-react'
 import client from '../../api/client'
 import InstallCodesCard from './InstallCodesCard'
 import { CopyButton } from './parts'
@@ -204,11 +204,60 @@ docker run -d --name eagleeye-network-agent --restart unless-stopped \\
   )
 }
 
-function MacGuide() {
+function MacGuide({ pkg }) {
+  const file = pkg?.filename ?? 'eagleeye-agent-<version>.tar.gz'
+  const dir = file.replace(/\.tar\.gz$/, '')
   return (
-    <div className="space-y-3 text-sm text-dark-300">
-      <p>There is no agent for macOS yet: it has no way to collect a Mac's inventory and security settings.</p>
-      <p>Macs are still found and identified on the network by the other agents' scans and passive listening, and by a network agent (with the switch port they are on).</p>
+    <div className="space-y-5">
+      <DownloadButton pkg={pkg} package="source" label="Download for macOS (.tar.gz)" className="btn-primary" />
+      <Requirements items={['macOS 12 or later (Apple silicon or Intel), and an administrator account', "Python 3.12 or later: python.org, or brew install python@3.12 (macOS's own python3 is too old)", 'HTTPS out to this EagleEye server']} />
+      <ol className="space-y-4">
+        <Step n={1} title="Get a code for it">
+          <p><strong>Register agent</strong> below, and save the code in a file, for example <code className="font-mono text-xs">~/code.txt</code>.</p>
+        </Step>
+        <Step n={2} title="Install and connect (Terminal)">
+          <Commands>{`cd ~/Downloads && tar xzf ${file}
+sudo bash ${dir}/packaging/macos/install-macos.sh ${file} --code-file ~/code.txt
+eagleeye gui`}</Commands>
+          <p className="text-xs text-dark-400">
+            It runs as the launchd daemon <code className="font-mono">com.umeagleeye.agent</code> (as root, from <code className="font-mono">/usr/local/eagleeye</code>);
+            its settings and logs are in <code className="font-mono">/Library/Application Support/EagleEye</code>. It reports the Mac's hardware, macOS version and updates,
+            FileVault, the firewall, XProtect, apps and Homebrew packages. Secure Boot and the Secure Enclave cannot be read from a program, so they are shown as unknown.
+          </p>
+        </Step>
+        <Step n={3} title="Optional: SBOM tools and Nmap">
+          <Commands>{`brew install syft grype nmap`}</Commands>
+        </Step>
+      </ol>
+      <p className="text-xs text-dark-400">
+        Updating: run the same script with the new package (the connection and settings are kept).
+        Removing: <code className="font-mono">sudo bash install-macos.sh --uninstall --purge</code>.
+      </p>
+    </div>
+  )
+}
+
+function AndroidGuide({ pkg }) {
+  return (
+    <div className="space-y-5">
+      <DownloadButton pkg={pkg} package="android" label="Download for Android (.apk)" className="btn-primary" />
+      <Requirements items={['Android 8 or later (phones and tablets)', 'Wi-Fi of your organisation for the first report (on mobile data it waits)', 'HTTPS out to this EagleEye server']} />
+      <ol className="space-y-4">
+        <Step n={1} title="Get a code for it">
+          <p><strong>Register agent</strong> below (one phone), or an <strong>install code</strong> for phones (Install codes, "Phones (Android)") to hand out to many.</p>
+        </Step>
+        <Step n={2} title="Install the app">
+          <p>Open the .apk on the phone and allow installing it (Android asks once for the browser or file app it came from). It is not on Google Play yet.</p>
+        </Step>
+        <Step n={3} title="Connect">
+          <p>Open <strong>EagleEye Agent</strong>, paste the code, and press <strong>Connect</strong>. It reports at once, then checks in every 15 minutes.</p>
+        </Step>
+      </ol>
+      <p className="text-xs text-dark-400">
+        It sends the phone's name and model, Android version and security patch level, screen lock, storage encryption,
+        signs of root and USB debugging, and its address on the Wi-Fi. Installed apps only when <strong>Include software users installed for themselves</strong> is
+        on for it. Never accounts, messages, contacts, photos, files or location; it does not scan or listen to the network.
+      </p>
     </div>
   )
 }
@@ -218,6 +267,7 @@ const PLATFORMS = [
   { key: 'linux', label: 'Linux', icon: Terminal },
   { key: 'network', label: 'Network agent', icon: Server },
   { key: 'macos', label: 'macOS', icon: Apple },
+  { key: 'android', label: 'Android', icon: Smartphone },
 ]
 
 export default function InstallTab({ downloads, canManage, isSuperadmin, onRegister }) {
@@ -241,7 +291,8 @@ export default function InstallTab({ downloads, canManage, isSuperadmin, onRegis
         {platform === 'windows' && <WindowsGuide pkg={downloads === null ? null : downloads?.windows} />}
         {platform === 'linux' && <LinuxGuide pkg={downloads === null ? null : downloads?.source} />}
         {platform === 'network' && <NetworkGuide pkg={downloads === null ? null : downloads?.source} />}
-        {platform === 'macos' && <MacGuide />}
+        {platform === 'macos' && <MacGuide pkg={downloads === null ? null : downloads?.source} />}
+        {platform === 'android' && <AndroidGuide pkg={downloads === null ? null : downloads?.android ?? null} />}
       </div>
 
       <div className="glass-card p-6 space-y-3">

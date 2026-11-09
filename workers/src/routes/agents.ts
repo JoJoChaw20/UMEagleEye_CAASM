@@ -155,12 +155,14 @@ const VERSION_RE = String.raw`(\d+(?:\.\d+){1,3})`
 const PACKAGES = {
   windows: { name: new RegExp(String.raw`^agent-installer/(EagleEyeAgent-Setup-${VERSION_RE}\.exe)$`), type: 'application/vnd.microsoft.portable-executable' },
   source: { name: new RegExp(String.raw`^agent-installer/(eagleeye-agent-${VERSION_RE}\.tar\.gz)$`), type: 'application/gzip' },
+  // the phone agent (mobile-agent/), sideloaded
+  android: { name: new RegExp(String.raw`^agent-installer/(EagleEyeMobile-${VERSION_RE}\.apk)$`), type: 'application/vnd.android.package-archive' },
 } as const
 type PackageKind = keyof typeof PACKAGES
 type Package = { key: string; filename: string; version: string; size: number; uploaded: Date }
 
 async function latestPackages(bucket: R2Bucket): Promise<Record<PackageKind, Package | null>> {
-  const latest: Record<PackageKind, Package | null> = { windows: null, source: null }
+  const latest: Record<PackageKind, Package | null> = { windows: null, source: null, android: null }
   const listed = await bucket.list({ prefix: INSTALLER_PREFIX })
   for (const o of listed.objects) {
     for (const kind of Object.keys(PACKAGES) as PackageKind[]) {
@@ -179,15 +181,16 @@ const packageOut = (p: Package | null) => p && ({ filename: p.filename, version:
 
 router.get('/installer', authMiddleware, async (c) => {
   const latest = await latestPackages(c.env.REPORTS_BUCKET)
-  if (!latest.windows && !latest.source) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
+  if (!latest.windows && !latest.source && !latest.android) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
   // The Windows installer's fields at the top level, as before; `packages` has each download.
-  return c.json({ ...packageOut(latest.windows), packages: { windows: packageOut(latest.windows), source: packageOut(latest.source) } })
+  return c.json({ ...packageOut(latest.windows), packages: {
+    windows: packageOut(latest.windows), source: packageOut(latest.source), android: packageOut(latest.android) } })
 })
 
-// ?package=windows (default) | source
+// ?package=windows (default) | source | android
 router.get('/installer/download', authMiddleware, async (c) => {
   const kind = (c.req.query('package') ?? 'windows') as PackageKind
-  if (!(kind in PACKAGES)) return c.json({ detail: 'package must be windows or source' }, 400)
+  if (!(kind in PACKAGES)) return c.json({ detail: 'package must be windows, source or android' }, 400)
   const pkg = (await latestPackages(c.env.REPORTS_BUCKET))[kind]
   const obj = pkg ? await c.env.REPORTS_BUCKET.get(pkg.key) : null
   if (!pkg || !obj) return c.json({ detail: 'That download has not been uploaded yet' }, 404)
@@ -635,7 +638,8 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
             ? or(eq(assetAddresses.assetId, assetId), and(eq(assetAddresses.networkKey, networkKey), eq(assetAddresses.ipAddress, ip)))
             : eq(assetAddresses.assetId, assetId),
         ))
-        for (const op of planAgentAddress(assetId, ip, mac, networkKey, current)) {
+        const ownIps = (inv.network.interfaces ?? []).flatMap(nic => nic.ipv4 ?? [])
+        for (const op of planAgentAddress(assetId, ip, mac, networkKey, current, ownIps)) {
           if (op.k === 'refresh') {
             statements.push(db.update(assetAddresses).set({ lastSeen: now, macAddress: op.macAddress, networkKey: op.networkKey })
               .where(eq(assetAddresses.addressId, op.addressId)))

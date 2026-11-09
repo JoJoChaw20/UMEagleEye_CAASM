@@ -56,6 +56,25 @@ export interface LinkRow { aName: string; aPort: string; bName: string; bPort: s
 
 const endKey = (e: LinkEnd) => `${e.device.toLowerCase()}\u0000${e.port.toLowerCase()}`
 
+const ipNum = (ip: string) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0)
+
+/** The networks a crawl reached: the subnets of the polled devices' own addresses (/8 to /30;
+ *  not loopback or self-assigned), each with the lowest device address on it as its gateway (the
+ *  router's .1 on the lab's VLANs). Kept on the crawl's Discovery record for the Networks list. */
+export function crawlSubnets(devices: { addresses: { ip: string; prefix?: number | null; network?: string | null }[] }[]): { subnet: string; gateway: string }[] {
+  const out = new Map<string, string>()
+  for (const d of devices) {
+    for (const a of d.addresses) {
+      if (!a.network || a.prefix == null || a.prefix < 8 || a.prefix > 30) continue
+      if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(a.network) || /^(127|169\.254)\./.test(a.network)) continue
+      const gw = out.get(a.network)
+      if (!gw || ipNum(a.ip) < ipNum(gw)) out.set(a.network, a.ip)
+    }
+  }
+  return [...out].map(([subnet, gateway]) => ({ subnet, gateway }))
+    .sort((x, y) => ipNum(x.subnet.split('/')[0]!) - ipNum(y.subnet.split('/')[0]!)).slice(0, 64)
+}
+
 /** One row per cable: the ends in a fixed order, so the cable seen from either of its
  *  devices (or by two agents) is the same row; reports of one cable are merged. */
 export function linkRows(links: CrawlLink[]): LinkRow[] {

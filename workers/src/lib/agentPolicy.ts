@@ -45,11 +45,14 @@ export const POLICY_SPECS = {
 export type PolicyKey = keyof typeof POLICY_SPECS
 export const POLICY_KEYS = Object.keys(POLICY_SPECS) as PolicyKey[]
 
-// Which settings each kind of agent has: a computer's own agent, and the network agent.
+// Which settings each kind of agent has: a computer's own agent, the network agent, and the phone
+// agent (mobile-agent/, Android): a phone only reports its own inventory (apps only when allowed).
 const NETWORK_KEYS = ['network_poll', 'network_seeds', 'network_ranges', 'network_depth', 'network_interval'] as const
+const MOBILE_KEYS = ['inventory', 'inventory_interval', 'inventory_user_software'] as const
 export const KIND_KEYS: Record<string, readonly PolicyKey[]> = {
   host: POLICY_KEYS.filter((k) => !(NETWORK_KEYS as readonly string[]).includes(k)),
   network: NETWORK_KEYS,
+  mobile: MOBILE_KEYS,
 }
 export const AGENT_KINDS = Object.keys(KIND_KEYS)
 

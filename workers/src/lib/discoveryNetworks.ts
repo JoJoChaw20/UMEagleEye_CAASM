@@ -57,6 +57,17 @@ export function networkOf(r: ScanRecordFacts): { subnet: string; gateway: string
   return { subnet, gateway: sameLan ? gateway : null }
 }
 
+/** The networks a network agent's crawl reached (routes/network.ts keeps them on its record). */
+export function crawlSubnetsOf(r: ScanRecordFacts): { subnet: string; gateway: string | null }[] {
+  const crawl = info(r)['crawl']
+  const list = crawl && typeof crawl === 'object' ? (crawl as Record<string, unknown>)['subnets'] : null
+  if (!Array.isArray(list)) return []
+  return list.flatMap((s) => {
+    const subnet = s && typeof s === 'object' ? str((s as Record<string, unknown>)['subnet']) : null
+    return subnet && isCidr(subnet) ? [{ subnet, gateway: str((s as Record<string, unknown>)['gateway']) }] : []
+  })
+}
+
 /** The passive network a record was heard on (folding key, see routes/scans.ts ingest). */
 export function passiveNetworkOf(network: { subnet?: string | null; lan_subnet?: string | null } | null | undefined): string | null {
   return str(network?.lan_subnet) ?? str(network?.subnet)
@@ -105,6 +116,8 @@ export interface NetworkSummary {
   /** Agent that was on it most recently (the one "Scan this network" uses) */
   latest_agent_id: string | null
   latest_at: string
+  /** Last completed crawl by a network agent that reached it */
+  last_crawl: { scan_id: string; at: string; agent_id: string | null; devices: number } | null
 }
 
 const iso = (v: Date | string | null): string | null => (v == null ? null : new Date(v).toISOString())
@@ -118,14 +131,16 @@ export function buildNetworks(
 ): NetworkSummary[] {
   const nets = new Map<string, NetworkSummary & { ips: Set<string>; agents: Set<string>; latestTs: number }>()
   for (const r of records) {
-    const net = networkOf(r)
-    if (!net) continue
+    const kind = scanKind(r)
+    // A crawl reads every network its routers are on; any other record belongs to one
+    const own = kind === 'snmp' ? crawlSubnetsOf(r) : [networkOf(r)].filter((x) => x !== null)
+    for (const net of own) {
     const when = new Date(r.completedAt ?? r.startedAt).getTime()
     let n = nets.get(net.subnet)
     if (!n) {
       n = {
         subnet: net.subnet, gateway: net.gateway, agent_ids: [], last_heard_at: null, last_heard_scan_id: null, last_full_scan: null,
-        hosts_24h: 0, new_devices: 0, latest_agent_id: null, latest_at: new Date(when).toISOString(),
+        hosts_24h: 0, new_devices: 0, latest_agent_id: null, latest_at: new Date(when).toISOString(), last_crawl: null,
         ips: new Set(), agents: new Set(), latestTs: -Infinity,
       }
       nets.set(net.subnet, n)
@@ -137,7 +152,6 @@ export function buildNetworks(
       n.latest_at = new Date(when).toISOString()
       if (r.agentId) n.latest_agent_id = r.agentId
     }
-    const kind = scanKind(r)
     if (kind === 'passive' && (!n.last_heard_at || when > Date.parse(n.last_heard_at))) {
       n.last_heard_at = iso(new Date(when))
       n.last_heard_scan_id = r.scanId
@@ -145,7 +159,13 @@ export function buildNetworks(
     if (kind === 'network' && r.status === 'completed' && (!n.last_full_scan || when > Date.parse(n.last_full_scan.at))) {
       n.last_full_scan = { scan_id: r.scanId, at: new Date(when).toISOString(), hosts: r.hostsDiscovered }
     }
+    if (kind === 'snmp' && r.status === 'completed' && (!n.last_crawl || when > Date.parse(n.last_crawl.at))) {
+      const crawl = info(r)['crawl'] as Record<string, unknown> | undefined
+      n.last_crawl = { scan_id: r.scanId, at: new Date(when).toISOString(), agent_id: r.agentId,
+        devices: typeof crawl?.['devices'] === 'number' ? crawl['devices'] as number : 0 }
+    }
     for (const ip of ipsByScan.get(r.scanId) ?? []) if (ipInCidr(ip, net.subnet)) n.ips.add(ip)
+    }
   }
   return [...nets.values()]
     .map(({ ips, agents, latestTs: _latest, ...n }) => ({

@@ -22,7 +22,7 @@ import { agentPolicy } from '../services/agentPolicy'
 import { MAP_DAYS, loadNetworkMap } from '../services/networkMap'
 import { normalizeMac } from '../lib/mac'
 import {
-  assetIndex, deviceAssets, linkRows, planLocations, topologySchema, type AssetRef, type CrawlHost,
+  assetIndex, crawlSubnets, deviceAssets, linkRows, planLocations, topologySchema, type AssetRef, type CrawlHost,
 } from '../lib/networkTopology'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -159,6 +159,7 @@ app.post('/topology', zValidator('json', topologySchema, (result, c) => {
     const summary = {
       devices: body.devices.length, links: rows.length, addresses: body.hosts.filter((h) => h.ip).length,
       located: locations.filter((l) => l.location.port).length,
+      subnets: crawlSubnets(body.devices),          // the networks it reached (Discovery's Networks list)
       notes: body.devices.flatMap((d) => (d.notes ?? []).map((n) => `${d.label}: ${n}`)).slice(0, 20),
       unreachable: body.stats?.unreachable ?? [], skipped: body.stats?.skipped ?? 0,
       seconds: body.stats?.seconds ?? null, requests: body.stats?.requests ?? null,

@@ -99,8 +99,17 @@ BitLocker, TPM and SMBv1 need Administrator; without it they are reported as "ne
 history, firewall from ufw / firewalld / nftables, disk encryption from LUKS layers under `/`, `/home`, `/var`, `/srv`,
 Secure Boot, TPM, xrdp, Samba SMBv1 and members of the sudo / wheel / admin groups. The SMBIOS UUID and serial need
 root; run the agent with `sudo` (or as a root systemd service), otherwise they are reported as unavailable and the
-server's VM-clone guard cannot use them. A machine without a desktop session reports the role "server". The macOS
-collector is not written yet; there the agent reports that once and stops trying.
+server's VM-clone guard cannot use them. A machine without a desktop session reports the role "server".
+
+**macOS** (`collectors/macos.py`) reports it from `system_profiler` (hardware, storage, apps with their code-signing
+publisher), `sw_vers`, `ioreg` (hardware UUID and serial), `sysctl`, `scutil`, `dsconfigad`, `ifconfig` +
+`networksetup`, `lsof` and Homebrew's Cellar: macOS updates from `/Library/Receipts/InstallHistory.plist` (only macOS
+and security updates count, not the XProtect/MRT data files), FileVault (`fdesetup`), the application firewall
+(`socketfilterfw`), XProtect (fresh when its data is under 45 days old) and other protection found by its app, Screen
+Sharing / Remote Desktop listening, and the admin group (`dscl`). Secure Boot, the Secure Enclave, UAC and SMBv1 have
+no readable equivalent and are reported as unknown (left out of the score). Apps under `/System` are macOS's own and
+left out; apps in a user's folder only with `user_software`. Tested against recorded output
+(`tests/test_macos_inventory.py`), not yet on a real Mac.
 
 ## Desktop app
 `python -m eagleeye gui`, or `EagleEyeAgent.exe` from the installer. One copy runs per user; it keeps running in the
@@ -198,16 +207,28 @@ inventory is kept: each run replaces the previous one, and software that is unin
 the asset. To stop collection on a machine, run the agent with `--no-inventory` or stop it; otherwise it sends a
 new inventory at its next run.
 
-## Running as a service (Windows and Linux)
+## Running as a service (Windows, Linux and macOS)
 Since 2.5.0 the agent runs as a system service: it starts with the computer, before anyone signs in, keeps
 running when the desktop app is closed, and restarts after a crash. The desktop app is only its window: it shows
 the service's state (over a local named pipe / Unix socket) and changes its settings after an administrator prompt.
 
-| | Windows | Linux |
-|---|---|---|
-| Service | `EagleEye Agent` (LocalSystem, delayed automatic start) | systemd unit `eagleeye-agent` (root) |
-| Settings, state, logs | `%ProgramData%\EagleEye` (Users may read; only administrators change) | `/var/lib/eagleeye` |
-| Secrets | `secrets.dat`, DPAPI machine key, SYSTEM + Administrators only | `secrets.json`, mode 600 |
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Service | `EagleEye Agent` (LocalSystem, delayed automatic start) | systemd unit `eagleeye-agent` (root) | launchd daemon `com.umeagleeye.agent` (root) |
+| Settings, state, logs | `%ProgramData%\EagleEye` (Users may read; only administrators change) | `/var/lib/eagleeye` | `/Library/Application Support/EagleEye` |
+| Secrets | `secrets.dat`, DPAPI machine key, SYSTEM + Administrators only | `secrets.json`, mode 600 | `secrets.json`, mode 600 |
+
+On a Mac, `packaging/macos/install-macos.sh` (in the source package) does it all: it finds Python 3.12+ (python.org
+or Homebrew; macOS's own `python3` is too old), puts the agent in `/usr/local/eagleeye` with its own environment
+(keyring, truststore, scapy, PySide6 unless `--no-gui`), adds the `eagleeye` command, connects it
+(`--code-file`) and registers the daemon:
+```bash
+sudo bash packaging/macos/install-macos.sh eagleeye-agent-<version>.tar.gz --code-file ~/code.txt
+eagleeye gui                                      # its window; settings changes ask for the administrator password
+sudo bash packaging/macos/install-macos.sh --uninstall --purge
+```
+The daemon restarts after a crash (not after `eagleeye service stop`). Passive listening uses libpcap, which comes
+with macOS; Syft, Grype and Nmap are found in Homebrew's folders (`brew install syft grype nmap`).
 
 The Windows installer sets it up. By hand, as an administrator (Windows: an elevated PowerShell; Linux: sudo,
 from the agent's folder):

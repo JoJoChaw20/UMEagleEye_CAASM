@@ -35,6 +35,10 @@ export interface PostureResult {
 export const MIN_ASSESSED_WEIGHT = 40
 export const PATCH_WARN_DAYS = 30
 export const PATCH_BAD_DAYS = 60
+// A phone's "security patch level" is the date of the patch set, usually a month or two behind
+// even on a phone that installed every update: so warn after 90 days and fail after 180.
+export const MOBILE_PATCH_WARN_DAYS = 90
+export const MOBILE_PATCH_BAD_DAYS = 180
 
 const VALUE: Record<string, number> = { good: 1, warn: 0.5, bad: 0 }
 
@@ -52,7 +56,11 @@ export function evaluatePosture(inventory: unknown): PostureResult {
   const checks: PostureCheck[] = []
   const push = (id: string, label: string, weight: number, state: CheckState, detail: string | null = null) =>
     checks.push({ id, label, weight, state, detail })
+  // A phone (the Android agent): no firewall, antivirus, UAC, SMB, TPM, RDP or local administrators
+  // to report, but its own checks (screen lock, root, USB debugging)
+  const mobile = inv['platform'] === 'android'
 
+  if (!mobile) {
   // Firewall
   const fw = bool(s['firewall_all_enabled'])
   push('firewall', 'Firewall', 15, fw == null ? 'unknown' : fw ? 'good' : 'bad',
@@ -64,6 +72,8 @@ export function evaluatePosture(inventory: unknown): PostureResult {
   push('antivirus', 'Antivirus', 15,
     !av.length ? 'unknown' : !active.length ? 'bad' : active.every(a => a['up_to_date'] === true) ? 'good' : 'warn',
     av.length ? av.map(a => `${a['name']}${a['enabled'] ? '' : ' (off)'}${a['enabled'] && a['up_to_date'] === false ? ' (out of date)' : ''}`).join(', ') : null)
+
+  }
 
   // Disk encryption: every reported volume protected (Windows BitLocker, or the
   // platform-neutral disk_encryption list other collectors send).
@@ -79,10 +89,32 @@ export function evaluatePosture(inventory: unknown): PostureResult {
   // updates are not active yet.
   const days = num(p['days_since_last_patch'])
   const pending = bool(p['pending_reboot'])
-  let upd: CheckState = days == null ? 'unknown' : days > PATCH_BAD_DAYS ? 'bad' : days > PATCH_WARN_DAYS ? 'warn' : 'good'
+  const [warnDays, badDays] = mobile ? [MOBILE_PATCH_WARN_DAYS, MOBILE_PATCH_BAD_DAYS] : [PATCH_WARN_DAYS, PATCH_BAD_DAYS]
+  let upd: CheckState = days == null ? 'unknown' : days > badDays ? 'bad' : days > warnDays ? 'warn' : 'good'
   if (upd === 'good' && pending) upd = 'warn'
   push('updates', 'Updates', 20, upd,
-    days == null ? null : `last update ${days} day${days === 1 ? '' : 's'} ago${pending ? ', restart pending' : ''}`)
+    days == null ? null : mobile ? `security patch level ${days} day${days === 1 ? '' : 's'} old`
+      : `last update ${days} day${days === 1 ? '' : 's'} ago${pending ? ', restart pending' : ''}`)
+
+  if (mobile) {
+    const lock = bool(s['screen_lock'])
+    push('screen_lock', 'Screen lock', 15, lock == null ? 'unknown' : lock ? 'good' : 'bad',
+      lock ? 'PIN, pattern, password or biometrics' : lock === false ? 'None: anyone holding the phone can open it' : null)
+    const rooted = bool(s['rooted'])
+    const signals = Array.isArray(s['root_signals']) ? (s['root_signals'] as unknown[]).map(String) : []
+    push('rooted', 'Not rooted', 15, rooted == null ? 'unknown' : rooted ? 'bad' : 'good',
+      rooted ? `Signs of root: ${signals.join(', ') || 'yes'}` : rooted === false ? 'No signs of root' : null)
+    const usb = bool(s['usb_debugging'])
+    push('usb_debugging', 'USB debugging', 5, usb == null ? 'unknown' : usb ? 'warn' : 'good',
+      usb ? 'On (a computer it is plugged into can control it)' : usb === false ? 'Off' : null)
+    const totalM = checks.reduce((n, c) => n + c.weight, 0)
+    const readableM = checks.filter(c => c.state in VALUE)
+    const assessedM = readableM.reduce((n, c) => n + c.weight, 0)
+    return {
+      model: POSTURE_MODEL, checks, assessedWeight: assessedM, totalWeight: totalM,
+      score: assessedM >= MIN_ASSESSED_WEIGHT ? Math.round(100 * readableM.reduce((n, c) => n + c.weight * VALUE[c.state]!, 0) / assessedM) : null,
+    }
+  }
 
   const uac = bool(s['uac_enabled'])
   push('uac', 'User Account Control', 10, uac == null ? 'unknown' : uac ? 'good' : 'bad')

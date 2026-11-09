@@ -87,3 +87,18 @@ test('the agent upload of the GNS3 lab is what the server takes', () => {
   assert.deepEqual([plan.pcb!.port, plan.pcb!.vlan, plan.pcb!.interface], [null, 10, 'Gi0/1.10'])
   assert.equal(plan.r1, undefined)
 })
+
+test("a crawl's networks: the subnets of the routers' and switches' own addresses, the lowest address as gateway", async () => {
+  const { crawlSubnets } = await import('./networkTopology')
+  // The GNS3 lab (9 Nov): R1 on the agent link and its VLAN subinterfaces, the switches' VLAN 99 SVIs
+  const r1 = { addresses: [
+    { ip: '10.99.0.1', prefix: 24, network: '10.99.0.0/24' }, { ip: '10.10.1.1', prefix: 24, network: '10.10.1.0/24' },
+    { ip: '10.10.10.1', prefix: 24, network: '10.10.10.0/24' }, { ip: '10.10.99.1', prefix: 24, network: '10.10.99.0/24' },
+    { ip: '1.1.1.1', prefix: 32, network: '1.1.1.1/32' }, { ip: '127.0.0.1', prefix: 8, network: '127.0.0.0/8' },
+  ] }
+  const sw1 = { addresses: [{ ip: '10.10.99.2', prefix: 24, network: '10.10.99.0/24' }, { ip: '10.10.5.5', prefix: null, network: null }] }
+  assert.deepEqual(crawlSubnets([sw1, r1]), [
+    { subnet: '10.10.1.0/24', gateway: '10.10.1.1' }, { subnet: '10.10.10.0/24', gateway: '10.10.10.1' },
+    { subnet: '10.10.99.0/24', gateway: '10.10.99.1' }, { subnet: '10.99.0.0/24', gateway: '10.99.0.1' },
+  ])
+})

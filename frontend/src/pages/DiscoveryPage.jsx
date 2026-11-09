@@ -36,10 +36,14 @@ const COVERAGE = {
   no_agent: ['No agent', 'border-red-500/30 bg-red-500/10 text-red-400', 'No online agent is on this network: install one on a computer here.'],
 }
 
+const CRAWLED_ONLY = ['Network agent only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400',
+  'A network agent reads this network from its routers and switches (every 15 minutes): devices appear from their ARP tables. No agent here listens or runs port scans.']
+
 function Coverage({ n, agentName }) {
   const c = n.coverage
   if (!c) return null
-  const [label, cls, help] = COVERAGE[c.state] ?? COVERAGE.no_agent
+  // No computer agent on it, but a network agent reads its routers: not uncovered
+  const [label, cls, help] = c.state === 'no_agent' && n.last_crawl ? CRAWLED_ONLY : COVERAGE[c.state] ?? COVERAGE.no_agent
   const names = (list) => list.map((a) => a.name || agentName(a.agent_id)).join(', ')
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -72,11 +76,18 @@ function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
             {' · '}{n.agent_ids.map(agentName).join(', ')}
           </p>
         </div>
-        <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border ${listening
-          ? 'border-green-500/30 bg-green-500/10 text-green-400' : 'border-dark-600/50 text-dark-400'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${listening ? 'bg-green-400 animate-pulse' : 'bg-dark-500'}`} />
-          {listening ? 'Agent listening now' : n.last_heard_at ? `Last heard ${ago(n.last_heard_at)}` : 'Not heard passively'}
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border ${listening
+            ? 'border-green-500/30 bg-green-500/10 text-green-400' : 'border-dark-600/50 text-dark-400'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${listening ? 'bg-green-400 animate-pulse' : 'bg-dark-500'}`} />
+            {listening ? 'Agent listening now' : n.last_heard_at ? `Last heard ${ago(n.last_heard_at)}` : 'Not heard passively'}
+          </span>
+          {n.last_crawl && (
+            <span className="text-xs text-dark-400" title="The last crawl of its routers and switches by a network agent">
+              Read by {agentName(n.last_crawl.agent_id)} · {ago(n.last_crawl.at)} · {n.last_crawl.devices} device{n.last_crawl.devices === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
       </div>
 
       <Coverage n={n} agentName={agentName} />

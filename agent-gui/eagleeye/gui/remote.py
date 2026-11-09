@@ -48,6 +48,9 @@ def service_installed(instance: str = "") -> bool:
         if sys.platform.startswith("linux"):
             from ..serviceinstall import unit_name
             return Path(f"/etc/systemd/system/{unit_name(instance)}.service").exists()
+        if sys.platform == "darwin":
+            from ..serviceinstall import launchd_plist
+            return launchd_plist(instance).exists()
     except (OSError, subprocess.SubprocessError):
         pass
     return False
@@ -64,8 +67,17 @@ def _cli() -> tuple[str, list[str], Optional[str]]:
 
 def run_elevated(args: list[str]) -> Optional[int]:
     """Run `eagleeye <args>` as an administrator and wait for it: its exit code, or None
-    when the prompt was declined. Windows asks with its UAC prompt; elsewhere pkexec."""
+    when the prompt was declined. Windows asks with its UAC prompt, macOS with its own
+    password prompt (osascript), Linux with pkexec."""
     program, lead, cwd = _cli()
+    if sys.platform == "darwin":
+        import shlex
+        line = " ".join(shlex.quote(a) for a in [program, *lead, *args])
+        if cwd:
+            line = f"cd {shlex.quote(cwd)} && {line}"
+        script = 'do shell script "' + line.replace("\\", "\\\\").replace('"', '\\"') + '" with administrator privileges'
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        return None if r.returncode != 0 and "-128" in r.stderr else r.returncode   # -128: Cancel pressed
     if sys.platform != "win32":
         r = subprocess.run(["pkexec", program, *lead, *args], cwd=cwd)
         return None if r.returncode in (126, 127) else r.returncode

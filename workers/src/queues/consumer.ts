@@ -121,9 +121,13 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
       } else if (job.type === 'service_cves') {
         const r = await runServiceCves(db, env.KV_CACHE, env.NVD_API_KEY, job)
         console.log(`[service_cves] ${r.devices} device(s): ${r.created} new, ${r.refreshed} still vulnerable, ${r.resolved} closed; `
-          + `${r.nvdCalls} NVD lookup(s)${r.deferred.length ? `, ${r.deferred.length} device(s) deferred` : ''}`)
-        // NVD's budget per job ran out: the rest in a minute (cached lookups are free then)
-        if (r.deferred.length) await env.ADVISORY_QUEUE.send({ ...job, assetIds: r.deferred }, { delaySeconds: 60 })
+          + `${r.nvdCalls} NVD lookup(s)${r.failed ? ` (${r.failed} failed)` : ''}${r.deferred.length ? `, ${r.deferred.length} device(s) deferred` : ''}`)
+        // NVD's budget per job ran out: the rest in a minute (cached lookups are free then). Lookups
+        // that failed are tried in 3 more jobs at most; after that the next scan brings them back.
+        const attempt = (job.attempt ?? 0) + (r.failed ? 1 : 0)
+        if (r.deferred.length && attempt <= 3) {
+          await env.ADVISORY_QUEUE.send({ ...job, assetIds: r.deferred, attempt }, { delaySeconds: 60 })
+        }
         message.ack()
       } else if (job.type === 'cti_ingest') {
         const next = await runIngestStep(db, env.KV_CACHE, { otx: env.OTX_API_KEY, threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')
