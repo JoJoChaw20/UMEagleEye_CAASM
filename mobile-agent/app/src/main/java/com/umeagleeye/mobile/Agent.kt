@@ -68,7 +68,12 @@ object Agent {
         }
         if (!reply.ok) return remember(store, "Heartbeat refused: ${reply.problem()}")
         val body = reply.json()
+        val sentVersion = store.policyVersion
         body.optJSONObject("policy")?.let { applyPolicy(store, it) }
+        // New settings: say at once that they are applied (else the dashboard shows "applying…" until the next round)
+        if (store.policyVersion != null && store.policyVersion != sentVersion) {
+            runCatching { api.post("/agents/$id/heartbeat", beat.put("policy_version", store.policyVersion).put("want_jobs", false), 20_000) }
+        }
 
         // 2. Jobs from the dashboard: "Collect inventory" is the only one a phone does
         var force = forceInventory

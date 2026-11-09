@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm'
 import type { R2Bucket } from '@cloudflare/workers-types'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
@@ -9,6 +9,7 @@ import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
 import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys, roleChange, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
 import { pendingJobsFor } from '../services/pendingJobs'
+import { agentLiveness } from '../lib/agentLiveness'
 import { getDb } from '../db/client'
 import { audit } from '../services/audit'
 import { networkTargetErrors } from '../services/scanTargets'
@@ -36,14 +37,8 @@ async function hashApiKey(key: string): Promise<string> {
 }
 
 // ── Helper: compute status from lastHeartbeat ─────────────────────
-function computeStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'offline' {
-  if (!lastHeartbeat) return 'offline'
-  const diffMs = Date.now() - new Date(lastHeartbeat).getTime()
-  const diffMin = diffMs / 60_000
-  if (diffMin < 2) return 'online'
-  if (diffMin < 10) return 'degraded'
-  return 'offline'
-}
+// Online / late / offline: lib/agentLiveness.ts (a phone checks in every 15 minutes, the rest every 30 s)
+const computeStatus = (lastHeartbeat: Date | null, kind: string | null) => agentLiveness(lastHeartbeat, kind)
 
 // What the Agents page shows for one agent. The computer it runs on comes from the
 // asset its endpoint inventory is bound to (agents.host_asset_id).
@@ -55,7 +50,7 @@ function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy) {
     agent_id: a.agentId,
     tenant_id: a.tenantId,
     name: a.name,
-    status: a.retiredAt ? 'retired' : computeStatus(a.lastHeartbeat),
+    status: a.retiredAt ? 'retired' : computeStatus(a.lastHeartbeat, a.kind),
     retired_at: a.retiredAt,
     last_heartbeat: a.lastHeartbeat,
     local_ip: a.gatewayIp,          // the column has always held the agent's own LAN IP
@@ -469,7 +464,7 @@ router.post(
       ok: true,
       // local_scans: agents before 2.6 grey out their own "Scan now"; scans start from the dashboard.
       policy: { local_scans: false, managed: resolved.managed, version: resolved.version },
-      ...(body.want_jobs === true ? { scans: await pendingJobsFor(db, agentId) } : {}),
+      ...(body.want_jobs === true ? { scans: await pendingJobsFor(db, agentId, (current ?? agent).kind) } : {}),
     })
   }
 )
@@ -716,6 +711,11 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         hostKey: sql`COALESCE(${assets.hostKey}, ${hostKey})`,
       }).where(eq(assets.assetId, assetId)),
       db.update(agents).set({ hostAssetId: assetId }).where(eq(agents.agentId, agentId)),
+      // A phone connected again (the app reinstalled, or disconnected and given a new code) is a new
+      // agent on the same phone: its earlier agents there can never check in again, so they retire
+      // instead of staying on the Agents page as offline duplicates.
+      ...(agent.kind === 'mobile' ? [db.update(agents).set({ retiredAt: now }).where(and(
+        eq(agents.hostAssetId, assetId), eq(agents.kind, 'mobile'), ne(agents.agentId, agentId), isNull(agents.retiredAt)))] : []),
       // Any inventory from this agent answers its dashboard "Collect inventory" jobs.
       db.update(scanResults).set({ status: 'completed', completedAt: now, failureReason: null })
         .where(and(eq(scanResults.agentId, agentId), eq(scanResults.scanType, 'inventory'),

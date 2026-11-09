@@ -18,11 +18,11 @@ import { RISKY_PORTS, compareVersions } from '../lib/exposure'
 import { CONCERN_IDS, concernCondition, concernCountColumns } from '../lib/concerns'
 import { extractPorts } from '../services/drift'
 import { summarizeCoverage, type CoverageAsset } from '../lib/coverage'
+import { agentLiveness } from '../lib/agentLiveness'
 
 const app = new Hono<{ Bindings: Env }>()
 
 const DAY = 86400000
-const AGENT_STALE_MS = 10 * 60 * 1000   // heartbeat older than this = offline
 const ASSET_STALE_DAYS = 7
 const SEV_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 }
 const PATCH_TOP = 6
@@ -44,7 +44,7 @@ app.get('/summary', authMiddleware, async (c) => {
 
     const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows,
            concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows, priorityMetrics, advisoryMetrics] = await Promise.all([
-      db.select({ agentId: agents.agentId, name: agents.name, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
+      db.select({ agentId: agents.agentId, name: agents.name, kind: agents.kind, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
         .from(agents).where(tenantId ? and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt)) : isNull(agents.retiredAt)),
       db.select({
           scanId: scanResults.scanId, scanType: scanResults.scanType, subnet: scanResults.subnet,
@@ -169,11 +169,10 @@ app.get('/summary', authMiddleware, async (c) => {
 
     // ── Collection health ──────────────────────────────────────────
     const agentsOut = agentRows.map(a => {
-      const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).getTime() : 0
+      const status = agentLiveness(a.lastHeartbeat, a.kind, now)
       return {
         agent_id: a.agentId, name: a.name, version: a.version, last_heartbeat: a.lastHeartbeat,
-        status: a.status,
-        online: a.status === 'online' && hb > 0 && now - hb < AGENT_STALE_MS,
+        status, online: status === 'online',
       }
     })
     const lastOf = (type: string) => scanRows.find(s => s.scanType === type && s.status === 'completed')

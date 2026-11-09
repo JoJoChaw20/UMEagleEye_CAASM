@@ -36,7 +36,7 @@ export async function expireStaleActiveScans(db: Db, scope: SQL | undefined): Pr
 }
 
 /** Up to 5 jobs this agent should run now (rows of scan_results). */
-export async function pendingJobsFor(db: Db, agentId: string) {
+export async function pendingJobsFor(db: Db, agentId: string, kind?: string | null) {
   // Auto-expire passive scans pending > 10 min
   await db.update(scanResults)
     .set({
@@ -83,8 +83,12 @@ export async function pendingJobsFor(db: Db, agentId: string) {
     .where(and(
       eq(scanResults.agentId, agentId),
       eq(scanResults.scanType, 'inventory'),
-      sql`((${scanResults.status} = 'pending' AND ${scanResults.startedAt} < now() - interval '30 minutes')
-        OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '15 minutes'))`,
+      // A phone checks in every 15 minutes, later while it dozes: it gets 2 hours to pick the job up
+      kind === 'mobile'
+        ? sql`((${scanResults.status} = 'pending' AND ${scanResults.startedAt} < now() - interval '2 hours')
+          OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '15 minutes'))`
+        : sql`((${scanResults.status} = 'pending' AND ${scanResults.startedAt} < now() - interval '30 minutes')
+          OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - interval '15 minutes'))`,
     ))
 
   // Network agent crawls ("Run now"): a crawl takes seconds to minutes.
