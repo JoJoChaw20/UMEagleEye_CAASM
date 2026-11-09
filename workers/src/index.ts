@@ -26,6 +26,7 @@ import dashboardRoutes from './routes/dashboard'
 import sbomRoutes from './routes/sbom'
 
 import { handleQueue } from './queues/consumer'
+import { shouldSignalKg, signalKgSyncSafe } from './kg/sync'
 import { handleCron } from './cron/triggers'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -51,6 +52,14 @@ app.use('*', async (c, next) => {
     maxAge: 86400,
   })
   return corsHandler(c, next)
+})
+
+// After a successful write, ask for one debounced graph sync (kg/sync.ts). Runs after the response
+// is sent and cannot fail it. Agent ingest (/api/v1/agents/*) passes through here like any route.
+app.use('*', async (c, next) => {
+  await next()
+  if (!shouldSignalKg(c.req.method, c.req.path, c.res.status)) return
+  try { c.executionCtx.waitUntil(signalKgSyncSafe(c.env)) } catch { /* no execution context: skip */ }
 })
 
 // ── Health ────────────────────────────────────────────────────────

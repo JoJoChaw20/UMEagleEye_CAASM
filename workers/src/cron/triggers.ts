@@ -6,6 +6,7 @@ import { purgeOldData } from '../services/retention'
 import { CTI_INGEST_LOCK } from '../services/cti'
 import { runAlertHygiene } from '../services/alertHygiene'
 import { rescoreAssets } from '../lib/rescore'
+import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
 import { tenants } from '../db/schema'
 
 // Maps cron expression to handler name for logging
@@ -41,8 +42,14 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
   try {
     switch (name) {
       case 'drift-audit': {
-        const count = await runDriftAudit(db)
-        console.log(`[drift-audit] Generated ${count} drift events`)
+        try {
+          const count = await runDriftAudit(db)
+          console.log(`[drift-audit] Generated ${count} drift events`)
+          if (count > 0) await signalKgSyncSafe(env)
+        } finally {
+          // Applies what the knowledge graph still has outstanding; its own failure stops nothing.
+          await step(env, 'kg-sync', async () => { await runKgSyncJob(env); return 'Graph sync run' })
+        }
         break
       }
 

@@ -9,6 +9,7 @@ import { CTI_INGEST_LOCK, runIngestStep, type CtiStep } from '../services/cti'
 import { runDriftAudit } from '../services/drift'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
 
 interface AdvisoryJob {
@@ -40,7 +41,12 @@ interface DriftCheckJob {
   agentId?: string
 }
 
-type Job = AdvisoryJob | ReportJob | CtiIngestJob
+// Applies the graph's outstanding changes (kg/sync.ts); sent by signalKgSync and by itself while work remains
+interface KgSyncJob {
+  type: 'kg_sync'
+}
+
+type Job = AdvisoryJob | ReportJob | CtiIngestJob | KgSyncJob
 
 // The same report as the dashboard's download: same data (services/reportData.ts), same
 // layout (frontend/src/utils/reportPdf.js). A queued report is always a tenant's (only tenant
@@ -62,12 +68,16 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
     try {
       const created = await runDriftAudit(db, null, ids)
       console.log(`[drift_check] ${ids.length} asset(s) checked, ${created} new alert(s)`)
+      if (created > 0) await signalKgSyncSafe(env)
       for (const m of driftMsgs) m.ack()
     } catch (err) {
       console.error('[drift_check] failed:', err)
       for (const m of driftMsgs) m.retry()
     }
   }
+
+  // Set when a job wrote tables the graph reads; one signal after the batch (never for kg_sync itself).
+  let wrote = false
 
   for (const message of batch.messages) {
     const job = message.body as Job
@@ -82,6 +92,7 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         )
         if (advisory) {
           console.log(`[advisory] Generated ${advisory.advisoryId} for ${advisory.assetLabel} (${advisory.severity} ${advisory.eventType})`)
+          wrote = true
         }
         message.ack()
       } else if (job.type === 'report') {
@@ -126,6 +137,10 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
           // Release the lock so re-ingestion can be triggered again
           await env.KV_CACHE.delete(CTI_INGEST_LOCK)
         }
+        wrote = true
+        message.ack()
+      } else if (job.type === 'kg_sync') {
+        await runKgSyncJob(env)
         message.ack()
       } else {
         message.ack()
@@ -135,4 +150,6 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
       message.retry()
     }
   }
+
+  if (wrote) await signalKgSyncSafe(env)
 }

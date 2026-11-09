@@ -67,6 +67,14 @@ SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
 JWT_EXPIRE_MINUTES = "1440"
 FRONTEND_URL = "https://umeagleeye.csnet.my"
 
+[ai]
+binding = "AI"
+
+[[analytics_engine_datasets]]
+binding = "PERF"
+dataset = "umeagleeye_perf"
+
+
 # ══════════════════════════════════════════════════════════════════
 # Staging environment  —  deploy with: npm run deploy:staging
 # Bindings and vars are NOT inherited by environments, so each is redeclared with
@@ -117,3 +125,10 @@ queue = "report-queue-staging"
 max_batch_size = 5
 max_batch_timeout = 60
 max_retries = 2
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.analytics_engine_datasets]]
+binding = "PERF"
+dataset = "umeagleeye_perf_staging"

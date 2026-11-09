@@ -1,4 +1,4 @@
-import type { Queue, R2Bucket, KVNamespace } from '@cloudflare/workers-types'
+import type { Ai, AnalyticsEngineDataset, Queue, R2Bucket, KVNamespace } from '@cloudflare/workers-types'
 
 export interface Env {
   // ── Secrets ──
@@ -10,6 +10,8 @@ export interface Env {
   OTX_API_KEY: string
   THREATFOX_API_KEY: string
   NVD_API_KEY?: string     // optional; no job uses it at present (CWE IDs come from Grype)
+  CF_ACCOUNT_ID?: string   // with CF_ANALYTICS_TOKEN: reads performance history (kg/perf.ts)
+  CF_ANALYTICS_TOKEN?: string
   // ── Vars ──
   APP_ENV: string
   OPENROUTER_MODEL: string
@@ -22,6 +24,8 @@ export interface Env {
   KV_CACHE: KVNamespace
   ADVISORY_QUEUE: Queue
   REPORT_QUEUE: Queue
+  AI?: Ai                  // embeddings for the knowledge graph
+  PERF?: AnalyticsEngineDataset  // request and job timings
 }
 
 export interface JWTPayload {
