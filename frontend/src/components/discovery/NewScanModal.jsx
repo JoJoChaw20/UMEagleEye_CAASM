@@ -7,6 +7,15 @@ import client from '../../api/client'
 // that is on the range's network (GET /scans/route shows which, and why); an agent that is
 // not on it scans only when picked here (through a router: no MAC addresses).
 
+const ipNum = (ip) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0)
+/** Whether an IPv4 address is in a CIDR ("192.168.36.60" in "192.168.36.0/24"). */
+function inCidr(ip, cidr) {
+  const [net, bits] = cidr.split('/')
+  if (!ip || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || !net) return false
+  const size = 2 ** (32 - Number(bits))
+  return Math.floor(ipNum(ip) / size) === Math.floor(ipNum(net) / size)
+}
+
 function validateSubnet(value) {
   const v = value.trim()
   if (!v) return 'Enter an IP address or a range'
@@ -25,7 +34,9 @@ export default function NewScanModal({ agents, networks, initial, onClose, onSub
   // The network each agent was last on (networks are newest first)
   const lastNetwork = useMemo(() => {
     const out = {}
-    for (const a of agents) if (a.networks?.length) out[a.agent_id] = a.networks[0]   // reported (2.5.1+)
+    // Reported (2.5.1+): the one holding the agent's own address (a lab VM is also on its NAT
+    // card's network, which may come first), else the first
+    for (const a of agents) if (a.networks?.length) out[a.agent_id] = a.networks.find((n) => inCidr(a.local_ip, n)) ?? a.networks[0]
     for (const n of networks) for (const id of n.agent_ids) if (!out[id]) out[id] = n.subnet
     return out
   }, [agents, networks])

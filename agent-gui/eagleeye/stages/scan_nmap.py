@@ -355,10 +355,10 @@ def fill_own_host(hosts: list[HostRecord]) -> None:
     """Nmap cannot see the MAC of the computer it runs on, so this computer came back
     with none and was recorded as a separate, MAC-less asset. Give it its own adapter's
     MAC and its computer name, so it matches the asset its inventory already made."""
-    me = netinfo.local_ip()
+    mine = {netinfo.local_ip(), netinfo.lan_ip()}       # a lab VM: its lab address too, not only NAT's
     for host in hosts:
-        if host.ip == me:
-            host.mac = host.mac or netinfo.own_mac(me)
+        if host.ip in mine:
+            host.mac = host.mac or netinfo.own_mac(host.ip)
             host.hostname = host.hostname or socket.gethostname() or None
             return
 

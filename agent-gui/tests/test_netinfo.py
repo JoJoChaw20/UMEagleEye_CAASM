@@ -180,3 +180,28 @@ def test_scapy_reads_the_windows_route_table_through_the_safe_copy():
         assert not views(netinfo._get_ip_forward_table2(2))
     finally:
         win.GetIpForwardTable2 = original
+
+
+def test_a_lab_vm_reports_itself_on_the_adapter_passive_listens_on(monkeypatch):
+    # The Ubuntu lab VM: ens37 is NAT (the route to the internet), ens33 the lab with
+    # GNS3's public-looking 142.19.0.1 next to 192.168.36.50 and no gateway (9 Nov).
+    from eagleeye.passive import adapters
+    monkeypatch.setattr(netinfo, "local_ip", lambda: "192.168.217.135")
+    monkeypatch.setattr(adapters, "list_adapters", lambda: [
+        {"name": "ens37", "ips": ["192.168.217.135"], "gateway": "192.168.217.2"},
+        {"name": "ens33", "ips": ["142.19.0.1", "192.168.36.50", "10.99.0.10"], "gateway": None},
+    ])
+    try:
+        netinfo.set_lan_interface(None)
+        assert netinfo.lan_ip() == "192.168.217.135"
+        netinfo.set_lan_interface("ens33")
+        assert netinfo.lan_ip() == "192.168.36.50"
+        assert netinfo.default_gateway() is None              # not NAT's 192.168.217.2
+        monkeypatch.setattr(netinfo, "own_mac", lambda ip: "00:0c:29:04:6c:77" if ip == "192.168.36.50" else None)
+        hosts = [HostRecord(ip="192.168.36.50")]
+        scan_nmap.fill_own_host(hosts)
+        assert hosts[0].mac == "00:0c:29:04:6c:77"
+        netinfo.set_lan_interface("eth9")                     # gone: back to the route to the internet
+        assert netinfo.lan_ip() == "192.168.217.135"
+    finally:
+        netinfo.set_lan_interface(None)

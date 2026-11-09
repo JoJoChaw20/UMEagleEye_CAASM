@@ -440,7 +440,7 @@ def test_rechecks_every_30_seconds_and_follows_a_switch_to_a_cable():
 def test_an_interface_set_in_settings_is_kept():
     chooser = InterfaceChooser("Ethernet 2", probe=FakeProbe("192.168.100.71"))
     assert chooser.refresh() == "Ethernet 2"
-    assert chooser.label == "Ethernet 2 (set in Settings)"
+    assert chooser.label == "Ethernet 2 (pinned on this computer)"
     assert chooser.is_own(LOOP_MAC)                     # own packets are still recognised
 
 

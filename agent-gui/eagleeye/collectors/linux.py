@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import VERSION
-from ..netinfo import local_ip
+from ..netinfo import lan_ip
 from .windows import _mac, _s, form_factor, primary_ip
 
 DMI = "/sys/class/dmi/id"
@@ -112,7 +112,7 @@ class System:
             return None
 
     def primary_ip(self) -> Optional[str]:
-        return local_ip()
+        return lan_ip()
 
 
 # ── small parsers (pure) ──────────────────────────────────────────────────────

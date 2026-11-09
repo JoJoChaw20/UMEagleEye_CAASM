@@ -686,3 +686,20 @@ def test_dashboard_cancel_stops_the_sbom_run_without_uploading(monkeypatch):
     svc.poll_once()
     wait_sbom(svc)
     assert client.sboms == [] and svc.history[0].status == "cancelled"
+
+
+def test_the_heartbeat_names_the_pinned_adapter_and_its_network_first(monkeypatch):
+    # LAB-WIN11 (9 Nov): the NAT card's network came first, so the dashboard's scan dialog
+    # said "on 192.168.217.0/24" although the agent was pinned to the lab card.
+    from eagleeye import netinfo
+    from eagleeye.passive import adapters
+    monkeypatch.setattr(adapters, "connected_networks", lambda: ["192.168.217.0/24", "192.168.36.0/24"])
+    monkeypatch.setattr(netinfo, "lan_ip", lambda: "192.168.36.60")
+    monkeypatch.setattr("eagleeye.service.sbom_tools.missing_tools", lambda: [])
+    try:
+        report = service(FakeClient(), passive_interface="Ethernet1")._report()
+        assert report["networks"] == ["192.168.36.0/24", "192.168.217.0/24"]
+        assert report["capabilities"]["lan_adapter"] == "Ethernet1"
+        assert "lan_adapter" not in service(FakeClient())._report()["capabilities"]
+    finally:
+        netinfo.set_lan_interface(None)

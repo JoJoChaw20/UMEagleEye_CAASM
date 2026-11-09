@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from . import VERSION, httpclient
-from .netinfo import default_gateway, local_ip
+from .netinfo import default_gateway, lan_ip
 
 log = logging.getLogger("eagleeye.api")
 
@@ -119,7 +119,7 @@ class AgentClient:
     def send_heartbeat(self, report: Optional[dict[str, Any]] = None) -> bool:
         """`report`: what this agent says about itself (kind, its own settings, what it
         can do, the policy version it applied; see AgentService._report)."""
-        payload: dict[str, Any] = {"version": VERSION, "gateway_ip": local_ip()}
+        payload: dict[str, Any] = {"version": VERSION, "gateway_ip": lan_ip()}
         gateway = default_gateway()
         if gateway:
             payload["default_gateway"] = gateway
@@ -171,7 +171,7 @@ class AgentClient:
 
     def check_connection(self) -> tuple[bool, str]:
         """Send one heartbeat and explain the outcome (for the setup screen)."""
-        payload = {"version": VERSION, "gateway_ip": local_ip()}
+        payload = {"version": VERSION, "gateway_ip": lan_ip()}
         try:
             resp = self._request("POST", f"/agents/{self.agent_id}/heartbeat", 15, data=json.dumps(payload))
         except httpclient.RequestException as exc:

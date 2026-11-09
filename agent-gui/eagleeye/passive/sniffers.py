@@ -110,7 +110,7 @@ class InterfaceChooser:
         self._checked_at: Optional[float] = None
         self.name: Optional[str] = self.fixed
         self.index: Optional[int] = None                 # its interface index (the built-in capture on Windows)
-        self.label = f"{self.fixed} (set in Settings)" if self.fixed else "checking..."
+        self.label = f"{self.fixed} (pinned on this computer)" if self.fixed else "checking..."
         self._own_macs: frozenset[str] = frozenset()
         # Replaced (never changed in place) when the network changes, so a host's tag
         # keeps describing the network it was heard on.

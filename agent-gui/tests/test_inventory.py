@@ -75,7 +75,7 @@ RAW = {
 
 @pytest.fixture
 def inv(monkeypatch):
-    monkeypatch.setattr(windows, "local_ip", lambda: "10.0.0.5")
+    monkeypatch.setattr(windows, "lan_ip", lambda: "10.0.0.5")
     return windows.normalize(json.loads(json.dumps(RAW)), collected_at=NOW)
 
 
