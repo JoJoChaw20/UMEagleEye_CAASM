@@ -103,10 +103,14 @@ def test_new_settings_are_applied_between_jobs_and_kept(tmp_path):
 def test_the_heartbeat_reports_what_the_agent_runs(tmp_path, monkeypatch):
     monkeypatch.setattr("eagleeye.passive.adapters.connected_networks", lambda: ["192.168.36.0/24"])
     svc, c = make(tmp_path, passive=True)
+    monkeypatch.setattr("eagleeye.sbom.find_tool", lambda name: None)       # no Syft or Grype here
     svc._capabilities = {"os": "win32"}
     svc._heartbeat()
     assert c.reports[-1] == {"kind": "host", "settings": policy.local_report(svc.local_settings),
-                             "capabilities": {"os": "win32"}, "networks": ["192.168.36.0/24"]}
+                             "capabilities": {"os": "win32", "sbom_tools": False}, "networks": ["192.168.36.0/24"]}
+    monkeypatch.setattr("eagleeye.sbom.find_tool", lambda name: f"C:/Program Files/{name}/{name}.exe")
+    svc._heartbeat()                                                    # installed: the next heartbeat says so
+    assert c.reports[-1]["capabilities"]["sbom_tools"] is True
     c.policy_managed, c.policy_version = {"passive": False}, "0a1b2c3d"
     svc._maybe_apply_policy()
     svc._heartbeat()

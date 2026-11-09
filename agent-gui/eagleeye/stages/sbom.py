@@ -71,8 +71,9 @@ class CveCheckStage(Stage):
         self.runner = runner
 
     def run(self, ctx: PipelineContext) -> None:
-        ctx.progress("Checking packages against Grype's vulnerability database "
-                     "(the first run downloads it, which takes a few minutes)")
+        downloaded = sbom.grype_db_summary()[0] if sbom.grype_db_dir() is not None else True
+        ctx.progress("Checking packages against Grype's vulnerability database" + (
+            "" if downloaded else " (downloading it first, about 3 GB: this takes a few minutes)"))
         try:
             report = sbom.run_grype(ctx.summary["grype"], ctx.summary["sbom"], self.runner, ctx.cancelled)
         except sbom.SbomCancelled as exc:

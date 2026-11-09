@@ -30,7 +30,7 @@ def window(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("EAGLEEYE_CONFIG", str(tmp_path / "config.json"))
     kc = FakeKeychain()
     monkeypatch.setattr(gui_app, "Keychain", lambda: kc)
-    monkeypatch.setattr(gui_app.DependenciesPage, "refresh", lambda self: None)   # no tool probing in tests
+    monkeypatch.setattr(gui_app.SettingsPage, "refresh_tools", lambda self: None)   # no tool probing in tests
     store = gui_app.Store(tmp_path / "config.json")
     win = gui_app.MainWindow(store, tmp_path / "logs")
     yield win
@@ -166,7 +166,28 @@ def test_the_app_only_connects_the_agent_and_shows_what_it_does(window):
     for gone in ("scan_btn", "inv_btn", "sbom_btn", "subnet"):
         assert not hasattr(status, gone), gone
     names = [window.nav.item(i).text() for i in range(window.nav.count())]
-    assert "Connection" in names and "Tools" in names and "Settings" not in names and "Dependencies" not in names
+    assert "Setup" in names and "Privacy" in names
+    for gone in ("Connection", "Tools", "Settings", "Dependencies"):
+        assert gone not in names, gone
+
+
+def test_setup_page_shows_the_tools_as_the_service_finds_them(window):
+    from eagleeye.deps import DepStatus
+    page = window.settings_page
+    page._fill_tools([
+        DepStatus("Syft", True, False, r"C:\Program Files\syft\syft.exe", version="1.44.0"),
+        DepStatus("Grype", False, False, "not found: no SBOM or CVE check of this computer", "Put grype.exe in C:\\Program Files\\grype\\"),
+        DepStatus("Runs as", True, False, "the agent service (LocalSystem): the rights listening and the security checks need"),
+    ], "service")
+    syft, grype, runs = (page._tool_rows[n] for n in ("Syft", "Grype", "Runs as"))
+    assert syft[0].text() == "Found, version 1.44.0" and syft[1].text().endswith("syft.exe") and syft[2].isHidden()
+    assert grype[0].text() == "Not found" and "Program Files" in grype[2].text() and not grype[2].isHidden()
+    assert runs[0].text().startswith("The agent service (LocalSystem)")
+    assert page.tools_note.text().startswith("As the agent service sees them") and "SBOM" in page.tools_note.text()
+    assert page.admin_btn.isHidden()                                   # the service has the rights already
+    page._fill_tools([DepStatus("Syft", True, False, "x"), DepStatus("Grype", True, False, "y")], "service")
+    assert len(page._tool_rows) == 3                                   # rows are updated, not added again
+    assert "nothing else to install" in page.tools_note.text()
 
 
 def test_privacy_page_shows_the_dashboard_values_read_only(window, tmp_path):

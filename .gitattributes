@@ -1,2 +1,4 @@
 # systemd units must keep Unix line endings, even when checked out on Windows
 *.service text eol=lf
+# shell scripts run on Linux test machines (agent-gui/packaging/dev)
+*.sh text eol=lf

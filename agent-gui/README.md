@@ -225,6 +225,8 @@ settings (`/root/.config/eagleeye/config.json`) in. Windows: `Stop-Service "Eagl
 
 Without a service (development, or `EAGLEEYE_EMBEDDED=1`) the desktop app runs the agent itself, as before 2.5.0.
 
+On Windows the service runs as LocalSystem, so Syft and Grype installed for one user (plain `winget install`, a download in your own folders) are invisible to it. Put `syft.exe` in `C:\Program Files\syft\` and `grype.exe` in `C:\Program Files\grype\`, or `winget install --scope machine Anchore.Syft` (and `Anchore.Grype`) as an administrator. The window's Setup page shows what the service finds, and the dashboard warns when SBOM is on without them. Grype's vulnerability database (about 3 GB) is kept in the agent's machine folder, `grype-db` (`C:\ProgramData\EagleEye\grype-db`, `/var/lib/eagleeye/grype-db`); `service uninstall --purge` removes it with the rest.
+
 On Linux the tools come from the distribution: `sudo apt install nmap` (passive listening needs no libpcap), and
 Syft + Grype for SBOMs:
 ```bash

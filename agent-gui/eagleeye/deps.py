@@ -1,8 +1,8 @@
 """Finds the external tools the agent uses and reports what is missing.
 
-Nmap and Npcap are not shipped with the agent (their licences restrict
-redistribution), nor are Syft and Grype (the SBOM tools). This module only detects
-them and says where to get them; the GUI fetches Nmap/Npcap from the official sources.
+Syft and Grype (the SBOM tools) are not shipped with the agent; this module detects them and
+says where to put them (agent_tools: the window's Setup page). Nmap and Npcap are only
+evaluation tools of the command line since 2.6 (`eagleeye deps` still lists them).
 """
 
 from __future__ import annotations
@@ -145,7 +145,36 @@ def check_all() -> list[DepStatus]:
     admin = is_admin()
     results.append(DepStatus(
         "Administrator / root", admin, False,
-        "yes" if admin else "no - passive sniffing needs it, and Nmap falls back to a connect scan",
+        "yes" if admin else "no - passive listening and some security checks need it",
         "" if admin else ("Run the terminal as Administrator" if sys.platform == "win32" else "Run with sudo"),
     ))
+    return results
+
+
+def agent_tools(service: bool) -> list[DepStatus]:
+    """What the agent itself uses, for its window's Setup page: Syft and Grype (the SBOM; scanning and
+    listening are built in) and the rights it runs with. `service`: checked inside the agent service,
+    so what it finds is what the daily SBOM will use (the window, running as the signed-in user, may
+    see tools the service cannot)."""
+    from . import sbom
+    results: list[DepStatus] = []
+    for tool in ("syft", "grype"):
+        path = sbom.find_tool(tool)
+        results.append(DepStatus(
+            tool.capitalize(), bool(path), False,
+            path if path else "not found: no SBOM or CVE check of this computer",
+            "" if path else sbom.install_hint(tool), version=sbom.tool_version(path) if path else None,
+        ))
+    if service:
+        downloaded, where = sbom.grype_db_summary()
+        results.append(DepStatus("Vulnerability database", downloaded, False, where))
+    admin = is_admin()
+    if service:
+        account = "LocalSystem" if sys.platform == "win32" else "root"
+        results.append(DepStatus("Runs as", True, False, f"the agent service ({account}): the rights listening and "
+                                                         "the security checks need"))
+    else:
+        results.append(DepStatus("Runs as", admin, False, "an administrator" if admin else
+                                 "the signed-in user: passive listening and some security checks need administrator rights",
+                                 "" if admin else "Restart as Administrator"))
     return results

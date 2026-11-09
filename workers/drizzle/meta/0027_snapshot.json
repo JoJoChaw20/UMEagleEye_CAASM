@@ -1,5 +1,5 @@
 {
-  "id": "49f0460d-6c5c-4aaa-8c50-f75ccfa5aeb8",
+  "id": "ca551b40-e5da-4a17-95ef-510eb0024d3a",
   "prevId": "e1a0b5ce-5fdf-44ea-b3a0-28ae2a9d8b09",
   "version": "7",
   "dialect": "postgresql",
@@ -66,28 +66,28 @@
         "advisories_event_id_events_event_id_fk": {
           "name": "advisories_event_id_events_event_id_fk",
           "tableFrom": "advisories",
+          "tableTo": "events",
           "columnsFrom": [
             "event_id"
           ],
-          "tableTo": "events",
           "columnsTo": [
             "event_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "advisories_assigned_to_users_user_id_fk": {
           "name": "advisories_assigned_to_users_user_id_fk",
           "tableFrom": "advisories",
+          "tableTo": "users",
           "columnsFrom": [
             "assigned_to"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -211,37 +211,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "agents_tenant_id_tenants_tenant_id_fk": {
           "name": "agents_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "agents",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agents_host_asset_id_assets_asset_id_fk": {
           "name": "agents_host_asset_id_assets_asset_id_fk",
           "tableFrom": "agents",
+          "tableTo": "assets",
           "columnsFrom": [
             "host_asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -330,9 +330,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_addr_current": {
           "name": "idx_addr_current",
@@ -357,10 +357,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "ended_at IS NULL AND network_key IS NOT NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "idx_addr_asset": {
           "name": "idx_addr_asset",
@@ -373,37 +373,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "asset_addresses_asset_id_assets_asset_id_fk": {
           "name": "asset_addresses_asset_id_assets_asset_id_fk",
           "tableFrom": "asset_addresses",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "asset_addresses_tenant_id_tenants_tenant_id_fk": {
           "name": "asset_addresses_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "asset_addresses",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -493,9 +493,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_identifier_lookup": {
           "name": "idx_identifier_lookup",
@@ -520,37 +520,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "asset_identifiers_asset_id_assets_asset_id_fk": {
           "name": "asset_identifiers_asset_id_assets_asset_id_fk",
           "tableFrom": "asset_identifiers",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "asset_identifiers_tenant_id_tenants_tenant_id_fk": {
           "name": "asset_identifiers_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "asset_identifiers",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -628,9 +628,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_rel_target": {
           "name": "idx_rel_target",
@@ -643,9 +643,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_rel_unique": {
           "name": "idx_rel_unique",
@@ -670,37 +670,37 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "asset_relationships_source_asset_id_assets_asset_id_fk": {
           "name": "asset_relationships_source_asset_id_assets_asset_id_fk",
           "tableFrom": "asset_relationships",
+          "tableTo": "assets",
           "columnsFrom": [
             "source_asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "asset_relationships_target_asset_id_assets_asset_id_fk": {
           "name": "asset_relationships_target_asset_id_assets_asset_id_fk",
           "tableFrom": "asset_relationships",
+          "tableTo": "assets",
           "columnsFrom": [
             "target_asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -796,9 +796,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_software_name": {
           "name": "idx_software_name",
@@ -811,24 +811,24 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "asset_software_asset_id_assets_asset_id_fk": {
           "name": "asset_software_asset_id_assets_asset_id_fk",
           "tableFrom": "asset_software",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1053,9 +1053,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_assets_tenant": {
           "name": "idx_assets_tenant",
@@ -1068,9 +1068,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_assets_host_key": {
           "name": "idx_assets_host_key",
@@ -1089,9 +1089,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_assets_in_my_assets": {
           "name": "idx_assets_in_my_assets",
@@ -1104,25 +1104,25 @@
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "in_my_assets",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "assets_tenant_id_tenants_tenant_id_fk": {
           "name": "assets_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "assets",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1198,37 +1198,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "audit_logs_user_id_users_user_id_fk": {
           "name": "audit_logs_user_id_users_user_id_fk",
           "tableFrom": "audit_logs",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "audit_logs_tenant_id_tenants_tenant_id_fk": {
           "name": "audit_logs_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "audit_logs",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1350,10 +1350,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"cti_indicators\".\"ti_event_id\" IS NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "idx_cti_event_value": {
           "name": "idx_cti_event_value",
@@ -1372,38 +1372,38 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"cti_indicators\".\"ti_event_id\" IS NOT NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "cti_indicators_tenant_id_tenants_tenant_id_fk": {
           "name": "cti_indicators_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "cti_indicators",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "cti_indicators_ti_event_id_ti_events_ti_event_id_fk": {
           "name": "cti_indicators_ti_event_id_ti_events_ti_event_id_fk",
           "tableFrom": "cti_indicators",
+          "tableTo": "ti_events",
           "columnsFrom": [
             "ti_event_id"
           ],
-          "tableTo": "ti_events",
           "columnsTo": [
             "ti_event_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1485,37 +1485,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "dependencies_asset_id_assets_asset_id_fk": {
           "name": "dependencies_asset_id_assets_asset_id_fk",
           "tableFrom": "dependencies",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "dependencies_sbom_id_sboms_sbom_id_fk": {
           "name": "dependencies_sbom_id_sboms_sbom_id_fk",
           "tableFrom": "dependencies",
+          "tableTo": "sboms",
           "columnsFrom": [
             "sbom_id"
           ],
-          "tableTo": "sboms",
           "columnsTo": [
             "sbom_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1592,9 +1592,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_dismissal_tenant": {
           "name": "idx_dismissal_tenant",
@@ -1607,63 +1607,63 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "duplicate_dismissals_tenant_id_tenants_tenant_id_fk": {
           "name": "duplicate_dismissals_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "duplicate_dismissals",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "duplicate_dismissals_asset_a_assets_asset_id_fk": {
           "name": "duplicate_dismissals_asset_a_assets_asset_id_fk",
           "tableFrom": "duplicate_dismissals",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_a"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "duplicate_dismissals_asset_b_assets_asset_id_fk": {
           "name": "duplicate_dismissals_asset_b_assets_asset_id_fk",
           "tableFrom": "duplicate_dismissals",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_b"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "duplicate_dismissals_dismissed_by_users_user_id_fk": {
           "name": "duplicate_dismissals_dismissed_by_users_user_id_fk",
           "tableFrom": "duplicate_dismissals",
+          "tableTo": "users",
           "columnsFrom": [
             "dismissed_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1765,9 +1765,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_enrol_tenant": {
           "name": "idx_enrol_tenant",
@@ -1780,37 +1780,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "enrolment_tokens_tenant_id_tenants_tenant_id_fk": {
           "name": "enrolment_tokens_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "enrolment_tokens",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "enrolment_tokens_created_by_users_user_id_fk": {
           "name": "enrolment_tokens_created_by_users_user_id_fk",
           "tableFrom": "enrolment_tokens",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1841,28 +1841,28 @@
         "event_cti_indicators_event_id_events_event_id_fk": {
           "name": "event_cti_indicators_event_id_events_event_id_fk",
           "tableFrom": "event_cti_indicators",
+          "tableTo": "events",
           "columnsFrom": [
             "event_id"
           ],
-          "tableTo": "events",
           "columnsTo": [
             "event_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "event_cti_indicators_indicator_id_cti_indicators_indicator_id_fk": {
           "name": "event_cti_indicators_indicator_id_cti_indicators_indicator_id_fk",
           "tableFrom": "event_cti_indicators",
+          "tableTo": "cti_indicators",
           "columnsFrom": [
             "indicator_id"
           ],
-          "tableTo": "cti_indicators",
           "columnsTo": [
             "indicator_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -2003,9 +2003,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_events_status": {
           "name": "idx_events_status",
@@ -2018,9 +2018,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_events_asset_status": {
           "name": "idx_events_asset_status",
@@ -2039,50 +2039,50 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "events_asset_id_assets_asset_id_fk": {
           "name": "events_asset_id_assets_asset_id_fk",
           "tableFrom": "events",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "events_assigned_to_users_user_id_fk": {
           "name": "events_assigned_to_users_user_id_fk",
           "tableFrom": "events",
+          "tableTo": "users",
           "columnsFrom": [
             "assigned_to"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "events_resolved_by_users_user_id_fk": {
           "name": "events_resolved_by_users_user_id_fk",
           "tableFrom": "events",
+          "tableTo": "users",
           "columnsFrom": [
             "resolved_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2208,9 +2208,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_links_a_asset": {
           "name": "idx_links_a_asset",
@@ -2223,9 +2223,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_links_b_asset": {
           "name": "idx_links_b_asset",
@@ -2238,63 +2238,63 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "network_links_tenant_id_tenants_tenant_id_fk": {
           "name": "network_links_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "network_links",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "network_links_agent_id_agents_agent_id_fk": {
           "name": "network_links_agent_id_agents_agent_id_fk",
           "tableFrom": "network_links",
+          "tableTo": "agents",
           "columnsFrom": [
             "agent_id"
           ],
-          "tableTo": "agents",
           "columnsTo": [
             "agent_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "network_links_a_asset_id_assets_asset_id_fk": {
           "name": "network_links_a_asset_id_assets_asset_id_fk",
           "tableFrom": "network_links",
+          "tableTo": "assets",
           "columnsFrom": [
             "a_asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "network_links_b_asset_id_assets_asset_id_fk": {
           "name": "network_links_b_asset_id_assets_asset_id_fk",
           "tableFrom": "network_links",
+          "tableTo": "assets",
           "columnsFrom": [
             "b_asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2373,24 +2373,24 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "posture_metrics_tenant_id_tenants_tenant_id_fk": {
           "name": "posture_metrics_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "posture_metrics",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2464,15 +2464,15 @@
         "sboms_asset_id_assets_asset_id_fk": {
           "name": "sboms_asset_id_assets_asset_id_fk",
           "tableFrom": "sboms",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2576,9 +2576,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_scans_agent_jobs": {
           "name": "idx_scans_agent_jobs",
@@ -2603,9 +2603,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_scans_started": {
           "name": "idx_scans_started",
@@ -2618,37 +2618,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "scan_results_agent_id_agents_agent_id_fk": {
           "name": "scan_results_agent_id_agents_agent_id_fk",
           "tableFrom": "scan_results",
+          "tableTo": "agents",
           "columnsFrom": [
             "agent_id"
           ],
-          "tableTo": "agents",
           "columnsTo": [
             "agent_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "scan_results_tenant_id_tenants_tenant_id_fk": {
           "name": "scan_results_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "scan_results",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2735,9 +2735,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -2745,10 +2745,10 @@
       "uniqueConstraints": {
         "tenants_slug_unique": {
           "name": "tenants_slug_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "slug"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -2878,37 +2878,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "ti_events_tenant_id_tenants_tenant_id_fk": {
           "name": "ti_events_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "ti_events",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "ti_events_created_by_users_user_id_fk": {
           "name": "ti_events_created_by_users_user_id_fk",
           "tableFrom": "ti_events",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "user_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3001,37 +3001,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "topology_nodes_asset_id_assets_asset_id_fk": {
           "name": "topology_nodes_asset_id_assets_asset_id_fk",
           "tableFrom": "topology_nodes",
+          "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
           ],
-          "tableTo": "assets",
           "columnsTo": [
             "asset_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "topology_nodes_tenant_id_tenants_tenant_id_fk": {
           "name": "topology_nodes_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "topology_nodes",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3141,9 +3141,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "idx_users_tenant": {
           "name": "idx_users_tenant",
@@ -3156,48 +3156,48 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "users_tenant_id_tenants_tenant_id_fk": {
           "name": "users_tenant_id_tenants_tenant_id_fk",
           "tableFrom": "users",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "tenant_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "users_username_unique": {
           "name": "users_username_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "username"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "users_email_unique": {
           "name": "users_email_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "users_google_id_unique": {
           "name": "users_google_id_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "google_id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -3273,7 +3273,8 @@
         "new_package",
         "removed_package",
         "cti_match",
-        "os_patch_missing"
+        "os_patch_missing",
+        "exposure"
       ]
     },
     "public.indicator_type": {
@@ -3367,10 +3368,10 @@
     }
   },
   "schemas": {},
-  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

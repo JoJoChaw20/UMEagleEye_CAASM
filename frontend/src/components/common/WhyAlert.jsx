@@ -52,6 +52,32 @@ function chain(e) {
         rule: 'R5 · An address or name of your own asset is in threat intel: treat as a possible compromise',
       }
     }
+    case 'vulnerable_service': {
+      const known = [`NVD lists ${d.cve_count ?? 'known'} CVE${d.cve_count === 1 ? '' : 's'} for ${d.product} ${d.version ?? ''}${d.max_cvss ? ` (worst CVSS ${d.max_cvss})` : ''}`]
+      if (d.kev_count) known.push(`${d.kev_count} of them ${d.kev_count === 1 ? 'is' : 'are'} on CISA's Known Exploited Vulnerabilities list`)
+      if (d.distro) known.push(`The banner names ${d.distro}: the distribution may have backported the fixes (lower confidence)`)
+      if (d.outside_sbom) known.push("The device's SBOM does not list this version, so its package scan cannot see it (a container, or a program installed by hand)")
+      return {
+        evidence: `A scan of ${where} found port ${d.port} answering "${d.seen ?? `${d.product} ${d.version ?? ''}`}", identified as ${d.vendor ? `${d.vendor} ` : ''}${d.product} ${d.version ?? ''} (Rapid7 Recog fingerprints)`,
+        knowledge: known,
+        rule: 'R9 · A product version with known CVEs on a device without an SBOM (version from the network banner)',
+      }
+    }
+    case 'exposure': {
+      const ev = d.evidence ?? {}
+      const seen = [
+        ev.product && `${ev.product}${ev.version ? ` ${ev.version}` : ''}`,
+        ev.realm && `a login prompt (realm "${ev.realm}")`, ev.title && `a page titled "${ev.title}"`,
+        ev.http_status && `HTTP ${ev.http_status}`, ev.not_after && `a certificate valid until ${new Date(ev.not_after).toLocaleDateString()}`,
+        ev.security && `RDP security "${ev.security}"`, ev.dialect && `SMB ${ev.dialect} without required signing`,
+        ev.checked, ev.what && `${ev.what}, and the asset is internet-facing`,
+      ].filter(Boolean)
+      return {
+        evidence: `An active scan of ${where} found port ${d.port} open${seen.length ? `: ${seen.join(', ')}` : ''}`,
+        knowledge: [d.fix ?? 'This configuration is a known risk'],
+        rule: `Exposure · ${d.title ?? 'A risky configuration seen now'} (stays open while scans still see it)`,
+      }
+    }
     case 'port_opened':
     case 'port_closed':
       return {

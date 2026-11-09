@@ -867,6 +867,26 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 e.event_type === 'os_patch_missing' && d.cves > 0 && ['Missing fixes', `${Number(d.cves).toLocaleString()} CVEs · ${d.critical ?? 0} critical · ${d.exploited ?? 0} exploited in the wild`],
                 e.event_type === 'os_patch_missing' && d.behind_since && ['Behind since', `${new Date(d.behind_since).toLocaleDateString()} (fixes released then)`],
                 e.event_type === 'os_patch_missing' && d.patch_status === 'unsupported' && ['Support', <span className="text-red-300">{d.reason ?? 'No longer receives security updates'}</span>],
+                e.event_type === 'vulnerable_service' && ['Service', `${d.vendor ? `${d.vendor} ` : ''}${d.product ?? '—'}${d.version ? ` ${d.version}` : ''} on port ${d.port}`],
+                e.event_type === 'vulnerable_service' && d.seen && ['Banner', d.seen],
+                e.event_type === 'vulnerable_service' && ['Confidence', d.distro ? `Version from the network banner; ${d.distro} may have backported the fixes` : 'Version from the network banner'],
+                e.event_type === 'vulnerable_service' && d.outside_sbom && ['SBOM', "Not in this device's SBOM at this version: probably a container or a program installed outside the package manager"],
+                e.event_type === 'vulnerable_service' && Array.isArray(d.cves) && d.cves.length > 0 && [`CVEs (${d.cve_count}${d.cve_count > d.cves.length ? `, worst ${d.cves.length} shown` : ''})`, <span className="block space-y-0.5">
+                  {d.cves.map(c => (
+                    <span key={c.id} className="block">
+                      <a href={`https://nvd.nist.gov/vuln/detail/${c.id}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">{c.id}</a>
+                      <span className="text-dark-400">{c.cvss != null ? ` · CVSS ${c.cvss}` : ''}</span>
+                      {c.kev && <span className="text-red-300"> · exploited in the wild</span>}
+                    </span>
+                  ))}
+                </span>],
+                e.event_type === 'exposure' && d.title && ['Finding', d.title],
+                e.event_type === 'exposure' && d.evidence?.realm && ['Login realm', d.evidence.realm],
+                e.event_type === 'exposure' && d.evidence?.title && ['Page title', d.evidence.title],
+                e.event_type === 'exposure' && d.evidence?.not_after && ['Certificate', `${d.evidence.subject ? `${d.evidence.subject} · ` : ''}valid until ${new Date(d.evidence.not_after).toLocaleDateString()}${d.evidence.days_left != null ? ` (${d.evidence.days_left < 0 ? `expired ${-d.evidence.days_left} days ago` : `${d.evidence.days_left} days left`})` : ''}`],
+                e.event_type === 'exposure' && d.evidence?.security && ['RDP security', d.evidence.security],
+                e.event_type === 'exposure' && d.evidence?.dialect && ['SMB', `${d.evidence.dialect}, signing not required`],
+                e.event_type === 'exposure' && d.fix && ['How to fix', d.fix],
                 e.composite_risk_score != null && ['Risk score', e.composite_risk_score],
                 d.port != null && ['Port', `${d.port}/${d.protocol ?? 'tcp'}${RISKY_PORTS[d.port] ? ` — ${RISKY_PORTS[d.port]}` : ''}`],
                 d.port != null && serviceOn(e.asset, d.port) && ['Service', serviceOn(e.asset, d.port)],

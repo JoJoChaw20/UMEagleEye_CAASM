@@ -55,7 +55,36 @@ class Finding:
         entry = {"port": port, "protocol": protocol, "service": self.service, "version": self.version, "product": self.product}
         if self.banner:
             entry["banner"] = self.banner[:200]
+        facts = self.facts()
+        if facts:
+            entry["facts"] = facts
         return entry
+
+    def facts(self) -> dict[str, Any]:
+        """What the port showed, for the dashboard's exposure rules (server: lib/exposureRules.ts):
+        its TLS certificate, an HTTP page's status/title/login realm, SMB signing, RDP's security
+        and NLA, and whether a database answered without a password. Uploaded since 2.6; before,
+        these stayed in the local comparison report."""
+        e, out = self.extra, {}
+        if "tls_version" in e:                                   # a TLS port (an RDP certificate is not one)
+            tls: dict[str, Any] = {"version": e["tls_version"]}
+            cert = e.get("certificate")
+            if isinstance(cert, dict):
+                tls.update({k: cert[k] for k in ("not_before", "not_after", "self_signed") if cert.get(k) is not None})
+                cn = (cert.get("subject") or {}).get("CN")
+                if cn:
+                    tls["subject_cn"] = str(cn)[:120]
+            out["tls"] = tls
+        if "status" in e:                                        # an HTTP answer
+            out["http"] = {k: e[k] for k in ("status", "server", "title", "realm") if e.get(k) not in (None, "")}
+        if "smb_dialect" in e or "signing_required" in e:
+            out["smb"] = {k: v for k, v in (("dialect", e.get("smb_dialect")),
+                                            ("signing_required", e.get("signing_required"))) if v is not None}
+        if "selected" in e:                                      # RDP's negotiated security
+            out["rdp"] = {"security": e["selected"], **({"nla_required": e["nla_required"]} if "nla_required" in e else {})}
+        if e.get("auth") in ("none", "required"):
+            out["auth"] = e["auth"]
+        return out
 
 
 # ── socket helpers ──
@@ -195,13 +224,14 @@ def parse_redis(data: bytes) -> Optional[Finding]:
     text = data.decode("utf-8", "replace")
     if text.startswith("$") or "redis_version:" in text:
         m = re.search(r"redis_version:([\w.]+)", text)
-        f = Finding("redis", "Redis", m.group(1) if m else "")
+        # INFO answered: Redis takes commands from anyone who can reach it (no requirepass / ACL)
+        f = Finding("redis", "Redis", m.group(1) if m else "", extra={"auth": "none"})
         os_m = re.search(r"\bos:([^\r\n]+)", text)
         if os_m:
             f.extra["os_hint"] = os_m.group(1).strip()
         return f
     if text.startswith(("-NOAUTH", "-ERR", "-DENIED", "-WRONGPASS")):
-        return Finding("redis", "Redis", extra={"note": text.strip()[:120]})
+        return Finding("redis", "Redis", extra={"note": text.strip()[:120], "auth": "required"})
     return None
 
 

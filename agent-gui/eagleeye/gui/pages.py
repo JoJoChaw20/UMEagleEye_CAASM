@@ -47,18 +47,30 @@ def _hint(text: str) -> QLabel:
     return label(text, "hint", wrap=True)
 
 
+# Pages stop growing at this width: forms and short text read badly across a maximised window.
+PAGE_MAX_WIDTH = 980
+
+
 def _scroll(*widgets: QWidget) -> QScrollArea:
-    """A scrollable column: the page header, then its panels."""
+    """A scrollable column: the page header, then its panels, at most PAGE_MAX_WIDTH wide."""
     body = QWidget()
     body.setObjectName("pageBody")
-    layout = QVBoxLayout(body)
-    layout.setContentsMargins(24, 22, 24, 24)
+    outer = QHBoxLayout(body)
+    outer.setContentsMargins(24, 22, 24, 24)
+    outer.setSpacing(0)
+    column = QWidget()
+    column.setObjectName("pageBody")
+    column.setMaximumWidth(PAGE_MAX_WIDTH)
+    layout = QVBoxLayout(column)
+    layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(16)
     for i, w in enumerate(widgets):
         layout.addWidget(w)
         if i == 0 and isinstance(w, PageHeader):
             layout.addSpacing(4)
     layout.addStretch(1)
+    outer.addWidget(column, 1)
+    outer.addStretch(0)
     area = QScrollArea()
     area.setWidgetResizable(True)
     area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -254,9 +266,9 @@ class StatusPage(QWidget):
         ctrl = self.win.controller
         svc = ctrl.service if ctrl.running else None
         if s.problems():
-            self.banner.setText("Not set up yet: open <b>Connection</b> and paste the code from your administrator "
+            self.banner.setText("Not set up yet: open <b>Setup</b> and paste the code from your administrator "
                                 "(the dashboard's Agents page).")
-            self.banner.set_action("Open Connection", lambda: self.win.show_page(self.win.settings_page))
+            self.banner.set_action("Open Setup", lambda: self.win.show_page(self.win.settings_page))
             self.banner.show()
         elif not ctrl.running:
             self.banner.setText("The agent is stopped. Press <b>Start</b> to connect.")
@@ -500,15 +512,16 @@ def managed_now(win: "MainWindow") -> dict[str, Any]:
 
 
 class SettingsPage(QWidget):
-    """Connection: how this agent reaches the dashboard. Everything the agent does is set on the
-    dashboard (2.6); the Privacy page shows it."""
+    """Setup: how this agent reaches the dashboard, and the tools it uses on this computer (as the
+    agent service finds them). Everything the agent does is set on the dashboard (2.6); the Privacy
+    page shows it."""
 
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
         self.win = win
         s = win.store.settings
 
-        conn = Panel("Server")
+        conn = Panel("Connection")
         # One paste instead of three: the code from the dashboard (a connection code, or an install
         # code that registers this computer) fills the three fields below; nothing is saved until Save.
         self.code = QLineEdit()
@@ -549,15 +562,94 @@ class SettingsPage(QWidget):
         tr.addWidget(self.test_result, 1)
         f.add("", test_row)
         conn.add_layout(f)
-        conn.add(_hint("What this agent does (scanning, listening, what it collects) is set by your administrator "
-                       "on the EagleEye dashboard. The Privacy page shows it."))
+
+        # What the agent uses besides itself: Syft and Grype for the SBOM (scanning and listening are
+        # built in), and the rights it runs with. Asked of the service: it runs as SYSTEM/root and
+        # does not see tools installed for one user only, which this window would.
+        self.recheck_btn = button("Re-check", "ghost", "refresh-cw", self.refresh_tools)
+        self.admin_btn = button("Restart as Administrator", None, "shield", win.relaunch_elevated)
+        self.admin_btn.hide()
+        tools = Panel("Tools on this computer", [self.recheck_btn, self.admin_btn])
+        self.tools_grid = FieldGrid(1)
+        tools.add_layout(self.tools_grid)
+        self.tools_note = _hint("")
+        tools.add(self.tools_note)
+        self._tool_rows: dict[str, tuple[QLabel, QLabel, QLabel]] = {}
 
         self.save_btn = button("Save", "primary", "check", self._save)
         self.save_result = label("", wrap=True)
-        _root(self, _scroll(PageHeader("Connection", "How this agent reaches your organisation's EagleEye dashboard."),
-                            conn),
+        _root(self, _scroll(PageHeader("Setup", "How this agent reaches your organisation's EagleEye dashboard, and the "
+                                                "tools it uses here. What it does is set on the dashboard; the Privacy "
+                                                "page shows it."),
+                            conn, tools),
               _footer(self.save_btn, self.save_result))
         self._secret_placeholders()
+        self.refresh_tools()
+
+    # ── tools ──
+    def refresh_tools(self) -> None:
+        """Ask the agent service what it finds (in the background), or check here without one."""
+        ctrl = self.win.controller
+        ask_service = getattr(self.win, "service_mode", False) and hasattr(ctrl, "tools")
+        self.recheck_btn.setEnabled(False)
+        self.tools_note.setText("Checking...")
+        set_tone(self.tools_note, "muted")
+
+        def check() -> tuple[list[Any], str]:
+            if ask_service:
+                try:
+                    return [deps.DepStatus(**t) for t in ctrl.tools()], "service"
+                except Exception:  # noqa: BLE001 - the service is stopped or older: say so, check here
+                    pass
+            return deps.agent_tools(service=False), "app" if not ask_service else "app-fallback"
+
+        def done(result: Any, error: Optional[BaseException]) -> None:
+            self.recheck_btn.setEnabled(True)
+            if error or not result:
+                self.tools_note.setText(f"Could not check the tools: {error}")
+                set_tone(self.tools_note, "error")
+                return
+            self._fill_tools(*result)
+
+        run_in_thread(check, done)
+
+    def _fill_tools(self, results: list[Any], source: str) -> None:
+        for r in results:
+            if r.name not in self._tool_rows:
+                state, detail, fix = label("", "value"), label("", "mono", wrap=True, selectable=True), _hint("")
+                cell = QWidget()
+                v = QVBoxLayout(cell)
+                v.setContentsMargins(0, 0, 0, 0)
+                v.setSpacing(2)
+                for w in (state, detail, fix):
+                    v.addWidget(w)
+                self.tools_grid.add(r.name, cell)
+                self._tool_rows[r.name] = (state, detail, fix)
+            state, detail, fix = self._tool_rows[r.name]
+            if r.name not in ("Syft", "Grype"):                       # Runs as, Vulnerability database
+                state.setText(r.detail[:1].upper() + r.detail[1:])
+                set_tone(state, None if r.ok or r.name != "Runs as" else "warn")   # a sentence, not a status word
+                detail.hide()
+            else:
+                state.setText(f"Found{f', version {r.version}' if r.version else ''}" if r.ok else "Not found")
+                set_tone(state, "ok" if r.ok else "warn")
+                detail.setText(r.detail if r.ok else "")
+                detail.setVisible(r.ok)
+            fix.setText(r.hint if not r.ok and r.name in ("Syft", "Grype") else "")
+            fix.setVisible(bool(fix.text()))
+        missing = [r.name for r in results if not r.ok and r.name in ("Syft", "Grype")]
+        note = {
+            "service": "As the agent service sees them. ",
+            "app-fallback": "The agent service did not answer, so this is what this window finds; the service may not "
+                            "see tools installed for your account only. ",
+            "app": "",
+        }[source]
+        self.tools_note.setText(note + ("Without Syft and Grype the dashboard cannot list this computer's software "
+                                        "packages or check them for vulnerabilities (SBOM)." if missing else
+                                        "Scanning and passive listening are built in: nothing else to install."))
+        set_tone(self.tools_note, None)
+        self.admin_btn.setVisible(source == "app" and not deps.is_admin())
+
 
     def _secret_placeholders(self) -> None:
         s = self.win.store.settings
@@ -794,57 +886,6 @@ def _summarise(inv: dict[str, Any]) -> str:
         return ""
 
 
-# ── Dependencies ──────────────────────────────────────────────────────────
-# Evaluation tools only (2.6): the agent scans with its own engine and listens with the built-in
-# capture; Nmap and Npcap are used only by `eagleeye scan --engine compare` / `listen --compare`.
-EVALUATION_ONLY = ("Nmap", "Packet capture (Npcap/libpcap)", "python: scapy")
-
-
-class DependenciesPage(QWidget):
-    """Tools: what the agent uses (Syft and Grype for the SBOM) and the rights it runs with."""
-
-    def __init__(self, win: "MainWindow") -> None:
-        super().__init__()
-        self.win = win
-        recheck = button("Re-check", None, "refresh-cw", self.refresh)
-        self.admin_btn = button("Restart as Administrator", None, "shield", win.relaunch_elevated)
-        # The agent service always has administrator rights: nothing to restart.
-        self.admin_btn.setVisible(not getattr(win, "service_mode", False))
-        box = Panel("Tools and permissions", [recheck, self.admin_btn], flush=True)
-        self.table = _table(["Component", "Status", "Details"])
-        self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        box.add(self.table)
-        _root(self, _scroll(PageHeader("Tools", "What the agent uses for SBOMs, and the rights it runs with. Scanning "
-                                                "and listening are built in."), box))
-        self._results: list[Any] = []
-        self.refresh()
-
-    def refresh(self) -> None:
-        self._results = [r for r in deps.check_all() if r.name not in EVALUATION_ONLY]
-        self._fill()
-        self.admin_btn.setVisible(not deps.is_admin() and not getattr(self.win, "service_mode", False))
-
-    def restyle(self) -> None:
-        self._fill()
-
-    def _fill(self) -> None:
-        results = self._results
-        self.table.setRowCount(len(results))
-        for i, r in enumerate(results):
-            status = "OK" if r.ok else ("Missing (required)" if r.required else "Not available")
-            tone = "ok" if r.ok else ("error" if r.required else "warn")
-            hint = r.hint if not r.ok and r.hint and r.name != "Administrator / root" else ""
-            detail = r.detail + (f" ({r.version})" if r.version else "") + (f"\n{hint}" if hint else "")
-            looks_like_path = ":\\" in r.detail or r.detail.startswith("/")
-            cells = [_item(r.name), _item(status, tone), _item(detail, tip=detail, mono=looks_like_path)]
-            for col, item in enumerate(cells):
-                self.table.setItem(i, col, item)
-        self.table.resizeRowsToContents()
-        for row in range(self.table.rowCount()):
-            self.table.setRowHeight(row, max(36, self.table.rowHeight(row) + 6))
-        fit_height(self.table)
-
-
 # ── Log ───────────────────────────────────────────────────────────────────
 class LogPage(QWidget):
     def __init__(self, win: "MainWindow", log_dir: Path) -> None:
@@ -874,5 +915,5 @@ class LogPage(QWidget):
 
 
 def all_pages(win: "MainWindow") -> Iterable[QWidget]:
-    return [w for w in (win.status_page, win.schedules_page, win.settings_page, win.privacy_page, win.deps_page,
+    return [w for w in (win.status_page, win.schedules_page, win.settings_page, win.privacy_page,
                         win.log_page) if w is not None]

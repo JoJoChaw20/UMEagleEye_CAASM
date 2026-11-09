@@ -133,6 +133,8 @@ def capabilities() -> dict[str, Any]:
         from . import deps
         out["admin"] = bool(deps.is_admin())
         out["nmap"] = deps.find_nmap() is not None
+        from . import sbom
+        out["sbom_tools"] = not sbom.missing_tools()        # the dashboard warns when SBOM is on without them
     except Exception:  # noqa: BLE001 - optional information
         pass
     try:

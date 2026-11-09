@@ -88,6 +88,10 @@ SCHEDULE_RETRY_SECONDS = 300
 # The first daily SBOM waits this long after the agent starts (the inventory, which links
 # this computer to its asset, goes first; and start-up stays light).
 SBOM_FIRST_DELAY = 15 * 60
+# A scheduled SBOM that comes due this soon after a full SBOM succeeded is answered by it, like one
+# that comes due during it (Ubuntu VM, 9 Nov: a dashboard SBOM ended at 06:52 and the first daily run,
+# 15 min after the restart, listed the same 900 packages again at 06:53).
+SBOM_ANSWERED_WITHIN = 60 * 60
 SBOM_RETRY_SECONDS = 3600
 # A failed automatic inventory (typically at start-up, before Wi-Fi is up) is retried after
 # 5 min, doubling while it keeps failing, never later than the normal interval.
@@ -164,6 +168,7 @@ class AgentService:
         self._sbom_last: Optional[tuple[str, bool]] = None   # (mode, succeeded) of the run that just ended
         self._sbom_wanted: Optional[str] = None              # "queued" | "covered": a Build SBOM now waiting
         self._sbom_due_waiting: Optional[float] = None       # a daily/weekly run that came due during a run
+        self._sbom_full_ok_at: Optional[float] = None         # when a full SBOM last succeeded
 
     # ── pipelines ──
     def _active_pipeline(self, subnet: str) -> Pipeline:
@@ -323,6 +328,8 @@ class AgentService:
             except Exception as exc:  # noqa: BLE001
                 log.error("SBOM worker failed: %s", exc, exc_info=True)
             self._sbom_last = (self.sbom_mode or "full", ok)
+            if self._sbom_last == ("full", True):
+                self._sbom_full_ok_at = time.time()
             self._sbom_future = None
             self.sbom_mode = None
 
@@ -369,23 +376,33 @@ class AgentService:
         if self._sbom_due_waiting is not None:
             due, self._sbom_due_waiting = self._sbom_due_waiting, None
             if finished_full:
-                # Answered by that run. The schedule keeps its own times: the next daily run
-                # 24 h after this one was due, and a weekly run that was due counts as done then.
-                if self.sbom_cache.weekly_due(due):
-                    self.sbom_cache.last_full = due
-                    self.sbom_cache.save()
-                self._next_sbom = due + self.settings.sbom_interval
-                log.info("The scheduled SBOM was answered by the full SBOM that just finished")
+                self._answered(due, "The scheduled SBOM was answered by the full SBOM that just finished")
                 return
         now = time.time()
         if now < self._next_sbom:
             return
-        if not (sbom_tools.find_tool("syft") and sbom_tools.find_tool("grype")):
-            log.info("Daily SBOM skipped: Syft and Grype are not both installed (see Dependencies)")
+        if self._sbom_full_ok_at is not None and now - self._sbom_full_ok_at < SBOM_ANSWERED_WITHIN:
+            minutes = max(1, round((now - self._sbom_full_ok_at) / 60))
+            self._answered(self._next_sbom, f"The scheduled SBOM was answered by the full SBOM that finished "
+                                            f"{minutes} min ago")
+            return
+        missing = sbom_tools.missing_tools()
+        if missing:
+            log.info("Daily SBOM skipped: the agent cannot find %s. To fix it, %s. The agent window's Setup page "
+                     "shows what it finds.", " and ".join(missing), sbom_tools.where_to_put())
             self._next_sbom = now + self.settings.sbom_interval
             return
         if self._submit_sbom(None, "schedule", full=self.sbom_cache.weekly_due(now)):
             self._next_sbom = now + self.settings.sbom_interval
+
+    def _answered(self, due: float, message: str) -> None:
+        """A scheduled run answered by a full run. The schedule keeps its own times: the next daily run
+        24 h after this one was due, and a weekly run that was due counts as done then."""
+        if self.sbom_cache.weekly_due(due):
+            self.sbom_cache.last_full = due
+            self.sbom_cache.save()
+        self._next_sbom = due + self.settings.sbom_interval
+        log.info(message)
 
     def _maybe_inventory(self, force: bool = False, trigger: Optional[str] = None,
                          scan_id: Optional[str] = None) -> None:
@@ -622,6 +639,8 @@ class AgentService:
         version it runs."""
         if self._capabilities is None:
             self._capabilities = policy.capabilities()
+        # Checked every time (a few file lookups): installing the tools shows on the dashboard at once.
+        self._capabilities["sbom_tools"] = not sbom_tools.missing_tools()
         report: dict[str, Any] = {
             "kind": policy.KIND, "settings": policy.local_report(self.local_settings),
             "capabilities": self._capabilities,

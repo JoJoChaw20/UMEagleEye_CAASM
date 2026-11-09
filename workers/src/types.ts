@@ -9,7 +9,7 @@ export interface Env {
   DEEPSEEK_API_KEY: string
   OTX_API_KEY: string
   THREATFOX_API_KEY: string
-  NVD_API_KEY?: string     // optional; no job uses it at present (CWE IDs come from Grype)
+  NVD_API_KEY?: string     // NVD's CVE search for services identified on devices without an agent (services/serviceCves.ts)
   CF_ACCOUNT_ID?: string   // with CF_ANALYTICS_TOKEN: reads performance history (kg/perf.ts)
   CF_ANALYTICS_TOKEN?: string
   // ── Vars ──

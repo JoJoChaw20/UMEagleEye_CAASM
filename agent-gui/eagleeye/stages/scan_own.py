@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..engine import run_own_scan
+from ..engine.ports import ports_for
 from ..pipeline.record import HostRecord
 from ..pipeline.runner import PipelineContext, Stage
 from .scan_nmap import NmapScanStage, fill_own_host, validate_target
@@ -46,6 +47,8 @@ class OwnScanStage(Stage):
         ctx.hosts = hosts
         ctx.summary["scanner"] = "own"
         ctx.summary["engine"] = stats.as_dict()
+        # The ports this scan checked: the server closes an exposure alert only for a port it checked.
+        ctx.summary["scanned_ports"] = list(ports_for(self.tier))
         ctx.progress(f"{len(hosts)} host(s) up", len(hosts), None)
 
 

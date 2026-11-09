@@ -1,7 +1,7 @@
 /**
  * kg/sync.ts — keeps the graph in step with the source tables.
  *
- * Triggers (migration 0027) list every changed row in kg_outbox. Nothing polls it: a write
+ * Triggers (migration 0029) list every changed row in kg_outbox. Nothing polls it: a write
  * sends one debounced queue message (signalKgSync), the chatbot applies what is outstanding
  * before it answers, and the existing 6-hourly cron drains anything left. Rows are claimed for
  * 90 seconds so concurrent drains split the work, and a drain that dies leaves them to the next.

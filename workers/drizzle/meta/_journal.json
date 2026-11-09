@@ -194,15 +194,29 @@
     {
       "idx": 27,
       "version": "7",
-      "when": 1794202492757,
-      "tag": "0027_knowledge_graph",
+      "when": 1794213564058,
+      "tag": "0027_exposure_alerts",
       "breakpoints": true
     },
     {
       "idx": 28,
       "version": "7",
+      "when": 1794217829532,
+      "tag": "0028_vulnerable_service_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794202492757,
+      "tag": "0029_knowledge_graph",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
       "when": 1794230000000,
-      "tag": "0028_kg_outbox_claim",
+      "tag": "0030_kg_outbox_claim",
       "breakpoints": true
     }
   ]

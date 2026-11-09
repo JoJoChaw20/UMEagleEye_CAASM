@@ -52,6 +52,8 @@ function actionText(type: string, d: Record<string, unknown>, group?: { pkg: str
     case 'port_opened': return `Review new open port ${d.port ?? '?'}/${d.protocol ?? 'tcp'}: close it or accept it`
     case 'new_device': return 'Identify the new device and give it an owner, or isolate it'
     case 'cti_match': return 'Investigate the threat-intelligence match on this host'
+    case 'vulnerable_service': return `Update ${String(d.product ?? 'the service')}${d.version ? ` ${String(d.version)}` : ''} on port ${d.port ?? '?'} (${d.cve_count ?? '?'} known CVEs${d.kev_count ? `, ${d.kev_count} exploited` : ''})`
+    case 'exposure': return `${String(d.title ?? 'Fix the exposure')} on port ${d.port ?? '?'}: ${String(d.fix ?? '').slice(0, 160)}`
     case 'os_patch_missing': return `Install the missing Windows updates${d.missing_kb ? ` (${String(d.missing_kb).slice(0, 40)})` : ''}`
     case 'version_downgrade': return `Check the downgrade of ${d.changed_attribute ?? 'a component'}${d.from ? ` from ${d.from} to ${d.to}` : ''}`
     case 'config_change': return `Review the configuration change${d.changed_attribute ? ` (${d.changed_attribute})` : ''}`

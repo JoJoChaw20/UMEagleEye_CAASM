@@ -169,6 +169,14 @@ function AgentSettings({ agent, onSaved }) {
         </p>
       </div>
       {error && <ErrorBox text={error} />}
+      {/* 2.6+ agents say whether their service finds Syft and Grype (older ones do not say) */}
+      {byKey.sbom?.value === true && policy.capabilities?.sbom_tools === false && (
+        <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>SBOM is on, but the agent cannot find Syft and Grype on its computer, so it skips the SBOM and CVE check.
+            Install them where the agent service can see them (its window's Setup page says where), or turn SBOM off here.</span>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {roles.map((r) => {

@@ -1,3 +1,4 @@
+import { ALWAYS_EXPOSED_PORTS } from '../lib/exposureRules'
 import type { DB } from '../db/client'
 import { assets, assetIdentifiers, events } from '../db/schema'
 import { isNotNull, and, eq, inArray, sql } from 'drizzle-orm'
@@ -272,7 +273,8 @@ export function detectDrift(
   if (baseline.ports_known !== false && Array.isArray(osInfo?.ports) && !portsUnreliable(baseline, osInfo)) {
     const basePorts = new Set(baseline.ports ?? [])
     for (const p of new Set(extractPorts(osInfo))) {
-      if (!basePorts.has(p)) {
+      // Telnet, FTP, VNC: the exposure alert says it already (lib/exposureRules.ts), not twice
+      if (!basePorts.has(p) && !ALWAYS_EXPOSED_PORTS.has(p)) {
         drifts.push({
           type:     'port_opened',
           severity: newPortSeverity(p, asset.isInternetFacing),
@@ -500,7 +502,7 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
   //    the drift alerts that still matter for these assets: open ones (to update or
   //    auto-resolve), false positives (to keep suppressed) and recently auto-resolved
   //    ones (to reopen if their condition returns).
-  const [macRows, existing] = await Promise.all([
+  const [macRows, existing, exposureRows] = await Promise.all([
     db.select({ assetId: assetIdentifiers.assetId, value: assetIdentifiers.value })
       .from(assetIdentifiers)
       .where(and(inArray(assetIdentifiers.assetId, ids), eq(assetIdentifiers.kind, 'mac'))),
@@ -514,7 +516,12 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
           OR (${events.status} = 'resolved' AND ${events.resolutionNote} LIKE 'Auto-resolved%'
               AND ${events.resolvedAt} > now() - make_interval(days => ${REOPEN_WITHIN_DAYS})))`,
       )),
+    // Ports with an exposure alert (lib/exposureRules.ts): a new port there says nothing more.
+    db.select({ assetId: events.assetId, details: events.details }).from(events)
+      .where(and(inArray(events.assetId, ids), eq(events.eventType, 'exposure'),
+        inArray(events.status, ['open', 'in_progress', 'accepted_risk', 'false_positive']))),
   ])
+  const exposedPorts = new Set(exposureRows.map((r) => `${r.assetId}:${(r.details as { port?: number } | null)?.port}`))
   const agentMacs = new Map<string, Set<string>>()
   for (const r of macRows) {
     const mac = normalizeMac(r.value)
@@ -555,6 +562,7 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
     if (portsUnreliable(baseline, asset.osInfo as Record<string, unknown> | null)) frozenPorts.add(asset.assetId)
     for (const d of drifts) {
       if (d === upgrade) continue
+      if (d.type === 'port_opened' && exposedPorts.has(`${asset.assetId}:${d.details.port}`)) continue
       candidates.push({ assetId: asset.assetId, type: d.type, severity: d.severity, details: d.details })
     }
   }

@@ -38,7 +38,7 @@ const SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 const EVENT_TYPE_VALUES = [
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'cve_detected', 'new_device', 'config_change', 'new_package',
-  'removed_package', 'cti_match', 'os_patch_missing',
+  'removed_package', 'cti_match', 'os_patch_missing', 'exposure', 'vulnerable_service',
 ] as const
 const DRIFT_TYPES = new Set([
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
