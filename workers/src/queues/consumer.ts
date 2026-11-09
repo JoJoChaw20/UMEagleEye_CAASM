@@ -11,6 +11,7 @@ import { runServiceCves, type ServiceCveJob } from '../services/serviceCves'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
+import { recordJob } from '../kg/perf'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
 
 interface AdvisoryJob {
@@ -67,11 +68,14 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
   if (driftMsgs.length > 0) {
     const ids = [...new Set(driftMsgs.map(m => (m.body as DriftCheckJob).assetId).filter(Boolean))]
     try {
+      const driftStart = Date.now()
       const created = await runDriftAudit(db, null, ids)
+      recordJob(env, 'drift_check', Date.now() - driftStart, true)
       console.log(`[drift_check] ${ids.length} asset(s) checked, ${created} new alert(s)`)
       if (created > 0) await signalKgSyncSafe(env)
       for (const m of driftMsgs) m.ack()
     } catch (err) {
+      recordJob(env, 'drift_check', 0, false)
       console.error('[drift_check] failed:', err)
       for (const m of driftMsgs) m.retry()
     }
@@ -84,6 +88,8 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
     const job = message.body as Job
     if ((job as { type?: string })?.type === 'drift_check') continue
 
+    const jobStart = Date.now()
+    const jobName = String((job as { type?: string })?.type ?? 'unknown').slice(0, 40)
     try {
       if (job.type === 'advisory') {
         const advisory = await generateAdvisory(
@@ -153,7 +159,9 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
       } else {
         message.ack()
       }
+      recordJob(env, jobName, Date.now() - jobStart, true)
     } catch (err) {
+      recordJob(env, jobName, Date.now() - jobStart, false)
       console.error('Queue job failed:', err)
       message.retry()
     }

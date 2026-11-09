@@ -28,10 +28,20 @@ export type Row = Record<string, any> // eslint-disable-line @typescript-eslint/
 
 const EMPTY: GraphDelta = { nodes: [], edges: [] }
 
+/** Replaces a lone surrogate (half an emoji) with U+FFFD: Postgres rejects it in text and jsonb. */
+export const wellFormed = (s: string): string =>
+  s.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd')
+
 export const clip = (v: unknown, max = 200): string => {
   if (v == null) return ''
-  const s = String(v).replace(/\s+/g, ' ').trim()
-  return s.length > max ? `${s.slice(0, max)}...` : s
+  const s = wellFormed(String(v).replace(/\s+/g, ' ').trim())
+  // A secret is checked in the whole field, before the cut: a value cut mid-way no longer matches
+  // a pattern. Kept whole, the text still matches, so safeDelta blocks the node and nothing is stored.
+  if (containsSecret(s)) return s
+  if (s.length <= max) return s
+  // Cut between characters, never inside an astral pair.
+  const cut = /[\ud800-\udbff]/.test(s[max - 1] ?? '') ? max - 1 : max
+  return `${s.slice(0, cut)}...`
 }
 const iso = (v: unknown): string | null => (v == null ? null : new Date(v as string).toISOString())
 
@@ -133,6 +143,8 @@ export function extractIdentifier(r: Row): GraphDelta {
 export function extractRelationship(r: Row): GraphDelta {
   if (!r.tenant_id) return EMPTY
   const key = `relationship:${r.relationship_id}`
+  // Both ends must belong to this company: a label from another company's device must not enter its node.
+  if (r.target_tenant_id !== undefined && r.target_tenant_id !== r.tenant_id) return EMPTY
   const src = r.source_label || 'unknown device', dst = r.target_label || 'unknown device'
   return {
     nodes: [node(r.tenant_id, key, 'relationship', `${src} ${r.relationship_type} ${dst}`,
@@ -178,7 +190,11 @@ function eventFacts(details: unknown): string {
   for (const k of FACT_KEYS) {
     const v = d[k]
     if (v === undefined || v === null || v === '') continue
-    parts.push(`${k.replace(/_/g, ' ')}: ${clip(typeof v === 'object' ? JSON.stringify(v) : v, k === 'description' ? 300 : 120)}`)
+    // Only scalars (and lists of scalars, like fix versions): an object under an allowed key
+    // would carry subkeys nobody allowlisted.
+    const scalar = (x: unknown) => ['string', 'number', 'boolean'].includes(typeof x)
+    if (typeof v === 'object' && !(Array.isArray(v) && v.every(scalar))) continue
+    parts.push(`${k.replace(/_/g, ' ')}: ${clip(Array.isArray(v) ? v.join(', ') : v, k === 'description' ? 300 : 120)}`)
   }
   return parts.join('; ')
 }

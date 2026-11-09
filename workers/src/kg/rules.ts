@@ -8,6 +8,9 @@ export interface AlertFact { key: string; title: string; severity: string; times
 export interface AgentFact { key: string; name: string; status: string; lastHeartbeat: string | null; retired: boolean }
 export interface ScanFact { key: string; agentKey: string | null; status: string; startedAt: string }
 
+import type { PerfWindow } from './perf'
+import { MIN_ROUTE_REQUESTS, SLOW_ROUTE_MS } from './perf'
+
 export interface Facts {
   assets: AssetFact[]
   advisories: AdvisoryFact[]
@@ -129,6 +132,99 @@ export function evaluateRules(f: Facts, now: Date): Problem[] {
       solution: 'The score is refreshed nightly. If it stays old, report it to the UMEagleEye team.',
       evidence: [], count: 1,
     })
+  }
+
+  return problems.sort((x, y) => y.rank - x.rank || y.count - x.count)
+}
+
+// ── Platform problems: about UMEagleEye itself, `platform` visibility, no tenant ──
+
+export interface FeedFact { source: string; ok: boolean; lastOkAt: string | null }
+export interface OutboxFact { count: number; oldestAt: string | null; stuck: number }
+export interface PlatformFacts {
+  windows: PerfWindow[]   // recent hourly performance windows, oldest first
+  feeds: FeedFact[]
+  outbox: OutboxFact | null
+}
+
+export const PLATFORM_RULES = ['route_persistently_slow', 'error_spike', 'slow_with_job', 'threat_feed_failing', 'graph_sync_backlog'] as const
+export const SLOW_WINDOWS = 3
+export const SPIKE_MIN_REQUESTS = 20
+export const SPIKE_ERROR_RATE = 0.2
+export const BACKLOG_ROWS = 200
+export const BACKLOG_AGE_MINUTES = 60
+const PLATFORM_EVIDENCE = 12
+
+const windowRef = (w: PerfWindow) => `perf:window:${w.start}`
+
+export function evaluatePlatformRules(f: PlatformFacts, now: Date): Problem[] {
+  const problems: Problem[] = []
+
+  const slowByRoute = new Map<string, PerfWindow[]>()
+  for (const w of f.windows) for (const r of w.slowRoutes) if (r.slow) slowByRoute.set(r.route, [...(slowByRoute.get(r.route) ?? []), w])
+  for (const [route, ws] of slowByRoute) {
+    if (ws.length < SLOW_WINDOWS) continue
+    const worst = Math.max(...ws.map(w => w.slowRoutes.find(r => r.route === route)?.avgMs ?? 0))
+    problems.push({
+      id: `perf_slow:${route}`, rule: 'route_persistently_slow', rank: 55, severity: 'medium',
+      title: `${route} has been slow in ${ws.length} recent hours`,
+      detail: `${route} averaged over ${SLOW_ROUTE_MS} ms with at least ${MIN_ROUTE_REQUESTS} requests in ${ws.length} of the last recorded hours, worst hour average ${worst} ms.`,
+      solution: 'Look at what this route queries: add an index or trim the query, and check the database share of time in the cited hours.',
+      evidence: ws.slice(-PLATFORM_EVIDENCE).map(windowRef), count: ws.length,
+    })
+  }
+
+  const spikes = f.windows.filter(w => w.requests >= SPIKE_MIN_REQUESTS && w.errorRate >= SPIKE_ERROR_RATE)
+  if (spikes.length) {
+    const worst = spikes.reduce((a, b) => (b.errorRate > a.errorRate ? b : a))
+    problems.push({
+      id: 'perf_errors', rule: 'error_spike', rank: 75, severity: 'high',
+      title: `Server errors spiked in ${spikes.length} recent hour(s)`,
+      detail: `In the hour starting ${worst.start}, ${worst.errors} of ${worst.requests} API requests failed with a server error (error rate ${Math.round(worst.errorRate * 1000) / 10}%).`,
+      solution: 'Read the Worker logs for that hour to find the failing route, then check the database and any recent deploy.',
+      evidence: spikes.slice(-PLATFORM_EVIDENCE).map(windowRef), count: spikes.length,
+    })
+  }
+
+  const lined = f.windows.filter(w => w.slow && (w.jobs.length > 0 || w.scanRequests > 0))
+  if (lined.length) {
+    const lines = lined.slice(-3).map(w => {
+      const slowest = w.slowRoutes[0]
+      const what = [...w.jobs.map(j => j.name), ...(w.scanRequests > 0 ? [`${w.scanRequests} scan request(s)`] : [])].join(', ')
+      return `in the hour starting ${w.start}${slowest ? ` ${slowest.route} averaged ${slowest.avgMs} ms` : ' requests were slow'} while ${what} ran`
+    })
+    problems.push({
+      id: 'perf_slow_with_job', rule: 'slow_with_job', rank: 35, severity: 'low',
+      title: `Slowness lined up with background work in ${lined.length} recent hour(s)`,
+      detail: `Timing only, not proof of cause: ${lines.join('; ')}.`,
+      solution: 'If this repeats, move the heavy job to a quieter hour or split it into smaller steps, then check whether the slow hours disappear.',
+      evidence: lined.slice(-PLATFORM_EVIDENCE).map(windowRef), count: lined.length,
+    })
+  }
+
+  for (const feed of f.feeds) {
+    if (feed.ok) continue
+    problems.push({
+      id: `feed:${feed.source}`, rule: 'threat_feed_failing', rank: 48, severity: 'medium',
+      title: `Threat feed ${feed.source} is failing`,
+      detail: `The last load of the ${feed.source} feed failed. It last loaded successfully ${feed.lastOkAt ?? 'never'}.`,
+      solution: 'Check the feed API key and whether the source is reachable, then press Update feeds now on the Threat Intel page.',
+      evidence: [], count: 1,
+    })
+  }
+
+  const o = f.outbox
+  if (o && o.count > 0) {
+    const ageMin = o.oldestAt ? Math.floor((now.getTime() - new Date(o.oldestAt).getTime()) / 60_000) : 0
+    if (o.count >= BACKLOG_ROWS || ageMin >= BACKLOG_AGE_MINUTES) {
+      problems.push({
+        id: 'kg_backlog', rule: 'graph_sync_backlog', rank: 42, severity: 'medium',
+        title: `The chatbot graph has ${o.count} change(s) waiting to be applied`,
+        detail: `${o.count} change(s) are waiting, the oldest for ${ageMin} minute(s) (since ${o.oldestAt ?? 'unknown'}). ${o.stuck} of them have been retried repeatedly.`,
+        solution: 'Check the queue consumer and Neon health, and read the Worker logs for [kg] errors. The 6-hourly job drains what is left.',
+        evidence: [], count: o.count,
+      })
+    }
   }
 
   return problems.sort((x, y) => y.rank - x.rank || y.count - x.count)

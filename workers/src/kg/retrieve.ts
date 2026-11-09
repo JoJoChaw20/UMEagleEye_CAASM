@@ -102,6 +102,7 @@ export async function followLinks(q: Q, a: Access, key: string, depth = 1, budge
 
 const SAFE_FIELD = /^[a-zA-Z_]{1,40}$/
 const MAX_LIST = 100
+const MAX_FILTERS = 6
 
 export interface CountResult {
   total: number
@@ -112,7 +113,10 @@ export interface CountResult {
 
 /** Exact count of nodes of one type, with property filters; optionally grouped or listed. */
 export async function countNodes(q: Q, a: Access, input: { type: string; where?: Record<string, string | number | boolean>; groupBy?: string }): Promise<CountResult | { error: string }> {
-  const filter = Object.fromEntries(Object.entries(input.where ?? {}).slice(0, 6))
+  const entries = Object.entries(input.where ?? {})
+  // Dropping a filter would inflate a count reported as exact, so too many is an error.
+  if (entries.length > MAX_FILTERS) return { error: `At most ${MAX_FILTERS} filters are allowed.` }
+  const filter = Object.fromEntries(entries)
   if (Object.keys(filter).some(k => !SAFE_FIELD.test(k))) return { error: 'Invalid filter name.' }
   if (input.groupBy && !SAFE_FIELD.test(input.groupBy)) return { error: 'Invalid group name.' }
   const params: unknown[] = [input.type, JSON.stringify(filter)]

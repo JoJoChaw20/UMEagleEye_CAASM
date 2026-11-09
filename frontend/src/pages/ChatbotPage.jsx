@@ -2,11 +2,10 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Bot, Send, User, Loader2, RotateCcw,
   Activity, Server, Bell, Shield, BarChart2, HelpCircle,
-  CheckCircle2, ChevronDown, ChevronUp, Sparkles,
+  CheckCircle2, Sparkles,
   Trash2, Plus, PanelLeft, MessageCircle, FileSearch, Wrench, XCircle,
 } from 'lucide-react'
-import { useNavigate, useLocation } from 'react-router-dom'
-import { parseAdvisory } from '../utils/advisoryText'
+import { useLocation } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useChatbot, makeWelcome, MAX_MSG } from '../context/ChatbotContext'
@@ -22,7 +21,7 @@ function SessionIcon({ session, className = 'h-4 w-4' }) {
 
 
 // ── Message bubble ────────────────────────────────────────────────
-function Bubble({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI }) {
+function Bubble({ msg, onConfirm, canConfirm }) {
   const isBot = msg.role === 'bot'
   return (
     <div className={`flex gap-3 ${isBot ? '' : 'flex-row-reverse'}`}>
@@ -35,7 +34,7 @@ function Bubble({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI
             ? 'bg-dark-800 border border-dark-700/50 text-dark-100 rounded-tl-sm'
             : 'bg-eagle-600/20 border border-eagle-500/30 text-dark-100 rounded-tr-sm'
         }`}>
-          <BotContent msg={msg} onSend={onSend} onOpenAdvisorySession={onOpenAdvisorySession} onSelectTenant={onSelectTenant} canDebugAI={canDebugAI} />
+          <BotContent msg={msg} onConfirm={onConfirm} canConfirm={canConfirm} />
         </div>
         <p className="text-[11px] text-dark-500 mt-1 px-1">
           {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -260,254 +259,43 @@ function MarkdownBody({ text }) {
   )
 }
 
-// ── Renders structured bot responses ─────────────────────────────
-function BotContent({ msg, onSend, onOpenAdvisorySession, onSelectTenant, canDebugAI }) {
-  const { type, content, items, data } = msg
-
-  if (type === 'tenant_select') {
-    const msgTenants = msg.tenants || []
-    return (
-      <div>
-        <p className="text-dark-200 mb-3">{content}</p>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => onSelectTenant?.(null, 'All Tenants', msg.command)}
-            className="px-3 py-1.5 text-xs rounded-lg bg-dark-700 border border-dark-600 text-dark-300 hover:text-dark-50 hover:border-dark-400 transition-colors"
-          >
-            🌐 All Tenants
-          </button>
-          {msgTenants.map(t => (
-            <button
-              key={t.tenant_id}
-              onClick={() => onSelectTenant?.(t.tenant_id, t.name, msg.command)}
-              className="px-3 py-1.5 text-xs rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-300 hover:bg-eagle-500/20 transition-colors"
-            >
-              {t.name}
-            </button>
-          ))}
-        </div>
-      </div>
-    )
-  }
-  const navigate = useNavigate()
-  const [expandedId, setExpandedId] = useState(null)
-
-  if (type === 'stats' && items) {
-    return (
-      <div>
-        <p className="font-semibold text-dark-50 mb-2">{content}</p>
-        <div className="grid grid-cols-2 gap-2">
-          {items.map(({ label, value }) => (
-            <div key={label} className="bg-dark-900/60 rounded-lg p-2 text-center">
-              <p className="text-lg font-bold text-eagle-400">{value}</p>
-              <p className="text-[11px] text-dark-300 mt-0.5">{label}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  if (type === 'posture' && data) {
-    const color = data.score >= 70 ? 'text-green-400' : data.score >= 40 ? 'text-yellow-400' : 'text-red-400'
-    return (
-      <div>
-        <p className="font-semibold text-dark-50 mb-2">{content}</p>
-        <div className="flex items-center gap-4 bg-dark-900/60 rounded-lg p-3">
-          <div className="text-center">
-            <p className={`text-3xl font-bold ${color}`}>{data.score}</p>
-            <p className="text-[11px] text-dark-400">/ 100</p>
-          </div>
-          <div className="space-y-1 text-xs text-dark-300">
-            <p>Total assets: <span className="text-dark-50 font-medium">{data.total}</span></p>
-            <p>Critical assets: <span className="text-red-400 font-medium">{data.critical}</span></p>
-            <p>Open critical events: <span className="text-yellow-400 font-medium">{data.openCrit}</span></p>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  if (type === 'assets' && items) {
-    const critColor = (s) => (s ?? 0) >= 8 ? 'text-red-400 bg-red-500/10 border-red-500/30' : (s ?? 0) >= 5 ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30' : 'text-green-400 bg-green-500/10 border-green-500/30'
-    return (
-      <div>
-        <p className="font-semibold text-dark-50 mb-2">{content}</p>
-        <div className="space-y-1">
-          {items.length === 0 && <p className="text-dark-400 text-xs">No assets found.</p>}
-          {items.map((a, i) => (
-            <div key={i} className="flex items-center gap-2 bg-dark-900/60 rounded-lg px-3 py-2 text-xs">
-              <span className="text-dark-500 w-4 text-right flex-shrink-0">{i + 1}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-dark-100 font-medium truncate">{a.hostname || a.ipAddress}</p>
-                {a.hostname && <p className="text-dark-500 font-mono">{a.ipAddress}</p>}
-              </div>
-              <span className="text-dark-400 capitalize flex-shrink-0">{a.deviceType}</span>
-              <span className={`flex-shrink-0 font-bold px-1.5 py-0.5 rounded border text-[11px] ${critColor(a.criticalityScore)}`}>
-                {a.criticalityScore ?? '—'}/10
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  if (type === 'alerts' && items) {
-    const sevCls = { critical: 'text-red-400 bg-red-500/10 border-red-500/30', high: 'text-orange-400 bg-orange-500/10 border-orange-500/30' }
-    const getDetail = (e) => {
-      const d = e.details ?? {}
-      return d.cve_id || d.cve || d.package_name || d.action || d.description || '—'
-    }
-    const isCve = (detail) => /^CVE-\d{4}-\d+$/i.test(detail)
-    return (
-      <div>
-        <p className="font-semibold text-dark-50 mb-2">{content}</p>
-        <div className="space-y-1">
-          {items.length === 0 && <p className="text-dark-400 text-xs">No critical/high alerts.</p>}
-          {items.map((e, i) => {
-            const detail = getDetail(e)
-            return (
-              <div
-                key={i}
-                onClick={() => navigate('/alerts')}
-                className="cursor-pointer bg-dark-900/60 hover:bg-dark-800/80 rounded-lg px-3 py-2 text-xs transition-colors border border-transparent hover:border-eagle-500/30"
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-dark-100 font-medium capitalize">{e.eventType?.replace(/_/g, ' ')}</span>
-                  <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold capitalize ${sevCls[e.severity] ?? 'text-dark-400'}`}>{e.severity}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  {isCve(detail) ? (
-                    <a
-                      href={`https://nvd.nist.gov/vuln/detail/${detail}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={ev => ev.stopPropagation()}
-                      className="font-mono text-eagle-400 hover:text-eagle-300 hover:underline"
-                    >
-                      {detail}
-                    </a>
-                  ) : (
-                    <span className="font-mono text-dark-200 truncate max-w-[60%]">{detail}</span>
-                  )}
-                  <span className="text-dark-500">{e.hostname || e.ipAddress}</span>
-                </div>
-                <p className="text-dark-600 mt-0.5">{new Date(e.timestamp).toLocaleString()}</p>
-              </div>
-            )
-          })}
-        </div>
-        <p className="text-dark-500 text-[11px] mt-2 text-center">Click any alert to view its details on the Alerts page.</p>
-      </div>
-    )
-  }
-
-  if (type === 'advisories' && items) {
-    const statusCls = {
-      open:         'text-red-400 bg-red-500/10 border-red-500/30',
-      acknowledged: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
-      in_progress:  'text-eagle-400 bg-eagle-500/10 border-eagle-500/30',
-    }
-    const parseSteps = (raw = '') => parseAdvisory(raw).steps
-    return (
-      <div>
-        <p className="font-semibold text-dark-50 mb-2">{content}</p>
-        <div className="space-y-2">
-          {items.length === 0 && <p className="text-dark-400 text-xs">No open advisories.</p>}
-          {items.map((a) => {
-            const shortId = a.advisoryId?.slice(0, 8)
-            const isExpanded = expandedId === a.advisoryId
-            const steps = parseSteps(a.recommendedAction)
-            return (
-              <div key={a.advisoryId} className="bg-dark-900/60 rounded-lg border border-dark-700/50 text-xs overflow-hidden">
-                <button
-                  onClick={() => setExpandedId(isExpanded ? null : a.advisoryId)}
-                  className="w-full text-left px-3 py-2 flex items-start justify-between gap-2 hover:bg-dark-800/60 transition-colors"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold capitalize flex-shrink-0 ${statusCls[a.status] ?? 'text-dark-400 border-dark-600'}`}>
-                        {a.status?.replace('_', ' ')}
-                      </span>
-                      <span className="text-dark-500 font-mono text-[11px] truncate">{shortId}...</span>
-                      <span className="text-dark-600 text-[11px] flex-shrink-0 ml-auto">{new Date(a.createdAt).toLocaleDateString()}</span>
-                    </div>
-                    <p className="text-dark-300 leading-snug line-clamp-2">{a.summary}</p>
-                  </div>
-                  {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-dark-400 flex-shrink-0 mt-0.5" /> : <ChevronDown className="w-3.5 h-3.5 text-dark-400 flex-shrink-0 mt-0.5" />}
-                </button>
-
-                {isExpanded && (
-                  <div className="px-3 pb-3 border-t border-dark-700/50 pt-2 space-y-3">
-                    <div>
-                      <p className="text-dark-500 uppercase text-[11px] tracking-wider mb-1">Advisory ID</p>
-                      <p className="text-dark-200 font-mono break-all leading-relaxed select-all">{a.advisoryId}</p>
-                    </div>
-                    <div>
-                      <p className="text-dark-500 uppercase text-[11px] tracking-wider mb-1">Description</p>
-                      <p className="text-dark-200 leading-relaxed whitespace-pre-wrap">{a.summary}</p>
-                    </div>
-                    <div>
-                      <p className="text-dark-500 uppercase text-[11px] tracking-wider mb-1">Recommended Actions</p>
-                      <div className="space-y-1.5">
-                        {steps.length > 1 ? steps.map((step, i) => (
-                          <div key={i} className="flex gap-2 items-start">
-                            <span className="flex-shrink-0 w-4 h-4 rounded-full bg-eagle-500/20 text-eagle-400 text-[11px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
-                            <p className="text-dark-200 leading-relaxed">{step}</p>
-                          </div>
-                        )) : <p className="text-dark-200 leading-relaxed whitespace-pre-wrap">{a.recommendedAction}</p>}
-                      </div>
-                    </div>
-                    {canDebugAI && (
-                      <button
-                        onClick={() => onOpenAdvisorySession?.(a)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-[11px] font-medium w-full justify-center"
-                      >
-                        <Sparkles className="w-3 h-3" />
-                        Debug with AI
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
-  }
-
-  if (type === 'fix' && data) {
-    return (
-      <div>
-        <div className="flex items-center gap-2 mb-2">
-          <CheckCircle2 className="w-4 h-4 text-green-400" />
-          <p className="font-semibold text-green-400">Advisory Resolved</p>
-        </div>
-        <div className="bg-dark-900/60 rounded-lg px-3 py-2 text-xs space-y-1">
-          <p className="text-dark-400 font-mono text-[11px]">{data.advisoryId?.slice(0, 8)}...</p>
-          <p className="text-dark-100">{data.summary}</p>
-        </div>
-      </div>
-    )
-  }
-
-
-  // AI / text — markdown renderer (no dangerouslySetInnerHTML), with the lookups the
-  // assistant made and any change it proposes (the person confirms; it never acts alone)
+// ── Renders a bot message ─────────────────────────────────────────
+// Everything the server sends is shown as plain text (React escapes it), never as HTML.
+function BotContent({ msg, onConfirm, canConfirm }) {
+  const { content, error, tools, proposals, sources } = msg
   return (
     <div className="space-y-2">
-      {msg.tools?.length > 0 && <ToolSteps tools={msg.tools} />}
+      {tools?.length > 0 && <ToolSteps tools={tools} />}
       <MarkdownBody text={content ?? ''} />
-      {(msg.proposals ?? []).map((p) => (
-        <ProposalCard key={p.advisory_id} proposal={p} onSend={onSend} canConfirm={canDebugAI} />
+      {error && (
+        <div role="alert" className="rounded-lg border border-accent-red/40 bg-accent-red/10 px-3 py-2 text-xs text-dark-100">{error}</div>
+      )}
+      {(proposals ?? []).map((p) => (
+        <ProposalCard key={p.confirm_token ?? p.advisory_id} proposal={p} onConfirm={onConfirm} canConfirm={canConfirm} />
       ))}
+      {sources?.length > 0 && <Sources sources={sources} />}
     </div>
   )
 }
 
-// The tools the assistant called for this answer (mcp/tools.ts on the API)
+// The records the answer is built from: title and type, as plain text.
+function Sources({ sources }) {
+  return (
+    <div className="pt-1" aria-label="Sources">
+      <p className="text-[11px] uppercase tracking-wider text-dark-500 mb-1">Sources</p>
+      <ul className="flex flex-wrap gap-1.5">
+        {sources.map((s, i) => (
+          <li key={`${s.key ?? s.ref ?? i}-${i}`} className="inline-flex max-w-full items-center gap-1 rounded-md border border-dark-700/60 bg-dark-900/50 px-1.5 py-0.5 text-[11px] text-dark-300">
+            <span className="truncate">{String(s.title ?? s.key ?? '')}</span>
+            {s.type && <span className="text-dark-500 flex-shrink-0">· {String(s.type)}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// The lookups the assistant made for this answer
 function ToolSteps({ tools }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-dark-400" aria-label="Data the assistant looked up">
@@ -526,22 +314,36 @@ function ToolSteps({ tools }) {
   )
 }
 
-// A change the assistant proposed. Only the Confirm click makes it, through the same
-// tenant-checked, audited `fix` command a person can type.
-function ProposalCard({ proposal, onSend, canConfirm }) {
-  const [done, setDone] = useState(false)
+// A change the assistant proposed. Only the Confirm click makes it: it calls
+// POST /chatbot/confirm, which checks the person, role and company again and audits it.
+// Cancel only hides the card; the token expires on its own.
+function ProposalCard({ proposal, onConfirm, canConfirm }) {
+  const [state, setState] = useState('idle') // idle | pending | done | dismissed
+  const busy = useRef(false)
   if (proposal.type !== 'resolve_advisory') return null
+  if (state === 'dismissed') return <p className="text-xs text-dark-500">Proposal dismissed. Nothing was changed.</p>
+  if (state === 'done') return null
+  const confirm = async () => {
+    if (busy.current) return
+    busy.current = true
+    setState('pending')
+    await onConfirm(proposal.confirm_token)
+    setState('done') // the result is shown in the chat
+  }
   return (
     <div className="rounded-lg border border-eagle-500/30 bg-eagle-500/5 px-3 py-2.5 text-xs space-y-2">
-      <p className="text-dark-100 font-medium">Resolve advisory <code className="font-mono">{proposal.advisory_id.slice(0, 8)}</code>?</p>
+      <p className="text-dark-100 font-medium">Resolve advisory <code className="font-mono">{String(proposal.advisory_id ?? '').slice(0, 8)}</code>?</p>
       {proposal.summary && <p className="text-dark-300">{proposal.summary}</p>}
-      {proposal.reason && <p className="text-dark-400">Assistant's reason (not verified): {proposal.reason}</p>}
+      {proposal.reason && <p className="text-dark-400">Advisory: {proposal.reason}</p>}
       {canConfirm ? (
-        <button type="button" disabled={done}
-          onClick={() => { setDone(true); onSend(`fix ${proposal.advisory_id}`) }}
-          className="btn-primary !py-1 !px-3 text-xs">
-          {done ? 'Sent' : 'Confirm'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button type="button" disabled={state === 'pending'} onClick={confirm} className="btn-primary !py-1 !px-3 text-xs">
+            {state === 'pending' ? 'Resolving…' : 'Confirm'}
+          </button>
+          <button type="button" disabled={state === 'pending'} onClick={() => setState('dismissed')} className="btn-secondary !py-1 !px-3 text-xs">
+            Cancel
+          </button>
+        </div>
       ) : (
         <p className="text-dark-400">Only tenant admins can resolve advisories.</p>
       )}
@@ -549,18 +351,65 @@ function ProposalCard({ proposal, onSend, canConfirm }) {
   )
 }
 
-// Commands that require tenant selection for superadmin before querying
-const DATA_COMMANDS = new Set(['status', 'assets', 'alerts', 'advisories', 'posture'])
-
-// ── Quick-command pills ───────────────────────────────────────────
+// ── Quick buttons: ordinary questions, answered from the knowledge graph ──
 const QUICK = [
-  { label: 'Status',      icon: Activity,   cmd: 'status',     roles: null },
-  { label: 'Posture',     icon: BarChart2,  cmd: 'posture',    roles: null },
-  { label: 'Assets',      icon: Server,     cmd: 'assets',     roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
-  { label: 'Alerts',      icon: Bell,       cmd: 'alerts',     roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
-  { label: 'Advisories',  icon: Shield,     cmd: 'advisories', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
-  { label: 'Help',        icon: HelpCircle, cmd: 'help',       roles: null },
+  { label: 'Status',      icon: Activity,   q: 'What is the overall security status of my environment?', roles: null },
+  { label: 'Posture',     icon: BarChart2,  q: 'What is my security posture score and what drives it?', roles: null },
+  { label: 'Assets',      icon: Server,     q: 'Which of my assets are the most critical?', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
+  { label: 'Alerts',      icon: Bell,       q: 'Which critical and high severity alerts are open?', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
+  { label: 'Advisories',  icon: Shield,     q: 'Which advisories are still open?', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
+  { label: 'Fix first',   icon: HelpCircle, q: 'What should I fix first?', roles: null },
 ]
+
+// Reads the answer stream (server-sent events). Calls onUpdate with everything received so far.
+// Events: token, tool, sources, proposal, error.
+async function readChatStream(res, onUpdate) {
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  const state = { content: '', error: null, tools: [], proposals: [], sources: [] }
+  let buf = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const chunk = line.slice(6).trim()
+        if (chunk === '[DONE]') break
+        let parsed
+        try { parsed = JSON.parse(chunk) } catch { continue /* skip malformed chunk */ }
+        if (typeof parsed.error === 'string') state.error = state.error ? `${state.error} ${parsed.error}` : parsed.error
+        if (typeof parsed.token === 'string') state.content += parsed.token
+        if (parsed.tool) {
+          // one chip per call: "running" is replaced by its "done"
+          const last = state.tools.findLastIndex(t => t.name === parsed.tool.name && t.status === 'running')
+          if (parsed.tool.status === 'done' && last !== -1) state.tools[last] = parsed.tool
+          else state.tools.push(parsed.tool)
+        }
+        if (Array.isArray(parsed.sources)) state.sources = parsed.sources
+        if (parsed.proposal) state.proposals.push(parsed.proposal)
+        if (!(parsed.error || parsed.token || parsed.tool || parsed.sources || parsed.proposal)) continue
+        onUpdate({ content: state.content, error: state.error, tools: [...state.tools], proposals: [...state.proposals], sources: [...state.sources] })
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+// What a failed request says to the person (429 is the per-minute question limit)
+async function failureText(res) {
+  if (res.status === 429) return 'You have asked a lot of questions in the last minute. Wait a moment, then try again.'
+  try {
+    const body = await res.json()
+    if (typeof body?.content === 'string' && body.content) return body.content
+    if (typeof body?.error === 'string' && body.error) return body.error
+  } catch { /* not JSON */ }
+  return `The assistant could not answer (HTTP ${res.status}). Please try again.`
+}
 
 // ── Typing indicator ──────────────────────────────────────────────
 function Typing() {
@@ -639,12 +488,12 @@ export default function ChatbotPage() {
   const { sessions, setSessions, activeId, setActiveId, updateSession, streamingSessionId, setStreamingSessionId } = useChatbot()
 
   const [input, setInput] = useState('')
-  const [localLoading, setLocalLoading] = useState(false)
+  const [pickedTenant, setPickedTenant] = useState('')
   const [tenants, setTenants] = useState([])
   const bottomRef = useRef(null)
 
-  // Combine: local loading (commands) OR background streaming on this session
-  const loading = localLoading || streamingSessionId === activeId
+  // Background streaming on this session (kept in context, so it survives navigation)
+  const loading = streamingSessionId === activeId
 
   const activeSession = sessions[activeId] ?? sessions.general
 
@@ -657,258 +506,96 @@ export default function ChatbotPage() {
 
 
 
+  // Asks one question and streams the answer into the session. Used by the input box, the
+  // quick buttons and the advisory sessions, so background generation survives navigation.
+  const streamAnswer = useCallback(async (sessionId, message, history, tenantId) => {
+    const placeholderTs = Date.now() + 1
+    const patchBot = (patch) => setSessions(prev => {
+      const s = prev[sessionId]
+      if (!s) return prev
+      const msgs = [...s.messages]
+      const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
+      if (idx !== -1) msgs[idx] = { ...msgs[idx], ...patch }
+      return { ...prev, [sessionId]: { ...s, messages: msgs, updatedAt: Date.now() } }
+    })
+    setSessions(prev => {
+      const s = prev[sessionId]
+      if (!s) return prev
+      return { ...prev, [sessionId]: { ...s, messages: [...s.messages.slice(-MAX_MSG + 1), { role: 'bot', type: 'ai', content: '', ts: placeholderTs }], updatedAt: Date.now() } }
+    })
+    setStreamingSessionId(sessionId)
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || '/api/v1'
+      const token = localStorage.getItem('access_token')
+      const res = await fetch(`${apiBase}/chatbot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ message, history, stream: true, ...(tenantId ? { tenant_id: tenantId } : {}) }),
+      })
+      if (!res.ok) { patchBot({ error: await failureText(res) }); return }
+      await readChatStream(res, patchBot)
+    } catch {
+      patchBot({ error: 'Could not reach the assistant. Please try again.' })
+    } finally {
+      setStreamingSessionId(null)
+    }
+  }, [setSessions, setStreamingSessionId])
+
   const send = useCallback(async (text) => {
     const trimmed = (text ?? input).trim()
     if (!trimmed || loading) return
     setInput('')
-
     const userMsg = { role: 'user', type: 'text', content: trimmed, ts: Date.now() }
     updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), userMsg] }))
+    const history = (sessions[activeId]?.messages ?? [])
+      .filter(m => (m.role === 'user' || m.role === 'bot') && m.content && !m.error)
+      .slice(-6)
+      .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content.slice(0, 6000) }))
+    await streamAnswer(activeId, trimmed, history, isSuperadmin ? pickedTenant : null)
+  }, [input, loading, activeId, sessions, updateSession, streamAnswer, isSuperadmin, pickedTenant])
 
-    // Superadmin data commands → ask which tenant first instead of querying immediately
-    if (isSuperadmin && DATA_COMMANDS.has(trimmed.toLowerCase())) {
-      const botMsg = {
-        role: 'bot', type: 'tenant_select', ts: Date.now(),
-        content: 'Which tenant would you like to query?',
-        tenants,
-        command: trimmed,
-      }
-      updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), botMsg] }))
-      return
-    }
-
-    setLocalLoading(true)
-
+  // The Confirm button: the server re-checks the person, role and company, then closes the advisory.
+  const confirmProposal = useCallback(async (token) => {
+    const sessionId = activeId
+    const say = (content, error) => updateSession(sessionId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), { role: 'bot', type: 'text', content, error, ts: Date.now() }] }))
     try {
-      const currentMsgs = sessions[activeId]?.messages ?? []
-      const history = currentMsgs
-        .filter(m => m.role === 'user' || (m.role === 'bot' && ['text', 'ai'].includes(m.type)))
-        .slice(-6)
-        .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: (m.content ?? '').slice(0, 6000) }))
-
-      // Detect AI-intent messages and stream the response token-by-token
-      const NON_AI = /^(status|posture|assets?|alerts?|advisori|help|mcp$|debug\s|fix[\s$])/i
-      const isAI = !NON_AI.test(trimmed.trim())
-
-      if (isAI) {
-        const placeholderTs = Date.now() + 1
-        const sessionIdAtSend = activeId  // capture so closure works after navigation
-        updateSession(sessionIdAtSend, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), { role: 'bot', type: 'ai', content: '', ts: placeholderTs }] }))
-        setStreamingSessionId(sessionIdAtSend)  // mark in context — survives page unmount
-        setLocalLoading(false)  // release local spinner; streaming indicator takes over
-
-        const apiBase = import.meta.env.VITE_API_URL || '/api/v1'
-        const token = localStorage.getItem('access_token')
-        const fetchRes = await fetch(`${apiBase}/chatbot`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ message: trimmed, history, stream: true }),
-        })
-        if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`)
-
-        const reader = fetchRes.body.getReader()
-        const decoder = new TextDecoder()
-        let buf = ''
-        let full = ''
-        const tools = []
-        const proposals = []
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buf += decoder.decode(value, { stream: true })
-            const lines = buf.split('\n')
-            buf = lines.pop() ?? ''
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue
-              const chunk = line.slice(6).trim()
-              if (chunk === '[DONE]') break
-              let parsed
-              try { parsed = JSON.parse(chunk) } catch { continue /* skip malformed chunk */ }
-              if (parsed.error) full += `${full ? '\n\n' : ''}${parsed.error}`
-              if (parsed.token) full += parsed.token
-              if (parsed.tool) {
-                // one chip per call: "running" is replaced by its "done"
-                const last = tools.findLastIndex(t => t.name === parsed.tool.name && t.status === 'running')
-                if (parsed.tool.status === 'done' && last !== -1) tools[last] = parsed.tool
-                else tools.push(parsed.tool)
-              }
-              if (parsed.proposal) proposals.push(parsed.proposal)
-              if (!(parsed.error || parsed.token || parsed.tool || parsed.proposal)) continue
-              // updateSession is from context — works even when ChatbotPage is unmounted
-              updateSession(sessionIdAtSend, s => {
-                const msgs = [...s.messages]
-                const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
-                if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full, tools: [...tools], proposals: [...proposals] }
-                return { messages: msgs }
-              })
-            }
-          }
-        } finally {
-          reader.releaseLock()
-          setStreamingSessionId(null)  // clear background streaming flag
-        }
-        return  // skip outer finally setLocalLoading (already cleared above)
-      } else {
-        const res = await client.post('/chatbot', { message: trimmed, history })
-        const { type, content, items, data } = res.data
-        const botMsg = { role: 'bot', type, content, items, data, ts: Date.now() }
-        updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), botMsg] }))
-      }
+      const res = await client.post('/chatbot/confirm', { token })
+      say(`Advisory \`${String(res.data.advisory_id).slice(0, 8)}\` marked as **resolved**.`)
     } catch (err) {
-      setStreamingSessionId(null)
-      const detail = err?.response?.data?.detail || err?.message || 'Failed to reach the assistant.'
-      updateSession(activeId, s => ({ messages: [...s.messages, { role: 'bot', type: 'text', content: detail, ts: Date.now() }] }))
-    } finally {
-      setLocalLoading(false)
+      say('', err?.response?.data?.error || 'Could not confirm. Please try again.')
     }
-  }, [input, loading, activeId, sessions, updateSession, isSuperadmin, tenants, setStreamingSessionId])
+  }, [activeId, updateSession])
 
-  // Called when superadmin picks a tenant from the tenant_select prompt
-  const sendWithTenant = useCallback(async (tenantId, tenantName, command) => {
-    if (loading) return
-    const label = tenantName ?? 'All Tenants'
-    const confirmMsg = { role: 'bot', type: 'text', content: `Querying **${label}**…`, ts: Date.now() }
-    updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), confirmMsg] }))
-    setLocalLoading(true)
-    try {
-      const body = { message: command, ...(tenantId ? { tenant_id: tenantId } : {}) }
-      const res = await client.post('/chatbot', body)
-      const { type, content, items, data } = res.data
-      const botMsg = { role: 'bot', type, content, items, data, ts: Date.now() }
-      updateSession(activeId, s => ({ messages: [...s.messages.slice(-MAX_MSG + 1), botMsg] }))
-    } catch (err) {
-      const detail = err?.response?.data?.detail || 'Failed to reach the assistant.'
-      updateSession(activeId, s => ({ messages: [...s.messages, { role: 'bot', type: 'text', content: detail, ts: Date.now() }] }))
-    } finally {
-      setLocalLoading(false)
-    }
-  }, [loading, activeId, updateSession])
-
-  // Called when user clicks "Debug with AI" on an advisory
+  // Called when the user clicks "Debug with AI" on an advisory: an ordinary question about it
   const openAdvisorySession = useCallback(async (advisory) => {
     const sessionId = `adv-${advisory.advisoryId}`
+    if (sessions[sessionId]) { setActiveId(sessionId); return }
 
-    // Switch to existing session if it already exists
-    if (sessions[sessionId]) {
-      setActiveId(sessionId)
-      return
-    }
-
-    // Create session with placeholder name
-    const placeholder = {
-      id: sessionId,
-      name: 'Loading…',
-      emoji: '🔄',
-      category: null,
-      advisoryId: advisory.advisoryId,
-      messages: [],
-      updatedAt: Date.now(),
-    }
-    setSessions(prev => ({ ...prev, [sessionId]: placeholder }))
+    setSessions(prev => ({
+      ...prev,
+      [sessionId]: { id: sessionId, name: 'Loading…', emoji: '🔄', category: null, advisoryId: advisory.advisoryId, messages: [], updatedAt: Date.now() },
+    }))
     setActiveId(sessionId)
-    setLocalLoading(true)
 
+    let cat = { name: 'Security Advisory', category: 'Security', emoji: '🔴' }
     try {
-      // AI categorize in parallel with first debug message
-      const [catRes] = await Promise.allSettled([
-        client.post('/chatbot/categorize', {
-          summary: advisory.summary ?? '',
-          recommendedAction: advisory.recommendedAction ?? '',
-        }),
-      ])
-
-      const cat = catRes.status === 'fulfilled' ? catRes.value.data : { name: 'Security Advisory', category: 'Security', emoji: '🔴' }
-
-      // Update session name from AI
-      setSessions(prev => ({
-        ...prev,
-        [sessionId]: { ...prev[sessionId], name: cat.name, emoji: cat.emoji, category: cat.category },
-      }))
-
-      // Auto-send the debug command — stream so background generation survives navigation
-      const prompt = `debug ${advisory.advisoryId}`
-      const userMsg = { role: 'user', type: 'text', content: prompt, ts: Date.now() }
-      const placeholderTs = Date.now() + 1
-      setSessions(prev => ({
-        ...prev,
-        [sessionId]: {
-          ...prev[sessionId],
-          messages: [userMsg, { role: 'bot', type: 'ai', content: '', ts: placeholderTs }],
-          updatedAt: Date.now(),
-        },
-      }))
-      setStreamingSessionId(sessionId)
-      setLocalLoading(false)
-
-      const apiBase = import.meta.env.VITE_API_URL || '/api/v1'
-      const token = localStorage.getItem('access_token')
-      const fetchRes = await fetch(`${apiBase}/chatbot`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ message: prompt, history: [], stream: true }),
+      const res = await client.post('/chatbot/categorize', {
+        summary: advisory.summary ?? '',
+        recommendedAction: advisory.recommendedAction ?? '',
       })
-      if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`)
-
-      const reader = fetchRes.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      let full = ''
-      const tools = []
-      const proposals = []
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buf += decoder.decode(value, { stream: true })
-          const lines = buf.split('\n')
-          buf = lines.pop() ?? ''
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            const chunk = line.slice(6).trim()
-            if (chunk === '[DONE]') break
-            let parsed
-            try { parsed = JSON.parse(chunk) } catch { continue /* skip malformed chunk */ }
-            if (parsed.error) full += `${full ? '\n\n' : ''}${parsed.error}`
-            if (parsed.token) full += parsed.token
-            if (parsed.tool) {
-              const last = tools.findLastIndex(t => t.name === parsed.tool.name && t.status === 'running')
-              if (parsed.tool.status === 'done' && last !== -1) tools[last] = parsed.tool
-              else tools.push(parsed.tool)
-            }
-            if (parsed.proposal) proposals.push(parsed.proposal)
-            if (!(parsed.error || parsed.token || parsed.tool || parsed.proposal)) continue
-            // setSessions from context — continues working after navigation
-            setSessions(prev => {
-              const s = prev[sessionId]
-              if (!s) return prev
-              const msgs = [...s.messages]
-              const idx = msgs.findIndex(m => m.ts === placeholderTs && m.role === 'bot')
-              if (idx !== -1) msgs[idx] = { ...msgs[idx], content: full, tools: [...tools], proposals: [...proposals] }
-              return { ...prev, [sessionId]: { ...s, messages: msgs, updatedAt: Date.now() } }
-            })
-          }
-        }
-      } finally {
-        reader.releaseLock()
-        setStreamingSessionId(null)
-      }
-      return  // skip outer finally setLocalLoading
-    } catch {
-      setStreamingSessionId(null)
-      setSessions(prev => ({
-        ...prev,
-        [sessionId]: {
-          ...prev[sessionId],
-          name: 'Advisory Session',
-          emoji: '🔴',
-          messages: [{ role: 'bot', type: 'text', content: 'Failed to load advisory debug. Please try again.', ts: Date.now() }],
-        },
-      }))
-    } finally {
-      setLocalLoading(false)
-    }
-  }, [sessions, setStreamingSessionId])
+      cat = res.data
+    } catch { /* keep the default name */ }
+    const prompt = `Explain advisory ${advisory.advisoryId}: why was it raised, and how do I fix it?`
+    setSessions(prev => ({
+      ...prev,
+      [sessionId]: {
+        ...prev[sessionId], name: cat.name, emoji: cat.emoji, category: cat.category,
+        messages: [{ role: 'user', type: 'text', content: prompt, ts: Date.now() }],
+        updatedAt: Date.now(),
+      },
+    }))
+    await streamAnswer(sessionId, prompt, [], null)
+  }, [sessions, setSessions, setActiveId, streamAnswer])
 
   // ── Auto-open advisory session when navigated from AdvisoriesPage ─
   useEffect(() => {
@@ -992,6 +679,17 @@ export default function ChatbotPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {isSuperadmin && (
+              <select
+                value={pickedTenant}
+                onChange={e => setPickedTenant(e.target.value)}
+                aria-label="Company to ask about"
+                className="bg-dark-800 border border-dark-700/60 rounded-lg text-xs text-dark-200 px-2 py-1.5 max-w-[12rem]"
+              >
+                <option value="">Pick a company</option>
+                {tenants.map(t => <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>)}
+              </select>
+            )}
             <button
               onClick={clearSession}
               className="btn-secondary flex items-center gap-1.5 text-xs px-3 py-1.5"
@@ -1005,10 +703,10 @@ export default function ChatbotPage() {
         {/* Quick buttons — only in General session */}
         {activeId === 'general' && (
           <div className="flex flex-wrap gap-2 mb-3 flex-shrink-0">
-            {visibleQuick.map(({ label, icon: Icon, cmd }) => (
+            {visibleQuick.map(({ label, icon: Icon, q }) => (
               <button
-                key={cmd}
-                onClick={() => send(cmd)}
+                key={label}
+                onClick={() => send(q)}
                 disabled={loading}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-800/60 border border-dark-700/40 text-dark-300 hover:text-dark-50 hover:border-eagle-500/40 hover:bg-eagle-500/5 transition-all disabled:opacity-50"
               >
@@ -1028,7 +726,7 @@ export default function ChatbotPage() {
             </div>
           )}
           {messages.map((msg, i) => (
-            <Bubble key={i} msg={msg} onSend={send} onOpenAdvisorySession={openAdvisorySession} onSelectTenant={sendWithTenant} canDebugAI={canDebugAI} />
+            <Bubble key={i} msg={msg} onConfirm={confirmProposal} canConfirm={canDebugAI} />
           ))}
           {loading && <Typing />}
           <div ref={bottomRef} />
@@ -1041,7 +739,7 @@ export default function ChatbotPage() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-              placeholder={activeId === 'general' ? 'Ask a security question or type a command…' : 'Ask about this advisory…'}
+              placeholder={activeId === 'general' ? 'Ask about your assets, alerts, advisories or the system…' : 'Ask about this advisory…'}
               rows={1}
               disabled={loading}
               className="flex-1 bg-transparent text-sm text-dark-100 placeholder-dark-500 resize-none outline-none max-h-28 py-1 px-2 disabled:opacity-50"

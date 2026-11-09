@@ -4,7 +4,9 @@
  * deliberately not sent through the outbox.
  */
 import type { Env } from '../types'
-import { evaluateRules, ALERT_AGE_DAYS, type AgentFact, type AlertFact, type AssetFact, type Problem, type ScanFact } from './rules'
+import { evaluateRules, evaluatePlatformRules, PLATFORM_RULES, ALERT_AGE_DAYS, type AgentFact, type AlertFact, type AssetFact, type FeedFact, type Problem, type ScanFact } from './rules'
+import type { PerfWindow } from './perf'
+import { LAST_INGEST_KEY, type LastIngest } from '../services/cti'
 import { deleteNodes, replaceEdges, upsertNodes, type Q } from './store'
 import type { KgEdge, KgNode, Row } from './extract'
 
@@ -69,8 +71,8 @@ export async function refreshProblems(q: Q, env: Env, tenantId: string, now = ne
   await deleteNodes(q, old.map(o => o.key as string).filter(k => !current.has(k)))
   await upsertNodes(q, env, nodes)
   await replaceEdges(q, problems.map(p => `problem:${tenantId}:${p.id}`), edges)
-  // A CVE no alert points at any more was fixed or closed out of existence.
-  await q(`DELETE FROM kg_nodes n WHERE n.tenant_id = $1 AND n.type = 'cve' AND NOT EXISTS (SELECT 1 FROM kg_edges e WHERE e.to_key = n.key)`, [tenantId])
+  // A CVE or indicator no alert points at any more was fixed, closed, or made private by its owner.
+  await q(`DELETE FROM kg_nodes n WHERE n.tenant_id = $1 AND n.type IN ('cve', 'indicator') AND NOT EXISTS (SELECT 1 FROM kg_edges e WHERE e.to_key = n.key)`, [tenantId])
 }
 
 const STATUS_MAX_AGE_MS = 5 * 60_000
@@ -82,4 +84,51 @@ export async function refreshIfStale(q: Q, env: Env, tenantId: string, touched: 
     if (row && Date.now() - new Date(row.updated_at).getTime() < STATUS_MAX_AGE_MS) return
   }
   await refreshProblems(q, env, tenantId)
+}
+
+// ── Platform problems: UMEagleEye's own speed, feeds and graph sync (superadmin only) ──
+
+const PLATFORM_WINDOW_HOURS = 24
+
+function platformProblemNode(p: Problem): KgNode {
+  return {
+    key: `problem:platform:${p.id}`, tenantId: null, visibility: 'platform', roleGroup: 'analyst', type: 'problem',
+    title: p.title, body: `Platform problem (${p.severity}): ${p.title}. ${p.detail} Recommended solution: ${p.solution}`,
+    props: { rule: p.rule, rank: p.rank, severity: p.severity, count: p.count, solution: p.solution },
+  }
+}
+
+/**
+ * Computes the platform problems (shared layer, `platform` visibility, no tenant) and removes the
+ * ones no longer true. Only problems of the rules in PLATFORM_RULES are replaced, so other shared
+ * problems (code hotspots) are left alone.
+ */
+export async function refreshPlatformProblems(q: Q, env: Env, now = new Date()): Promise<void> {
+  const since = new Date(now.getTime() - PLATFORM_WINDOW_HOURS * 3_600_000).toISOString()
+  const [windows, outbox] = await Promise.all([
+    q(`SELECT props FROM kg_nodes WHERE tenant_id IS NULL AND type = 'performance_window' AND props ->> 'start' > $1 ORDER BY props ->> 'start'`, [since]),
+    q(`SELECT count(*)::int AS n, min(changed_at) AS oldest, count(*) FILTER (WHERE attempts >= 3)::int AS stuck FROM kg_outbox`),
+  ])
+  let feeds: FeedFact[] = []
+  try {
+    const last = await env.KV_CACHE.get<LastIngest>(LAST_INGEST_KEY, 'json')
+    feeds = Object.entries(last?.feeds ?? {}).map(([source, f]) => ({ source, ok: f.ok, lastOkAt: f.last_ok_at ?? null }))
+  } catch (err) {
+    console.error('[kg] feed record unreadable:', err instanceof Error ? err.message : err)
+  }
+  const o = outbox[0]
+  const problems = evaluatePlatformRules({
+    windows: windows.map(w => w.props as PerfWindow),
+    feeds,
+    outbox: o ? { count: Number(o.n ?? 0), oldestAt: o.oldest ? new Date(o.oldest).toISOString() : null, stuck: Number(o.stuck ?? 0) } : null,
+  }, now)
+
+  const nodes = problems.map(platformProblemNode)
+  const owners = nodes.map(n => n.key)
+  const edges: KgEdge[] = problems.flatMap(p => p.evidence.map(e => ({ from: `problem:platform:${p.id}`, to: e, relation: 'EVIDENCE', tenantId: null })))
+  const old = await q(`SELECT key FROM kg_nodes WHERE tenant_id IS NULL AND type = 'problem' AND props ->> 'rule' = ANY($1::text[])`, [[...PLATFORM_RULES]])
+  const current = new Set(owners)
+  await deleteNodes(q, old.map(r => String(r.key)).filter(k => !current.has(k)))
+  await upsertNodes(q, env, nodes)
+  await replaceEdges(q, owners, edges)
 }

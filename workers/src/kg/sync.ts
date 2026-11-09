@@ -43,10 +43,10 @@ const SOURCES: Record<string, Source> = {
   },
   asset_relationships: {
     prefix: 'relationship', pk: 'relationship_id', extract: extractRelationship,
-    sql: `SELECT t.relationship_id, t.source_asset_id, t.target_asset_id, t.relationship_type, t.confidence, s.tenant_id,
+    sql: `SELECT t.relationship_id, t.source_asset_id, t.target_asset_id, t.relationship_type, t.confidence, s.tenant_id, d.tenant_id AS target_tenant_id,
             COALESCE(s.hostname, s.ip_address) AS source_label, COALESCE(d.hostname, d.ip_address) AS target_label
           FROM asset_relationships t JOIN assets s ON s.asset_id = t.source_asset_id JOIN assets d ON d.asset_id = t.target_asset_id
-          WHERE t.relationship_id = ANY($1::uuid[])`,
+          WHERE t.relationship_id = ANY($1::uuid[]) AND s.tenant_id IS NOT DISTINCT FROM d.tenant_id`,
   },
   sboms: {
     prefix: 'sbom', pk: 'sbom_id', extract: extractSbom,
@@ -100,52 +100,101 @@ const SOURCES: Record<string, Source> = {
   },
 }
 
-export interface DrainResult { processed: number; remaining: number; blocked: number; tenants: string[] }
+export interface DrainResult { processed: number; remaining: number; blocked: number; quarantined: number; tenants: string[] }
 
-/** Applies up to `limit` outstanding changes to the graph. */
-export async function drainOutbox(q: Q, env: Env, limit = 500): Promise<DrainResult> {
+/** A row that failed this many claims is set aside (excluded from claims) until a new change resets it. */
+export const MAX_ATTEMPTS = 5
+const CLAIM_SECONDS = 90
+
+/** Reads, extracts and writes one table's rows. Returns how many nodes the secret check blocked. */
+async function applyTable(q: Q, env: Env, source: Source, ids: string[], tenants: Set<string>): Promise<number> {
+  const rows = await q(source.sql, [ids])
+  const nodes: GraphDelta['nodes'] = [], edges: GraphDelta['edges'] = [], owners: string[] = [], gone = new Set(ids)
+  let blocked = 0
+  for (const r of rows) {
+    const delta = safeDelta(source.extract(r))
+    blocked += delta.blocked
+    const first = delta.nodes[0]
+    if (!first) continue
+    gone.delete(String(r[source.pk]))
+    nodes.push(...delta.nodes)
+    edges.push(...delta.edges)
+    owners.push(first.key)
+    for (const n of delta.nodes) if (n.tenantId) tenants.add(n.tenantId)
+  }
+  const goneKeys = [...gone].map(id => `${source.prefix}:${id}`)
+  if (goneKeys.length > 0) {
+    // A deleted row's company still needs its status and problems recomputed.
+    for (const t of await q(`SELECT DISTINCT tenant_id FROM kg_nodes WHERE key = ANY($1::text[]) AND tenant_id IS NOT NULL`, [goneKeys])) {
+      if (t.tenant_id) tenants.add(String(t.tenant_id))
+    }
+  }
+  await upsertNodes(q, env, nodes)
+  await replaceEdges(q, owners, edges)
+  await deleteNodes(q, goneKeys)
+  return blocked
+}
+
+/**
+ * Applies up to `limit` outstanding changes to the graph. With a tenant, only that company's rows
+ * are claimed and `remaining` counts its rows plus rows whose company is not yet known, so a
+ * "still catching up" note errs on the cautious side. Without one it is global (queue job, cron).
+ */
+export async function drainOutbox(q: Q, env: Env, limit = 500, tenantId?: string): Promise<DrainResult> {
+  const scope = tenantId ?? null
   const claimed = await q(`
-    UPDATE kg_outbox o SET claimed_until = now() + interval '90 seconds'
-    FROM (SELECT table_name, row_pk FROM kg_outbox WHERE claimed_until IS NULL OR claimed_until < now()
+    UPDATE kg_outbox o SET claimed_until = now() + interval '${CLAIM_SECONDS} seconds', attempts = o.attempts + 1
+    FROM (SELECT table_name, row_pk FROM kg_outbox
+          WHERE (claimed_until IS NULL OR claimed_until < now()) AND attempts < ${MAX_ATTEMPTS}
+            AND ($2::uuid IS NULL OR tenant_id = $2::uuid)
           ORDER BY changed_at LIMIT $1 FOR UPDATE SKIP LOCKED) c
     WHERE o.table_name = c.table_name AND o.row_pk = c.row_pk
-    RETURNING o.table_name, o.row_pk, o.changed_at::text AS changed_at`, [limit])
+    RETURNING o.table_name, o.row_pk, o.tenant_id, o.changed_at::text AS changed_at`, [limit, scope])
 
   const tenants = new Set<string>()
   let blocked = 0
+  const failed = new Set<string>()
   if (claimed.length > 0) {
     const byTable = new Map<string, string[]>()
-    for (const c of claimed) byTable.set(c.table_name, [...(byTable.get(c.table_name) ?? []), c.row_pk])
+    for (const c of claimed) {
+      byTable.set(c.table_name, [...(byTable.get(c.table_name) ?? []), c.row_pk])
+      if (c.tenant_id) tenants.add(String(c.tenant_id))
+    }
 
     for (const [table, ids] of byTable) {
       const source = SOURCES[table]
       if (!source) continue
-      const rows = await q(source.sql, [ids])
-      const nodes: GraphDelta['nodes'] = [], edges: GraphDelta['edges'] = [], owners: string[] = [], gone = new Set(ids)
-      for (const r of rows) {
-        const delta = safeDelta(source.extract(r))
-        blocked += delta.blocked
-        const first = delta.nodes[0]
-        if (!first) continue
-        gone.delete(String(r[source.pk]))
-        nodes.push(...delta.nodes)
-        edges.push(...delta.edges)
-        owners.push(first.key)
-        for (const n of delta.nodes) if (n.tenantId) tenants.add(n.tenantId)
+      try {
+        blocked += await applyTable(q, env, source, ids, tenants)
+      } catch (err) {
+        // One bad row must not hold back the others: retry the table's rows one at a time.
+        console.error(`[kg] ${table} batch failed, applying rows one by one:`, err)
+        for (const id of ids) {
+          try { blocked += await applyTable(q, env, source, [id], tenants) } catch (e) {
+            console.error(`[kg] ${table} ${id} failed (attempt counted):`, e)
+            failed.add(`${table}|${id}`)
+          }
+        }
       }
-      await upsertNodes(q, env, nodes)
-      await replaceEdges(q, owners, edges)
-      await deleteNodes(q, [...gone].map(id => `${source.prefix}:${id}`))
     }
 
-    // Only entries unchanged since the claim: a newer change stays queued.
-    await q(`
-      DELETE FROM kg_outbox o USING unnest($1::text[], $2::text[], $3::timestamptz[]) AS d(table_name, row_pk, changed_at)
-      WHERE o.table_name = d.table_name AND o.row_pk = d.row_pk AND o.changed_at = d.changed_at`,
-    [claimed.map(c => c.table_name), claimed.map(c => c.row_pk), claimed.map(c => c.changed_at)])
+    // Only entries unchanged since the claim: a newer change stays queued. A failed row stays too,
+    // claimed, and is tried again when the claim expires, until it is set aside.
+    const done = claimed.filter(c => !failed.has(`${c.table_name}|${c.row_pk}`))
+    if (done.length > 0) {
+      await q(`
+        DELETE FROM kg_outbox o USING unnest($1::text[], $2::text[], $3::timestamptz[]) AS d(table_name, row_pk, changed_at)
+        WHERE o.table_name = d.table_name AND o.row_pk = d.row_pk AND o.changed_at = d.changed_at`,
+      [done.map(c => c.table_name), done.map(c => c.row_pk), done.map(c => c.changed_at)])
+    }
   }
-  const [left] = await q(`SELECT count(*)::int AS n FROM kg_outbox`)
-  return { processed: claimed.length, remaining: Number(left?.n ?? 0), blocked, tenants: [...tenants] }
+  const [left] = await q(`
+    SELECT count(*) FILTER (WHERE (claimed_until IS NULL OR claimed_until < now()) AND attempts < ${MAX_ATTEMPTS})::int AS n,
+           count(*) FILTER (WHERE attempts >= ${MAX_ATTEMPTS})::int AS quarantined
+    FROM kg_outbox WHERE $1::uuid IS NULL OR tenant_id = $1::uuid OR tenant_id IS NULL`, [scope])
+  const quarantined = Number(left?.quarantined ?? 0)
+  if (quarantined > 0) console.warn(`[kg] ${quarantined} outbox row(s) set aside after ${MAX_ATTEMPTS} failed attempts`)
+  return { processed: claimed.length - failed.size, remaining: Number(left?.n ?? 0), blocked, quarantined, tenants: [...tenants] }
 }
 
 const SIGNAL_KEY = 'kg:sync:signal'
@@ -164,15 +213,19 @@ export async function signalKgSync(env: Env): Promise<void> {
   await env.ADVISORY_QUEUE.send({ type: 'kg_sync' }, { delaySeconds: 30 })
 }
 
-/** One queue job: drain, refresh what changed, and carry on while work remains. */
+/** One queue job: drain, refresh the companies it touched, and carry on while it is making progress. */
 export async function runKgSync(q: Q, env: Env, refresh: (tenantId: string) => Promise<void>): Promise<void> {
   const r = await drainOutbox(q, env)
   if (r.blocked) console.warn(`[kg] ${r.blocked} node(s) blocked by the secret check`)
-  if (r.remaining === 0) for (const t of r.tenants) await refresh(t)
+  // Every drain refreshes the companies it touched, so none is lost between batches.
+  for (const t of r.tenants) {
+    try { await refresh(t) } catch (err) { console.error(`[kg] refresh of ${t} failed:`, err) }
+  }
   const filled = r.remaining === 0 ? await backfillEmbeddings(q, env) : 0
-  // A failed embedding fills nothing, so an outage cannot loop.
-  if (r.remaining > 0 || filled > 0) await env.ADVISORY_QUEUE.send({ type: 'kg_sync' }, { delaySeconds: 1 })
-  console.log(`[kg_sync] processed ${r.processed}, remaining ${r.remaining}, embedded ${filled}`)
+  // Requeue only when progress was made: a drain that applied nothing (all claimed by others, or
+  // failing) waits for the cron instead of spinning. A failed embedding fills nothing, so an outage cannot loop.
+  if ((r.remaining > 0 && r.processed > 0) || filled > 0) await env.ADVISORY_QUEUE.send({ type: 'kg_sync' }, { delaySeconds: 1 })
+  console.log(`[kg_sync] processed ${r.processed}, remaining ${r.remaining}, quarantined ${r.quarantined}, embedded ${filled}`)
 }
 
 /** The job as the queue and the cron run it: own connection, problems refreshed per changed company. */

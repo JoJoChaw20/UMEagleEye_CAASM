@@ -4,7 +4,7 @@
  */
 import { neon } from '@neondatabase/serverless'
 import type { Env } from '../types'
-import type { KgEdge, KgNode, Row } from './extract'
+import { wellFormed, type KgEdge, type KgNode, type Row } from './extract'
 
 export type Q = (text: string, params?: unknown[]) => Promise<Row[]>
 
@@ -71,7 +71,8 @@ export async function upsertNodes(q: Q, env: Env, input: KgNode[]): Promise<void
       tenant_id = EXCLUDED.tenant_id, visibility = EXCLUDED.visibility, role_group = EXCLUDED.role_group, type = EXCLUDED.type,
       embedding = COALESCE(EXCLUDED.embedding, CASE WHEN kg_nodes.title = EXCLUDED.title AND kg_nodes.body = EXCLUDED.body THEN kg_nodes.embedding END),
       title = EXCLUDED.title, body = EXCLUDED.body, props = EXCLUDED.props, source_ref = EXCLUDED.source_ref, updated_at = now()`,
-  [JSON.stringify(rows)])
+  // Every string is made well-formed: one lone surrogate would make Postgres reject the whole batch.
+  [JSON.stringify(rows, (_k, v) => (typeof v === 'string' ? wellFormed(v) : v))])
 }
 
 /** Replaces the outgoing edges of the given owner nodes. */

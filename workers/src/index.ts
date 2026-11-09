@@ -28,11 +28,15 @@ import sbomRoutes from './routes/sbom'
 import { handleQueue } from './queues/consumer'
 import { shouldSignalKg, signalKgSyncSafe } from './kg/sync'
 import { handleCron } from './cron/triggers'
+import { perfMiddleware } from './kg/perf'
 
 const app = new Hono<{ Bindings: Env }>()
 
 // ── Global middleware ─────────────────────────────────────────────
 app.use('*', logger())
+
+// Speed history: route pattern, status, total and database time per request (kg/perf.ts). Never fails a request.
+app.use('*', perfMiddleware)
 
 // Browser hardening for every API answer (HSTS, nosniff, no framing). Cross-origin resource and
 // embedder policies are left off: the dashboard is on another origin and reads the API with CORS.

@@ -1,7 +1,7 @@
 /**
- * mcp/tools.ts — the UMEagleEye tools, defined once and used by both
- *   - the MCP server (routes/mcp.ts) that MCP clients such as Claude Desktop connect to, and
- *   - the dashboard chatbot (mcp/agent.ts), which calls them through the model's tool calls.
+ * mcp/tools.ts — the UMEagleEye tools used by the MCP server (routes/mcp.ts) that MCP clients
+ * such as Claude Desktop connect to. The dashboard chatbot does not use them: it answers from
+ * the knowledge graph (kg/agent.ts).
  *
  * Rules every tool follows:
  *   - The tenant comes from the signed-in user (ToolContext), never from the model's

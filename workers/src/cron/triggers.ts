@@ -7,6 +7,9 @@ import { CTI_INGEST_LOCK } from '../services/cti'
 import { runAlertHygiene } from '../services/alertHygiene'
 import { rescoreAssets } from '../lib/rescore'
 import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
+import { kgQuery } from '../kg/store'
+import { recordJob, refreshPerf, timedJob } from '../kg/perf'
+import { refreshPlatformProblems } from '../kg/problems'
 import { tenants } from '../db/schema'
 
 // Maps cron expression to handler name for logging
@@ -24,11 +27,14 @@ function getCronName(cron: string): string {
 // result is kept in KV (cron:last:<step>, 30 days) for whoever needs to know it ran.
 async function step(env: Env, name: string, run: () => Promise<string>): Promise<void> {
   const at = new Date().toISOString()
+  const started = Date.now()
   try {
     const summary = await run()
+    recordJob(env, name, Date.now() - started, true)
     console.log(`[${name}] ${summary}`)
     await env.KV_CACHE.put(`cron:last:${name}`, JSON.stringify({ ok: true, at, summary }), { expirationTtl: 30 * 86400 }).catch(() => {})
   } catch (err) {
+    recordJob(env, name, Date.now() - started, false)
     console.error(`[${name}] failed:`, err)
     await env.KV_CACHE.put(`cron:last:${name}`, JSON.stringify({ ok: false, at, error: String(err).slice(0, 500) }), { expirationTtl: 30 * 86400 }).catch(() => {})
   }
@@ -43,12 +49,19 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
     switch (name) {
       case 'drift-audit': {
         try {
-          const count = await runDriftAudit(db)
+          const count = await timedJob(env, 'drift-audit', () => runDriftAudit(db))
           console.log(`[drift-audit] Generated ${count} drift events`)
           if (count > 0) await signalKgSyncSafe(env)
         } finally {
           // Applies what the knowledge graph still has outstanding; its own failure stops nothing.
           await step(env, 'kg-sync', async () => { await runKgSyncJob(env); return 'Graph sync run' })
+          // Pulls the speed history into the graph and refreshes the platform problems; isolated like the rest.
+          await step(env, 'perf-refresh', async () => {
+            const q = kgQuery(env)
+            const r = await refreshPerf(q, env)
+            await refreshPlatformProblems(q, env)
+            return r.ok ? `${r.windows} performance window(s) stored` : `Performance history not pulled (${r.reason})`
+          })
         }
         break
       }
