@@ -142,6 +142,10 @@ class ServiceHost:
             return {"queued": what}
         if cmd == "noop":
             return {}
+        if cmd == "tools":                  # the window's Setup page: what THIS process (the service) finds
+            from dataclasses import asdict as _asdict
+            from .deps import agent_tools
+            return {"tools": [_asdict(t) for t in agent_tools(service=True)]}
         raise ValueError(f"unknown command {cmd!r}")
 
     def status(self) -> dict[str, Any]:

@@ -27,7 +27,7 @@ from ..service import SCHEDULES_ENABLED
 from .consent import ConsentDialog, needs_consent
 from .controller import AgentController, QtLogHandler, start_pump, stop_pump
 from . import theme
-from .pages import DependenciesPage, LogPage, PrivacyPage, SchedulesPage, SettingsPage, StatusPage, all_pages
+from .pages import LogPage, PrivacyPage, SchedulesPage, SettingsPage, StatusPage, all_pages
 from .widgets import PAGE_ROLE, ElidedLabel, LiveDot, RailNav, ThemeSwitch, button, refresh_icons
 
 log = logging.getLogger("eagleeye.gui")
@@ -90,18 +90,17 @@ class MainWindow(QMainWindow):
         self.schedules_page = SchedulesPage(self) if SCHEDULES_ENABLED else None
         self.settings_page = SettingsPage(self)
         self.privacy_page = PrivacyPage(self)
-        self.deps_page = DependenciesPage(self)
         self.log_page = LogPage(self, log_dir)
         self.stack = QStackedWidget()
-        # Two groups on the rail: what the agent does, and how it is set up.
+        # Two groups on the rail: what the agent does, and this computer's setup (the connection and
+        # tools on one page since 2.6: each had one box left once the settings moved to the dashboard).
         doing: list[tuple[str, str, QWidget]] = [("Status", "activity", self.status_page)]
         if self.schedules_page is not None:
             doing.append(("Schedules", "calendar-clock", self.schedules_page))
         doing.append(("Log", "scroll-text", self.log_page))
-        setup = [("Connection", "settings", self.settings_page), ("Privacy", "shield-check", self.privacy_page),
-                 ("Tools", "package", self.deps_page)]
+        setup = [("Setup", "settings", self.settings_page), ("Privacy", "shield-check", self.privacy_page)]
         self.nav = RailNav()
-        for group, pages in (("Agent", doing), ("Setup", setup)):
+        for group, pages in (("Agent", doing), ("This computer", setup)):
             self.nav.add_group(group)
             for name, icon_name, page in pages:
                 self.nav.add_page(name, icon_name, self.stack.addWidget(page))
@@ -335,14 +334,14 @@ class MainWindow(QMainWindow):
             return
         reason = self.controller.start(s)
         if reason:
-            # Said where it is fixed, not in a box: the Connection page, next to Test connection.
+            # Said where it is fixed, not in a box: the Setup page, next to Test connection.
             self.show_page(self.settings_page)
             self.settings_page.show_problem(f"The agent cannot start yet: {reason}.")
             return
         log.info("EagleEye Agent v%s started (server %s, agent %s)", VERSION, s.api_url, s.agent_id)
         if s.passive and not deps.is_admin():
             log.info("Not running as Administrator: passive listening works only if the capture allows "
-                     "non-admin capture (otherwise use Tools > Restart as Administrator)")
+                     "non-admin capture (otherwise use Setup > Restart as Administrator)")
 
     def settings_changed(self, connection_changed: bool = False) -> bool:
         """Called after a page saved settings: restart the agent so they take effect.
@@ -395,7 +394,7 @@ class MainWindow(QMainWindow):
         svc = self.controller.service if self.controller.running else None
         service_state = getattr(self.controller, "state", None) if self.service_mode else None
         if self.store.settings.problems() or service_state == "not_set_up":
-            tone, state, detail = "off", "Not set up", "Paste the connection code in Settings"
+            tone, state, detail = "off", "Not set up", "Paste the connection code on the Setup page"
         elif service_state == "unavailable":
             tone, state, detail = "down", "Stopped", "The agent service is not running (Start asks for an administrator)"
         elif svc is None:

@@ -111,7 +111,7 @@ it listens on (for example *Wi-Fi (192.168.1.20)*).
 |---|---|
 | Agent stays **Offline** | Open the agent: if it says *Stopped*, choose **Start**; check Connection > Test connection |
 | *The server rejected the agent ID or API key* | The key was rotated or mistyped: issue a new connection code |
-| *needs Administrator* on passive listening | The service runs with the rights it needs: check it is running (`Get-Service EagleEyeAgent`), or Tools > **Restart as Administrator** |
+| *needs Administrator* on passive listening | The service runs with the rights it needs: check it is running (`Get-Service EagleEyeAgent`), or Setup > **Restart as Administrator** |
 | Passive listening on the wrong network | The agent listens on the network the computer uses; check the Status page shows the right one |
 
 ---

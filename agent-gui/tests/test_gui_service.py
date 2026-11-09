@@ -121,7 +121,7 @@ def test_the_controller_follows_the_service(monkeypatch):
     ctrl = remote.ServiceController()
     ctrl.refresh_now()
     assert (ctrl.state, ctrl.running) == ("not_set_up", False)
-    assert "Settings" in ctrl.start(Settings())                     # nothing to start before setup
+    assert "Setup page" in ctrl.start(Settings())                   # nothing to start before setup
     fake.status = STATUS
     ctrl.refresh_now()
     assert ctrl.running and ctrl.service.last_heartbeat_ok
@@ -136,12 +136,12 @@ def test_the_window_in_service_mode(qapp, machine_dir, monkeypatch, tmp_path):
     monkeypatch.setattr(remote.ipc, "call", FakeIpc(STATUS))
     monkeypatch.setattr(remote.ServiceController, "_poll", lambda self: None)
     monkeypatch.setattr(remote.ServiceController, "_tail_log", lambda self: None)
-    monkeypatch.setattr(gui_app.DependenciesPage, "refresh", lambda self: None)
+    monkeypatch.setattr(gui_app.SettingsPage, "refresh_tools", lambda self: None)
     ctrl = remote.ServiceController()
     ctrl.refresh_now()
     win = gui_app.MainWindow(remote.ServiceStore(), tmp_path / "logs", ctrl)
     try:
-        assert win.service_mode and win.deps_page.admin_btn.isHidden()
+        assert win.service_mode and win.settings_page.admin_btn.isHidden()
         win.refresh()
         assert win.state.text() == "Running" and "Heartbeat OK" in win.state_detail.text()
         assert win.admin.text().startswith("Agent service")

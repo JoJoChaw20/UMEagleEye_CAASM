@@ -244,11 +244,16 @@ class ServiceController:
     def start(self, settings: Settings) -> Optional[str]:
         """Start the service (an administrator prompt). Returns why it did not, or None."""
         if self.state == "not_set_up":
-            return "save the server details in Settings first"
+            return "save the server details on the Setup page first"
         return self._control("start")
 
     def stop(self) -> Optional[str]:
         return self._control("stop")
+
+    def tools(self) -> list[dict[str, Any]]:
+        """What the service itself finds (Syft, Grype, the account it runs as): the Setup page. Raises
+        when the service does not answer (stopped, or older than this window)."""
+        return list(ipc.call({"cmd": "tools"}, ipc.address(self.instance), timeout=45).get("tools") or [])
 
     def detach(self) -> None:
         """The app closes: the service keeps running."""

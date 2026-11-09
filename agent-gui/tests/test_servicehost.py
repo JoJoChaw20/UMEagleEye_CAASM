@@ -186,3 +186,19 @@ def test_the_service_waits_for_the_last_passive_upload(machine_dir):
     host.stop()
     worker.join(5)
     assert waited == [servicehost.FINAL_UPLOAD_SECONDS] and made[0].stopped.is_set()
+
+
+def test_the_service_says_which_tools_it_finds_itself(machine_dir, monkeypatch, tmp_path):
+    # The window asks the SERVICE: a copy of Syft installed for one user is not what the service sees.
+    from eagleeye import sbom
+    syft = tmp_path / "syft.exe"
+    syft.write_text("")
+    monkeypatch.setattr(sbom, "find_tool", lambda name: str(syft) if name == "syft" else None)
+    monkeypatch.setattr(sbom, "tool_version", lambda path: "1.44.0")
+    host = ServiceHost("t", make_service=lambda s: None, load=lambda: Settings())
+    tools = {t["name"]: t for t in host.handle({"cmd": "tools"})["tools"]}
+    assert tools["Syft"]["ok"] and tools["Syft"]["version"] == "1.44.0"
+    assert not tools["Grype"]["ok"] and tools["Grype"]["hint"]
+    assert tools["Runs as"]["ok"] and "agent service" in tools["Runs as"]["detail"]
+    assert sbom.missing_tools() == ["Grype"]
+    assert "grype" in sbom.where_to_put().lower()

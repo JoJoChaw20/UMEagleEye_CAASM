@@ -127,6 +127,9 @@ def _tool_candidates(name: str) -> list[str]:
             base = os.environ.get(var)
             if base:
                 paths.append(str(Path(base) / name / exe))
+        base = os.environ.get("ProgramFiles")
+        if base:    # `winget install --scope machine`: its links, which a running service's PATH lacks until a restart
+            paths.append(str(Path(base) / "WinGet" / "Links" / exe))
     else:
         paths += [f"/usr/local/bin/{name}", f"/opt/homebrew/bin/{name}", f"/usr/bin/{name}"]
     from .config import config_dir
@@ -154,14 +157,32 @@ def tool_version(path: str) -> Optional[str]:
     return None
 
 
+def where_to_put() -> str:
+    """Where to install Syft and Grype so the agent SERVICE finds them. It runs as SYSTEM (Windows)
+    or root: a copy installed for one user (winget without --scope machine, a download in the user's
+    folders) is not visible to it, and it deliberately runs nothing from folders users can write."""
+    if sys.platform == "win32":
+        return (r"put syft.exe in C:\Program Files\syft\ and grype.exe in C:\Program Files\grype\, or run "
+                "`winget install --scope machine Anchore.Syft` and `winget install --scope machine Anchore.Grype` "
+                "as an administrator")
+    if sys.platform == "darwin":
+        return "install them in /usr/local/bin or /opt/homebrew/bin (brew install syft grype)"
+    return "install them in /usr/local/bin (the commands on the dashboard's Install tab)"
+
+
+def missing_tools() -> list[str]:
+    """Which of Syft and Grype this process cannot find."""
+    return [name.capitalize() for name in ("syft", "grype") if not find_tool(name)]
+
+
 INSTALL_HINTS = {
     "syft": {
-        "win32": "winget install Anchore.Syft   (or download from https://github.com/anchore/syft/releases)",
+        "win32": r"Put syft.exe in C:\Program Files\syft\, or as an administrator: winget install --scope machine Anchore.Syft",
         "linux": "curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin",
         "darwin": "brew install syft",
     },
     "grype": {
-        "win32": "winget install Anchore.Grype   (or download from https://github.com/anchore/grype/releases)",
+        "win32": r"Put grype.exe in C:\Program Files\grype\, or as an administrator: winget install --scope machine Anchore.Grype",
         "linux": "curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin",
         "darwin": "brew install grype",
     },
@@ -311,13 +332,14 @@ class AwakeClock:
 Runner = Callable[[list[str], int], int]     # (command, timeout) -> exit code
 
 
-def _run(command: list[str], timeout: int, cancelled: Callable[[], bool] = lambda: False) -> int:
+def _run(command: list[str], timeout: int, cancelled: Callable[[], bool] = lambda: False,
+         env: Optional[dict[str, str]] = None) -> int:
     """Run a tool, stopping it when `cancelled()` turns true (checked every second) or
-    when it has run for `timeout` seconds of awake time."""
+    when it has run for `timeout` seconds of awake time. `env`: its environment (None: ours)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     name = Path(command[0]).stem
     with tempfile.TemporaryFile() as err:     # a file, not a pipe: a chatty tool can never block on it
-        proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=err, creationflags=flags)
+        proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=err, creationflags=flags, env=env)
         awake = AwakeClock()
         try:
             while True:
@@ -799,8 +821,70 @@ def run_grype(grype: str, doc: dict[str, Any], runner: Optional[Callable[[list[s
         cmd = [grype, f"sbom:{sbom_path}", "-o", f"json={out_path}"]
         if runner:
             return json.loads(runner(cmd, GRYPE_TIMEOUT))
-        _run(cmd, GRYPE_TIMEOUT, cancelled)
+        _run(cmd, GRYPE_TIMEOUT, cancelled, env=grype_env())
         return json.loads(out_path.read_text(encoding="utf-8", errors="replace"))
+
+
+# ── Grype's vulnerability database (about 3 GB) ──
+def grype_db_dir() -> Optional[Path]:
+    """Where Grype keeps its vulnerability database: in the agent's machine folder when the agent runs
+    with administrator rights (the service), else Grype's own default (the user's cache). Left to Grype,
+    the service's copy went to its default for SYSTEM / root, which on Linux is /.cache (systemd starts
+    root services without HOME), and each `sudo grype` by hand made another 3 GB copy in /root/.cache."""
+    from .deps import is_admin
+    from .machine import machine_dir
+    return machine_dir() / "grype-db" if is_admin() else None
+
+
+def _default_grype_dbs() -> list[Path]:
+    """Where Grype put its database before the agent chose (to move it instead of downloading again)."""
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        return [Path(local) / "grype" / "db"] if local else []
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    home = os.environ.get("HOME")
+    paths = [Path(xdg) / "grype" / "db"] if xdg else []
+    paths += [Path(home) / ".cache" / "grype" / "db"] if home else []
+    return paths + [Path("/.cache/grype/db"), Path("/root/.cache/grype/db")]
+
+
+def prepare_grype_db() -> Optional[Path]:
+    """The database folder for Grype (made if missing), adopting a database already in Grype's default
+    place once; None when Grype should use its default."""
+    target = grype_db_dir()
+    if target is None:
+        return None
+    if not target.exists():
+        for old in _default_grype_dbs():
+            try:
+                if old.is_dir() and any(old.iterdir()):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old), str(target))
+                    log.info("Moved Grype's vulnerability database from %s to %s", old, target)
+                    break
+            except OSError as exc:
+                log.warning("Could not move Grype's database from %s (%s): it downloads a new one", old, exc)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def grype_env() -> Optional[dict[str, str]]:
+    """Grype's environment: ours, with its database folder (None: ours as it is)."""
+    folder = prepare_grype_db()
+    return None if folder is None else {**os.environ, "GRYPE_DB_CACHE_DIR": str(folder)}
+
+
+def grype_db_summary() -> tuple[bool, str]:
+    """(downloaded, a sentence) for the window's Setup page."""
+    folder = grype_db_dir()
+    if folder is None:
+        return False, "in Grype's own folder of this user"
+    files = [f for f in folder.rglob("*") if f.is_file()] if folder.is_dir() else []
+    if not files:
+        return False, f"not downloaded yet: Grype fetches it (about 3 GB) at the first SBOM, into {folder}"
+    size = sum(f.stat().st_size for f in files) / 2 ** 30
+    newest = datetime.fromtimestamp(max(f.stat().st_mtime for f in files))
+    return True, f"{size:.1f} GB, updated {newest:%d %b %Y}, in {folder}"
 
 
 # ── Grype report → findings for /sboms/ingest-cve ──

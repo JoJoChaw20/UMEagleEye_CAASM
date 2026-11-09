@@ -274,3 +274,42 @@ def test_yarn_lock_extras_add_the_versions_syft_left_out(tmp_path):
     assert sorted(c["version"] for c in merged["components"] if c["name"] == "react") == ["18.3.1", "19.2.4"]
     assert yarn_lock_extras(syft + extra, str(tmp_path)) == []          # nothing twice
     assert yarn_lock_extras(syft, str(tmp_path / "gone")) == []         # unreadable lockfile adds nothing
+
+
+def test_the_service_keeps_grypes_database_in_its_own_folder_and_adopts_an_old_one(monkeypatch, tmp_path):
+    from eagleeye import deps, machine
+    monkeypatch.setattr(machine, "machine_dir", lambda: tmp_path / "machine")
+    monkeypatch.setattr(deps, "is_admin", lambda: True)
+    old = tmp_path / "root-cache" / "grype" / "db"                  # where Grype put it on its own (/.cache on Linux)
+    (old / "6").mkdir(parents=True)
+    (old / "6" / "vulnerability.db").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(sbom, "_default_grype_dbs", lambda: [tmp_path / "nothing-here", old])
+    env = sbom.grype_env()
+    target = tmp_path / "machine" / "grype-db"
+    assert env["GRYPE_DB_CACHE_DIR"] == str(target)
+    assert (target / "6" / "vulnerability.db").is_file() and not old.exists()     # moved, not downloaded again
+    downloaded, sentence = sbom.grype_db_summary()
+    assert downloaded and str(target) in sentence and "GB" in sentence
+    (old / "6").mkdir(parents=True)                                  # a later copy elsewhere is left alone
+    assert sbom.grype_env()["GRYPE_DB_CACHE_DIR"] == str(target) and old.exists()
+
+
+def test_without_administrator_rights_grype_keeps_its_own_default(monkeypatch, tmp_path):
+    from eagleeye import deps
+    monkeypatch.setattr(deps, "is_admin", lambda: False)
+    assert sbom.grype_env() is None and sbom.grype_db_dir() is None
+    assert sbom.grype_db_summary()[0] is False
+
+
+def test_grype_runs_with_the_database_folder(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(cmd, timeout, cancelled=lambda: False, env=None):
+        seen["env"] = env
+        out = [a for a in cmd if a.startswith("json=")][0][len("json="):]
+        Path(out).write_text('{"matches": []}', encoding="utf-8")
+        return 0
+    monkeypatch.setattr(sbom, "_run", fake_run)
+    monkeypatch.setattr(sbom, "grype_env", lambda: {"GRYPE_DB_CACHE_DIR": str(tmp_path)})
+    assert sbom.run_grype("grype", {"components": []}) == {"matches": []}
+    assert seen["env"] == {"GRYPE_DB_CACHE_DIR": str(tmp_path)}

@@ -380,8 +380,10 @@ class AgentService:
         now = time.time()
         if now < self._next_sbom:
             return
-        if not (sbom_tools.find_tool("syft") and sbom_tools.find_tool("grype")):
-            log.info("Daily SBOM skipped: Syft and Grype are not both installed (see Dependencies)")
+        missing = sbom_tools.missing_tools()
+        if missing:
+            log.info("Daily SBOM skipped: the agent cannot find %s. To fix it, %s. The agent window's Setup page "
+                     "shows what it finds.", " and ".join(missing), sbom_tools.where_to_put())
             self._next_sbom = now + self.settings.sbom_interval
             return
         if self._submit_sbom(None, "schedule", full=self.sbom_cache.weekly_due(now)):
@@ -622,6 +624,8 @@ class AgentService:
         version it runs."""
         if self._capabilities is None:
             self._capabilities = policy.capabilities()
+        # Checked every time (a few file lookups): installing the tools shows on the dashboard at once.
+        self._capabilities["sbom_tools"] = not sbom_tools.missing_tools()
         report: dict[str, Any] = {
             "kind": policy.KIND, "settings": policy.local_report(self.local_settings),
             "capabilities": self._capabilities,
