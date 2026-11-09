@@ -8,7 +8,7 @@
 import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { assets, ctiIndicators, dependencies, events, sboms } from '../db/schema'
-import { identifyServices, inSbom, planServices, productKey, sbomNames, serviceFinding, type CveRef, type OpenServiceAlert,
+import { identifyServices, inSbom, isBuildStamp, planServices, productKey, sbomNames, serviceFinding, type CveRef, type OpenServiceAlert,
   type SbomPackage, type ServiceFinding } from '../lib/serviceIdentity'
 import { KEV_SOURCE } from './threatIntel'
 
@@ -16,14 +16,16 @@ const NVD_PER_JOB = 10
 const CACHE_SECONDS = 86_400
 const NVD = 'https://services.nvd.nist.gov/rest/json/cves/2.0'
 
-export interface ServiceCveJob { type: 'service_cves'; assetIds: string[]; scannedPorts?: number[] | null }
-export interface ServiceCveResult { devices: number; created: number; refreshed: number; resolved: number; nvdCalls: number; deferred: string[] }
+export interface ServiceCveJob { type: 'service_cves'; assetIds: string[]; scannedPorts?: number[] | null; attempt?: number }
+export interface ServiceCveResult { devices: number; created: number; refreshed: number; resolved: number; nvdCalls: number; failed: number; deferred: string[] }
 
 interface NvdCve { cve?: { id?: string; vulnStatus?: string; metrics?: Record<string, { cvssData?: { baseScore?: number } }[]> } }
 
 /** The CVEs NVD lists for one product version (CPE 2.3), from the cache or NVD; null when not
- *  fetched (budget used up, or NVD failed: the device is tried again by a later job or scan). */
-async function cvesFor(cpe: string, kv: KVNamespace, nvdKey: string | undefined, budget: { left: number; calls: number }): Promise<{ id: string; cvss: number | null }[] | null> {
+ *  fetched (budget used up, or NVD failed: the device is tried again by a later job or scan). A name
+ *  NVD rejects (400/404) has no CVEs to find, and asking again would not change that: none, cached. */
+async function cvesFor(cpe: string, kv: KVNamespace, nvdKey: string | undefined,
+  budget: { left: number; calls: number; failed: number }): Promise<{ id: string; cvss: number | null }[] | null> {
   const key = `nvd:cpe:${cpe}`
   const cached = await kv.get(key).catch(() => null)
   if (cached) return JSON.parse(cached)
@@ -33,7 +35,12 @@ async function cvesFor(cpe: string, kv: KVNamespace, nvdKey: string | undefined,
     const res = await fetch(`${NVD}?virtualMatchString=${encodeURIComponent(cpe)}&resultsPerPage=2000`, {
       headers: { ...(nvdKey ? { apiKey: nvdKey } : {}), 'User-Agent': 'UMEagleEye' }, signal: AbortSignal.timeout(20_000),
     })
-    if (!res.ok) { console.error(`[service_cves] NVD ${res.status} for ${cpe}`); return null }
+    if (res.status === 400 || res.status === 404) {
+      console.warn(`[service_cves] NVD does not know ${cpe} (${res.status}): no CVEs`)
+      await kv.put(key, '[]', { expirationTtl: CACHE_SECONDS }).catch(() => {})
+      return []
+    }
+    if (!res.ok) { console.error(`[service_cves] NVD ${res.status} for ${cpe}`); budget.failed++; return null }
     const data = await res.json() as { vulnerabilities?: NvdCve[] }
     const list = (data.vulnerabilities ?? []).filter((v) => v.cve?.id && v.cve.vulnStatus !== 'Rejected').map((v) => {
       const m = v.cve!.metrics ?? {}
@@ -44,13 +51,14 @@ async function cvesFor(cpe: string, kv: KVNamespace, nvdKey: string | undefined,
     return list
   } catch (err) {
     console.error(`[service_cves] NVD lookup failed for ${cpe}:`, err)
+    budget.failed++
     return null
   }
 }
 
 export async function runServiceCves(db: DB, kv: KVNamespace, nvdKey: string | undefined, job: ServiceCveJob,
   now = new Date()): Promise<ServiceCveResult> {
-  const result: ServiceCveResult = { devices: 0, created: 0, refreshed: 0, resolved: 0, nvdCalls: 0, deferred: [] }
+  const result: ServiceCveResult = { devices: 0, created: 0, refreshed: 0, resolved: 0, nvdCalls: 0, failed: 0, deferred: [] }
   const ids = [...new Set(job.assetIds)].slice(0, 500)
   if (!ids.length) return result
   const [devices, withSbom, existing] = await Promise.all([
@@ -62,7 +70,7 @@ export async function runServiceCves(db: DB, kv: KVNamespace, nvdKey: string | u
   ])
   const sbomSet = new Set(withSbom.map((r) => r.assetId))
   const checked = job.scannedPorts?.length ? new Set(job.scannedPorts) : null
-  const budget = { left: NVD_PER_JOB, calls: 0 }
+  const budget = { left: NVD_PER_JOB, calls: 0, failed: 0 }
 
   // 0) identify; on a device with an SBOM, which of those products its package list already has
   const identifiedOf = new Map(devices.map((d) => {
@@ -103,6 +111,7 @@ export async function runServiceCves(db: DB, kv: KVNamespace, nvdKey: string | u
     perDevice.set(d.assetId, { identified, cves })
   }
   result.nvdCalls = budget.calls
+  result.failed = budget.failed
   const kev = new Set<string>()
   if (kevNeeded.size) {
     const rows = await db.select({ value: ctiIndicators.value }).from(ctiIndicators)
@@ -138,7 +147,8 @@ export async function runServiceCves(db: DB, kv: KVNamespace, nvdKey: string | u
         const p = portOf(key)
         if (p == null) return null
         if (coveredOf.get(d.assetId)?.has(`${key}@${p}`)) return 'sbom'
-        return got.identified.some((s) => s.port === p && productKey(s) === key) ? 'no_cve' : null
+        const s = got.identified.find((x) => x.port === p && productKey(x) === key)
+        return !s ? null : !s.cpe && s.version && isBuildStamp(s.version, s.seen) ? 'build' : 'no_cve'
       },
       checkedPortsOf: (key) => { const p = portOf(key); return !!checked && p != null && checked.has(p) },
     })

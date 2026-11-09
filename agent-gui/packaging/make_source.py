@@ -1,4 +1,4 @@
-"""The agent's source package for Linux and the network agent: dist/eagleeye-agent-<version>.tar.gz.
+"""The agent's source package for Linux, macOS (packaging/macos/install-macos.sh) and the network agent: dist/eagleeye-agent-<version>.tar.gz.
 
 Everything a Linux computer needs to run the agent as a service, and to build the network agent's
 Docker image (packaging/network-agent), without the tests or the Windows packaging. Published next
@@ -20,7 +20,7 @@ from eagleeye import VERSION  # noqa: E402
 
 INCLUDE = [
     "eagleeye", "pyproject.toml", "README.md", ".dockerignore",
-    "packaging/network-agent", "packaging/eagleeye.service", "packaging/THIRD-PARTY-NOTICES.txt",
+    "packaging/network-agent", "packaging/eagleeye.service", "packaging/macos", "packaging/THIRD-PARTY-NOTICES.txt",
 ]
 SKIP_PARTS = {"__pycache__", ".pytest_cache"}
 
@@ -37,6 +37,9 @@ def main() -> int:
     def reset(info: tarfile.TarInfo) -> tarfile.TarInfo:     # no build machine's user names in it
         info.uid = info.gid = 0
         info.uname = info.gname = ""
+        # Built on Windows the files come out writable by everyone (0666); unpacked as root for a
+        # root service, any local user could then change the code it runs. Owner-writable only.
+        info.mode = 0o755 if info.isdir() or info.name.endswith(".sh") else 0o644
         return info
 
     count = 0

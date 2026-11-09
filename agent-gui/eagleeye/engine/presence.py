@@ -15,6 +15,7 @@ import ctypes
 import ipaddress
 import json
 import logging
+import re
 import socket
 import struct
 import subprocess
@@ -79,9 +80,22 @@ def _linux_networks() -> list[tuple[str, Network]]:
     return out
 
 
+def _darwin_networks() -> list[tuple[str, Network]]:
+    from ..passive.adapters import list_adapters
+    out = []
+    for a in list_adapters():
+        for ip in a.get("ips") or []:
+            plen = (a.get("prefixes") or {}).get(ip)
+            if plen is not None and not ip.startswith(("127.", "169.254.")):
+                out.append((ip, ipaddress.ip_network(f"{ip}/{plen}", strict=False)))
+    return out
+
+
 def local_networks() -> list[tuple[str, Network]]:
     """(this computer's address, its network) for every IPv4 address it holds."""
     try:
+        if sys.platform == "darwin":
+            return _darwin_networks()
         return _windows_networks() if sys.platform == "win32" else _linux_networks()
     except Exception as exc:  # noqa: BLE001
         log.debug("could not read local networks: %s", exc)
@@ -126,6 +140,10 @@ def own_mac(ip: str) -> Optional[str]:
     try:
         if sys.platform == "win32":
             return send_arp(ip, ip)
+        if sys.platform == "darwin":
+            from ..passive.adapters import list_adapters
+            return next((format_mac(bytes(int(x, 16) for x in a["mac"].split(":"))) for a in list_adapters()
+                         if ip in (a.get("ips") or []) and a.get("mac")), None)
         data = json.loads(subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, timeout=10).stdout)
         return parse_ip_addr_macs(data).get(ip)
     except Exception:  # noqa: BLE001
@@ -153,6 +171,33 @@ def parse_proc_net_arp(text: str) -> dict[str, str]:
             if mac:
                 found[parts[0]] = mac
     return found
+
+
+def parse_arp_an(text: str) -> dict[str, str]:
+    """ip -> MAC of the resolved entries of macOS's `arp -an`
+    ("? (192.168.1.1) at a4:2b:b0:1:2:3 on en0 ifscope [ethernet]"; "(incomplete)" skipped)."""
+    found = {}
+    for m in re.finditer(r"\((\d{1,3}(?:\.\d{1,3}){3})\) at ([0-9a-fA-F:]+) on ", text):
+        parts = m.group(2).split(":")
+        if len(parts) == 6:
+            mac = format_mac(bytes(int(p, 16) for p in parts))
+            if mac:
+                found[m.group(1)] = mac
+    return found
+
+
+def _read_arp_table() -> Optional[dict[str, str]]:
+    """The kernel's ARP table: Linux /proc/net/arp, macOS `arp -an`; None when unreadable."""
+    if sys.platform == "darwin":
+        try:
+            return parse_arp_an(subprocess.run(["arp", "-an"], capture_output=True, text=True, timeout=10).stdout)
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        with open("/proc/net/arp", encoding="ascii") as f:
+            return parse_proc_net_arp(f.read())
+    except OSError:
+        return None
 
 
 ARP_TRIGGER_BATCH = 32
@@ -183,10 +228,8 @@ def _linux_arp(addresses: list[str], src: str, rounds: int = 2, wait: float = 1.
     for _ in range(rounds):
         trigger_arp([ip for ip in addresses if ip not in found], src)
         time.sleep(wait)
-        try:
-            with open("/proc/net/arp", encoding="ascii") as f:
-                table = parse_proc_net_arp(f.read())
-        except OSError:
+        table = _read_arp_table()
+        if table is None:
             break
         found.update({ip: mac for ip, mac in table.items() if ip in wanted})
         if len(found) == len(addresses):
@@ -237,6 +280,9 @@ def _linux_ping(ip: str, timeout_ms: int) -> bool:
         try:
             s.sendto(struct.pack(">BBHHH", 8, 0, 0, 0, 1) + b"EagleEye", (ip, 0))
             data = s.recv(1024)
+            # macOS hands the reply over with its IP header, Linux without
+            if data and data[0] >> 4 == 4 and len(data) > (data[0] & 0x0F) * 4:
+                data = data[(data[0] & 0x0F) * 4:]
             return bool(data) and data[0] == 0
         except OSError:
             return False

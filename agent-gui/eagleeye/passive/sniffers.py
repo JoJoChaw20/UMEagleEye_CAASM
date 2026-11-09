@@ -110,7 +110,7 @@ class InterfaceChooser:
         self._checked_at: Optional[float] = None
         self.name: Optional[str] = self.fixed
         self.index: Optional[int] = None                 # its interface index (the built-in capture on Windows)
-        self.label = f"{self.fixed} (set in Settings)" if self.fixed else "checking..."
+        self.label = f"{self.fixed} (pinned on this computer)" if self.fixed else "checking..."
         self._own_macs: frozenset[str] = frozenset()
         # Replaced (never changed in place) when the network changes, so a host's tag
         # keeps describing the network it was heard on.
@@ -222,8 +222,10 @@ _VIRTUAL_ADAPTER_WORDS = ("loopback", "km-test", "vmware virtual", "vmware netwo
                           "hyper-v virtual", "vethernet", "wsl", "docker", "npcap loopback")
 
 
-# Linux bridges and links of containers and local VMs (Docker, libvirt, LXD, Kubernetes).
-_VIRTUAL_LINUX_PREFIXES = ("br-", "veth", "virbr", "lxdbr", "cni", "flannel")
+# Linux bridges and links of containers and local VMs (Docker, libvirt, LXD, Kubernetes), and
+# macOS's own: tunnels (VPN, iCloud Private Relay), AirDrop/AWDL, bridges, VMs' NICs.
+_VIRTUAL_LINUX_PREFIXES = ("br-", "veth", "virbr", "lxdbr", "cni", "flannel",
+                           "utun", "awdl", "llw", "bridge", "gif", "stf", "anpi", "vmenet", "feth", "ipsec")
 
 
 def _is_virtual_adapter(adapter: dict[str, Any]) -> bool:

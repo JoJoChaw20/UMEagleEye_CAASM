@@ -184,9 +184,11 @@ export function matchAsset(input: MatcherInput, cand: MatcherCandidates): MatchD
     // The "network/server device on a different network" exception applies ONLY
     // when BOTH keys are non-null and differ. An unscoped matched address
     // (network_key NULL, e.g. a manual asset) counts as compatible → still merge
-    // (the caller fills in its network_key on match).
+    // (the caller fills in its network_key on match). Never when the machine's own agent
+    // reported this MAC: one card with addresses on two networks (lab VM's ens33,
+    // 192.168.36.50 and GNS3's 10.99.0.10, 9 Nov) is that machine, not a second device.
     const crossNetwork = hit.networkKey !== null && input.networkKey !== null && hit.networkKey !== input.networkKey
-    if ((hit.assetDeviceType === 'network' || hit.assetDeviceType === 'server') && crossNetwork) {
+    if ((hit.assetDeviceType === 'network' || hit.assetDeviceType === 'server') && crossNetwork && !vouched.includes(hit.assetId)) {
       // A router/server's global MAC seen on a different network is more likely a
       // second device sharing an uplink than the same box — do NOT merge.
       return { rule: '1-possible-duplicate', assetId: null, possibleDuplicateOf: hit.assetId }
@@ -302,7 +304,7 @@ export interface CurrentAddressRow {
  */
 export function addressesToEnd(
   rows: CurrentAddressRow[],
-  rec: { assetId: string; networkKey: string | null; ip: string; mac: string | null; keepAddressId?: string | null },
+  rec: { assetId: string; networkKey: string | null; ip: string; mac: string | null; keepAddressId?: string | null; ownIps?: readonly string[] | null },
 ): string[] {
   if (rec.networkKey === null) return []
   const out: string[] = []
@@ -310,7 +312,11 @@ export function addressesToEnd(
     if (r.addressId === rec.keepAddressId || r.networkKey === null) continue
     const sameSpot = r.networkKey === rec.networkKey && r.ipAddress === rec.ip
     if (r.assetId !== rec.assetId && sameSpot) out.push(r.addressId)
-    else if (r.assetId === rec.assetId && rec.mac && r.macAddress === rec.mac && r.networkKey !== rec.networkKey) out.push(r.addressId)
+    // The same card on another network: it moved (a laptop from the lab to home)... unless the
+    // machine's own agent still lists that address on its cards (`ownIps`, from its inventory):
+    // then the card holds both, and both stay current.
+    else if (r.assetId === rec.assetId && rec.mac && r.macAddress === rec.mac && r.networkKey !== rec.networkKey
+      && !rec.ownIps?.includes(r.ipAddress)) out.push(r.addressId)
   }
   return out
 }
@@ -498,6 +504,11 @@ export async function prefetchIdentity(
     // Only the role is needed from the inventory blob (criticality v2).
     agentRole: sql<string | null>`${assets.endpointInventory}->'os'->>'role'`,
     agentManaged: sql<boolean>`(${assets.inventoryCollectedAt} IS NOT NULL)`,
+    // The IPv4 addresses its agent's last inventory listed on its cards (addressesToEnd)
+    agentIps: sql<string[] | null>`ARRAY(SELECT jsonb_array_elements_text(nic->'ipv4')
+      FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${assets.endpointInventory}->'network'->'interfaces') = 'array'
+        THEN ${assets.endpointInventory}->'network'->'interfaces' ELSE '[]'::jsonb END) nic
+      WHERE jsonb_typeof(nic->'ipv4') = 'array')`,
   }
   const toMs = (v: unknown): number => (v ? new Date(v as string | Date).getTime() : 0)
   const absorb = (r: Record<string, unknown>, asAddress = true) => {
@@ -532,6 +543,7 @@ export async function prefetchIdentity(
         internetFacingOverride: (r.internetFacingOverride as boolean | null) ?? null,
         agentRole: (r.agentRole as string | null) ?? null,
         agentManaged: r.agentManaged === true,
+        agentIps: Array.isArray(r.agentIps) ? r.agentIps as string[] : [],
       })
     }
   }

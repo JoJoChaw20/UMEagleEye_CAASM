@@ -24,6 +24,7 @@ polling thread, which they wake up.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import queue
 import threading
@@ -38,7 +39,7 @@ from typing import Any, Callable, Optional
 from . import sbom as sbom_tools
 from .api import TRY_AGAIN_LATER, AgentClient
 from .config import Settings
-from . import policy
+from . import netinfo, policy
 from .passive import PassiveSuite
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
 from .schedule import Schedule, ScheduleState
@@ -129,6 +130,9 @@ class AgentService:
         # with the administrator's settings applied (policy.py). The last applied policy
         # is kept on disk, so it holds from the start, before the first heartbeat.
         self.local_settings = settings
+        # The adapter passive listening is set to is also the network the agent reports
+        # itself on (its LAN address and gateway), not the NAT adapter next to it
+        netinfo.set_lan_interface(settings.passive_interface)
         self.policy_store = policy.PolicyStore(policy_path)
         self.applied_policy_version, self.managed = self.policy_store.load()
         self.settings = policy.apply(settings, self.managed)
@@ -641,6 +645,11 @@ class AgentService:
             self._capabilities = policy.capabilities()
         # Checked every time (a few file lookups): installing the tools shows on the dashboard at once.
         self._capabilities["sbom_tools"] = not sbom_tools.missing_tools()
+        # The adapter pinned on this computer (EAGLEEYE_PASSIVE_INTERFACE): the dashboard shows it
+        if self.local_settings.passive_interface:
+            self._capabilities["lan_adapter"] = self.local_settings.passive_interface[:80]
+        else:
+            self._capabilities.pop("lan_adapter", None)
         report: dict[str, Any] = {
             "kind": policy.KIND, "settings": policy.local_report(self.local_settings),
             "capabilities": self._capabilities,
@@ -649,7 +658,11 @@ class AgentService:
             report["policy_version"] = self.applied_policy_version
         try:
             from .passive.adapters import connected_networks
-            report["networks"] = connected_networks()      # for routing scans to this agent (2.5.1)
+            # For routing scans to this agent (2.5.1); its own network first (the dashboard
+            # labels the agent with it), not the NAT adapter's that happens to come first.
+            networks = connected_networks()
+            mine = ipaddress.ip_address(netinfo.lan_ip())
+            report["networks"] = sorted(networks, key=lambda n: mine not in ipaddress.ip_network(n))
         except Exception as exc:  # noqa: BLE001 - optional
             log.debug("Could not list this computer's networks: %s", exc)
         return report

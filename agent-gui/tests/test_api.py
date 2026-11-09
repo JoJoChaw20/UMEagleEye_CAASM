@@ -118,7 +118,7 @@ def test_4xx_is_not_retried_and_reports_the_server_detail():
 
 
 def test_heartbeat_payload_and_failure(monkeypatch):
-    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.1.20")
+    monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.1.20")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: "192.168.1.1")
     c, session, _ = client(FakeResponse(200))
     assert c.send_heartbeat()
@@ -132,7 +132,7 @@ def test_heartbeat_payload_and_failure(monkeypatch):
 
 
 def test_heartbeat_answer_carries_the_local_scan_policy(monkeypatch):
-    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.1.20")
+    monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.1.20")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
     c, _, _ = client(FakeResponse(200, {"ok": True, "policy": {"local_scans": False}}),
                      FakeResponse(200, {"ok": True}), FakeResponse(200, {"ok": True, "policy": {"local_scans": True}}))

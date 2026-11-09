@@ -27,6 +27,43 @@ def local_ip() -> str:
         return "127.0.0.1"
 
 
+_lan_interface: Optional[str] = None
+
+
+def set_lan_interface(name: Optional[str]) -> None:
+    """Name the adapter of the network this agent watches: the one passive listening is
+    set to (EAGLEEYE_PASSIVE_INTERFACE). Only needed on a computer with a second adapter
+    for the internet, such as a lab VM with a NAT adapter: the agent's own address and
+    gateway are then the lab adapter's, not those of the route to the internet."""
+    global _lan_interface
+    _lan_interface = name or None
+
+
+def _lan_adapter() -> Optional[dict[str, Any]]:
+    if not _lan_interface:
+        return None
+    try:
+        from .passive.adapters import list_adapters
+        return next((a for a in list_adapters() if a.get("name") == _lan_interface), None)
+    except Exception as exc:  # noqa: BLE001 - fall back to the route to the internet
+        log.debug("Could not read the adapter %s: %s", _lan_interface, exc)
+        return None
+
+
+def lan_ip() -> str:
+    """This agent's own address on its network: the private address of the adapter named
+    with set_lan_interface (a lab VM's ens33 also holds GNS3 addresses), else the one the
+    OS reaches the internet with (local_ip)."""
+    ips = [ip for ip in (_lan_adapter() or {}).get("ips") or [] if not ip.startswith(("127.", "169.254."))]
+    for ip in ips:
+        try:
+            if ipaddress.IPv4Address(ip).is_private:
+                return ip
+        except ValueError:
+            continue
+    return ips[0] if ips else local_ip()
+
+
 def parse_default_gateway(system: str, output: str, via: Optional[str] = None) -> Optional[str]:
     """Pull the default gateway out of `route print` (Windows), `ip route` (Linux)
     or `route -n get default` (macOS) output.
@@ -58,7 +95,12 @@ def parse_default_gateway(system: str, output: str, via: Optional[str] = None) -
 
 
 def default_gateway() -> Optional[str]:
-    """Best-effort default-gateway IPv4 lookup. Returns None on any failure."""
+    """Best-effort default-gateway IPv4 lookup. Returns None on any failure. With the
+    agent's adapter named (set_lan_interface), that adapter's gateway: None on a lab
+    network whose only way out is the other (NAT) adapter."""
+    adapter = _lan_adapter()
+    if adapter is not None:
+        return adapter.get("gateway") or None
     system = platform.system()
     command = {
         "Windows": ["route", "print", "-4", "0.0.0.0"],

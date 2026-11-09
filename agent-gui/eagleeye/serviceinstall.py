@@ -6,7 +6,7 @@ install (as an administrator):
   2. moves this user's settings there once, with the secrets from their Credential
      Manager into the machine secrets file (nothing to enter again after an upgrade);
   3. registers the service (Windows: delayed automatic start as LocalSystem, restarted
-     after a failure; Linux: a systemd unit) and starts it.
+     after a failure; Linux: a systemd unit; macOS: a launchd daemon) and starts it.
 """
 
 from __future__ import annotations
@@ -51,6 +51,28 @@ def _source_root() -> Optional[str]:
 def unit_name(instance: str = "") -> str:
     """The systemd unit: eagleeye-agent, or eagleeye-agent-<instance>."""
     return f"eagleeye-agent-{instance}" if instance else "eagleeye-agent"
+
+
+def launchd_label(instance: str = "") -> str:
+    """The macOS launchd daemon: com.umeagleeye.agent, or com.umeagleeye.agent-<instance>."""
+    return f"com.umeagleeye.agent-{instance}" if instance else "com.umeagleeye.agent"
+
+
+def launchd_plist(instance: str = "") -> Path:
+    return Path(f"/Library/LaunchDaemons/{launchd_label(instance)}.plist")
+
+
+def launchd_job(instance: str, command: list[str], source_root: Optional[str], log_dir: Path) -> dict:
+    """The daemon's plist: started at boot and after a crash (not after a clean stop),
+    at most once a minute, with up to 60 s to stop (the last passive upload)."""
+    job: dict = {
+        "Label": launchd_label(instance), "ProgramArguments": command,
+        "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ThrottleInterval": 60, "ExitTimeOut": 60,
+        "StandardOutPath": str(log_dir / "launchd.log"), "StandardErrorPath": str(log_dir / "launchd.log"),
+    }
+    if source_root:                                  # a run from source: the daemon finds the package
+        job["EnvironmentVariables"] = {"PYTHONPATH": source_root}
+    return job
 
 
 def _quote(arg: str) -> str:
@@ -120,6 +142,19 @@ def install(instance: str = "", source: Optional[Path] = None, start: bool = Tru
         if start:
             r = _run(["sc.exe", "start", name])
             done.append("started it" if r.returncode == 0 else f"could not start it: {(r.stdout + r.stderr).strip()[-200:]}")
+    elif sys.platform == "darwin":
+        import plistlib
+        path = launchd_plist(instance)
+        label = launchd_label(instance)
+        _run(["launchctl", "bootout", f"system/{label}"])          # an older copy, loaded
+        path.write_bytes(plistlib.dumps(launchd_job(instance, _command(instance), _source_root(), machine_log_dir(instance))))
+        os.chmod(path, 0o644)                                       # launchd refuses a writable plist
+        if start:
+            r = _run(["launchctl", "bootstrap", "system", str(path)])
+            done.append(f"installed {path} and started it" if r.returncode == 0
+                        else f"installed {path}; could not start it: {(r.stdout + r.stderr).strip()[-200:]}")
+        else:
+            done.append(f"installed {path} (starts at the next boot)")
     else:
         legacy = Path("/etc/systemd/system/eagleeye.service")    # the hand-installed unit before 2.5.0
         if not instance and legacy.exists():
@@ -153,6 +188,12 @@ def uninstall(instance: str = "", purge: bool = False) -> list[str]:
             time.sleep(1)
         r = _run(["sc.exe", "delete", name])
         done.append(f"removed the service {name}" if r.returncode == 0 else f"no service {name}")
+    elif sys.platform == "darwin":
+        _run(["launchctl", "bootout", f"system/{launchd_label(instance)}"])
+        path = launchd_plist(instance)
+        if path.exists():
+            path.unlink()
+        done.append(f"removed {launchd_label(instance)}")
     else:
         unit = unit_name(instance)
         _run(["systemctl", "disable", "--now", unit])
@@ -171,6 +212,12 @@ def control(action: str, instance: str = "") -> str:
     name = service_name(instance)
     if sys.platform == "win32":
         r = _run(["sc.exe", action, name])
+    elif sys.platform == "darwin":
+        label = launchd_label(instance)
+        argv = {"start": ["launchctl", "bootstrap", "system", str(launchd_plist(instance))],
+                "stop": ["launchctl", "bootout", f"system/{label}"],
+                "restart": ["launchctl", "kickstart", "-k", f"system/{label}"]}.get(action, ["launchctl", "print", f"system/{label}"])
+        r = _run(argv)
     else:
         r = _run(["systemctl", action, unit_name(instance)])
     return (r.stdout + r.stderr).strip() or "ok"

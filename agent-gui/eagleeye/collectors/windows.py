@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import VERSION
-from ..netinfo import local_ip
+from ..netinfo import lan_ip
 from . import CollectorError
 
 SCRIPT = Path(__file__).with_name("windows_inventory.ps1")
@@ -275,7 +275,7 @@ def normalize(raw: dict[str, Any], collected_at: Optional[datetime] = None) -> d
             "local_admin_count": sec.get("local_admin_count"),
         },
         "network": {
-            "primary_ip": primary_ip(local_ip(), interfaces),
+            "primary_ip": primary_ip(lan_ip(), interfaces),
             "interfaces": interfaces,
             "listening": listening,
         },

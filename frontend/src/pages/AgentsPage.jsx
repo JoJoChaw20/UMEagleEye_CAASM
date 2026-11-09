@@ -11,7 +11,7 @@ import AgentPanel from '../components/agents/AgentPanel'
 import AgentDefaultsCard from '../components/agents/AgentDefaultsCard'
 import InstallTab, { DownloadButton, useDownloads } from '../components/agents/InstallTab'
 import { ROLES } from '../components/agents/policy'
-import { CopyButton, NetworkBadge, Seen, StatusBadge } from '../components/agents/parts'
+import { CopyButton, MobileBadge, NetworkBadge, Seen, StatusBadge } from '../components/agents/parts'
 import { agentApiUrl, makeConnectionCode } from '../utils/connectionCode'
 
 // Agents, in three tabs: the agents (a row opens its panel: settings and actions), Install
@@ -198,6 +198,7 @@ function AgentRow({ a, showTenant, tenantName, onOpen }) {
         <p className="font-medium text-dark-50 flex items-center gap-1.5 flex-wrap">
           {a.name}
           {a.kind === 'network' && <NetworkBadge />}
+          {a.kind === 'mobile' && <MobileBadge />}
         </p>
         <Where a={a} />
       </td>

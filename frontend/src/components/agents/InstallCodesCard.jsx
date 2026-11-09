@@ -79,7 +79,7 @@ export default function InstallCodesCard({ enabled }) {
                 return (
                   <tr key={t.token_id}>
                     <td className="text-sm text-dark-100">{t.name}</td>
-                    <td className="text-sm">{t.kind === 'network' ? 'Network agents' : 'Computers'}</td>
+                    <td className="text-sm">{t.kind === 'network' ? 'Network agents' : t.kind === 'mobile' ? 'Phones' : 'Computers'}</td>
                     <td className="text-sm">{t.uses}{t.max_uses ? ` of ${t.max_uses}` : ''}
                       {t.last_used_at && <span className="block text-[11px] text-dark-500">last {formatSeen(t.last_used_at).text}</span>}
                     </td>
@@ -130,6 +130,7 @@ function NewCode({ onClose, onMade }) {
           <select className="input-field text-sm w-full" value={kind} onChange={(e) => setKind(e.target.value)}>
             <option value="host">Computers</option>
             <option value="network">Network agents</option>
+            <option value="mobile">Phones (Android)</option>
           </select>
         </label>
         <label className="text-xs text-dark-400 space-y-1">Valid for (days)

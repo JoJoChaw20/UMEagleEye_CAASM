@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An eye on the EagleEye blue: the launcher icon (a vector, so one file serves every screen). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="#1D4ED8" android:pathData="M24,2a22,22 0 1,0 0.001,0z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M6,24C10,15 17,11 24,11C31,11 38,15 42,24C38,33 31,37 24,37C17,37 10,33 6,24z" />
+    <path android:fillColor="#1D4ED8" android:pathData="M24,17a7,7 0 1,0 0.001,0z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M26,20a2.5,2.5 0 1,0 0.001,0z" />
+</vector>

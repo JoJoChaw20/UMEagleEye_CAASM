@@ -51,6 +51,7 @@ export interface PrefetchAsset {
   internetFacingOverride?: boolean | null    // analyst-confirmed exposure wins over inference
   agentRole?: string | null                  // OS role the machine's agent reported (criticality v2)
   agentManaged?: boolean                     // has an agent inventory: its main IP/MAC come from that
+  agentIps?: string[]                        // the addresses that inventory listed on its cards
 }
 export interface IdentityPrefetch {
   addresses: PrefetchAddress[]
@@ -139,6 +140,7 @@ interface MutAsset {
   internetFacingOverride?: boolean | null
   agentRole?: string | null
   agentManaged?: boolean
+  agentIps?: string[]
 }
 
 /**
@@ -376,7 +378,7 @@ export function planIngest(
       // device's address on this network and IP, and this device's addresses on other
       // networks with the same MAC. Ends go before the insert (idx_addr_current).
       const keep = cur && cur.ipAddress === host.ip ? cur.addressId : null
-      for (const id of addressesToEnd(workAddrs.filter(w => !w.ended), { assetId, networkKey, ip: host.ip, mac, keepAddressId: keep })) {
+      for (const id of addressesToEnd(workAddrs.filter(w => !w.ended), { assetId, networkKey, ip: host.ip, mac, keepAddressId: keep, ownIps: st.agentIps })) {
         if (id === cur?.addressId) continue
         ops.push({ k: 'endAddress', addressId: id })
         const w = workAddrs.find(x => x.addressId === id)

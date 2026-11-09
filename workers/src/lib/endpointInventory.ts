@@ -171,8 +171,10 @@ export function bindMachine(input: BindingInput): BindingResult {
 }
 
 /** Device type the machine reports about itself (OS role, then chassis). */
-export function deviceTypeFor(inv: InventoryPayload): 'server' | 'workstation' | 'unknown' {
+export function deviceTypeFor(inv: InventoryPayload): 'server' | 'workstation' | 'mobile' | 'unknown' {
   const role = inv.os?.role
+  // A phone or tablet (the Android agent)
+  if (inv.platform === 'android' || role === 'mobile' || inv.hardware?.form_factor === 'phone' || inv.hardware?.form_factor === 'tablet') return 'mobile'
   if (role === 'server' || role === 'domain_controller') return 'server'
   const ff = inv.hardware?.form_factor
   if (ff === 'server') return 'server'
@@ -225,13 +227,14 @@ export type AgentAddressOp =
  */
 export function planAgentAddress(
   assetId: string, ip: string, mac: string | null, networkKey: string | null, current: AgentAddressRow[],
+  ownIps: readonly string[] = [],
 ): AgentAddressOp[] {
   const mine = current.filter(r => r.assetId === assetId)
   const here = mine.find(r => r.ipAddress === ip && (r.networkKey === networkKey || r.networkKey === null))
   // Another device on this network and IP, and this machine's same-MAC addresses on other
-  // networks (it moved): lib/identity.ts addressesToEnd. A new IP on this network also
-  // ends this machine's old one (DHCP).
-  const ends = new Set(addressesToEnd(current, { assetId, networkKey, ip, mac, keepAddressId: here?.addressId ?? null }))
+  // networks (it moved; not those its cards still hold, `ownIps`): lib/identity.ts
+  // addressesToEnd. A new IP on this network also ends this machine's old one (DHCP).
+  const ends = new Set(addressesToEnd(current, { assetId, networkKey, ip, mac, keepAddressId: here?.addressId ?? null, ownIps }))
   if (!here && networkKey !== null) for (const r of mine) if (r.networkKey === networkKey) ends.add(r.addressId)
   const ops: AgentAddressOp[] = [...ends].map(addressId => ({ k: 'end' as const, addressId }))
   ops.push(here

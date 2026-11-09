@@ -291,6 +291,8 @@ function networkCondition(subnet: string): SQL {
     and(eq(scanResults.scanType, 'passive'), sql`COALESCE(${lan}, ${scanResults.networkInfo}->>'subnet') = ${subnet}`),
     and(eq(scanResults.scanType, 'active'), kindCondition('network'), eq(scanResults.subnet, subnet)),
     and(eq(scanResults.scanType, 'active'), sql`NOT (${kindCondition('network')})`, sql`${lan} = ${subnet}`),
+    // a crawl that reached it (lib/discoveryNetworks.ts crawlSubnetsOf)
+    and(eq(scanResults.scanType, 'snmp'), sql`${scanResults.networkInfo}->'crawl'->'subnets' @> ${JSON.stringify([{ subnet }])}::jsonb`),
   )!
 }
 

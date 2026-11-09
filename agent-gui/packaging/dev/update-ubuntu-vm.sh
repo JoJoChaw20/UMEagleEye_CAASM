@@ -35,6 +35,7 @@ systemctl stop eagleeye-agent 2>/dev/null || true
 rm -rf "$DIR"                                   # no files left over from the last build
 mkdir -p "$DIR"
 tar xzf "$TARBALL" -C "$DIR" --strip-components=1
+chown -R root:root "$DIR" && chmod -R go-w "$DIR"   # the root service runs this code: only root may change it
 cd "$DIR"
 
 if [ -n "$CODE_FILE" ]; then

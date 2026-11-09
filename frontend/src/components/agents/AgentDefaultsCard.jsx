@@ -2,13 +2,14 @@
 // page's Defaults tab. A default applies to every agent of the tenant without a setting of
 // its own; a setting with no default here is the built-in default.
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Monitor, Network } from 'lucide-react'
+import { AlertTriangle, Monitor, Network, Smartphone } from 'lucide-react'
 import client from '../../api/client'
 import { GROUPS, PolicyInput, invalid, same, show } from './policy'
 
 const KINDS = [
   { kind: 'host', title: 'Computers', icon: Monitor, help: 'The agent installed on each computer.' },
   { kind: 'network', title: 'Network agents', icon: Network, help: 'Agents that read the routers and switches.' },
+  { kind: 'mobile', title: 'Phones', icon: Smartphone, help: 'The EagleEye app on Android phones and tablets.' },
 ]
 
 export default function AgentDefaultsCard({ tenantId, onSaved }) {

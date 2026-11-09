@@ -169,6 +169,12 @@ function AgentSettings({ agent, onSaved }) {
         </p>
       </div>
       {error && <ErrorBox text={error} />}
+      {policy.capabilities?.lan_adapter && (
+        <p className="text-xs text-dark-400">
+          Network adapter: <span className="font-mono text-dark-200">{policy.capabilities.lan_adapter}</span>, pinned on the computer
+          (EAGLEEYE_PASSIVE_INTERFACE). Passive listening, the agent's address and its network follow it, not the adapter to the internet.
+        </p>
+      )}
       {/* 2.6+ agents say whether their service finds Syft and Grype (older ones do not say) */}
       {byKey.sbom?.value === true && policy.capabilities?.sbom_tools === false && (
         <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">

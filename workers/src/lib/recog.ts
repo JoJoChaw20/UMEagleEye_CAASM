@@ -42,13 +42,17 @@ export function recognize(name: RecogDb, text: string | null | undefined): Recor
   return null
 }
 
-/** A Recog CPE ("cpe:/a:vendor:product:version", the 2.2 URI form) as a CPE 2.3 formatted string;
- *  null without a usable version (NVD would then list every version's CVEs). */
-export function cpe23(uri: string | undefined): string | null {
+/** A Recog CPE ("cpe:/a:vendor:product:version", the 2.2 URI form) as a CPE 2.3 formatted string,
+ *  with `version` (the cleaned one) in place of the URI's when given; null without a usable version
+ *  (NVD would then list every version's CVEs). CPE 2.3 escapes everything but letters, digits and
+ *  . _ - with a backslash: NVD answers 404 to Cisco's "15.9(3)M12" and finds "15.9\(3\)m12". */
+export function cpe23(uri: string | undefined, version?: string | null): string | null {
   if (!uri) return null
-  const m = /^cpe:\/([aoh]):([^:]+):([^:]+):?([^:]*)/.exec(uri)
+  const m = /^cpe:\/([aoh]):([^:]+):([^:]+)(?::([^:]*))?/.exec(uri)
   if (!m) return null
-  const [, part, vendor, product, version] = m
-  if (!version || version === '-' || /[{}]/.test(version)) return null
-  return `cpe:2.3:${part}:${vendor}:${product}:${version}:*:*:*:*:*:*:*`
+  const [, part, vendor, product, fromUri] = m
+  const v = version === undefined ? fromUri : version
+  if (!v || v === '-' || /[{}\s]/.test(v)) return null
+  const esc = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]/g, (c) => `\\${c}`)
+  return `cpe:2.3:${part}:${esc(vendor!)}:${esc(product!)}:${esc(v)}:*:*:*:*:*:*:*`
 }

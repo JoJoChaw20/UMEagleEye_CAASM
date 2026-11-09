@@ -49,7 +49,7 @@ def test_policy_path_is_per_instance(tmp_path):
 
 
 def test_heartbeat_sends_the_report_and_reads_the_managed_settings(monkeypatch):
-    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.0.139")
+    monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.0.139")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
     answer = {"ok": True, "policy": {"local_scans": False, "managed": {"passive": True}, "version": "0a1b2c3d"}}
     c, session, _ = client(FakeResponse(200, answer), FakeResponse(200, {"ok": True, "policy": {"local_scans": True}}))
@@ -147,7 +147,7 @@ def test_passive_listening_follows_the_administrator(tmp_path, monkeypatch):
 
 
 def test_jobs_come_with_the_heartbeat_and_are_handed_out_once(monkeypatch):
-    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.0.139")
+    monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.0.139")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
     job = {"scanId": "s1", "scanType": "inventory", "subnet": "asset-1", "status": "pending"}
     c, session, _ = client(FakeResponse(200, {"ok": True, "policy": {"local_scans": True}, "scans": [job]}),
@@ -160,7 +160,7 @@ def test_jobs_come_with_the_heartbeat_and_are_handed_out_once(monkeypatch):
 
 
 def test_a_failed_heartbeat_is_not_reported_as_no_jobs(monkeypatch):
-    monkeypatch.setattr("eagleeye.api.local_ip", lambda: "192.168.0.139")
+    monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.0.139")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)
     down = [httpclient.ConnectionError("x")] * (len(RETRY_DELAYS) + 1)
     c, _, _ = client(FakeResponse(200, {"ok": True, "scans": []}), *down, FakeResponse(200, {"ok": True, "scans": []}))
