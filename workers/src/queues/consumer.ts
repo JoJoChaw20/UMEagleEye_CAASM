@@ -7,6 +7,7 @@ import { generateAdvisory } from '../services/advisory'
 import { savePostureSnapshot } from '../services/posture'
 import { CTI_INGEST_LOCK, runIngestStep, type CtiStep } from '../services/cti'
 import { runDriftAudit } from '../services/drift'
+import { runServiceCves, type ServiceCveJob } from '../services/serviceCves'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
@@ -40,7 +41,7 @@ interface DriftCheckJob {
   agentId?: string
 }
 
-type Job = AdvisoryJob | ReportJob | CtiIngestJob
+type Job = AdvisoryJob | ReportJob | CtiIngestJob | ServiceCveJob
 
 // The same report as the dashboard's download: same data (services/reportData.ts), same
 // layout (frontend/src/utils/reportPdf.js). A queued report is always a tenant's (only tenant
@@ -116,6 +117,13 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
           }
           await env.KV_CACHE.put(`report:${filename}`, JSON.stringify(failedMeta), { expirationTtl: 24 * 3600 })
         }
+        message.ack()
+      } else if (job.type === 'service_cves') {
+        const r = await runServiceCves(db, env.KV_CACHE, env.NVD_API_KEY, job)
+        console.log(`[service_cves] ${r.devices} device(s): ${r.created} new, ${r.refreshed} still vulnerable, ${r.resolved} closed; `
+          + `${r.nvdCalls} NVD lookup(s)${r.deferred.length ? `, ${r.deferred.length} device(s) deferred` : ''}`)
+        // NVD's budget per job ran out: the rest in a minute (cached lookups are free then)
+        if (r.deferred.length) await env.ADVISORY_QUEUE.send({ ...job, assetIds: r.deferred }, { delaySeconds: 60 })
         message.ack()
       } else if (job.type === 'cti_ingest') {
         const next = await runIngestStep(db, env.KV_CACHE, { otx: env.OTX_API_KEY, threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')

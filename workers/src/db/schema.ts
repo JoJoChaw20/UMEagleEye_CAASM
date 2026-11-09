@@ -24,7 +24,10 @@ export const eventTypeEnum = pgEnum('event_type', [
   // One per Windows machine missing fixes Microsoft released (services/windowsPatch.ts)
   'os_patch_missing',
   // A risky configuration an active scan sees now: one per device, rule and port (lib/exposureRules.ts)
-  'exposure'
+  'exposure',
+  // A product version with known CVEs, identified from its banner on a device without an SBOM:
+  // one per device and product (lib/serviceIdentity.ts, services/serviceCves.ts)
+  'vulnerable_service'
 ])
 // Alert triage lifecycle. open/in_progress count as "open" everywhere
 // (see lib/eventStatus.ts); the other three close the alert.

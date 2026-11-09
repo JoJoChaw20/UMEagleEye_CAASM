@@ -52,6 +52,17 @@ function chain(e) {
         rule: 'R5 · An address or name of your own asset is in threat intel: treat as a possible compromise',
       }
     }
+    case 'vulnerable_service': {
+      const known = [`NVD lists ${d.cve_count ?? 'known'} CVE${d.cve_count === 1 ? '' : 's'} for ${d.product} ${d.version ?? ''}${d.max_cvss ? ` (worst CVSS ${d.max_cvss})` : ''}`]
+      if (d.kev_count) known.push(`${d.kev_count} of them ${d.kev_count === 1 ? 'is' : 'are'} on CISA's Known Exploited Vulnerabilities list`)
+      if (d.distro) known.push(`The banner names ${d.distro}: the distribution may have backported the fixes (lower confidence)`)
+      if (d.outside_sbom) known.push("The device's SBOM does not list this version, so its package scan cannot see it (a container, or a program installed by hand)")
+      return {
+        evidence: `A scan of ${where} found port ${d.port} answering "${d.seen ?? `${d.product} ${d.version ?? ''}`}", identified as ${d.vendor ? `${d.vendor} ` : ''}${d.product} ${d.version ?? ''} (Rapid7 Recog fingerprints)`,
+        knowledge: known,
+        rule: 'R9 · A product version with known CVEs on a device without an SBOM (version from the network banner)',
+      }
+    }
     case 'exposure': {
       const ev = d.evidence ?? {}
       const seen = [

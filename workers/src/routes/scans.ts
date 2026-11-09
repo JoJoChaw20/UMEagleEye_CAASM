@@ -79,9 +79,12 @@ function buildOsInfo(os: Record<string, unknown> | null | undefined, ports: Nmap
     info.versions = [...new Set(ports.map(p => p.version).filter(Boolean))]
     info.services = ports.map(p => {
       const facts = cleanFacts(p.facts)          // agent 2.6+: what the port showed (lib/exposureRules.ts)
+      // The banner (SSH ident, FTP/SMTP/Telnet greeting): what Recog identifies the product from
+      const banner = typeof p.banner === 'string' && p.banner.trim() ? p.banner.trim().slice(0, 200) : null
       return {
         port: p.port, protocol: p.protocol ?? 'tcp',
         service: p.service ?? null, product: p.product ?? null, version: p.version ?? null,
+        ...(banner ? { banner } : {}),
         ...(facts ? { facts } : {}),
       }
     })
@@ -1410,6 +1413,16 @@ Example:
         }
       } catch (err) {
         console.error('scan ingest: exposure rules failed:', err)
+      }
+    }
+    // Vulnerable services (lib/serviceIdentity.ts): identified from the banners, CVEs from NVD, in a
+    // queue job (NVD must not hold up the upload). A network-agent crawl brings SNMP descriptions.
+    if ((scan_type === 'active' || scan_type === 'snmp') && upsertedAssetIds.length) {
+      try {
+        await c.env.ADVISORY_QUEUE.send({ type: 'service_cves', assetIds: [...new Set(upsertedAssetIds)].slice(0, 500),
+          scannedPorts: scan_type === 'active' ? network?.scanned_ports ?? null : null })
+      } catch (err) {
+        console.error('scan ingest: queueing the vulnerable-service check failed:', err)
       }
     }
 

@@ -31,6 +31,7 @@ export const EVENT_TYPE_LABELS = {
   new_device:        'New Device',
   os_patch_missing:  'Windows Updates Missing',
   exposure:          'Exposure',
+  vulnerable_service: 'Vulnerable Service',
 }
 
 const CONFIG_CHANGE_LABELS = {
@@ -83,7 +84,14 @@ export function renderDetail(e) {
   if (e.event_type === 'new_device')      return `New: ${d.ip ?? ''}${d.mac ? ` (${d.mac})` : ''}`
   if (e.event_type === 'os_patch_missing') return windowsPatchSummary(d)
   if (e.event_type === 'exposure') return exposureSummary(d)
+  if (e.event_type === 'vulnerable_service') return vulnerableServiceSummary(d)
   return d.changed_attribute ?? '—'
+}
+
+// "OpenSSH 8.9p1 · port 22 · 32 CVEs (1 exploited)" (workers/src/lib/serviceIdentity.ts)
+export function vulnerableServiceSummary(d) {
+  const cves = d.cve_count ? `${d.cve_count} CVE${d.cve_count === 1 ? '' : 's'}${d.kev_count ? ` (${d.kev_count} exploited)` : ''}` : null
+  return [`${d.product ?? 'Service'}${d.version ? ` ${d.version}` : ''}`, d.port != null ? `port ${d.port}` : null, cves].filter(Boolean).join(' · ')
 }
 
 // "Port 80 · realm "Router"" / "Port 443 · expired 8 days ago (nas.lab)" (workers/src/lib/exposureRules.ts)
@@ -256,6 +264,12 @@ function basePlaybook(e) {
       return d.exploited || exposed
         ? { urgency: '≤72h', text: `Install ${kb} through Windows Update and restart. It fixes ${d.exploited ? 'a CVE attackers are already using' : 'CVEs on an internet-facing machine'}, so do not wait for the patch cycle.` }
         : { urgency: 'Patch cycle', text: `Install ${kb} through Windows Update and restart in the next patch window. One cumulative update fixes every CVE listed; the alert closes itself at the next inventory.` }
+    }
+    case 'vulnerable_service': {
+      const distro = d.outside_sbom ? ' It is not in the device\'s SBOM: look for a container (docker ps) or a hand-installed copy serving this port, and update its image or binary.'
+        : d.distro ? ` The banner names ${d.distro}: its packages often carry the fixes without changing the version, so check the installed package first (e.g. apt changelog / rpm -q --changelog).` : ''
+      const urgency = d.kev_count ? '≤72h' : e.severity === 'critical' ? '≤72h' : 'Patch cycle'
+      return { urgency, text: `Update ${d.product ?? 'the service'}${d.version ? ` ${d.version}` : ''} on port ${d.port} to a version without these CVEs, or close the port if it is not needed.${distro} The alert closes itself when a scan sees a version without known CVEs.` }
     }
     case 'exposure': {
       const urgency = e.severity === 'critical' ? '≤24h' : e.severity === 'high' ? '≤72h' : 'Patch cycle'

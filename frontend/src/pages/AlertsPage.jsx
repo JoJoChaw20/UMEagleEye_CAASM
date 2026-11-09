@@ -867,6 +867,19 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 e.event_type === 'os_patch_missing' && d.cves > 0 && ['Missing fixes', `${Number(d.cves).toLocaleString()} CVEs · ${d.critical ?? 0} critical · ${d.exploited ?? 0} exploited in the wild`],
                 e.event_type === 'os_patch_missing' && d.behind_since && ['Behind since', `${new Date(d.behind_since).toLocaleDateString()} (fixes released then)`],
                 e.event_type === 'os_patch_missing' && d.patch_status === 'unsupported' && ['Support', <span className="text-red-300">{d.reason ?? 'No longer receives security updates'}</span>],
+                e.event_type === 'vulnerable_service' && ['Service', `${d.vendor ? `${d.vendor} ` : ''}${d.product ?? '—'}${d.version ? ` ${d.version}` : ''} on port ${d.port}`],
+                e.event_type === 'vulnerable_service' && d.seen && ['Banner', d.seen],
+                e.event_type === 'vulnerable_service' && ['Confidence', d.distro ? `Version from the network banner; ${d.distro} may have backported the fixes` : 'Version from the network banner'],
+                e.event_type === 'vulnerable_service' && d.outside_sbom && ['SBOM', "Not in this device's SBOM at this version: probably a container or a program installed outside the package manager"],
+                e.event_type === 'vulnerable_service' && Array.isArray(d.cves) && d.cves.length > 0 && [`CVEs (${d.cve_count}${d.cve_count > d.cves.length ? `, worst ${d.cves.length} shown` : ''})`, <span className="block space-y-0.5">
+                  {d.cves.map(c => (
+                    <span key={c.id} className="block">
+                      <a href={`https://nvd.nist.gov/vuln/detail/${c.id}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">{c.id}</a>
+                      <span className="text-dark-400">{c.cvss != null ? ` · CVSS ${c.cvss}` : ''}</span>
+                      {c.kev && <span className="text-red-300"> · exploited in the wild</span>}
+                    </span>
+                  ))}
+                </span>],
                 e.event_type === 'exposure' && d.title && ['Finding', d.title],
                 e.event_type === 'exposure' && d.evidence?.realm && ['Login realm', d.evidence.realm],
                 e.event_type === 'exposure' && d.evidence?.title && ['Page title', d.evidence.title],
