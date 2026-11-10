@@ -15,7 +15,7 @@ export function StatusBadge({ status }) {
   return (
     <span
       className={`text-xs px-2 py-0.5 rounded-md border font-medium inline-flex items-center gap-1.5 ${m.cls}`}
-      title={status === 'degraded' ? 'No heartbeat for 2 to 10 minutes' : undefined}
+      title={status === 'degraded' ? 'Missed its usual check-in: a computer or network agent for 2 to 10 minutes, a phone for 35 minutes to 6 hours' : undefined}
     >
       <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
       {m.label}

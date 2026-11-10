@@ -6,6 +6,7 @@ import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { advisories, agents } from '../db/schema'
 import { advisoryScope } from '../lib/advisoryScope'
+import { agentLiveness, livenessMinutes } from '../lib/agentLiveness'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -22,13 +23,7 @@ interface Notification {
   metadata: Record<string, unknown>
 }
 
-function agentStatus(lastHeartbeat: Date | null): 'online' | 'degraded' | 'offline' {
-  if (!lastHeartbeat) return 'offline'
-  const min = (Date.now() - new Date(lastHeartbeat).getTime()) / 60_000
-  if (min < 2) return 'online'
-  if (min < 10) return 'degraded'
-  return 'offline'
-}
+const agentStatus = (lastHeartbeat: Date | null, kind: string | null) => agentLiveness(lastHeartbeat, kind)
 
 // ── GET / — aggregated notification feed ─────────────────────────
 app.get('/', authMiddleware, async (c) => {
@@ -105,7 +100,7 @@ app.get('/', authMiddleware, async (c) => {
         : []
 
     for (const a of agentRows) {
-      const status = agentStatus(a.lastHeartbeat)
+      const status = agentStatus(a.lastHeartbeat, a.kind)
       if (status === 'offline') {
         items.push({
           id: `agent-offline-${a.agentId}`,
@@ -121,7 +116,7 @@ app.get('/', authMiddleware, async (c) => {
           id: `agent-degraded-${a.agentId}`,
           type: 'agent_degraded',
           title: '⚡ Agent Degraded',
-          message: `Agent "${a.name}" has not sent a heartbeat in the last 10 minutes.`,
+          message: `Agent "${a.name}" has not sent a heartbeat in the last ${livenessMinutes(a.kind).online} minutes.`,
           timestamp: a.lastHeartbeat?.toISOString() ?? a.createdAt!.toISOString(),
           severity: 'warning',
           metadata: { agent_id: a.agentId, agent_name: a.name },

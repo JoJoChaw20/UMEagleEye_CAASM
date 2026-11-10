@@ -51,6 +51,9 @@ class Store(context: Context) {
     var lastInventoryAt: Long
         get() = prefs.getLong("last_inventory_at", 0)
         set(v) = prefs.edit().putLong("last_inventory_at", v).apply()
+    var lastBackgroundAt: Long
+        get() = prefs.getLong("last_background_at", 0)
+        set(v) = prefs.edit().putLong("last_background_at", v).apply()
     var lastMessage: String?
         get() = prefs.getString("last_message", null)
         set(v) = prefs.edit().putString("last_message", v).apply()

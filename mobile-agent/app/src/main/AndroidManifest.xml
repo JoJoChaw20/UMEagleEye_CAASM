@@ -2,7 +2,8 @@
 <!-- The EagleEye phone agent. What it may do:
      INTERNET / ACCESS_NETWORK_STATE: reach the EagleEye server, read this phone's own address;
      QUERY_ALL_PACKAGES: list installed apps (only sent when the administrator allows it);
-     RECEIVE_BOOT_COMPLETED: keep its 15-minute check after a restart.
+     RECEIVE_BOOT_COMPLETED: keep its 15-minute check after a restart;
+     REQUEST_IGNORE_BATTERY_OPTIMIZATIONS: ask (with Android's own prompt) to be exempt, so the check runs while the phone sleeps.
      No location, contacts, messages, camera, microphone, accessibility or device-admin access. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
@@ -10,6 +11,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:ignore="BatteryLife" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
@@ -35,5 +38,14 @@
             android:name=".AgentJobService"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Only the system sends MY_PACKAGE_REPLACED (a protected broadcast), to this app alone -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

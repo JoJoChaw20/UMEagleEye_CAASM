@@ -1,8 +1,12 @@
 package com.umeagleeye.mobile
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.text.InputType
 import android.text.format.DateUtils
 import android.view.Gravity
@@ -23,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var connectButton: Button
     private lateinit var checkButton: Button
     private lateinit var disconnectButton: Button
+    private lateinit var batteryButton: Button
     private val pad by lazy { (16 * resources.displayMetrics.density).toInt() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +47,7 @@ class MainActivity : Activity() {
         column.addView(codeBox)
         connectButton = button("Connect") { connect() }.also { column.addView(it) }
         checkButton = button("Check now") { checkNow() }.also { column.addView(it) }
+        batteryButton = button("Allow background checks") { askBatteryExemption() }.also { column.addView(it) }
         disconnectButton = button("Disconnect") { disconnect() }.also { column.addView(it) }
 
         column.addView(text("What it sends", 16f, bold = true).also { it.setPadding(0, pad, 0, pad / 4) })
@@ -57,7 +63,20 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        AgentJobService.ensureScheduled(this)
         refresh()
+    }
+
+    /** Whether Android lets the 15-minute check run while the phone sleeps (battery optimisation off). */
+    private fun unrestricted(): Boolean =
+        getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) == true
+
+    /** Android's own prompt: "Let app always run in background?" (Settings as a fallback). */
+    private fun askBatteryExemption() {
+        val ask = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+        runCatching { startActivity(ask) }.onFailure {
+            runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+        }
     }
 
     private fun refresh() {
@@ -67,6 +86,7 @@ class MainActivity : Activity() {
         connectButton.visibility = if (connected) View.GONE else View.VISIBLE
         checkButton.visibility = if (connected) View.VISIBLE else View.GONE
         disconnectButton.visibility = if (connected) View.VISIBLE else View.GONE
+        batteryButton.visibility = if (connected && !unrestricted()) View.VISIBLE else View.GONE
         if (!connected) {
             status.text = "Not connected"
             detail.text = "On the dashboard: Agents > Install > Android > Register agent, then paste the code here."
@@ -80,6 +100,10 @@ class MainActivity : Activity() {
             append("Last inventory: ${ago(store.lastInventoryAt)}")
             append(if (store.inventoryOn) " (every ${store.inventoryInterval / 3600} h)" else " (switched off by your administrator)")
             append("\nInstalled apps: ${if (store.sendApps) "sent" else "not sent"}")
+            append("\n\nBackground check: ${if (AgentJobService.isScheduled(this@MainActivity)) "every 15 minutes" else "not scheduled"}")
+            append("\nLast background check: ${ago(store.lastBackgroundAt)}")
+            append(if (unrestricted()) "\nBattery: unrestricted (checks run while the phone sleeps)"
+                else "\nBattery: optimised (Android may hold the checks back while the phone sleeps)")
             store.lastMessage?.let { append("\n\n$it") }
         }
     }

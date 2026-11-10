@@ -5,6 +5,7 @@ import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, t
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
+import { agentLiveness } from '../lib/agentLiveness'
 import { audit } from '../services/audit'
 import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
@@ -1586,10 +1587,7 @@ app.post('/:assetId/collect-inventory', authMiddleware, requireRoles(...WRITE_RO
     }
 
     const [agent] = await db
-      .select({
-        agentId: agents.agentId,
-        online: sql<boolean>`(${agents.lastHeartbeat} > now() - interval '2 minutes')`,
-      })
+      .select({ agentId: agents.agentId, kind: agents.kind, lastHeartbeat: agents.lastHeartbeat })
       .from(agents)
       .where(and(eq(agents.hostAssetId, assetId), isNull(agents.retiredAt)))
       .orderBy(desc(agents.lastHeartbeat))
@@ -1625,9 +1623,13 @@ app.post('/:assetId/collect-inventory', authMiddleware, requireRoles(...WRITE_RO
     return c.json({
       scan_id: scan.scanId,
       status:  'pending',
-      message: agent.online
-        ? 'Inventory requested. The agent on this device sends it within a minute.'
-        : 'The agent on this device is offline. It collects the inventory if it reconnects within 30 minutes.',
+      message: agent.kind === 'mobile'
+        ? (agentLiveness(agent.lastHeartbeat, agent.kind) === 'offline'
+          ? 'Inventory requested. The phone has not checked in for over 6 hours: open the EagleEye app on it and press Check now (the job waits 2 hours).'
+          : 'Inventory requested. The phone sends it at its next check-in (every 15 minutes), or at once if you press Check now in its EagleEye app.')
+        : agentLiveness(agent.lastHeartbeat, agent.kind) === 'online'
+          ? 'Inventory requested. The agent on this device sends it within a minute.'
+          : 'The agent on this device is offline. It collects the inventory if it reconnects within 30 minutes.',
     }, 202)
   } catch (err) {
     console.error('collect-inventory error:', err)
