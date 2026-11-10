@@ -8,7 +8,7 @@ export const MAX_MSG = 50
 export function makeWelcome(username) {
   return {
     role: 'bot', type: 'text', ts: Date.now(),
-    content: `Hello **${username ?? 'there'}**! I'm the UMEagleEye security assistant.\n\nSelect an advisory folder on the left to debug it, or use the quick buttons below.`,
+    content: `Hello **${username ?? 'there'}**! I'm the UMEagleEye security assistant.\n\nAsk about your assets, alerts and advisories, or pick a quick question below. To work through one advisory, open it on the Advisories page and choose **Debug with AI**.`,
   }
 }
 
@@ -56,6 +56,14 @@ export function ChatbotProvider({ children }) {
   })
   // Tracks which session is currently streaming — persists across page navigation
   const [streamingSessionId, setStreamingSessionId] = useState(null)
+  // The floating chat panel: open or closed, and an advisory waiting to be opened in it
+  // ("Debug with AI" on the Advisories page). The panel picks the advisory up and clears it.
+  const [widgetOpen, setWidgetOpen] = useState(false)
+  const [pendingAdvisory, setPendingAdvisory] = useState(null)
+  const openAdvisoryChat = useCallback((advisory) => {
+    setPendingAdvisory(advisory)
+    setWidgetOpen(true)
+  }, [])
 
   // Re-load from localStorage when the real user ID becomes available after auth resolves
   useEffect(() => {
@@ -84,6 +92,8 @@ export function ChatbotProvider({ children }) {
       activeId, setActiveId,
       updateSession,
       streamingSessionId, setStreamingSessionId,
+      widgetOpen, setWidgetOpen,
+      pendingAdvisory, setPendingAdvisory, openAdvisoryChat,
     }}>
       {children}
     </ChatbotContext.Provider>

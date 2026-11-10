@@ -33,6 +33,24 @@ test('a closed alert is not counted as open', () => {
   assert.equal(d.nodes[0].props.open, false)
 })
 
+test('final review: an alert on an asset with no IP does not print "(null)"', () => {
+  const alert = { event_id: 'e', tenant_id: T, asset_id: 'x', event_type: 'new_device', severity: 'low', status: 'open', hostname: 'web-01', timestamp: '2026-01-01T00:00:00Z', details: {} }
+  const body = extractEvent({ ...alert, ip_address: null }).nodes[0].body
+  assert.ok(!body.includes('null'), body)
+  assert.ok(!body.includes('()'), body)
+  assert.match(body, /on web-01\. Raised/)
+  assert.match(extractEvent({ ...alert, ip_address: '10.0.0.1' }).nodes[0].body, /on web-01 \(10\.0\.0\.1\)\. Raised/)
+})
+
+test('an advisory on an asset with no IP does not print "(null)"', () => {
+  const adv = { advisory_id: 'abcdef1234', tenant_id: T, event_id: 'e1', asset_id: 'x', summary: 's', recommended_action: 'r', status: 'open', severity: 'high', event_type: 'cve_detected', hostname: 'web-01' }
+  const body = extractAdvisory({ ...adv, ip_address: null }).nodes[0].body
+  assert.ok(!body.includes('null'), body)
+  assert.ok(!body.includes('()'), body)
+  assert.match(body, /on web-01\. Summary/)
+  assert.match(extractAdvisory({ ...adv, ip_address: '10.0.0.1' }).nodes[0].body, /on web-01 \(10\.0\.0\.1\)\. Summary/)
+})
+
 test('a secret pasted into an allowed field blocks the node', () => {
   const d = extractScan({ scan_id: 's', tenant_id: T, scan_type: 'active', status: 'failed', hosts_discovered: 0, started_at: '2026-01-01T00:00:00Z', failure_reason: 'connect postgresql://admin:hunter2@db/x failed' })
   const safe = safeDelta(d)

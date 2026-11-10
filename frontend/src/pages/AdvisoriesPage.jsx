@@ -3,6 +3,7 @@ import { FileSearch, X, CheckCircle, ShieldAlert, UserPlus, Filter, Sparkles } f
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { useChatbot } from '../context/ChatbotContext'
 import TenantSelector from '../components/common/TenantSelector'
 import AdvisoryBody from '../components/common/AdvisoryBody'
 
@@ -10,6 +11,7 @@ const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved'
 
 export default function AdvisoriesPage() {
   const { user } = useAuth()
+  const { openAdvisoryChat } = useChatbot()
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -212,7 +214,7 @@ export default function AdvisoriesPage() {
                 {!isSuperadmin && (
                   <button
                     onClick={() => {
-                      navigate('/chatbot', { state: { advisory: selectedAdvisory } })
+                      openAdvisoryChat(selectedAdvisory)
                       setSelectedAdvisory(null)
                     }}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg bg-eagle-500/10 border border-eagle-500/30 text-eagle-400 hover:bg-eagle-500/20 transition-colors text-sm font-medium"

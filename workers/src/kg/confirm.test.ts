@@ -83,7 +83,7 @@ test('success: one statement updates the advisory and writes the audit record', 
   assert.match(text, /status::text = ANY/)
   assert.match(text, /INSERT INTO audit_logs/)
   assert.match(text, /advisory_status_update/)
-  assert.match(text, /"via":"chatbot"/)
+  assert.match(text, /'via', 'chatbot'/)
   assert.deepEqual(params.slice(0, 3), [ADV, T, 'u1'])
   assert.deepEqual(params[3], ['open', 'acknowledged', 'in_progress'])
   assert.deepEqual(s.deleted, [proposalKey(TOKEN)])
@@ -121,4 +121,35 @@ test('a database failure refuses cleanly and keeps the token for a retry', async
   const r = await confirmAdvisory({ kv: s.kv, q, user: admin, token: TOKEN })
   assert.equal(r.ok, false)
   assert.deepEqual(s.deleted, [])
+})
+
+// ── The latest scan decides: a problem still detected is not closed ──
+
+const detected = { advisory_id: null, summary: null, previous_status: null, audited: 0, still_detected: true, hostname: 'web-01', ip_address: '10.0.0.5', last_scanned: '2026-10-08T08:57:34.532Z', alert_type: 'port_opened', port: '445' }
+
+test('a problem the latest scan still detects is not closed, and says why', async () => {
+  const s = setup({ rows: [detected] })
+  const r = await confirmAdvisory({ kv: s.kv, q: s.q, user: admin, token: TOKEN })
+  assert.equal(r.ok, false)
+  assert.equal(r.ok === false && r.status, 409)
+  assert.match(r.ok === false ? r.error : '', /^Not closed: Port 445 is still detected on web-01\. .*2026-10-08 08:57 UTC/)
+  assert.equal(s.calls.length, 1)
+})
+
+test('the close statement only updates when no alert for the same problem is open', async () => {
+  const s = setup()
+  await confirmAdvisory({ kv: s.kv, q: s.q, user: admin, token: TOKEN })
+  const { text } = s.calls[0]
+  assert.match(text, /NOT EXISTS \(SELECT 1 FROM live\)/)
+  assert.match(text, /o\.status::text IN \('open', 'in_progress'\)/)
+  assert.match(text, /\(o\.details->>'port'\) IS NOT DISTINCT FROM \(t\.details->>'port'\)/)
+  assert.match(text, /a\.tenant_id = \$2::uuid/)
+  assert.match(text, /'last_scanned'/)
+})
+
+test('an advisory already handled, with nothing still detected, gives the plain refusal', async () => {
+  const s = setup({ rows: [{ ...detected, still_detected: false }] })
+  const r = await confirmAdvisory({ kv: s.kv, q: s.q, user: admin, token: TOKEN })
+  assert.equal(r.ok, false)
+  assert.match(r.ok === false ? r.error : '', /already resolved or is no longer available/)
 })

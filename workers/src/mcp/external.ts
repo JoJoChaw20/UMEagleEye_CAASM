@@ -12,7 +12,7 @@
  *   - only allowlisted tools are offered, to analyst roles, and none can change UMEagleEye;
  *   - arguments that carry internal data (private or link-local IPs, MAC addresses, e-mail
  *     addresses) are refused before anything is sent;
- *   - results are untrusted data, truncated, like every tool result (mcp/agent.ts);
+ *   - results are untrusted data, truncated, like every tool result;
  *   - tool lists are cached in KV for an hour, and every call has a timeout.
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'

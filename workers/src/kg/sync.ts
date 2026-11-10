@@ -5,6 +5,11 @@
  * sends one debounced queue message (signalKgSync), the chatbot applies what is outstanding
  * before it answers, and the existing 6-hourly cron drains anything left. Rows are claimed for
  * 90 seconds so concurrent drains split the work, and a drain that dies leaves them to the next.
+ *
+ * The debounce drops the signal of any write inside its window, so every signalled job is followed
+ * by one sweep once the window has passed. A sweep that applies rows looks once more, and a sweep
+ * that finds nothing ends the chain, so an idle database is left asleep. Rows that only fail apply
+ * nothing, so they cannot keep a chain going either.
  */
 import type { Env } from '../types'
 import {
@@ -12,8 +17,9 @@ import {
   extractLink, extractPosture, extractRelationship, extractSbom, extractScan, extractSoftware, extractTiEvent,
   extractTopology, safeDelta, type GraphDelta, type Row,
 } from './extract'
-import { backfillEmbeddings, deleteNodes, kgQuery, replaceEdges, upsertNodes, type Q } from './store'
+import { backfillEmbeddings, deleteStatements, edgesStatements, embedChanged, kgQuery, nodesStatement, runBatch, type Q, type Stmt } from './store'
 import { refreshProblems } from './problems'
+import { recordJob } from './perf'
 
 interface Source { prefix: string; pk: string; sql: string; extract: (r: Row) => GraphDelta }
 
@@ -106,33 +112,117 @@ export interface DrainResult { processed: number; remaining: number; blocked: nu
 export const MAX_ATTEMPTS = 5
 const CLAIM_SECONDS = 90
 
-/** Reads, extracts and writes one table's rows. Returns how many nodes the secret check blocked. */
-async function applyTable(q: Q, env: Env, source: Source, ids: string[], tenants: Set<string>): Promise<number> {
-  const rows = await q(source.sql, [ids])
-  const nodes: GraphDelta['nodes'] = [], edges: GraphDelta['edges'] = [], owners: string[] = [], gone = new Set(ids)
-  let blocked = 0
-  for (const r of rows) {
-    const delta = safeDelta(source.extract(r))
-    blocked += delta.blocked
-    const first = delta.nodes[0]
-    if (!first) continue
-    gone.delete(String(r[source.pk]))
-    nodes.push(...delta.nodes)
-    edges.push(...delta.edges)
-    owners.push(first.key)
-    for (const n of delta.nodes) if (n.tenantId) tenants.add(n.tenantId)
+/** What one changed row turns into. A row with no node (deleted, blocked, no tenant) removes its old node. */
+interface RowDelta { table: string; id: string; nodes: GraphDelta['nodes']; edges: GraphDelta['edges']; owner: string | null; goneKey: string | null }
+
+/**
+ * The requests one drain may use in all. A Worker run has 50 subrequests, and the refreshes and
+ * backfill after a queue drain can take 26 of them. A chat also pays for its model calls and tools,
+ * so it gets less. Rows the budget does not reach wait for the next drain.
+ */
+export const DRAIN_REQUESTS = 18
+/**
+ * A chat's drain: the six base requests and two splits. Its embedding calls come on top (at most
+ * three for 100 rows), so a chat's drain costs at most 11 of the 45 subrequests a chat may use
+ * (agent.ts CHAT_SUBREQUESTS).
+ */
+export const CHAT_DRAIN_REQUESTS = 8
+/**
+ * Claim, read, the deleted rows' companies, the embedding read, the first write and the finish.
+ * Splitting spends only what is above these, so the finish always has its request.
+ */
+const DRAIN_BASE_REQUESTS = 6
+
+/** One drain's bookkeeping: rows proven bad, rows it did not get to, and the extra requests it may still use. */
+interface DrainRun { failed: Set<string>; left: Set<string>; splits: number }
+
+const outboxId = (table: string, id: string) => `${table}|${id}`
+
+// The Workers runtime's words for a run that has used its subrequests. The Neon driver quotes them in its own error.
+const SUBREQUEST_LIMIT = /too many (?:subrequests|api requests)/i
+const isSubrequestLimit = (err: unknown): boolean => SUBREQUEST_LIMIT.test(`${String(err)} ${String((err as { cause?: unknown } | null)?.cause ?? '')}`)
+
+/**
+ * Runs `attempt` on all the items as one request. A failure splits them in two, so one poison row
+ * cannot sink the others. Only an item that fails alone is counted as bad. Once the budget is spent,
+ * or the Worker reports its subrequest limit (which says nothing about the rows), what was not
+ * tried is left for the next drain with nothing counted against it.
+ */
+async function trySplitting<T>(run: DrainRun, items: T[], idOf: (item: T) => string, what: string, attempt: (part: T[]) => Promise<void>, isSplit = false): Promise<void> {
+  if (items.length === 0) return
+  const leave = () => { for (const item of items) run.left.add(idOf(item)) }
+  if (isSplit) {
+    if (run.splits < 1) return leave()
+    run.splits--
   }
-  const goneKeys = [...gone].map(id => `${source.prefix}:${id}`)
-  if (goneKeys.length > 0) {
-    // A deleted row's company still needs its status and problems recomputed.
-    for (const t of await q(`SELECT DISTINCT tenant_id FROM kg_nodes WHERE key = ANY($1::text[]) AND tenant_id IS NOT NULL`, [goneKeys])) {
-      if (t.tenant_id) tenants.add(String(t.tenant_id))
+  try {
+    await attempt(items)
+  } catch (err) {
+    if (isSubrequestLimit(err)) {
+      console.warn(`[kg] subrequest limit reached during ${what}: ${items.length} row(s) left for the next drain`)
+      run.splits = 0
+      return leave()
     }
+    if (items.length === 1) {
+      console.error(`[kg] ${what} of ${idOf(items[0]!)} failed (attempt counted):`, err)
+      run.failed.add(idOf(items[0]!))
+      return
+    }
+    const mid = Math.floor(items.length / 2)
+    await trySplitting(run, items.slice(0, mid), idOf, what, attempt, true)
+    await trySplitting(run, items.slice(mid), idOf, what, attempt, true)
   }
-  await upsertNodes(q, env, nodes)
-  await replaceEdges(q, owners, edges)
-  await deleteNodes(q, goneKeys)
-  return blocked
+}
+
+/** Reads every changed row in one request and turns each into its graph delta. */
+async function readDeltas(q: Q, byTable: Map<string, string[]>, tenants: Set<string>, run: DrainRun): Promise<{ deltas: RowDelta[]; blocked: number }> {
+  const deltas: RowDelta[] = []
+  let blocked = 0
+  const toDeltas = (table: string, ids: string[], rows: Row[]) => {
+    const source = SOURCES[table]!
+    const gone = new Set(ids)
+    for (const r of rows) {
+      const id = String(r[source.pk])
+      let delta: ReturnType<typeof safeDelta>
+      try {
+        delta = safeDelta(source.extract(r))
+      } catch (err) {
+        // The row exists, so it must not read as deleted. It fails alone and the rest carry on.
+        console.error(`[kg] extract of ${outboxId(table, id)} failed (attempt counted):`, err)
+        gone.delete(id)
+        run.failed.add(outboxId(table, id))
+        continue
+      }
+      blocked += delta.blocked
+      const first = delta.nodes[0]
+      if (!first) continue
+      gone.delete(id)
+      deltas.push({ table, id, nodes: delta.nodes, edges: delta.edges, owner: first.key, goneKey: null })
+      for (const n of delta.nodes) if (n.tenantId) tenants.add(n.tenantId)
+    }
+    for (const id of gone) deltas.push({ table, id, nodes: [], edges: [], owner: null, goneKey: `${source.prefix}:${id}` })
+  }
+  const rows = [...byTable].filter(([t]) => SOURCES[t]).flatMap(([table, ids]) => ids.map(id => ({ table, id })))
+  await trySplitting(run, rows, r => outboxId(r.table, r.id), 'read', async part => {
+    const tables = new Map<string, string[]>()
+    for (const { table, id } of part) tables.set(table, [...(tables.get(table) ?? []), id])
+    const entries = [...tables]
+    const results = await runBatch(q, entries.map(([t, ids]) => ({ text: SOURCES[t]!.sql, params: [ids] })))
+    // Checked before any row is used, so a short answer cannot make the missing rows read as deleted.
+    if (results.length !== entries.length) throw new Error('the read batch returned too few results')
+    entries.forEach(([table, ids], i) => toDeltas(table, ids, results[i] ?? []))
+  })
+  return { deltas, blocked }
+}
+
+/** One write for a set of rows. A failure splits the set in two, so one poison row cannot sink the others. */
+async function writeDeltas(q: Q, deltas: RowDelta[], vectors: Map<string, string>, run: DrainRun): Promise<void> {
+  await trySplitting(run, deltas, d => outboxId(d.table, d.id), 'write', async part => {
+    const nodes = nodesStatement(part.flatMap(d => d.nodes), vectors)
+    const owners = part.flatMap(d => (d.owner ? [d.owner] : []))
+    const goneKeys = part.flatMap(d => (d.goneKey ? [d.goneKey] : []))
+    await runBatch(q, [...(nodes ? [nodes] : []), ...edgesStatements(owners, part.flatMap(d => d.edges)), ...deleteStatements(goneKeys)])
+  })
 }
 
 /**
@@ -140,7 +230,7 @@ async function applyTable(q: Q, env: Env, source: Source, ids: string[], tenants
  * are claimed and `remaining` counts its rows plus rows whose company is not yet known, so a
  * "still catching up" note errs on the cautious side. Without one it is global (queue job, cron).
  */
-export async function drainOutbox(q: Q, env: Env, limit = 500, tenantId?: string): Promise<DrainResult> {
+export async function drainOutbox(q: Q, env: Env, limit = 500, tenantId?: string, requests = DRAIN_REQUESTS): Promise<DrainResult> {
   const scope = tenantId ?? null
   const claimed = await q(`
     UPDATE kg_outbox o SET claimed_until = now() + interval '${CLAIM_SECONDS} seconds', attempts = o.attempts + 1
@@ -153,7 +243,7 @@ export async function drainOutbox(q: Q, env: Env, limit = 500, tenantId?: string
 
   const tenants = new Set<string>()
   let blocked = 0
-  const failed = new Set<string>()
+  const run: DrainRun = { failed: new Set(), left: new Set(), splits: Math.max(0, requests - DRAIN_BASE_REQUESTS) }
   if (claimed.length > 0) {
     const byTable = new Map<string, string[]>()
     for (const c of claimed) {
@@ -161,41 +251,59 @@ export async function drainOutbox(q: Q, env: Env, limit = 500, tenantId?: string
       if (c.tenant_id) tenants.add(String(c.tenant_id))
     }
 
-    for (const [table, ids] of byTable) {
-      const source = SOURCES[table]
-      if (!source) continue
-      try {
-        blocked += await applyTable(q, env, source, ids, tenants)
-      } catch (err) {
-        // One bad row must not hold back the others: retry the table's rows one at a time.
-        console.error(`[kg] ${table} batch failed, applying rows one by one:`, err)
-        for (const id of ids) {
-          try { blocked += await applyTable(q, env, source, [id], tenants) } catch (e) {
-            console.error(`[kg] ${table} ${id} failed (attempt counted):`, e)
-            failed.add(`${table}|${id}`)
-          }
-        }
+    // The rows' companies and the deleted rows' companies are all known before anything is written.
+    const { deltas, blocked: b } = await readDeltas(q, byTable, tenants, run)
+    blocked += b
+    const goneKeys = deltas.flatMap(d => (d.goneKey ? [d.goneKey] : []))
+    if (goneKeys.length > 0) {
+      for (const t of await q(`SELECT DISTINCT tenant_id FROM kg_nodes WHERE key = ANY($1::text[]) AND tenant_id IS NOT NULL`, [goneKeys])) {
+        if (t.tenant_id) tenants.add(String(t.tenant_id))
       }
     }
+    const nodes = deltas.flatMap(d => d.nodes)
+    await writeDeltas(q, deltas, await embedChanged(q, env, nodes), run)
+  }
 
-    // Only entries unchanged since the claim: a newer change stays queued. A failed row stays too,
-    // claimed, and is tried again when the claim expires, until it is set aside.
-    const done = claimed.filter(c => !failed.has(`${c.table_name}|${c.row_pk}`))
-    if (done.length > 0) {
-      await q(`
+  // Only entries unchanged since the claim: a newer change stays queued. A failed row stays too,
+  // claimed, and is tried again when the claim expires, until it is set aside.
+  const idOf = (c: Row) => outboxId(c.table_name, c.row_pk)
+  const done = claimed.filter(c => !run.failed.has(idOf(c)) && !run.left.has(idOf(c)))
+  const finish: Stmt[] = done.length > 0
+    ? [{
+        text: `
         DELETE FROM kg_outbox o USING unnest($1::text[], $2::text[], $3::timestamptz[]) AS d(table_name, row_pk, changed_at)
         WHERE o.table_name = d.table_name AND o.row_pk = d.row_pk AND o.changed_at = d.changed_at`,
-      [done.map(c => c.table_name), done.map(c => c.row_pk), done.map(c => c.changed_at)])
-    }
+        params: [done.map(c => c.table_name), done.map(c => c.row_pk), done.map(c => c.changed_at)],
+      }]
+    : []
+  // Rows this drain did not get to go back as they were: free to claim, and their attempt returned,
+  // so healthy rows behind many poison rows are never set aside. A newer change has already reset them.
+  const waiting = claimed.filter(c => run.left.has(idOf(c)))
+  if (waiting.length > 0) {
+    finish.push({
+      text: `
+      UPDATE kg_outbox o SET claimed_until = NULL, attempts = GREATEST(o.attempts - 1, 0)
+      FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS d(table_name, row_pk, changed_at)
+      WHERE o.table_name = d.table_name AND o.row_pk = d.row_pk AND o.changed_at = d.changed_at`,
+      params: [waiting.map(c => c.table_name), waiting.map(c => c.row_pk), waiting.map(c => c.changed_at)],
+    })
   }
-  const [left] = await q(`
+  finish.push({
+    text: `
     SELECT count(*) FILTER (WHERE (claimed_until IS NULL OR claimed_until < now()) AND attempts < ${MAX_ATTEMPTS})::int AS n,
            count(*) FILTER (WHERE attempts >= ${MAX_ATTEMPTS})::int AS quarantined
-    FROM kg_outbox WHERE $1::uuid IS NULL OR tenant_id = $1::uuid OR tenant_id IS NULL`, [scope])
+    FROM kg_outbox WHERE $1::uuid IS NULL OR tenant_id = $1::uuid OR tenant_id IS NULL`,
+    params: [scope],
+  })
+  const finished = await runBatch(q, finish)
+  const left = finished[finished.length - 1]?.[0]
   const quarantined = Number(left?.quarantined ?? 0)
   if (quarantined > 0) console.warn(`[kg] ${quarantined} outbox row(s) set aside after ${MAX_ATTEMPTS} failed attempts`)
-  return { processed: claimed.length - failed.size, remaining: Number(left?.n ?? 0), blocked, quarantined, tenants: [...tenants] }
+  return { processed: done.length, remaining: Number(left?.n ?? 0), blocked, quarantined, tenants: [...tenants] }
 }
+
+// A refresh is about four requests; a drain about ten; a run has 50 subrequests in all.
+const MAX_REFRESH_PER_JOB = 6
 
 const SIGNAL_KEY = 'kg:sync:signal'
 const SIGNAL_TTL = 120
@@ -213,25 +321,64 @@ export async function signalKgSync(env: Env): Promise<void> {
   await env.ADVISORY_QUEUE.send({ type: 'kg_sync' }, { delaySeconds: 30 })
 }
 
+/** Why a job is running. A cron run sets neither flag: it finds what is left and schedules no sweep of its own. */
+export interface KgSyncFlags { signalled?: boolean; owesSweep?: boolean }
+
+/** What the kg_sync messages of a queue batch ask for. A message with no followUp flag came from a signal. */
+export function kgSyncFlags(bodies: unknown[]): KgSyncFlags {
+  const messages = bodies as Array<{ followUp?: boolean; owesSweep?: boolean } | null>
+  return { signalled: messages.some(m => !m?.followUp), owesSweep: messages.some(m => !!m?.owesSweep) }
+}
+
 /** One queue job: drain, refresh the companies it touched, and carry on while it is making progress. */
-export async function runKgSync(q: Q, env: Env, refresh: (tenantId: string) => Promise<void>): Promise<void> {
+export async function runKgSync(q: Q, env: Env, refresh: (tenantId: string) => Promise<void>, flags: KgSyncFlags = {}): Promise<void> {
   const r = await drainOutbox(q, env)
   if (r.blocked) console.warn(`[kg] ${r.blocked} node(s) blocked by the secret check`)
-  // Every drain refreshes the companies it touched, so none is lost between batches.
-  for (const t of r.tenants) {
+  // Every drain refreshes the companies it touched, up to what one Worker run can afford. A company
+  // past the cap is recovered the next time its chat runs (refreshIfStale). The cron cannot recover
+  // it, because the company's rows have already left the outbox.
+  const refreshing = r.tenants.slice(0, MAX_REFRESH_PER_JOB)
+  if (r.tenants.length > MAX_REFRESH_PER_JOB) console.warn(`[kg] ${r.tenants.length - MAX_REFRESH_PER_JOB} company(ies) not refreshed this round`)
+  for (const t of refreshing) {
     try { await refresh(t) } catch (err) { console.error(`[kg] refresh of ${t} failed:`, err) }
   }
   const filled = r.remaining === 0 ? await backfillEmbeddings(q, env) : 0
   // Requeue only when progress was made: a drain that applied nothing (all claimed by others, or
   // failing) waits for the cron instead of spinning. A failed embedding fills nothing, so an outage cannot loop.
-  if ((r.remaining > 0 && r.processed > 0) || filled > 0) await env.ADVISORY_QUEUE.send({ type: 'kg_sync' }, { delaySeconds: 1 })
+  const owesSweep = !!flags.signalled || !!flags.owesSweep || r.processed > 0
+  if ((r.remaining > 0 && r.processed > 0) || filled > 0) await env.ADVISORY_QUEUE.send({ type: 'kg_sync', followUp: true, ...(owesSweep ? { owesSweep } : {}) }, { delaySeconds: 1 })
+  // Writes during the signal's debounce window send no signal of their own, so a finished drain looks
+  // once more after that window. It stops by itself: a sweep that applies nothing schedules nothing.
+  else if (owesSweep) await env.ADVISORY_QUEUE.send({ type: 'kg_sync', followUp: true }, { delaySeconds: SIGNAL_TTL + 5 })
   console.log(`[kg_sync] processed ${r.processed}, remaining ${r.remaining}, quarantined ${r.quarantined}, embedded ${filled}`)
 }
 
 /** The job as the queue and the cron run it: own connection, problems refreshed per changed company. */
-export async function runKgSyncJob(env: Env): Promise<void> {
+export async function runKgSyncJob(env: Env, flags: KgSyncFlags = {}): Promise<void> {
   const q = kgQuery(env)
-  await runKgSync(q, env, tenantId => refreshProblems(q, env, tenantId))
+  await runKgSync(q, env, tenantId => refreshProblems(q, env, tenantId), flags)
+}
+
+/**
+ * Runs the job once for all the kg_sync messages of a queue batch. A batch is one Worker run, so
+ * separate jobs would share its 50 subrequests, and one drain already covers what they ask for.
+ */
+export async function handleKgSyncMessages(
+  env: Env,
+  messages: Array<{ body: unknown; ack: () => void; retry: () => void }>,
+  run: (env: Env, flags: KgSyncFlags) => Promise<void> = runKgSyncJob,
+): Promise<void> {
+  if (messages.length === 0) return
+  const start = Date.now()
+  try {
+    await run(env, kgSyncFlags(messages.map(m => m.body)))
+    recordJob(env, 'kg_sync', Date.now() - start, true)
+    for (const m of messages) m.ack()
+  } catch (err) {
+    recordJob(env, 'kg_sync', Date.now() - start, false)
+    console.error('Queue job failed:', err)
+    for (const m of messages) m.retry()
+  }
 }
 
 /** Signals after work that wrote graph tables. A failed signal is logged, never thrown. */

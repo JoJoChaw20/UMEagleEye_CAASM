@@ -29,11 +29,13 @@ function model(kind: string, replies: Array<ModelReply | Error>) {
 
 const NODE = { key: 'asset:1', type: 'asset', title: 'web-01', body: 'Device web-01, IP 10.0.0.5, 5 open ports.', props: {}, source_ref: null }
 
-function fakeQ(opts: { remaining?: number; drainThrows?: boolean; rows?: Array<Record<string, unknown>>; advisory?: Record<string, unknown> | null; total?: number } = {}) {
+function fakeQ(opts: { remaining?: number; drainThrows?: boolean; rows?: Array<Record<string, unknown>>; advisory?: Record<string, unknown> | null; total?: number; claimed?: Array<Record<string, unknown>>; assets?: Array<Record<string, unknown>> } = {}) {
   const calls: Array<{ text: string; params: unknown[] }> = []
   const q: Q = async (sql, params = []) => {
     calls.push({ text: sql, params })
-    if (sql.includes('UPDATE kg_outbox')) { if (opts.drainThrows) throw new Error('db secret detail'); return [] }
+    if (sql.includes('UPDATE kg_outbox')) { if (opts.drainThrows) throw new Error('db secret detail'); return opts.claimed ?? [] }
+    if (sql.includes('FROM assets WHERE asset_id')) return (opts.assets ?? []).filter(r => (params[0] as string[]).includes(r.asset_id as string))
+    if (sql.includes('INSERT INTO kg_nodes') && String(params[0]).includes('POISON')) throw new Error('invalid input syntax')
     if (sql.includes('count(*) FILTER')) return [{ n: opts.remaining ?? 0, quarantined: 0 }]
     if (sql.includes('SELECT updated_at')) return [{ updated_at: new Date().toISOString() }]
     if (sql.includes('FROM advisories')) return opts.advisory === null ? [] : [opts.advisory ?? { advisory_id: ADV, summary: 'Patch web-01', status: 'open' }]
@@ -58,19 +60,20 @@ function kv() {
 
 function setup(opts: {
   kind?: string; replies?: Array<ModelReply | Error>; role?: string; tenantId?: string | null; picked?: string | null
-  q?: Parameters<typeof fakeQ>[0]
+  q?: Parameters<typeof fakeQ>[0]; kv?: ReturnType<typeof kv>; sends?: unknown[]
 }) {
   const { q, calls } = fakeQ(opts.q)
   const m = model(opts.kind ?? 'system', opts.replies ?? [])
-  const k = kv()
-  const env = { DATABASE_URL: 'x', KV_CACHE: k.binding, ADVISORY_QUEUE: { send: async () => {} } } as unknown as Env
+  const k = opts.kv ?? kv()
+  const sends: unknown[] = opts.sends ?? []
+  const env = { DATABASE_URL: 'x', KV_CACHE: k.binding, ADVISORY_QUEUE: { send: async (m: unknown) => { sends.push(m) } } } as unknown as Env
   const events: Array<Record<string, unknown>> = []
   const ctx: GraphCtx = {
     query: q, env, ai: m.ai,
     user: { userId: 'u1', role: opts.role ?? 'tenant_admin', tenantId: opts.tenantId === undefined ? A : opts.tenantId },
     pickedTenant: opts.picked,
   }
-  return { ctx, m, q, calls, k, events, emit: async (e: Record<string, unknown>) => { events.push(e) } }
+  return { ctx, m, q, calls, k, sends, events, emit: async (e: Record<string, unknown>) => { events.push(e) } }
 }
 
 const answerOf = (events: Array<Record<string, unknown>>) => events.filter(e => e.token).map(e => e.token).join('')
@@ -350,7 +353,7 @@ const proposedAnswer = 'Advisory 7c9e6679 can be closed once you press Confirm [
 
 test('a proposal is stored with a single-use token and carried on the final event', async () => {
   const s = setup({ replies: [tools(propose), text(proposedAnswer)] })
-  const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   const p = finalOf(s.events)?.proposal as { type: string; advisory_id: string; confirm_token: string; summary: string; expires_in: number }
   assert.equal(p.type, 'resolve_advisory')
   assert.equal(p.advisory_id, ADV)
@@ -366,14 +369,14 @@ test('a proposal is stored with a single-use token and carried on the final even
 
 test('proposing never changes the advisory', async () => {
   const s = setup({ replies: [tools(propose), text(proposedAnswer)] })
-  await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.ok(!s.calls.some(c => /UPDATE advisories|INSERT INTO audit/i.test(c.text)))
   assert.ok(s.calls.some(c => /FROM advisories/.test(c.text)))
 })
 
 test('the advisory lookup is limited to the company and to active advisories', async () => {
   const s = setup({ replies: [tools(propose), text(proposedAnswer)] })
-  await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   const lookup = s.calls.find(c => /FROM advisories/.test(c.text))
   assert.equal(lookup?.params[0], A)
   assert.deepEqual(lookup?.params[2], ['open', 'acknowledged', 'in_progress'])
@@ -382,7 +385,7 @@ test('the advisory lookup is limited to the company and to active advisories', a
 for (const role of ['tenant_viewer', 'business_owner', 'superadmin']) {
   test(`role ${role} cannot propose`, async () => {
     const s = setup({ role, picked: A, replies: [tools(propose), text("I don't know.")] })
-    const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+    const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
     assert.equal(r.proposal, null)
     assert.equal(s.k.store.size, 0)
     assert.ok(!s.calls.some(c => /FROM advisories/.test(c.text)))
@@ -391,7 +394,7 @@ for (const role of ['tenant_viewer', 'business_owner', 'superadmin']) {
 
 test('an advisory that is not in the company or not active cannot be proposed', async () => {
   const s = setup({ q: { advisory: null }, replies: [tools(propose), text("I don't know.")] })
-  const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.equal(r.proposal, null)
   assert.equal(s.k.store.size, 0)
   assert.match(String(s.m.seen[1]?.messages.find(m => m.role === 'tool')?.content), /not found/i)
@@ -399,7 +402,7 @@ test('an advisory that is not in the company or not active cannot be proposed', 
 
 test('a proposal does not survive a refused answer', async () => {
   const s = setup({ replies: [tools(propose), text('Advisory abcd1234 closed [S1].'), text('Advisory abcd1234 closed [S1].')] })
-  const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.equal(r.content, IDK)
   assert.equal(r.proposal, null)
   assert.equal(finalOf(s.events)?.proposal, undefined)
@@ -409,7 +412,7 @@ test('a proposal does not survive a refused answer', async () => {
 test('only one proposal per question', async () => {
   const two = tools(call('propose_resolve_advisory', { advisory_id: ADV }, 'p1'), call('propose_resolve_advisory', { advisory_id: ADV }, 'p2'))
   const s = setup({ replies: [two, text(proposedAnswer)] })
-  await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.equal(s.k.store.size, 1)
 })
 
@@ -454,14 +457,14 @@ test('a truncated answer says so', async () => {
 
 test('I3: the card reason is server text from the advisory row', async () => {
   const s = setup({ replies: [tools(propose), text(proposedAnswer)] })
-  const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.equal(r.proposal?.reason, 'Advisory 7c9e6679: Patch web-01')
 })
 
 test('I3: a reason written by the model is refused and never reaches the client', async () => {
   const claim = 'Verified patched on 10.99.99.99 per CVE-2099-1234; 77 hosts clean.'
   const s = setup({ replies: [tools(call('propose_resolve_advisory', { advisory_id: ADV, reason: claim })), text("I don't know.")] })
-  const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.equal(r.proposal, null)
   assert.ok(!JSON.stringify(s.events).includes('10.99.99.99'))
   assert.equal(s.k.store.size, 0)
@@ -555,7 +558,7 @@ test('I8: an uncited claim with a trailing refusal and no tool calls is refused'
 test('I9: a false claim of closing an advisory is refused, and its proposal dropped', async () => {
   const claim = 'I have closed advisory 7c9e6679 [S1].'
   const s = setup({ replies: [tools(propose), text(claim), text(claim)] })
-  const r = await runGraphAgent(s.ctx, 'close it', [], s.emit)
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
   assert.equal(r.content, IDK)
   assert.equal(r.proposal, null)
   assert.equal(s.k.store.size, 0)
@@ -752,4 +755,243 @@ test('I2 (round 2): text typed by the user does not become evidence', async () =
   s.ctx.query = async (sql, params) => (sql.includes('AS start') ? [] : sql.includes('max(updated_at)') ? [{ at: new Date().toISOString() }] : inner(sql, params))
   const r = await runGraphAgent(s.ctx, 'why was the site slow at 3pm, is 203.0.113.9 the cause?', [], s.emit)
   assert.equal(r.content.includes('203.0.113.9'), false)
+})
+
+test('count_nodes tells the model which filter means open', async () => {
+  const s = setup({ replies: [text("I don't know.")] })
+  await runGraphAgent(s.ctx, 'how many open alerts?', [], s.emit)
+  const tool = (s.m.seen[0]?.tools as Array<{ function: { name: string; description: string } }>).find(t => t.function.name === 'count_nodes')
+  assert.ok(tool?.function.description.includes('"open":true'))
+  assert.ok(tool?.function.description.includes('"active":true'))
+})
+
+test('the last round tells the model no more lookups are available', async () => {
+  const many = Array.from({ length: 6 }, (_, i) => call('search_graph', { query: `q${i}` }, `c${i}`))
+  const s = setup({ replies: [tools(...many), text('web-01 at 10.0.0.5 [S1].')] })
+  await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  const last = s.m.seen[s.m.seen.length - 1]!
+  assert.equal(last.tools, undefined)
+  assert.ok(String(last.messages[last.messages.length - 1]?.content).includes('No more lookups'))
+})
+
+test('tool-call markup in the final text is regenerated, then refused', async () => {
+  const markup = 'I will count.\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name="count_nodes">'
+  const s = setup({ replies: [tools(search), text(markup), text(markup)] })
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, IDK)
+})
+
+test('a banner holding tool-call markup can be quoted without a regeneration', async () => {
+  const banner = { ...NODE, body: 'Device web-01, IP 10.0.0.5, banner <tool_call> on port 8080.' }
+  const quoted = 'web-01 at 10.0.0.5 shows the banner <tool_call> on port 8080 [S1].'
+  const s = setup({ replies: [tools(search), text(quoted), text('should not be asked')], q: { rows: [banner] } })
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, quoted)
+  assert.equal(s.m.calls(), 2, 'collected text must not cause a regeneration')
+})
+
+test('a system question is told to use list_problems before saying it does not know', async () => {
+  const s = setup({ kind: 'system', replies: [text("I don't know.")] })
+  await runGraphAgent(s.ctx, 'What are the biggest code bottlenecks or hotspots?', [], s.emit)
+  const prompt = String(s.m.seen[0]?.messages[0]?.content)
+  assert.match(prompt, /problems, bottlenecks, hotspots, risks or weak points must call list_problems/)
+  assert.match(prompt, /empty search_graph result is not grounds for "I don't know" before list_problems has been called/)
+})
+
+test('the chat drain spends few requests on poison rows', async () => {
+  const claimed = Array.from({ length: 100 }, (_, i) => ({ table_name: 'assets', row_pk: `a${i}`, tenant_id: A, changed_at: 'x' }))
+  const assets = claimed.map(c => ({ asset_id: c.row_pk, tenant_id: A, hostname: 'POISON', ip_address: '10.0.0.1' }))
+  const s = setup({ replies: [text("I don't know.")], q: { claimed, assets } })
+  await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  // Only the drain's writes carry these rows. The status refresh after it writes its own node.
+  const writes = s.calls.filter(c => c.text.includes('INSERT INTO kg_nodes') && String(c.params[0]).includes('POISON')).length
+  assert.ok(writes <= 7, `expected at most 7 write attempts, got ${writes}`)
+})
+
+// ── Final review fixes ──
+
+test('F3: a question about our own servers is never answered as general, even when sorted as general', async () => {
+  const claim = 'You have 14 servers running SMBv1.'
+  const s = setup({ kind: 'general', replies: [text(claim), text(claim)] })
+  const r = await runGraphAgent(s.ctx, 'How many of our servers still run SMBv1?', [], s.emit)
+  assert.equal(r.kind, 'system')
+  assert.ok(s.m.seen[0]?.tools, 'the company path offers the graph tools')
+  assert.ok(s.calls.some(c => c.text.includes('UPDATE kg_outbox')), 'the company data was brought up to date first')
+  assert.doesNotMatch(r.content, /General security guidance/)
+  assert.equal(r.content, IDK)
+})
+
+test('F3: a general answer stating a count about the user\'s environment is regenerated once, then refused', async () => {
+  const claim = 'You have 14 servers running SMBv1. Disable it on each of them.'
+  const s = setup({ kind: 'general', replies: [text(claim), text(claim)] })
+  const r = await runGraphAgent(s.ctx, 'How do I disable SMBv1?', [], s.emit)
+  assert.equal(s.m.calls(), 2)
+  assert.match(String(s.m.seen[1]?.messages.at(-1)?.content), /you have 14/i)
+  assert.equal(s.m.seen[1]?.tools, undefined)
+  assert.equal(r.content, IDK)
+  assert.ok(!JSON.stringify(s.events).includes('14 servers'))
+  assert.equal(s.calls.length, 0, 'the general path still reads no company data')
+})
+
+test('F3: a regenerated general answer that passes is released with its label', async () => {
+  const good = 'Disable SMBv1 with `Set-SmbServerConfiguration -EnableSMB1Protocol $false`, then restart.'
+  const s = setup({ kind: 'general', replies: [text('Patch the server at 10.1.2.3 first.'), text(good)] })
+  const r = await runGraphAgent(s.ctx, 'How do I disable SMBv1?', [], s.emit)
+  assert.equal(r.content, `**General security guidance, not specific to your environment.**\n\n${good}`)
+  assert.ok(!JSON.stringify(s.events).includes('10.1.2.3'))
+})
+
+test('F3 normal: a general answer naming a CVE is released with its label, first time', async () => {
+  const answer = 'Log4Shell (CVE-2021-44228) affects Apache Log4j 2.0 to 2.14.1. Upgrade to 2.17.1 or later.'
+  const s = setup({ kind: 'general', replies: [text(answer)] })
+  const r = await runGraphAgent(s.ctx, 'What is Log4Shell and how do I fix it?', [], s.emit)
+  assert.equal(s.m.calls(), 1)
+  assert.equal(r.kind, 'general')
+  assert.equal(r.content, `**General security guidance, not specific to your environment.**\n\n${answer}`)
+})
+
+test('F5: a catching-up drain starts the global sync once, and a caught-up drain does not', async () => {
+  const behind = setup({ q: { remaining: 3 }, replies: [text("I don't know.")] })
+  await runGraphAgent(behind.ctx, 'x', [], behind.emit)
+  assert.deepEqual(behind.sends, [{ type: 'kg_sync' }])
+  const current = setup({ replies: [text("I don't know.")] })
+  await runGraphAgent(current.ctx, 'x', [], current.emit)
+  assert.deepEqual(current.sends, [])
+})
+
+test('F5: the signal is debounced by KV across chats', async () => {
+  const shared = kv(), sends: unknown[] = []
+  for (let i = 0; i < 3; i++) {
+    const s = setup({ q: { remaining: 3 }, kv: shared, sends, replies: [text("I don't know.")] })
+    await runGraphAgent(s.ctx, 'x', [], s.emit)
+  }
+  assert.equal(sends.length, 1)
+})
+
+test('final review: a company user cannot count platform-only records, so no zero can be cited', async () => {
+  for (const args of [{ type: 'performance_window' }, { type: 'problem', where: { rule: 'route_persistently_slow' } }, { type: 'problem', where: { rule: 'code_hotspot_large_file' } }, { type: 'route' }]) {
+    const claim = 'There are 0 slow hours [S1].'
+    const s = setup({ q: { total: 0 }, replies: [tools(call('count_nodes', args)), text(claim), text(claim)] })
+    const r = await runGraphAgent(s.ctx, 'how many slow hours were there?', [], s.emit)
+    assert.match(toolResult(s), /error/, JSON.stringify(args))
+    assert.ok(!s.calls.some(c => c.text.includes('AS total')), JSON.stringify(args))
+    assert.equal(r.content, IDK)
+  }
+})
+
+test('final review normal: a company user still counts its own problems, and a superadmin counts performance windows', async () => {
+  const own = setup({ replies: [tools(call('count_nodes', { type: 'problem' })), text('There are 3 problems [S1].')] })
+  assert.equal((await runGraphAgent(own.ctx, 'how many problems?', [], own.emit)).content, 'There are 3 problems [S1].')
+  const admin = setup({ role: 'superadmin', tenantId: null, picked: A, replies: [tools(call('count_nodes', { type: 'performance_window' })), text('There are 3 windows [S1].')] })
+  assert.equal((await runGraphAgent(admin.ctx, 'how many windows?', [], admin.emit)).content, 'There are 3 windows [S1].')
+})
+
+// ── Seen on staging, 2026-11-10 ──
+
+test('a fix answer that copies the section instructions into its headings is released without them', async () => {
+  const echoed = '## What we found: facts about this company from the tool results only, each cited.\nPort 5 on web-01 [S1].\n\n## Suggested steps: numbered steps from general security practice for this asset\'s operating system only.\n1. Move it to port 9443.'
+  const s = setup({ kind: 'fix', replies: [tools(search), text(echoed)] })
+  const r = await runGraphAgent(s.ctx, 'fix web-01', [], s.emit)
+  assert.doesNotMatch(r.content, /facts about this company|general security practice for this asset/)
+  assert.match(r.content, /^## What we found\nPort 5 on web-01 \[S1\]\./)
+  assert.match(r.content, /## Suggested steps\n> General guidance/)
+})
+
+test('typing confirm points to the Confirm button, asks no model and changes nothing', async () => {
+  const s = setup({ kind: 'neither' })
+  let aiCalls = 0
+  const ai = s.ctx.ai
+  s.ctx.ai = async (...a) => { aiCalls++; return ai(...a) }
+  const r = await runGraphAgent(s.ctx, 'confirm', [], s.emit)
+  assert.equal(aiCalls, 0)
+  assert.match(r.content, /Typing does not close anything/)
+  assert.match(r.content, /Confirm button/)
+  assert.equal(r.proposal, null)
+  assert.equal(s.calls.length, 0)
+  assert.equal(finalOf(s.events)?.proposal, undefined)
+})
+
+test('yes after a Confirm request points to the button; yes with no such request is an ordinary question', async () => {
+  const asked = setup({ kind: 'neither' })
+  const history = [{ role: 'user' as const, content: 'close advisory 7c9e6679' }, { role: 'assistant' as const, content: 'It is not yet closed. Press Confirm to close it.' }]
+  assert.match((await runGraphAgent(asked.ctx, 'yes', history, asked.emit)).content, /Confirm button/)
+  const plain = setup({ kind: 'neither' })
+  assert.match((await runGraphAgent(plain.ctx, 'yes', [], plain.emit)).content, /only help/)
+})
+
+test('an advisory whose problem the latest scan still detects is not proposed, and the model is told why', async () => {
+  const advisory = { advisory_id: ADV, summary: 'Port 445 open on web-01', status: 'open', still_detected: true, hostname: 'web-01', last_scanned: '2026-10-08T08:57:34.532Z', alert_type: 'port_opened', port: '445' }
+  const s = setup({ q: { advisory }, replies: [tools(propose), text("I don't know.")] })
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
+  assert.equal(r.proposal, null)
+  assert.equal(s.k.store.size, 0)
+  assert.match(String(s.m.seen[1]?.messages.find(m => m.role === 'tool')?.content), /Not closed: Port 445 is still detected on web-01/)
+  const lookup = s.calls.find(c => /FROM advisories/.test(c.text))
+  assert.match(String(lookup?.text), /AS still_detected/)
+  assert.match(String(lookup?.text), /o\.status::text IN \('open', 'in_progress'\)/)
+})
+
+test('an advisory whose problem is no longer detected is still proposed', async () => {
+  const advisory = { advisory_id: ADV, summary: 'Port 445 open on web-01', status: 'open', still_detected: false, hostname: 'web-01', last_scanned: '2026-10-08T08:57:34.532Z' }
+  const s = setup({ q: { advisory }, replies: [tools(propose), text(proposedAnswer)] })
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
+  assert.equal(r.proposal?.advisory_id, ADV)
+})
+
+// ── Seen on staging, 2026-11-10: a refused close came back as "I don't know" ──
+// Error results are not evidence, so any model wording of a refusal that names the advisory,
+// device or scan time failed verification. The refusal is now the server's own text.
+
+for (const who of [{ role: 'superadmin', tenantId: null, picked: null }, { role: 'superadmin', tenantId: null, picked: A }, { role: 'tenant_viewer', tenantId: A, picked: null }]) {
+  test(`${who.role}${who.picked ? ' with a company picked' : ''} asking to close an advisory is told the role cannot, with no model call`, async () => {
+    const s = setup({ role: who.role, tenantId: who.tenantId, picked: who.picked })
+    let aiCalls = 0
+    const ai = s.ctx.ai
+    s.ctx.ai = async (...a) => { aiCalls++; return ai(...a) }
+    const r = await runGraphAgent(s.ctx, 'Please close advisory 281ab6b4.', [], s.emit)
+    assert.equal(aiCalls, 0)
+    assert.match(r.content, /^Your role cannot close advisories\./)
+    assert.equal(r.proposal, null)
+    assert.equal(s.calls.length, 0)
+  })
+}
+
+test('a close the latest scan refuses is answered with the server refusal, not I don\'t know', async () => {
+  const advisory = { advisory_id: ADV, summary: 'Port 445 open on web-01', status: 'open', still_detected: true, hostname: 'web-01', last_scanned: '2026-10-08T08:57:34.532Z', alert_type: 'port_opened', port: '445' }
+  const s = setup({ q: { advisory }, replies: [tools(propose), text('Advisory 7c9e6679 on web-01 cannot be closed yet.'), text('Advisory 7c9e6679 on web-01 cannot be closed yet.')] })
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
+  assert.notEqual(r.content, IDK)
+  assert.match(r.content, /^Not closed: Port 445 is still detected on web-01\. .*2026-10-08 08:57 UTC/)
+  assert.equal(r.proposal, null)
+})
+
+test('an advisory that is not found is answered with the server text', async () => {
+  const s = setup({ q: { advisory: null }, replies: [tools(propose), text('Advisory 7c9e6679 was not found.'), text('Advisory 7c9e6679 was not found.')] })
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
+  assert.match(r.content, /^Advisory not found in this company, or it is already resolved\./)
+})
+
+test('a refusal does not hide a proposal the model made afterwards', async () => {
+  const advisory = { advisory_id: ADV, summary: 'Patch web-01', status: 'open', still_detected: false }
+  const s = setup({ q: { advisory }, replies: [tools(call('propose_resolve_advisory', { advisory_id: 'x' })), tools(call('propose_resolve_advisory', { advisory_id: ADV }, 'c2')), text(proposedAnswer)] })
+  const r = await runGraphAgent(s.ctx, 'close advisory 7c9e6679', [], s.emit)
+  assert.equal(r.proposal?.advisory_id, ADV)
+  assert.equal(r.content, proposedAnswer)
+})
+
+test('a role that cannot close, asking something else too, gets an answer with the refusal as a note', async () => {
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, replies: [tools(search), text('Device web-01 has 5 open ports [S1].')] })
+  const r = await runGraphAgent(s.ctx, 'How many ports are open on web-01? Also close advisory 7c9e6679.', [], s.emit)
+  assert.match(r.content, /^> Your role cannot close advisories\./)
+  assert.match(r.content, /Device web-01 has 5 open ports \[S1\]\.$/)
+  assert.equal(r.proposal, null)
+  assert.ok(!s.m.seen.some(x => JSON.stringify(x.tools ?? []).includes('propose_resolve_advisory')), 'the close tool is not offered')
+})
+
+test('a refused close inside a longer question is a note on the answer', async () => {
+  const advisory = { advisory_id: ADV, summary: 'Port 445 open on web-01', status: 'open', still_detected: true, hostname: 'web-01', last_scanned: '2026-10-08T08:57:34.532Z', alert_type: 'port_opened', port: '445' }
+  const s = setup({ q: { advisory }, replies: [tools(propose), tools(search), text('Device web-01 has 5 open ports [S1].')] })
+  const r = await runGraphAgent(s.ctx, 'How many ports are open on web-01? Also close advisory 7c9e6679.', [], s.emit)
+  assert.match(r.content, /^> Not closed: Port 445 is still detected on web-01\./)
+  assert.match(r.content, /Device web-01 has 5 open ports \[S1\]\.$/)
 })

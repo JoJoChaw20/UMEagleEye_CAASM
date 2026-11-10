@@ -7,7 +7,8 @@ import type { Env } from '../types'
 import { evaluateRules, evaluatePlatformRules, PLATFORM_RULES, ALERT_AGE_DAYS, type AgentFact, type AlertFact, type AssetFact, type FeedFact, type Problem, type ScanFact } from './rules'
 import type { PerfWindow } from './perf'
 import { LAST_INGEST_KEY, type LastIngest } from '../services/cti'
-import { deleteNodes, replaceEdges, upsertNodes, type Q } from './store'
+import { deleteStatements, edgesStatements, embedChanged, nodesStatement, runBatch, type Q, type Stmt } from './store'
+import { MAX_ATTEMPTS } from './sync'
 import type { KgEdge, KgNode, Row } from './extract'
 
 function problemNode(tenantId: string, p: Problem): KgNode {
@@ -20,24 +21,27 @@ function problemNode(tenantId: string, p: Problem): KgNode {
 
 export async function refreshProblems(q: Q, env: Env, tenantId: string, now = new Date()): Promise<void> {
   const cutoff = new Date(now.getTime() - ALERT_AGE_DAYS * 86_400_000).toISOString()
-  const [assets, sboms, advisories, aging, agingCount, agents, scans, posture, status] = await Promise.all([
-    q(`SELECT key, title, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'asset'`, [tenantId]),
-    q(`SELECT DISTINCT to_key FROM kg_edges WHERE tenant_id = $1 AND relation = 'SBOM_OF'`, [tenantId]),
-    q(`SELECT key, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'advisory' AND props @> '{"active":true}'`, [tenantId]),
-    q(`SELECT key, title, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'event' AND props @> '{"open":true}'
-        AND props ->> 'severity' IN ('high','critical') AND props ->> 'timestamp' < $2 ORDER BY props ->> 'timestamp' LIMIT 50`, [tenantId, cutoff]),
-    q(`SELECT count(*)::int AS n FROM kg_nodes WHERE tenant_id = $1 AND type = 'event' AND props @> '{"open":true}'
-        AND props ->> 'severity' IN ('high','critical') AND props ->> 'timestamp' < $2`, [tenantId, cutoff]),
-    q(`SELECT agent_id, name, status, last_heartbeat, retired_at FROM agents WHERE tenant_id = $1`, [tenantId]),
-    q(`SELECT key, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'scan' ORDER BY props ->> 'startedAt' DESC LIMIT 200`, [tenantId]),
-    q(`SELECT props FROM kg_nodes WHERE key = $1`, [`posture:${tenantId}`]),
-    q(`SELECT
+  // Every read in one request: a Worker on the free plan cannot afford one round trip per read.
+  const reads: Stmt[] = [
+    { text: `SELECT key, title, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'asset'`, params: [tenantId] },
+    { text: `SELECT DISTINCT to_key FROM kg_edges WHERE tenant_id = $1 AND relation = 'SBOM_OF'`, params: [tenantId] },
+    { text: `SELECT key, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'advisory' AND props @> '{"active":true}'`, params: [tenantId] },
+    { text: `SELECT key, title, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'event' AND props @> '{"open":true}'
+        AND props ->> 'severity' IN ('high','critical') AND props ->> 'timestamp' < $2 ORDER BY props ->> 'timestamp' LIMIT 50`, params: [tenantId, cutoff] },
+    { text: `SELECT count(*)::int AS n FROM kg_nodes WHERE tenant_id = $1 AND type = 'event' AND props @> '{"open":true}'
+        AND props ->> 'severity' IN ('high','critical') AND props ->> 'timestamp' < $2`, params: [tenantId, cutoff] },
+    { text: `SELECT agent_id, name, status, last_heartbeat, retired_at FROM agents WHERE tenant_id = $1`, params: [tenantId] },
+    { text: `SELECT key, props FROM kg_nodes WHERE tenant_id = $1 AND type = 'scan' ORDER BY props ->> 'startedAt' DESC LIMIT 200`, params: [tenantId] },
+    { text: `SELECT props FROM kg_nodes WHERE key = $1`, params: [`posture:${tenantId}`] },
+    { text: `SELECT
         count(*) FILTER (WHERE type = 'asset')::int AS assets,
         count(*) FILTER (WHERE type = 'asset' AND props @> '{"inMyAssets":true}')::int AS my_assets,
         count(*) FILTER (WHERE type = 'event' AND props @> '{"open":true,"severity":"critical"}')::int AS critical,
         count(*) FILTER (WHERE type = 'advisory' AND props @> '{"active":true}')::int AS advisories
-      FROM kg_nodes WHERE tenant_id = $1`, [tenantId]),
-  ])
+      FROM kg_nodes WHERE tenant_id = $1`, params: [tenantId] },
+    { text: `SELECT key FROM kg_nodes WHERE tenant_id = $1 AND type = 'problem'`, params: [tenantId] },
+  ]
+  const [assets = [], sboms = [], advisories = [], aging = [], agingCount = [], agents = [], scans = [], posture = [], status = [], old = []] = await runBatch(q, reads)
   const covered = new Set(sboms.map(s => s.to_key as string))
   const problems = evaluateRules({
     assets: assets.map((a: Row): AssetFact => ({
@@ -66,13 +70,17 @@ export async function refreshProblems(q: Q, env: Env, tenantId: string, now = ne
   })
   const edges: KgEdge[] = problems.flatMap(p => p.evidence.map(e => ({ from: `problem:${tenantId}:${p.id}`, to: e, relation: 'EVIDENCE', tenantId })))
 
-  const old = await q(`SELECT key FROM kg_nodes WHERE tenant_id = $1 AND type = 'problem'`, [tenantId])
   const current = new Set(nodes.map(n => n.key))
-  await deleteNodes(q, old.map(o => o.key as string).filter(k => !current.has(k)))
-  await upsertNodes(q, env, nodes)
-  await replaceEdges(q, problems.map(p => `problem:${tenantId}:${p.id}`), edges)
-  // A CVE or indicator no alert points at any more was fixed, closed, or made private by its owner.
-  await q(`DELETE FROM kg_nodes n WHERE n.tenant_id = $1 AND n.type IN ('cve', 'indicator') AND NOT EXISTS (SELECT 1 FROM kg_edges e WHERE e.to_key = n.key)`, [tenantId])
+  const stale = old.map(o => o.key as string).filter(k => !current.has(k))
+  const nodeWrite = nodesStatement(nodes, await embedChanged(q, env, nodes))
+  // Every write in one request too. A CVE or indicator no alert points at any more was fixed, closed,
+  // or made private by its owner.
+  await runBatch(q, [
+    ...deleteStatements(stale),
+    ...(nodeWrite ? [nodeWrite] : []),
+    ...edgesStatements(problems.map(p => `problem:${tenantId}:${p.id}`), edges),
+    { text: `DELETE FROM kg_nodes n WHERE n.tenant_id = $1 AND n.type IN ('cve', 'indicator') AND NOT EXISTS (SELECT 1 FROM kg_edges e WHERE e.to_key = n.key)`, params: [tenantId] },
+  ])
 }
 
 const STATUS_MAX_AGE_MS = 5 * 60_000
@@ -105,9 +113,14 @@ function platformProblemNode(p: Problem): KgNode {
  */
 export async function refreshPlatformProblems(q: Q, env: Env, now = new Date()): Promise<void> {
   const since = new Date(now.getTime() - PLATFORM_WINDOW_HOURS * 3_600_000).toISOString()
-  const [windows, outbox] = await Promise.all([
-    q(`SELECT props FROM kg_nodes WHERE tenant_id IS NULL AND type = 'performance_window' AND props ->> 'start' > $1 ORDER BY props ->> 'start'`, [since]),
-    q(`SELECT count(*)::int AS n, min(changed_at) AS oldest, count(*) FILTER (WHERE attempts >= 3)::int AS stuck FROM kg_outbox`),
+  // Every read in one request and every write in one more: a chat about speed runs this before it
+  // answers, inside the same subrequest budget as its lookups (agent.ts CHAT_SUBREQUESTS).
+  const [windows = [], outbox = [], old = []] = await runBatch(q, [
+    { text: `SELECT props FROM kg_nodes WHERE tenant_id IS NULL AND type = 'performance_window' AND props ->> 'start' > $1 ORDER BY props ->> 'start'`, params: [since] },
+    // A stuck row is one the drain has set aside: it failed MAX_ATTEMPTS claims, and no drain claims it
+    // again until a new change to the same source row resets its attempts.
+    { text: `SELECT count(*)::int AS n, min(changed_at) AS oldest, count(*) FILTER (WHERE attempts >= ${MAX_ATTEMPTS})::int AS stuck FROM kg_outbox` },
+    { text: `SELECT key FROM kg_nodes WHERE tenant_id IS NULL AND type = 'problem' AND props ->> 'rule' = ANY($1::text[])`, params: [[...PLATFORM_RULES]] },
   ])
   let feeds: FeedFact[] = []
   try {
@@ -126,9 +139,11 @@ export async function refreshPlatformProblems(q: Q, env: Env, now = new Date()):
   const nodes = problems.map(platformProblemNode)
   const owners = nodes.map(n => n.key)
   const edges: KgEdge[] = problems.flatMap(p => p.evidence.map(e => ({ from: `problem:platform:${p.id}`, to: e, relation: 'EVIDENCE', tenantId: null })))
-  const old = await q(`SELECT key FROM kg_nodes WHERE tenant_id IS NULL AND type = 'problem' AND props ->> 'rule' = ANY($1::text[])`, [[...PLATFORM_RULES]])
   const current = new Set(owners)
-  await deleteNodes(q, old.map(r => String(r.key)).filter(k => !current.has(k)))
-  await upsertNodes(q, env, nodes)
-  await replaceEdges(q, owners, edges)
+  const nodeWrite = nodesStatement(nodes, await embedChanged(q, env, nodes))
+  await runBatch(q, [
+    ...deleteStatements(old.map(r => String(r.key)).filter(k => !current.has(k))),
+    ...(nodeWrite ? [nodeWrite] : []),
+    ...edgesStatements(owners, edges),
+  ])
 }

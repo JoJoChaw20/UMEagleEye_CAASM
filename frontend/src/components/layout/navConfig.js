@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Bell, FileSearch, Globe, FileText,
-  Settings, Radar, Bot, Building2, MessageCircle, Package, Boxes, Users, Share2,
+  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2,
 } from 'lucide-react'
 
 // One source for the sidebar and the command palette, filtered by role the same way
@@ -31,7 +31,6 @@ export function buildNavSections(role) {
     ]},
     { label: 'System', items: [
       { to: '/agents', icon: Bot, label: 'Agents', keywords: 'eagleeye agent heartbeat connection code' },
-      { to: '/chatbot', icon: MessageCircle, label: 'Chatbot', keywords: 'ai assistant ask' },
       ...(canSeeOps ? [{ to: '/settings', icon: Settings, label: 'Settings', keywords: 'profile mfa password' }] : []),
     ]},
   ]

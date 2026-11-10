@@ -319,11 +319,52 @@ export function resetPerfWarning(): void { warnedNoSecrets = false }
 const MYT_OFFSET_H = 8
 const pad = (n: number) => String(n).padStart(2, '0')
 
+const MONTH_NAME = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+const ORDINAL = '(?:st|nd|rd|th)?'
+const OPTIONAL_YEAR = '(?:,?\\s+(\\d{4}))?'
+// The lookarounds keep the minutes of a clock time, as in 15:30 March 3, from being read as a day.
+const DAY_MONTH = new RegExp(`(?<![:\\d])\\b(\\d{1,2})${ORDINAL}(?:\\s+of)?\\s+${MONTH_NAME}\\b\\.?${OPTIONAL_YEAR}(?![:\\d])`, 'i')
+const MONTH_DAY = new RegExp(`\\b${MONTH_NAME}\\b\\.?\\s+(\\d{1,2})${ORDINAL}(?![:\\d])\\b${OPTIONAL_YEAR}`, 'i')
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+const monthIndex = (name: string) => MONTHS.indexOf(name.slice(0, 3).toLowerCase())
+
+// Ways of naming a day that are not read: a month with no day, a day with no month, numeric dates
+// whose day and month order is unknown, and relative days. "May" alone is an ordinary word, so a
+// month counts here on its own only when spelled in full and not "May", and otherwise needs a
+// word such as "in", or a year, beside it.
+const UNREADABLE_DATE = new RegExp([
+  '\\b(?:january|february|march|april|june|july|august|september|october|november|december)\\b',
+  `\\b(?:in|during|of)\\s+${MONTH_NAME}\\b`,
+  `\\b${MONTH_NAME}\\s+\\d{4}\\b`,
+  '\\bthe\\s+\\d{1,2}(?:st|nd|rd|th)\\b',
+  '(?<![\\d.])\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?(?![\\d/])',
+  '\\b\\d{1,2}\\.\\d{1,2}\\.\\d{4}\\b',
+  '(?<![\\w-])\\d{1,2}-\\d{1,2}-\\d{2,4}\\b',
+  '\\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\\b',
+  '\\b(?:last|next|previous)\\s+(?:week|month|year)\\b',
+  '\\b\\d+\\s+(?:days?|weeks?|months?|years?)\\s+ago\\b',
+  '\\bday\\s+before\\b',
+  '\\bthe\\s+other\\s+day\\b',
+].join('|'), 'i')
+
+/** The calendar date a question states. A null year means none was given. */
+function statedDate(question: string): { year: number | null; month: number; day: number } | 'unreadable' | null {
+  const iso = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(question)
+  if (iso) return { year: Number(iso[1]), month: Number(iso[2]) - 1, day: Number(iso[3]) }
+  const dm = DAY_MONTH.exec(question)
+  if (dm) return { year: dm[3] ? Number(dm[3]) : null, month: monthIndex(dm[2]!), day: Number(dm[1]) }
+  const md = MONTH_DAY.exec(question)
+  if (md) return { year: md[3] ? Number(md[3]) : null, month: monthIndex(md[1]!), day: Number(md[2]) }
+  return UNREADABLE_DATE.test(question) ? 'unreadable' : null
+}
+
 /**
  * The clock time a question names, as an instant. A bare time is Malaysia time (UTC+8, the zone
  * the product shows) unless the user says UTC/GMT; any other named zone gives null (the model is
- * told to convert it). The day is today, "yesterday", or a date written as YYYY-MM-DD; a time
- * still ahead today means the last time it happened.
+ * told to convert it). The day is a date stated in the question (3 March 2026, March 3 2026 or
+ * 2026-03-03, the year being optional), "yesterday", or today; a time still ahead today means the
+ * last time it happened, and so does a date with no year that is still ahead this year. A date
+ * that is named but cannot be read gives null, because assuming today would answer for the wrong day.
  */
 export function resolveAskedTime(question: string, now: Date): { utc: Date; label: string } | null {
   const ampm = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(am|pm)\b/i.exec(question)
@@ -340,11 +381,19 @@ export function resolveAskedTime(question: string, now: Date): { utc: Date; labe
   const offset = isUtc ? 0 : MYT_OFFSET_H
   const local = new Date(now.getTime() + offset * 3_600_000)
   let y = local.getUTCFullYear(), m = local.getUTCMonth(), d = local.getUTCDate()
-  const iso = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(question)
+  const instant = (year: number) => Date.UTC(year, m, d, hour, minute) - offset * 3_600_000
+  const stated = statedDate(question)
+  if (stated === 'unreadable') return null
   let explicitDay = false
-  if (iso) { y = Number(iso[1]); m = Number(iso[2]) - 1; d = Number(iso[3]); explicitDay = true }
-  else if (/\byesterday\b/i.test(question)) { d -= 1; explicitDay = true }
-  let utcMs = Date.UTC(y, m, d, hour, minute) - offset * 3_600_000
+  if (stated) {
+    m = stated.month; d = stated.day; explicitDay = true
+    if (stated.year !== null) y = stated.year
+    else if (instant(y) > now.getTime()) y -= 1
+    // A date that does not exist, such as 31 February, would otherwise roll into the next month.
+    const check = new Date(Date.UTC(y, m, d))
+    if (check.getUTCMonth() !== m || check.getUTCDate() !== d) return null
+  } else if (/\byesterday\b/i.test(question)) { d -= 1; explicitDay = true }
+  let utcMs = instant(y)
   if (!explicitDay && utcMs > now.getTime()) utcMs -= 86_400_000
   const utc = new Date(utcMs)
   const at = new Date(utcMs + offset * 3_600_000)

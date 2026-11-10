@@ -227,6 +227,34 @@ const TABS = [
   { key: 'defaults', label: 'Defaults' },
 ]
 
+function Modal({ title, onClose, children, wide = false }) {
+  useEffect(() => {
+    const onKeyDown = (event) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4" onClick={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agents-modal-title"
+        className={`glass-card w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[90vh] overflow-y-auto p-6 space-y-4`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <h2 id="agents-modal-title" className="text-lg font-semibold text-dark-50">{title}</h2>
+          <button type="button" onClick={onClose} className="text-dark-400 hover:text-dark-50" title="Close" aria-label="Close">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        {children}
+      </section>
+    </div>
+  )
+}
+
 export default function AgentsPage() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()

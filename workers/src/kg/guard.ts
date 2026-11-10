@@ -42,13 +42,17 @@ const CLASSIFY_PROMPT = [
   'Reply with the label only, one word.',
 ].join('\n')
 
+// A reasoning model spends its tokens on thinking before the one-word label: at 10 tokens the reply
+// was empty, so every question fell through to `system`.
+const CLASSIFY_MAX_TOKENS = 1024
+
 /** Sorts a question. A failed call or an unreadable reply counts as `system`. */
 export async function classify(ai: ModelCall, question: string): Promise<Kind> {
   try {
     const reply = await ai([
       { role: 'system', content: CLASSIFY_PROMPT },
       { role: 'user', content: wrapUntrusted(JSON.stringify(question)) },
-    ], undefined, { maxTokens: 10, temperature: 0 })
+    ], undefined, { maxTokens: CLASSIFY_MAX_TOKENS, temperature: 0 })
     return parseKind(reply.text)
   } catch (err) {
     console.error('[kg-guard] classify failed:', err instanceof Error ? err.message : err)
@@ -337,8 +341,13 @@ function stepValues(steps: string): Value[] {
 
 interface EvidenceIndex { text: string; numbers: Set<string>; ids: string[]; dates: Set<string>; times: Set<string> }
 
+/** The evidence as plain text: tool results reach here as JSON with `<` escaped. */
+function evidenceText(evidence: string | string[]): string {
+  return (Array.isArray(evidence) ? evidence.join('\n') : evidence).replace(/\\u003c/gi, '<').replace(/\\[nrt]/g, ' ')
+}
+
 function indexEvidence(evidence: string | string[]): EvidenceIndex {
-  const joined = (Array.isArray(evidence) ? evidence.join('\n') : evidence).replace(/\\u003c/gi, '<').replace(/\\[nrt]/g, ' ')
+  const joined = evidenceText(evidence)
   const values = extractValues(joined, false)
   const dates = new Set<string>(), times = new Set<string>()
   for (const v of values) {
@@ -438,16 +447,113 @@ export function closureClaimProblems(text: string): string[] {
 const CLOSE_VERB = /\b(?:close|closing|resolve|resolving|dismiss|dismissing)\b(?!\s+(?:(?:the|this|that|a|an|off)\s+)?(?:ports?|sessions?|connections?|firewall|window|tab|dns|domains?|hostnames?|ip|names?|address|addresses)\b)/
 const MARK_DONE = /\bmark(?:ed|ing)?\b[^.?!\n]{0,60}?\b(?:resolved|fixed|done|closed|complete|completed)\b/
 const FIX_ID = /\bfix\s+(?:advisory\s+)?["'`]?([0-9a-f][0-9a-f-]{3,35})\b/
+const ADVISORY_NOUN = /\badvisor(?:y|ies)\b/
+// An advisory ID as a person types it: its first 8 characters, or the whole UUID. It holds a digit.
+const ADVISORY_ID = /(?<![\w-])(?=[0-9a-f-]*\d)[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?(?![\w-])/
 
 /**
  * Whether the signed-in user's own question asks to close an advisory. Decided from that text
  * alone, never from history or tool output, so planted text cannot put a Confirm card on screen.
+ * A close verb counts only in a sentence that names an advisory or an advisory ID: "how do I
+ * resolve CVE-2024-1234 on web-01" asks for advice, not for a closure.
  */
 export function wantsAdvisoryClosed(question: string): boolean {
   const q = question.normalize('NFKC').toLowerCase()
-  if (CLOSE_VERB.test(q) || MARK_DONE.test(q)) return true
+  const closes = q.split(/(?<=[.!?])\s+|\n+/).some(s => CLOSE_VERB.test(s) && (ADVISORY_NOUN.test(s) || ADVISORY_ID.test(s)))
+  if (closes || MARK_DONE.test(q)) return true
   const id = q.match(FIX_ID)?.[1]
   return !!id && /\d/.test(id)
+}
+
+// Sentences that carry no question of their own around a close request.
+const COURTESY = /^(?:please|pls|thanks|thank you|thx|ok|okay|hi|hello|hey)[\s,.!]*$/
+
+/**
+ * Whether the message does nothing but ask to close an advisory (politeness aside), so a refusal
+ * is the whole answer. "fix <id>" is not counted: it usually asks how to fix, not to close.
+ */
+export function onlyAsksToClose(question: string): boolean {
+  const sentences = question.normalize('NFKC').toLowerCase().split(/(?<=[.!?])\s+|\n+/).map(s => s.trim()).filter(Boolean)
+  const asksToClose = (s: string) => (CLOSE_VERB.test(s) && (ADVISORY_NOUN.test(s) || ADVISORY_ID.test(s))) || MARK_DONE.test(s)
+  return sentences.some(asksToClose) && sentences.every(s => asksToClose(s) || COURTESY.test(s))
+}
+
+// ── General answers ────────────────────────────────────────────────
+
+// Words by which people point at their own organisation. "US" in capitals is the country, so only
+// "us" and "Us" count.
+const OWN_ORGANISATION = /\b(?:my|mine|our|ours|ourselves|we)\b|\bthis\s+(?:company|organi[sz]ation|org|business|network|environment|estate|tenant)\b/i
+const US = /\b[Uu]s\b/
+
+/**
+ * Whether the user's own question is about their own organisation, such as "how many of our
+ * servers run SMBv1?". That needs company data, so such a question is never answered as general
+ * guidance. Decided from the question text alone, never from history or the model.
+ */
+export function refersToOwnOrganisation(question: string): boolean {
+  const q = question.normalize('NFKC')
+  return OWN_ORGANISATION.test(q) || US.test(q)
+}
+
+/** Private, shared and link-local addresses: one of these names somebody's own machine. */
+function isPrivateAddress(ip: string): boolean {
+  const v = ip.toLowerCase()
+  if (v.includes(':')) return /^f[cd][0-9a-f]{0,2}:/.test(v) || /^fe[89ab][0-9a-f]?:/.test(v)
+  const [a = -1, b = -1] = v.split('.').map(Number)
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)
+}
+
+// The private ranges written as their definitions are public facts, not somebody's machine.
+const PRIVATE_RANGE_DEFINITION = /(?<![\w.:])(?:10\.0\.0\.0\/8|172\.16\.0\.0\/12|192\.168\.0\.0\/16|169\.254\.0\.0\/16|100\.64\.0\.0\/10|fc00::\/7|fe80::\/10)(?![\w/]|\.\d)/gi
+
+// Parts of algorithm, protocol and product names that have the shape of a host name, such as
+// diffie-hellman-group14-sha256, hmac-md5, FS-SMB1 and win32, and of public catalogue IDs: OWASP
+// categories (A01, LLM01), ATT&CK tactics, groups, software and mitigations (TA0001, G0007, S0002,
+// M1036), threat groups (APT28, UNC2452, TA505) and standards (IEC62443).
+const GENERAL_TERM_PART = /^(?:sha\d*|md5|hmac|group\d+|curve\d+|aes\d*|gcm|cbc|ctr|poly1305|ecdh|ecdsa|ed25519|ed448|rsa\d*|dh|nistp\d+|diffie|hellman|chacha\d*|umac|etm|blake\d*|tlsv?[\d.]*|sslv?\d*|smb\d*|ntlmv?\d*|krb\d*|kerberos|win32|win64|office365|m365|a\d{2}|llm\d{2}|ta\d+|[gsm]\d{4}|apt\d+|unc\d+|iec\d+)$/i
+
+/** A host-like value in general advice: not a tool, patch, algorithm or protocol name. */
+const isGeneralHost = (raw: string): boolean => !STEP_TERM.test(raw) && !raw.toLowerCase().split(/[-_.@]/).some(p => GENERAL_TERM_PART.test(p))
+
+// A count of the user's own things: "you have 3", "your 12 servers", "3 of your", "your network has
+// 40". "You have two options" and "you have 30 days" are advice, not a count of anything they own.
+const COUNT_FIRST = Object.keys(NUMBER_WORDS).filter(w => w !== 'one').join('|')
+const COUNT_NEXT = Object.keys(NUMBER_WORDS).join('|')
+const COUNT = `(?:\\d[\\d,]*(?:\\.\\d+)?|(?:${COUNT_FIRST})(?:[- ](?:${COUNT_NEXT}))*)(?![\\w-]|\\.\\d)`
+const NOT_OWNED = '(?!\\s+(?:main\\s+|basic\\s+|common\\s+|other\\s+|more\\s+|possible\\s+|simple\\s+|key\\s+)?(?:options?|choices?|ways?|approaches|methods?|steps?|alternatives?|paths?|minutes?|hours?|days?|weeks?|months?|years?|seconds?|attempts?|tries)\\b)'
+const OWNED_COUNT = new RegExp([
+  `\\byou(?:['’]ve|['’]re)?(?:\\s+(?:currently|still|now|only|already|also))*(?:\\s+(?:have|own|run|running|operate|operating|manage|managing|got))+(?:\\s+(?:only|just|about|around|roughly|approximately|over|exactly|at\\s+least|more\\s+than|fewer\\s+than|less\\s+than))*\\s+${COUNT}${NOT_OWNED}`,
+  `\\byour\\s+${COUNT}${NOT_OWNED}`,
+  `(?<![\\w.])${COUNT}\\s+(?:of|out\\s+of)\\s+your\\b`,
+  `\\byour\\s+(?:company|organi[sz]ation|network|environment|estate|fleet|business|infrastructure)\\s+(?:has|have|runs|contains|owns|includes)(?:\\s+(?:only|about|around|over|exactly))?\\s+${COUNT}`,
+].join('|'), 'gi')
+
+/**
+ * What a general answer must not contain, because each would be an unchecked fact about the user's
+ * own environment: a private address, an advisory ID, a host-like name, or a count of the user's
+ * things. CVE IDs, public addresses and other public facts are allowed, because general security
+ * answers name them. Host-like names are read in prose only, as in Suggested steps: a code block's
+ * words are tool syntax. Empty means the answer may be released.
+ */
+export function generalAnswerProblems(text: string): string[] {
+  const input = text.replace(PRIVATE_RANGE_DEFINITION, ' ')
+  const prose: string[] = []
+  eachLine(input, (line, fenced) => { if (!fenced) prose.push(line) })
+  const proseText = prose.join('\n')
+  const records = extractValues(input, true).filter(v => (v.tag === 'ip' && isPrivateAddress(v.raw)) || v.cls === 'id')
+  const hosts = extractValues(proseText, true).filter(v =>
+    (v.tag === 'caps' && isGeneralHost(v.raw)) || ((v.tag === 'host' || v.tag === 'code') && isStepHost(v.raw) && isGeneralHost(v.raw)) || (v.tag === 'fqdn' && PRIVATE_SUFFIX.test(v.raw)))
+  const counts = [...prepare(proseText).matchAll(OWNED_COUNT)].map(m => m[0].trim())
+  return [...new Set([...records, ...hosts].map(v => v.raw).concat(counts))]
+}
+
+// A tool call written out as text: seen from the real model on the last round, when no tools are offered.
+const TOOL_MARKUP = /<[｜|]DSML[｜|]|<\/?tool_call>|<[｜|]tool[▁_ ]call|<function=/gi
+
+/** Text that tries to call a tool is not an answer. Markup found verbatim in the evidence, such as a quoted banner, is a value. */
+export function toolMarkupProblems(text: string, evidence: string | string[] = []): string[] {
+  const known = evidenceText(evidence)
+  return [...text.matchAll(TOOL_MARKUP)].some(m => !known.includes(m[0])) ? ['the answer contains tool-call markup instead of a finished answer'] : []
 }
 
 const STEPS_NOTE = '> General guidance, not checked against your data.'
@@ -461,4 +567,47 @@ export function labelSuggestedSteps(text: string): string {
     if (!done && !fenced && labelOf(line)?.label === STEPS) { out.push(STEPS_NOTE); done = true }
   })
   return out.join('\n')
+}
+
+// ── A heading that repeats the prompt's instruction ────────────────
+
+/** What each fix section holds, as the prompt words it (agent.ts FIX_FORMAT). */
+export const FOUND_HINT = 'State only facts about this company from the tool results, and cite each one.'
+export const STEPS_HINT = 'Give numbered steps from general security practice for this asset\'s operating system only.'
+
+// The opening words of each instruction, current and earlier wording, up to the end of its sentence.
+const ECHO = /^(?:state only facts about this company|facts about this company from the tool results|give numbered steps from general security practice|numbered steps from general security practice)[^.\n]*\.?\s*/i
+const LABEL_WITH_TEXT = /^\s*(#{1,6}\s+)?(?:\*\*|__)?\s*(what we found|suggested steps)\s*:?\s*(?:\*\*|__)?\s*:?\s*(.*)$/i
+
+/**
+ * A model sometimes copies the section instruction into its heading ("## What we found: facts about
+ * this company from the tool results only, each cited."). Only a copied instruction is cut: the line
+ * becomes the bare heading, and anything after the instruction moves to the next line. Run it before
+ * the structure check, so a copied instruction does not count as the content of What we found.
+ */
+export function stripFormatEcho(text: string): string {
+  const out: string[] = []
+  eachLine(text, (line, fenced) => {
+    const m = fenced ? null : line.match(LABEL_WITH_TEXT)
+    const echo = m ? (m[3] ?? '').match(ECHO) : null
+    if (!m || !echo) { out.push(line); return }
+    out.push(`${m[1]?.trim() || '##'} ${(m[2] ?? '').replace(/^./, c => c.toUpperCase())}`)
+    const rest = (m[3] ?? '').slice(echo[0].length).trim()
+    if (rest) out.push(rest)
+  })
+  return out.join('\n')
+}
+
+// ── Typing "confirm" instead of pressing the button ────────────────
+
+const BARE_CONFIRM = /^\s*(?:please\s+)?(?:i\s+)?confirm(?:ed)?(?:\s+(?:it|that|this|the\s+(?:closure|close|proposal)))?(?:\s+please)?\s*[.!]*\s*$/i
+const BARE_YES = /^\s*(?:yes|yeah|yep|y|ok|okay|sure|do it|go ahead|proceed|approved?)(?:[\s,]+(?:please|close it|do it|go ahead))?\s*[.!]*\s*$/i
+
+/**
+ * True when the message is only a confirmation, which typing cannot give: only the Confirm button
+ * closes an advisory. A bare "yes" or "ok" counts only right after an answer that asked for Confirm.
+ */
+export function isTypedConfirmation(question: string, lastAnswer: string | undefined): boolean {
+  if (BARE_CONFIRM.test(question)) return true
+  return BARE_YES.test(question) && /\bConfirm\b/.test(lastAnswer ?? '')
 }

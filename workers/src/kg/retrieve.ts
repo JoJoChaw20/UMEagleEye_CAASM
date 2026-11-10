@@ -14,8 +14,10 @@ const STOP = new Set(('a an and are as at be but by can could did do does for fr
 
 /** A tsquery matching any meaningful word of the question, or null when there is none. */
 export function keywordQuery(text: string): string | null {
-  const words = [...new Set((text.toLowerCase().match(/[\w.-]+/g) ?? [])
-    .map(w => w.replace(/^[.-]+|[.-]+$/g, ''))
+  // A path such as /api/v1/assets is one token in the index, so it is searched whole, and word by word too.
+  const words = [...new Set((text.toLowerCase().match(/[\w.\/-]+/g) ?? [])
+    .map(w => w.replace(/^[.-]+|[.\/-]+$/g, ''))
+    .flatMap(w => (w.includes('/') ? [w, ...w.split('/')] : [w]))
     .filter(w => w.length > 1 && !STOP.has(w)))].slice(0, 24)
   return words.length ? words.map(w => `'${w}'`).join(' | ') : null
 }

@@ -16,7 +16,8 @@ import SettingsPage from './pages/SettingsPage'
 import AgentsPage from './pages/AgentsPage'
 import TenantsPage from './pages/TenantsPage'
 import TenantSettingsPage from './pages/TenantSettingsPage'
-import ChatbotPage from './pages/ChatbotPage'
+import { useEffect } from 'react'
+import { useChatbot } from './context/ChatbotContext'
 
 // Role groups used by route guards
 const ALL_ROLES        = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
@@ -36,6 +37,14 @@ function LegacyAssetsRedirect({ scope }) {
   if (scope && !params.has('scope')) params.set('scope', scope)
   const qs = params.toString()
   return <Navigate to={`/inventory${qs ? `?${qs}` : ''}`} replace />
+}
+
+// The assistant is a bubble in the bottom-right corner now, not a page. An old /chatbot
+// link or bookmark opens the bubble's panel over the dashboard.
+function ChatbotRedirect() {
+  const { setWidgetOpen } = useChatbot()
+  useEffect(() => { setWidgetOpen(true) }, [setWidgetOpen])
+  return <Navigate to="/" replace />
 }
 
 export default function App() {
@@ -70,7 +79,7 @@ export default function App() {
 
         {/* SYSTEM */}
         <Route path="agents"   element={<ProtectedRoute allowedRoles={ALL_ROLES}><AgentsPage /></ProtectedRoute>} />
-        <Route path="chatbot"  element={<ProtectedRoute allowedRoles={ALL_ROLES}><ChatbotPage /></ProtectedRoute>} />
+        <Route path="chatbot"  element={<ChatbotRedirect />} />
         <Route path="settings" element={<ProtectedRoute allowedRoles={SETTINGS_ROLES}><SettingsPage /></ProtectedRoute>} />
 
         {/* ADMIN */}

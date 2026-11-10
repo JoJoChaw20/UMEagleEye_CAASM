@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { Env } from '../types'
 import { refreshPlatformProblems } from './problems'
+import { MAX_ATTEMPTS } from './sync'
 
 const NOW = new Date('2026-11-09T12:00:00Z')
 type Call = { text: string; params: unknown[] }
@@ -63,6 +64,13 @@ test('a backlog is read from the outbox', async () => {
   const { q, env, calls } = setup({ outbox: { n: 900, oldest: '2026-11-09T10:00:00Z', stuck: 2 } })
   await refreshPlatformProblems(q, env, NOW)
   assert.deepEqual(written(calls).map(r => r.key), ['problem:platform:kg_backlog'])
+})
+
+test('final review: a stuck outbox row is one set aside after the drain\'s own attempt limit', async () => {
+  const { q, env, calls } = setup({})
+  await refreshPlatformProblems(q, env, NOW)
+  const outbox = calls.find(c => c.text.includes('FROM kg_outbox'))!
+  assert.match(outbox.text, new RegExp(`attempts >= ${MAX_ATTEMPTS}\\)::int AS stuck`))
 })
 
 test('an unreadable feed record raises nothing and does not throw', async () => {

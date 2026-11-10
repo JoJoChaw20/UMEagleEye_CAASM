@@ -8,6 +8,7 @@ import {
 import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
 import { useTheme } from '../../context/ThemeContext'
+import { useChatbot } from '../../context/ChatbotContext'
 import { buildNavSections } from './navConfig'
 
 const DEVICE_ICONS = { server: Server, workstation: Monitor, network: Network, iot: Cpu, mobile: Smartphone }
@@ -24,6 +25,7 @@ export default function CommandPalette({ open, onClose }) {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { theme, setTheme } = useTheme()
+  const { setWidgetOpen } = useChatbot()
   const [query, setQuery] = useState('')
   const [assets, setAssets] = useState([])
   const [assetState, setAssetState] = useState('idle') // idle | loading | done | error
@@ -70,7 +72,7 @@ export default function CommandPalette({ open, onClose }) {
     const actions = [
       { id: 'act:priority', icon: Bell, label: 'Open alerts by priority', keywords: 'urgent triage', run: go('/alerts?sort=priority') },
       ...(canSeeOps ? [{ id: 'act:scan', icon: Radar, label: 'Start a discovery scan', keywords: 'scan network nmap', run: go('/discovery') }] : []),
-      { id: 'act:chat', icon: MessageCircle, label: 'Ask the security assistant', keywords: 'chatbot ai question', run: go('/chatbot') },
+      { id: 'act:chat', icon: MessageCircle, label: 'Ask the security assistant', keywords: 'chatbot ai question', run: () => setWidgetOpen(true) },
       { id: 'theme:dark', icon: Moon, label: 'Switch to dark theme', keywords: 'theme mode appearance', hint: theme === 'dark' ? 'Current' : '', run: () => setTheme('dark') },
       { id: 'theme:light', icon: Sun, label: 'Switch to light theme', keywords: 'theme mode bright appearance', hint: theme === 'light' ? 'Current' : '', run: () => setTheme('light') },
       { id: 'theme:system', icon: MonitorSmartphone, label: 'Match system theme', keywords: 'theme mode auto appearance', hint: theme === 'system' ? 'Current' : '', run: () => setTheme('system') },

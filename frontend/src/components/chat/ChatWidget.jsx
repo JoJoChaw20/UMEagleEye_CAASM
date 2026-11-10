@@ -2,14 +2,13 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Bot, Send, User, Loader2, RotateCcw,
   Activity, Server, Bell, Shield, BarChart2, HelpCircle,
-  CheckCircle2, Sparkles,
-  Trash2, Plus, PanelLeft, MessageCircle, FileSearch, Wrench, XCircle,
+  CheckCircle2, Sparkles, ChevronDown, Maximize2, Minimize2, X,
+  Trash2, Plus, MessageCircle, FileSearch, Wrench, XCircle,
 } from 'lucide-react'
-import { useLocation } from 'react-router-dom'
-import client from '../api/client'
-import { useAuth } from '../context/AuthContext'
-import { useChatbot, makeWelcome, MAX_MSG } from '../context/ChatbotContext'
-import { useTheme } from '../context/ThemeContext'
+import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
+import { useChatbot, makeWelcome, MAX_MSG } from '../../context/ChatbotContext'
+import { useTheme } from '../../context/ThemeContext'
 
 // Sessions keep their stored emoji for compatibility, but the page draws icons:
 // a speech bubble for chats, the Advisories icon for advisory debug sessions.
@@ -24,12 +23,12 @@ function SessionIcon({ session, className = 'h-4 w-4' }) {
 function Bubble({ msg, onConfirm, canConfirm }) {
   const isBot = msg.role === 'bot'
   return (
-    <div className={`flex gap-3 ${isBot ? '' : 'flex-row-reverse'}`}>
-      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isBot ? 'bg-eagle-500/20 text-eagle-400' : 'bg-dark-700 text-dark-300'}`}>
-        {isBot ? <Bot className="w-4 h-4" /> : <User className="w-4 h-4" />}
+    <div className={`flex gap-2 ${isBot ? '' : 'flex-row-reverse'}`}>
+      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${isBot ? 'bg-eagle-500/20 text-eagle-400' : 'bg-dark-700 text-dark-300'}`}>
+        {isBot ? <Bot className="w-3.5 h-3.5" /> : <User className="w-3.5 h-3.5" />}
       </div>
-      <div className={`max-w-[78%] ${isBot ? '' : 'items-end flex flex-col'}`}>
-        <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+      <div className={`min-w-0 ${isBot ? 'max-w-[88%]' : 'max-w-[80%] items-end flex flex-col'}`}>
+        <div className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
           isBot
             ? 'bg-dark-800 border border-dark-700/50 text-dark-100 rounded-tl-sm'
             : 'bg-eagle-600/20 border border-eagle-500/30 text-dark-100 rounded-tr-sm'
@@ -414,9 +413,9 @@ async function failureText(res) {
 // ── Typing indicator ──────────────────────────────────────────────
 function Typing() {
   return (
-    <div className="flex gap-3">
-      <div className="w-8 h-8 rounded-full bg-eagle-500/20 flex items-center justify-center flex-shrink-0">
-        <Bot className="w-4 h-4 text-eagle-400" />
+    <div className="flex gap-2">
+      <div className="w-7 h-7 rounded-full bg-eagle-500/20 flex items-center justify-center flex-shrink-0">
+        <Bot className="w-3.5 h-3.5 text-eagle-400" />
       </div>
       <div className="bg-dark-800 border border-dark-700/50 rounded-2xl rounded-tl-sm px-4 py-3.5 flex items-center" role="status" aria-label="Assistant is typing">
         <span className="trace-loader w-12" />
@@ -425,8 +424,8 @@ function Typing() {
   )
 }
 
-// ── Session sidebar ───────────────────────────────────────────────
-function SessionSidebar({ sessions, activeId, onSelect, onDelete, onNew }) {
+// ── Chats list: opens over the conversation in the side panel; a fixed left column in full screen ─────
+function SessionList({ sessions, activeId, onSelect, onDelete, onNew, sidebar }) {
   const sorted = Object.values(sessions).sort((a, b) => {
     if (a.id === 'general') return -1
     if (b.id === 'general') return 1
@@ -434,77 +433,140 @@ function SessionSidebar({ sessions, activeId, onSelect, onDelete, onNew }) {
   })
 
   return (
-    <div className="w-56 flex-shrink-0 flex flex-col gap-1 pr-3 border-r border-dark-700/50 overflow-y-auto">
-      <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
-        <p className="text-[11px] font-semibold text-dark-500 tracking-widest uppercase">Sessions</p>
-        <button
-          onClick={onNew}
-          className="p-0.5 text-dark-500 hover:text-eagle-400 transition-colors"
-          title="New chat"
-        >
-          <Plus className="w-3.5 h-3.5" />
+    <nav
+      aria-label="Chats"
+      className={sidebar
+        ? 'flex w-72 flex-shrink-0 flex-col border-r border-dark-700/60 bg-dark-950/40'
+        : 'absolute inset-0 z-10 flex flex-col bg-dark-900 animate-[palette-fade_120ms_ease-out]'}
+    >
+      <div className="flex items-center justify-between border-b border-dark-700/60 px-4 py-2.5">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-dark-500">Chats</p>
+        <button type="button" onClick={onNew} className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-eagle-400 transition-colors hover:bg-eagle-500/10 hover:text-eagle-300">
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New chat
         </button>
       </div>
-      {sorted.map(s => (
-        <div key={s.id} className="group relative">
-          <button
-            onClick={() => onSelect(s.id)}
-            className={`w-full text-left flex items-start gap-2 px-2 py-2 rounded-lg transition-all text-xs ${
-              activeId === s.id
-                ? 'bg-eagle-500/15 border border-eagle-500/30 text-dark-50'
-                : 'text-dark-400 hover:bg-dark-800/60 hover:text-dark-100 border border-transparent'
-            }`}
-          >
-            <span className="mt-0.5 flex-shrink-0"><SessionIcon session={s} className="h-3.5 w-3.5" /></span>
-            <div className="min-w-0 flex-1">
-              <p className="font-medium truncate leading-tight">{s.name}</p>
-              {s.category && <p className="text-dark-500 text-[11px] truncate mt-0.5">{s.category}</p>}
-              <p className="text-dark-600 text-[11px] mt-0.5">{s.messages.length} msg{s.messages.length !== 1 ? 's' : ''}</p>
-            </div>
-          </button>
-          {s.id !== 'general' && (
+      <ul className="flex-1 space-y-1 overflow-y-auto p-2">
+        {sorted.map(s => (
+          <li key={s.id} className="group relative">
             <button
-              onClick={() => onDelete(s.id)}
-              className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 p-0.5 text-dark-500 hover:text-accent-red transition-all"
-              title="Delete session"
+              type="button"
+              onClick={() => onSelect(s.id)}
+              aria-current={activeId === s.id ? 'true' : undefined}
+              className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left text-xs transition-colors ${
+                activeId === s.id
+                  ? 'border-eagle-500/30 bg-eagle-500/10 text-dark-50'
+                  : 'border-transparent text-dark-300 hover:bg-dark-800/70 hover:text-dark-100'
+              }`}
             >
-              <Trash2 className="w-3 h-3" />
+              <span className="mt-0.5 flex-shrink-0"><SessionIcon session={s} className="h-3.5 w-3.5" /></span>
+              <span className="min-w-0 flex-1 pr-6">
+                <span className="block truncate font-medium leading-tight">{s.name}</span>
+                {s.category && <span className="mt-0.5 block truncate text-[11px] text-dark-500">{s.category}</span>}
+                <span className="mt-0.5 block text-[11px] text-dark-500">{s.messages.length} message{s.messages.length !== 1 ? 's' : ''}</span>
+              </span>
             </button>
-          )}
-        </div>
-      ))}
-    </div>
+            {s.id !== 'general' && (
+              <button
+                type="button"
+                onClick={() => onDelete(s.id)}
+                className="absolute right-2 top-2.5 rounded p-1 text-dark-500 opacity-0 transition-opacity hover:text-accent-red focus-visible:opacity-100 group-hover:opacity-100"
+                title="Delete chat"
+                aria-label={`Delete chat ${s.name}`}
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </nav>
   )
 }
 
-// ── Main page ─────────────────────────────────────────────────────
-export default function ChatbotPage() {
+// A small square icon button for the panel header
+function HeaderButton({ label, onClick, children, className = '' }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-dark-400 transition-colors hover:bg-dark-800 hover:text-dark-100 ${className}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// ── The assistant: a bubble in the bottom-right corner that opens a chat panel ──
+// Rendered once by MainLayout, so a chat (and an answer still streaming) survives page changes.
+export default function ChatWidget() {
   const { user } = useAuth()
   const isSuperadmin = user?.role === 'superadmin'
   const canDebugAI   = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
-  const location = useLocation()
 
-  // Sessions and streaming state live in ChatbotContext (persists across page navigation)
-  const { sessions, setSessions, activeId, setActiveId, updateSession, streamingSessionId, setStreamingSessionId } = useChatbot()
+  // Sessions, streaming and open state live in ChatbotContext (they persist across page navigation)
+  const {
+    sessions, setSessions, activeId, setActiveId, updateSession, streamingSessionId, setStreamingSessionId,
+    widgetOpen: open, setWidgetOpen: setOpen, pendingAdvisory, setPendingAdvisory,
+  } = useChatbot()
 
   const [input, setInput] = useState('')
   const [pickedTenant, setPickedTenant] = useState('')
   const [tenants, setTenants] = useState([])
+  const [showSessions, setShowSessions] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [unread, setUnread] = useState(false)
   const bottomRef = useRef(null)
+  const inputRef = useRef(null)
+  const launcherRef = useRef(null)
 
   // Background streaming on this session (kept in context, so it survives navigation)
   const loading = streamingSessionId === activeId
-
   const activeSession = sessions[activeId] ?? sessions.general
 
-  // Fetch tenant list once for superadmin (used by tenant_select prompt)
+  // The company list for a superadmin's picker, fetched the first time the panel opens
   useEffect(() => {
-    if (!isSuperadmin) return
+    if (!isSuperadmin || !open || tenants.length > 0) return
     client.get('/tenants').then(res => setTenants(res.data.tenants || [])).catch(() => {})
-  }, [isSuperadmin])
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [activeId, sessions, loading])
+  }, [isSuperadmin, open, tenants.length])
 
+  useEffect(() => { if (open) bottomRef.current?.scrollIntoView({ block: 'end' }) }, [open, activeId, sessions, loading])
+  useEffect(() => { if (open && !showSessions) inputRef.current?.focus() }, [open, activeId, showSessions])
+  useEffect(() => { if (open) setUnread(false) }, [open])
 
+  // An answer that finishes while the panel is closed marks the bubble
+  const wasStreaming = useRef(false)
+  useEffect(() => {
+    if (wasStreaming.current && !streamingSessionId && !open) setUnread(true)
+    wasStreaming.current = !!streamingSessionId
+  }, [streamingSessionId, open])
+
+  const close = useCallback(() => {
+    setOpen(false)
+    setShowSessions(false)
+    setExpanded(false)
+  }, [setOpen])
+
+  // The bubble is hidden while the panel is open, so focus goes back to it once it shows again
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (wasOpen.current && !open) launcherRef.current?.focus()
+    wasOpen.current = open
+  }, [open])
+
+  // Escape closes the chats list first, then leaves full screen, then closes the panel
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (showSessions) setShowSessions(false)
+      else if (expanded) setExpanded(false)
+      else close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, showSessions, expanded, close])
 
   // Asks one question and streams the answer into the session. Used by the input box, the
   // quick buttons and the advisory sessions, so background generation survives navigation.
@@ -566,7 +628,7 @@ export default function ChatbotPage() {
     }
   }, [activeId, updateSession])
 
-  // Called when the user clicks "Debug with AI" on an advisory: an ordinary question about it
+  // "Debug with AI" on an advisory: an ordinary question about it, in its own chat
   const openAdvisorySession = useCallback(async (advisory) => {
     const sessionId = `adv-${advisory.advisoryId}`
     if (sessions[sessionId]) { setActiveId(sessionId); return }
@@ -597,14 +659,14 @@ export default function ChatbotPage() {
     await streamAnswer(sessionId, prompt, [], null)
   }, [sessions, setSessions, setActiveId, streamAnswer])
 
-  // ── Auto-open advisory session when navigated from AdvisoriesPage ─
+  // Picks up an advisory handed over by the Advisories page, once
   useEffect(() => {
-    const advisory = location.state?.advisory
-    if (!advisory?.advisoryId) return
+    if (!pendingAdvisory?.advisoryId) return
+    const advisory = pendingAdvisory
+    setPendingAdvisory(null)
+    setShowSessions(false)
     openAdvisorySession(advisory)
-    // Clear router state so re-renders don't re-trigger
-    window.history.replaceState({}, '')
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pendingAdvisory]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const deleteSession = (id) => {
     if (id === 'general') return
@@ -629,133 +691,208 @@ export default function ChatbotPage() {
     }
     setSessions(prev => ({ ...prev, [id]: session }))
     setActiveId(id)
+    setShowSessions(false)
   }
 
   const clearSession = () => {
     if (activeId === 'general') {
       updateSession('general', () => ({ messages: [makeWelcome(user?.username)] }))
     } else {
-      updateSession(activeId, s => ({ messages: [] }))
+      updateSession(activeId, () => ({ messages: [] }))
     }
   }
 
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const selectSession = (id) => { setActiveId(id); setShowSessions(false) }
+
   const visibleQuick = QUICK.filter(q => !q.roles || q.roles.includes(user?.role))
   const messages = activeSession.messages ?? []
+  const sessionCount = Object.keys(sessions).length
+  const title = activeSession.id === 'general' ? 'Security assistant' : activeSession.name
+  // Docked: a full-height panel on the right edge (MainLayout makes room for it on wide screens).
+  // Full screen: covers the whole app, with the conversation kept to a readable width.
+  const panelClass = expanded
+    ? 'z-[55] animate-[palette-fade_160ms_ease-out]'
+    : 'z-[45] shadow-2xl shadow-dark-950/60 sm:left-auto sm:w-[420px] sm:border-l sm:border-dark-700/80 animate-[panel-slide_220ms_cubic-bezier(0.16,1,0.3,1)]'
+  const gutter = expanded ? 'px-[max(1rem,calc((100%_-_52rem)_/_2))]' : 'px-3'
 
   return (
-    <div className="flex h-[calc(100dvh-6rem)] gap-0 lg:h-[calc(100dvh-7rem)]">
+    <>
+      {open && (
+        <section
+          role="dialog"
+          aria-label="Security assistant"
+          className={`fixed inset-0 flex flex-col overflow-hidden bg-dark-900 ${panelClass}`}
+        >
+          {/* Header */}
+          <header className="flex h-16 flex-shrink-0 items-center gap-1 border-b border-dark-700/60 px-2">
+            {expanded ? (
+              // Full screen: the chats are listed on the left, so the title is only a title
+              <div className="flex min-w-0 flex-1 items-center gap-2.5 px-1.5 py-1">
+                <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-eagle-500/15 text-eagle-400">
+                  <Bot className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold leading-tight text-dark-50">{title}</span>
+                  <span className="block text-[11px] text-dark-400">{sessionCount} chat{sessionCount !== 1 ? 's' : ''}</span>
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowSessions(v => !v)}
+                aria-expanded={showSessions}
+                title={showSessions ? 'Back to the chat' : 'Show all chats'}
+                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-dark-800"
+              >
+                <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-eagle-500/15 text-eagle-400">
+                  <Bot className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold leading-tight text-dark-50">{title}</span>
+                  <span className="flex items-center gap-1 text-[11px] text-dark-400">
+                    {showSessions ? 'Back to the chat' : `${sessionCount} chat${sessionCount !== 1 ? 's' : ''}`}
+                    <ChevronDown className={`h-3 w-3 transition-transform ${showSessions ? 'rotate-180' : ''}`} aria-hidden="true" />
+                  </span>
+                </span>
+              </button>
+            )}
+            <HeaderButton label="New chat" onClick={newSession}><Plus className="h-4 w-4" aria-hidden="true" /></HeaderButton>
+            <HeaderButton label="Clear this chat" onClick={clearSession}><RotateCcw className="h-4 w-4" aria-hidden="true" /></HeaderButton>
+            <HeaderButton label={expanded ? 'Exit full screen' : 'Full screen'} onClick={() => { setShowSessions(false); setExpanded(v => !v) }} className="hidden sm:flex">
+              {expanded ? <Minimize2 className="h-4 w-4" aria-hidden="true" /> : <Maximize2 className="h-4 w-4" aria-hidden="true" />}
+            </HeaderButton>
+            <HeaderButton label="Close the assistant" onClick={close}><X className="h-4 w-4" aria-hidden="true" /></HeaderButton>
+          </header>
 
-      {/* ── Session sidebar ───────────────────────────── */}
-      {sidebarOpen && (
-        <SessionSidebar
-          sessions={sessions}
-          activeId={activeId}
-          onSelect={setActiveId}
-          onDelete={deleteSession}
-          onNew={newSession}
-        />
+          <div className="flex min-h-0 flex-1">
+            {expanded && (
+              <SessionList
+                sessions={sessions}
+                activeId={activeId}
+                onSelect={selectSession}
+                onDelete={deleteSession}
+                onNew={newSession}
+                sidebar
+              />
+            )}
+
+            <div className="flex min-w-0 flex-1 flex-col">
+              {/* Company picker: a superadmin asks about one company at a time */}
+              {isSuperadmin && (
+                <div className={`flex-shrink-0 border-b border-dark-700/60 py-2 ${gutter}`}>
+                  <select
+                    value={pickedTenant}
+                    onChange={e => setPickedTenant(e.target.value)}
+                    aria-label="Company to ask about"
+                    className="w-full rounded-lg border border-dark-700/60 bg-dark-800 px-2 py-1.5 text-xs text-dark-200"
+                  >
+                    <option value="">No company picked: shared knowledge only</option>
+                    {tenants.map(t => <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <div className="relative flex min-h-0 flex-1 flex-col">
+                {showSessions && !expanded && (
+                  <SessionList
+                    sessions={sessions}
+                    activeId={activeId}
+                    onSelect={selectSession}
+                    onDelete={deleteSession}
+                    onNew={newSession}
+                  />
+                )}
+
+                {/* Messages */}
+                <div className={`min-h-0 flex-1 space-y-4 overflow-y-auto py-4 ${gutter}`} aria-live="polite">
+                  {messages.length === 0 && (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-dark-500">
+                      <Sparkles className="h-8 w-8 opacity-30" aria-hidden="true" />
+                      <p className="text-sm">Ask anything about this advisory</p>
+                    </div>
+                  )}
+                  {messages.map((msg, i) => (
+                    <Bubble key={i} msg={msg} onConfirm={confirmProposal} canConfirm={canDebugAI} />
+                  ))}
+                  {loading && <Typing />}
+                  <div ref={bottomRef} />
+                </div>
+
+                {/* Quick questions, in the General chat */}
+                {activeId === 'general' && (
+                  <div
+                    className={`flex flex-shrink-0 gap-1.5 overflow-x-auto pb-2 ${expanded ? `${gutter} flex-wrap` : 'pl-3 pr-8 [mask-image:linear-gradient(to_right,black_calc(100%-2rem),transparent)]'}`}
+                    aria-label="Quick questions"
+                  >
+                    {visibleQuick.map(({ label, icon: Icon, q }) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => send(q)}
+                        disabled={loading}
+                        title={q}
+                        className="flex flex-shrink-0 items-center gap-1.5 rounded-full border border-dark-700/50 bg-dark-800/60 px-3 py-1 text-xs font-medium text-dark-300 transition-colors hover:border-eagle-500/40 hover:bg-eagle-500/5 hover:text-dark-50 disabled:opacity-50"
+                      >
+                        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Input */}
+                <div className={`flex-shrink-0 border-t border-dark-700/60 py-3 ${gutter}`}>
+                  <div className="flex items-end gap-2 rounded-xl border border-dark-700/50 bg-dark-800/60 p-1.5 transition-colors focus-within:border-eagle-500/40">
+                    <textarea
+                      ref={inputRef}
+                      value={input}
+                      onChange={e => setInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+                      placeholder={activeId === 'general' ? 'Ask about your assets, alerts or advisories…' : 'Ask about this advisory…'}
+                      aria-label="Message to the assistant"
+                      rows={1}
+                      disabled={loading}
+                      className="max-h-28 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-dark-100 placeholder-dark-500 outline-none disabled:opacity-50"
+                      style={{ minHeight: '2rem' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => send()}
+                      disabled={loading || !input.trim()}
+                      aria-label="Send"
+                      className="flex-shrink-0 rounded-lg bg-eagle-600 p-2 text-on-brand transition-colors hover:bg-eagle-500 disabled:bg-dark-700 disabled:text-dark-500"
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
       )}
 
-      {/* ── Chat panel ───────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0 pl-4">
-
-        {/* Header */}
-        <div className="flex items-center justify-between mb-3 flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setSidebarOpen(v => !v)}
-              className="p-1.5 text-dark-400 hover:text-dark-100 hover:bg-dark-800 rounded-lg transition-all"
-              title={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
-            >
-              <PanelLeft className="w-4 h-4" />
-            </button>
-            <span className="flex h-8 w-8 items-center justify-center rounded-md border border-dark-700 bg-dark-900"><SessionIcon session={activeSession} /></span>
-            <div>
-              <h1 className="text-base font-bold text-dark-50 leading-tight">{activeSession.name}</h1>
-              {activeSession.category && (
-                <p className="text-[11px] text-dark-400">{activeSession.category}</p>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {isSuperadmin && (
-              <select
-                value={pickedTenant}
-                onChange={e => setPickedTenant(e.target.value)}
-                aria-label="Company to ask about"
-                className="bg-dark-800 border border-dark-700/60 rounded-lg text-xs text-dark-200 px-2 py-1.5 max-w-[12rem]"
-              >
-                <option value="">Pick a company</option>
-                {tenants.map(t => <option key={t.tenant_id} value={t.tenant_id}>{t.name}</option>)}
-              </select>
-            )}
-            <button
-              onClick={clearSession}
-              className="btn-secondary flex items-center gap-1.5 text-xs px-3 py-1.5"
-              title="Clear this session"
-            >
-              <RotateCcw className="w-3.5 h-3.5" /> Clear
-            </button>
-          </div>
-        </div>
-
-        {/* Quick buttons — only in General session */}
-        {activeId === 'general' && (
-          <div className="flex flex-wrap gap-2 mb-3 flex-shrink-0">
-            {visibleQuick.map(({ label, icon: Icon, q }) => (
-              <button
-                key={label}
-                onClick={() => send(q)}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-800/60 border border-dark-700/40 text-dark-300 hover:text-dark-50 hover:border-eagle-500/40 hover:bg-eagle-500/5 transition-all disabled:opacity-50"
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {label}
-              </button>
-            ))}
-          </div>
+      {/* The bubble. Hidden while the panel is open: the panel has its own close button. */}
+      <button
+        ref={launcherRef}
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-expanded={open}
+        aria-label="Open the security assistant"
+        title="Security assistant"
+        className={`fixed bottom-6 right-6 z-[45] h-14 w-14 items-center justify-center rounded-full bg-eagle-600 text-on-brand shadow-lg shadow-dark-950/50 transition-[transform,background-color] duration-200 hover:scale-105 hover:bg-eagle-500 active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-eagle-400 ${open ? 'hidden' : 'flex'}`}
+      >
+        <MessageCircle className="h-6 w-6" aria-hidden="true" />
+        {!open && (streamingSessionId || unread) && (
+          <span
+            className={`absolute -right-0.5 -top-0.5 h-3.5 w-3.5 rounded-full border-2 border-dark-950 ${streamingSessionId ? 'animate-pulse bg-accent-amber' : 'bg-accent-green'}`}
+            aria-hidden="true"
+          />
         )}
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto glass-card p-4 space-y-4 min-h-0">
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-dark-500 gap-2">
-              <Sparkles className="w-8 h-8 opacity-30" />
-              <p className="text-sm">Ask anything about this advisory</p>
-            </div>
-          )}
-          {messages.map((msg, i) => (
-            <Bubble key={i} msg={msg} onConfirm={confirmProposal} canConfirm={canDebugAI} />
-          ))}
-          {loading && <Typing />}
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input */}
-        <div className="mt-3 flex-shrink-0">
-          <div className="flex gap-2 items-end bg-dark-800/60 border border-dark-700/40 rounded-xl p-2 focus-within:border-eagle-500/40 transition-colors">
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-              placeholder={activeId === 'general' ? 'Ask about your assets, alerts, advisories or the system…' : 'Ask about this advisory…'}
-              rows={1}
-              disabled={loading}
-              className="flex-1 bg-transparent text-sm text-dark-100 placeholder-dark-500 resize-none outline-none max-h-28 py-1 px-2 disabled:opacity-50"
-              style={{ minHeight: '2rem' }}
-            />
-            <button
-              onClick={() => send()}
-              disabled={loading || !input.trim()}
-              className="p-2 bg-eagle-600 hover:bg-eagle-500 disabled:bg-dark-700 disabled:text-dark-500 text-on-brand rounded-lg transition-colors flex-shrink-0"
-            >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            </button>
-          </div>
-          <p className="text-[11px] text-dark-600 mt-1.5 text-center">Enter to send · Shift+Enter for new line</p>
-        </div>
-      </div>
-    </div>
+        {!open && (streamingSessionId || unread) && (
+          <span className="sr-only">{streamingSessionId ? 'An answer is being written' : 'A new answer is ready'}</span>
+        )}
+      </button>
+    </>
   )
 }

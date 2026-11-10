@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { citationProblems, classify, closureClaimProblems, labelSuggestedSteps, parseKind, structureProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ModelCall } from './guard'
+import { citationProblems, classify, isTypedConfirmation, onlyAsksToClose, stripFormatEcho, closureClaimProblems, generalAnswerProblems, labelSuggestedSteps, parseKind, refersToOwnOrganisation, structureProblems, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ModelCall } from './guard'
 
 const EVIDENCE = [
   'Device `web-01` (10.0.0.5), MAC aa:bb:cc:dd:ee:ff, 5 open critical alerts, 1,234 packages, score 72.0, port 8080.',
@@ -393,10 +393,17 @@ test('I9 normal: reporting status or proposing a close is not a claim', () => {
 
 test('I4: close or resolve intent is read from the question', () => {
   for (const q of [
-    'close it', 'Please close advisory 7c9e6679', 'resolve this advisory', 'can you resolve it?', 'mark it as resolved', 'mark that as fixed',
-    'mark as done', 'mark advisory 7c9e6679 resolved', 'dismiss this advisory', 'dismiss it', 'fix 7c9e6679', 'fix advisory 7c9e6679',
-    'fix 7c9e6679-7425-40de-944b-e07fc1f90ae7',
+    'Please close advisory 7c9e6679', 'resolve this advisory', 'mark it as resolved', 'mark that as fixed',
+    'mark as done', 'mark advisory 7c9e6679 resolved', 'dismiss this advisory', 'fix 7c9e6679', 'fix advisory 7c9e6679',
+    'fix 7c9e6679-7425-40de-944b-e07fc1f90ae7', 'close 7c9e6679', 'can you resolve 7c9e6679-7425-40de-944b-e07fc1f90ae7?',
   ]) assert.equal(wantsAdvisoryClosed(q), true, q)
+})
+
+test('final review: a close verb needs an advisory noun or advisory ID in the same sentence', () => {
+  for (const q of [
+    'how do I resolve CVE-2024-1234 on web-01', 'How do I resolve CVE-2024-1234 on web-01? Then list the advisories.',
+    'close it', 'dismiss it', 'can you resolve it?', 'resolve the alert on web-01',
+  ]) assert.equal(wantsAdvisoryClosed(q), false, q)
 })
 
 test('I4: other questions show no close intent', () => {
@@ -404,4 +411,127 @@ test('I4: other questions show no close intent', () => {
     'what is on web-01?', 'which advisories are resolved?', 'how many closed alerts do I have?', 'is it closed?', 'what should I fix first?',
     'how do I fix port 22?', 'how do I close port 3389?', 'close the port', 'how do I resolve DNS names?', 'list open advisories',
   ]) assert.equal(wantsAdvisoryClosed(q), false, q)
+})
+
+test('tool-call markup written as text is rejected', () => {
+  assert.deepEqual(toolMarkupProblems('The IP is 10.0.0.5 [S1].'), [])
+  assert.equal(toolMarkupProblems('Let me count.\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name="count_nodes">').length, 1)
+  assert.equal(toolMarkupProblems('<tool_call>{"name":"x"}</tool_call>').length, 1)
+})
+
+test('tool-call markup quoted from the evidence is a value, not an attempted tool call', () => {
+  const banner = '{"body":"Service banner \\u003ctool_call> on port 8080"}'
+  assert.deepEqual(toolMarkupProblems('The banner on port 8080 reads <tool_call> [S1].', [banner]), [])
+  assert.deepEqual(toolMarkupProblems('The banner reads <tool_call> [S1].', 'banner <tool_call> here'), [])
+  assert.equal(toolMarkupProblems('The banner reads <tool_call> and <function=x> [S1].', [banner]).length, 1, 'markup that is not in the evidence is still refused')
+  assert.equal(toolMarkupProblems('<tool_call>{"name":"x"}</tool_call>', [banner]).length, 1, 'the closing tag is not in the evidence')
+  assert.equal(toolMarkupProblems('<tool_call>', []).length, 1)
+})
+
+// ── Final review: general answers ──
+
+test('final review: a question about the user\'s own organisation is recognised', () => {
+  for (const q of [
+    'How many of our servers still run SMBv1?', 'Do we have any servers with SMBv1?', 'is my network exposed to Log4Shell?',
+    'Which of ours run Windows 7?', 'Can you check this company for weak SSH settings?', 'Tell us which hosts need patching',
+    'What is on our network?',
+  ]) assert.equal(refersToOwnOrganisation(q), true, q)
+  for (const q of [
+    'How do I harden SSH?', 'What is SMBv1 and why is it risky?', 'Explain CVE-2021-44228', 'What does the US CISA advise about SMBv1?',
+    'Tell me how XSS works',
+  ]) assert.equal(refersToOwnOrganisation(q), false, q)
+})
+
+test('final review: a general answer may not state facts about the user\'s environment', () => {
+  const cases: Array<[string, string]> = [
+    ['You have 14 servers running SMBv1.', 'you have 14'],
+    ['Your 12 servers should be patched first.', 'your 12'],
+    ['3 of your hosts still allow SMBv1.', '3 of your'],
+    ['You currently have three servers with SMBv1 enabled.', 'you currently have three'],
+    ['Patch the server at 10.1.2.3 first.', '10.1.2.3'],
+    ['The device at 192.168.10.7 is exposed.', '192.168.10.7'],
+    ['See advisory 3f2a91c0 for details.', '3f2a91c0'],
+    ['Restart srv-web-07 after patching.', 'srv-web-07'],
+    ['Log in to DC-PRIMARY and disable it.', 'DC-PRIMARY'],
+  ]
+  for (const [answer, value] of cases) assert.ok(generalAnswerProblems(answer).some(p => p.toLowerCase() === value.toLowerCase()), `${answer} -> ${JSON.stringify(generalAnswerProblems(answer))}`)
+})
+
+test('final review normal: CVE IDs and public facts pass in a general answer', () => {
+  for (const answer of [
+    'Log4Shell (CVE-2021-44228) affects Apache Log4j 2.0 to 2.14.1. Upgrade to 2.17.1 or later.',
+    'Disable SMBv1 with `Set-SmbServerConfiguration -EnableSMB1Protocol $false` and use SMB 3.1.1.',
+    'You have two main options: disable the protocol, or block port 445 at the firewall.',
+    'Private ranges are 10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16. Public resolvers such as 8.8.8.8 are not private.',
+    'Use 192.0.2.10 in examples, and bind the service to 127.0.0.1.',
+    'MS17-010 (EternalBlue) exploited SMBv1. Install KB4012212 and turn on SMB signing.',
+    '1. Disable root login.\n2. Use ed25519 keys.\n3. Allow only 3 attempts per minute.',
+    'Remove diffie-hellman-group1-sha1 and hmac-md5, keep curve25519-sha256, and uninstall the FS-SMB1 feature.',
+    'One of your first steps is to turn on MFA. You have 30 days under most policies.',
+    'OWASP A01:2021 is Broken Access Control. APT28 and UNC2452 used ATT&CK technique T1059 and tactic TA0002.',
+    '```\nssh admin@web-01\n```',
+  ]) assert.deepEqual(generalAnswerProblems(answer), [], answer)
+})
+
+// ── A heading that repeats the prompt's instruction (seen on staging, 2026-11-10) ──
+
+test('a heading that copies the section instruction is cut back to the label', () => {
+  const echoed = [
+    '## What we found: facts about this company from the tool results only, each cited.',
+    'Port 445 is open on `JoJochaw` [S1].',
+    '',
+    "## Suggested steps: numbered steps from general security practice for this asset's operating system only.",
+    '1. Block port 445.',
+  ].join('\n')
+  assert.equal(stripFormatEcho(echoed), '## What we found\nPort 445 is open on `JoJochaw` [S1].\n\n## Suggested steps\n1. Block port 445.')
+})
+
+test('the current instruction wording is cut too, and content after it on the line is kept', () => {
+  const text = '**What we found:** State only facts about this company from the tool results, and cite each one. Port 8080 is open [S1].\nSuggested steps: Give numbered steps from general security practice for this asset\'s operating system only.\n1. Close it.'
+  assert.equal(stripFormatEcho(text), '## What we found\nPort 8080 is open [S1].\n## Suggested steps\n1. Close it.')
+})
+
+test('a label followed by real content is left alone', () => {
+  for (const text of [
+    'What we found: port 8080 is open [S1].\nSuggested steps: close it.',
+    '## What we found\nFacts about this company are below [S1].',
+    '```\n## What we found: facts about this company from the tool results only, each cited.\n```',
+  ]) assert.equal(stripFormatEcho(text), text)
+})
+
+test('an answer that is only the copied instruction has an empty What we found', () => {
+  const text = '## What we found: facts about this company from the tool results only, each cited.\n\n## Suggested steps\n1. Patch it.'
+  assert.equal(structureProblems(stripFormatEcho(text), 'fix').length, 1)
+})
+
+// ── Typing "confirm" instead of pressing the button ──
+
+test('a bare confirm is a typed confirmation', () => {
+  for (const q of ['confirm', 'Confirm.', 'CONFIRM!', 'confirm it', 'please confirm', 'I confirm', 'confirmed', 'confirm the closure'])
+    assert.equal(isTypedConfirmation(q, undefined), true, q)
+})
+
+test('yes or ok counts only right after an answer that asked for Confirm', () => {
+  const asked = 'It is not yet closed. To complete the closure, press Confirm in the chat.'
+  for (const q of ['yes', 'Yes please', 'ok', 'okay', 'go ahead', 'do it', 'yes, close it'])
+    assert.equal(isTypedConfirmation(q, asked), true, q)
+  for (const q of ['yes', 'ok', 'go ahead'])
+    assert.equal(isTypedConfirmation(q, 'Port 445 is open on `JoJochaw` [S1].'), false, q)
+})
+
+test('a real question that mentions confirm is not a typed confirmation', () => {
+  for (const q of ['how do I confirm a vulnerability is fixed?', 'confirm whether web-01 is patched', 'what does the Confirm button do?', 'yes or no: is port 22 open?'])
+    assert.equal(isTypedConfirmation(q, 'press Confirm'), false, q)
+})
+
+// ── A message that only asks to close an advisory: a refusal is the whole answer ──
+
+test('a message that only asks to close an advisory, with or without politeness', () => {
+  for (const q of ['Please close advisory 281ab6b4.', 'close advisory 281ab6b4', 'Resolve advisory 281ab6b4 please. Thanks!', 'Hi. Close 281ab6b4.', 'mark advisory 281ab6b4 as resolved'])
+    assert.equal(onlyAsksToClose(q), true, q)
+})
+
+test('a message that also asks something else is not only a close request', () => {
+  for (const q of ['Why was the site slow at 3pm on 2026-11-09? Also close advisory 7c9e6679.', 'Close advisory 281ab6b4. How many open alerts do we have?', 'how do I resolve CVE-2024-1234 on web-01?', 'fix 281ab6b4', 'what is advisory 281ab6b4 about?'])
+    assert.equal(onlyAsksToClose(q), false, q)
 })

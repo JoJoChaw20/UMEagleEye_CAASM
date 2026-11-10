@@ -207,7 +207,7 @@ export function extractEvent(r: Row): GraphDelta {
   const facts = eventFacts(d)
   const nodes: KgNode[] = [node(r.tenant_id, key, 'event',
     `${r.severity} ${r.event_type}${cve ? ` ${cve}` : ''} on ${label(r)}`,
-    `Alert ${r.event_type}, severity ${r.severity}, status ${r.status}, on ${label(r)} (${r.ip_address}). Raised ${iso(r.timestamp)}, seen ${r.occurrences ?? 1} time(s).${r.composite_risk_score != null ? ` Risk score ${r.composite_risk_score}.` : ''}${facts ? ` ${facts}.` : ''}`, {
+    `Alert ${r.event_type}, severity ${r.severity}, status ${r.status}, on ${label(r)}${r.ip_address ? ` (${r.ip_address})` : ''}. Raised ${iso(r.timestamp)}, seen ${r.occurrences ?? 1} time(s).${r.composite_risk_score != null ? ` Risk score ${r.composite_risk_score}.` : ''}${facts ? ` ${facts}.` : ''}`, {
       eventId: r.event_id, eventType: r.event_type, severity: r.severity, status: r.status, open,
       cve, assetKey: `asset:${r.asset_id}`, timestamp: iso(r.timestamp),
     })]
@@ -235,7 +235,7 @@ export function extractAdvisory(r: Row): GraphDelta {
   const key = `advisory:${r.advisory_id}`, shortId = String(r.advisory_id).slice(0, 8)
   return {
     nodes: [node(r.tenant_id, key, 'advisory', `Advisory ${shortId}: ${clip(r.summary, 120)}`,
-      `Advisory ${shortId}, status ${r.status}, for a ${r.severity} ${r.event_type} on ${label(r)} (${r.ip_address}). Summary: ${clip(r.summary, 600)} Recommended action: ${clip(r.recommended_action, 1200)}`, {
+      `Advisory ${shortId}, status ${r.status}, for a ${r.severity} ${r.event_type} on ${label(r)}${r.ip_address ? ` (${r.ip_address})` : ''}. Summary: ${clip(r.summary, 600)} Recommended action: ${clip(r.recommended_action, 1200)}`, {
         advisoryId: r.advisory_id, shortId, status: r.status, active: ACTIVE_ADVISORY.includes(r.status),
         severity: r.severity, assetKey: `asset:${r.asset_id}`, createdAt: iso(r.created_at),
       })],

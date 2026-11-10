@@ -3,26 +3,32 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Header from './Header'
 import CommandPalette from './CommandPalette'
+import ChatWidget from '../chat/ChatWidget'
+import { useChatbot } from '../../context/ChatbotContext'
 
 const isTypingTarget = (el) =>
   el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 
 const DESKTOP = '(min-width: 1024px)'
+// Wide enough to keep the page beside the assistant's 420px panel instead of under it
+const WIDE = '(min-width: 1280px)'
 
-function useIsDesktop() {
-  const [desktop, setDesktop] = useState(() => window.matchMedia(DESKTOP).matches)
+function useMedia(query) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches)
   useEffect(() => {
-    const mq = window.matchMedia(DESKTOP)
-    const onChange = () => setDesktop(mq.matches)
+    const mq = window.matchMedia(query)
+    const onChange = () => setMatches(mq.matches)
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
-  }, [])
-  return desktop
+  }, [query])
+  return matches
 }
 
 export default function MainLayout() {
   const location = useLocation()
-  const isDesktop = useIsDesktop()
+  const isDesktop = useMedia(DESKTOP)
+  const isWide = useMedia(WIDE)
+  const { widgetOpen } = useChatbot()
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') === 'true'
   )
@@ -70,13 +76,15 @@ export default function MainLayout() {
         <div className="fixed inset-0 z-40 bg-dark-950/70 animate-[palette-fade_160ms_ease-out]" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
       )}
       <div
-        className={`min-w-0 flex-1 transition-[margin] duration-300 ease-out ${isDesktop ? (collapsed ? 'ml-16' : 'ml-64') : 'ml-0'}`}
+        className={`min-w-0 flex-1 transition-[margin] duration-300 ease-out ${isDesktop ? (collapsed ? 'ml-16' : 'ml-64') : 'ml-0'} ${isWide && widgetOpen ? 'mr-[420px]' : ''}`}
       >
         <Header onToggleSidebar={toggle} onOpenPalette={() => setPaletteOpen(true)} />
-        <main id="main" key={location.pathname} className="p-4 animate-[page-in_240ms_cubic-bezier(0.16,1,0.3,1)] lg:p-6">
+        {/* Bottom padding keeps the end of every page clear of the assistant bubble */}
+        <main id="main" key={location.pathname} className="p-4 pb-24 animate-[page-in_240ms_cubic-bezier(0.16,1,0.3,1)] lg:p-6 lg:pb-24">
           <Outlet />
         </main>
       </div>
+      <ChatWidget />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   )

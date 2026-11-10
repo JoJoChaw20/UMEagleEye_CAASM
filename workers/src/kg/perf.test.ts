@@ -328,6 +328,51 @@ test('I2: a bare clock time is Malaysia time (UTC+8) unless another zone is name
   assert.equal(resolveAskedTime('why is it slow', now), null)
 })
 
+test('a date stated in the question is read, in each common form', () => {
+  const now = new Date('2026-11-09T12:00:00Z')
+  const want = '2026-03-03T07:00:00.000Z'
+  for (const q of [
+    'Why was it slow on 3 March 2026 at 3pm?', 'slow on March 3 2026 at 3pm', 'slow on March 3, 2026 at 3pm', 'slow on 2026-03-03 at 3pm',
+    'slow on 3rd March 2026 at 3pm', 'slow on the 3rd of March 2026 at 3pm', 'slow on Mar 3 2026 at 3pm', 'slow on 3 mar 2026 at 15:00',
+    'slow at 3pm on 3 March', 'slow at 3pm on March 3', 'at 15:00 March 3 2026',
+  ]) assert.equal(resolveAskedTime(q, now)?.utc.toISOString(), want, q)
+  assert.equal(resolveAskedTime('slow on 3 March 2026 at 3pm', now)!.label, '15:00 Malaysia time (UTC+8) on 2026-03-03, which is 07:00 UTC')
+  assert.equal(resolveAskedTime('slow on 3 March 2026 at 15:00 UTC', now)!.utc.toISOString(), '2026-03-03T15:00:00.000Z')
+  assert.equal(resolveAskedTime('slow on May 3 at 3pm', now)!.utc.toISOString(), '2026-05-03T07:00:00.000Z')
+})
+
+test('a date with no year is the last time that date happened', () => {
+  const now = new Date('2026-11-09T12:00:00Z')
+  assert.equal(resolveAskedTime('slow on 25 December at 3pm', now)!.utc.toISOString(), '2025-12-25T07:00:00.000Z')
+  assert.equal(resolveAskedTime('slow on 9 November at 3pm', now)!.utc.toISOString(), '2026-11-09T07:00:00.000Z')
+})
+
+test('with no date named, the day is still worked out as before', () => {
+  const now = new Date('2026-11-09T12:00:00Z')
+  assert.equal(resolveAskedTime('slow at 3pm', now)!.utc.toISOString(), '2026-11-09T07:00:00.000Z')
+  assert.equal(resolveAskedTime('it may be slow at 3pm', now)!.utc.toISOString(), '2026-11-09T07:00:00.000Z')
+  assert.equal(resolveAskedTime('slow on 10.0.0.0/24 at 3pm', now)!.utc.toISOString(), '2026-11-09T07:00:00.000Z')
+  assert.equal(resolveAskedTime('slow on version 2.4 at 3pm', now)!.utc.toISOString(), '2026-11-09T07:00:00.000Z')
+  assert.equal(resolveAskedTime('what happened on 3 March 2026', now), null, 'a date with no clock time names no hour')
+})
+
+test('a date that cannot be read gives null, never today', () => {
+  const now = new Date('2026-11-09T12:00:00Z')
+  for (const q of [
+    'slow on 31 February 2026 at 3pm', 'slow on 2026-13-45 at 3pm', 'slow in March at 3pm', 'slow on 03/03/2026 at 3pm', 'slow on 3.3.2026 at 3pm',
+    'slow on 03-03-2026 at 3pm', 'slow last Tuesday at 3pm', 'slow the day before yesterday at 3pm', 'slow 3 days ago at 3pm', 'slow last week at 3pm',
+    'slow in May at 3pm', 'slow in May 2026 at 3pm', 'slow in Mar at 3pm', 'slow on the 3rd at 3pm',
+  ]) assert.equal(resolveAskedTime(q, now), null, q)
+})
+
+test('the note for a dated question names that date, not today', () => {
+  const now = new Date('2026-11-09T12:00:00Z')
+  const note = askedTimeNote('Why was it slow on 3 March 2026 at 3pm?', now, ['2026-11-09T05:00:00.000Z', '2026-11-09T06:00:00.000Z'])!
+  assert.match(note, /on 2026-03-03/)
+  assert.ok(!note.includes('2026-11-09, which'), note)
+  assert.match(note, /no history for that time/)
+})
+
 test('I2: coverage verdicts: covered, outside the range, and a gap inside it', () => {
   const now = new Date('2026-11-09T12:00:00Z')
   const hours = (...h: number[]) => h.map(x => `2026-11-09T${String(x).padStart(2, '0')}:00:00.000Z`)

@@ -1,13 +1,11 @@
 /**
- * mcp-tools-demo.ts — checks the chatbot / MCP tools without a model and without touching data.
+ * mcp-tools-demo.ts — checks the MCP tools without a model and without touching data.
  *
- *  1. Every tool converts to an OpenAI function schema, and its access rules hold per role.
+ *  1. Every tool's access rules hold per role.
  *  2. Every tool runs against a RECORDING database (returns no rows), and each SQL statement it
  *     built is then EXPLAINed (planned, never executed) on the real database, which catches
  *     type and enum errors. Skipped when DATABASE_URL is not set.
- *  3. The agent loop runs against a fake model that streams tool calls, then an answer:
- *     events, the proposal for resolve_advisory, unknown tools and the call limit.
- *  4. The MCP server lists the read-only tools over Streamable HTTP (in-process).
+ *  3. The MCP server lists the read-only tools over Streamable HTTP (in-process).
  *
  * Run from workers/:
  *   npx esbuild scripts/mcp-tools-demo.ts --bundle --platform=node --format=cjs --outfile=.m.cjs
@@ -19,7 +17,6 @@ import * as schema from '../src/db/schema'
 import type { DB } from '../src/db/client'
 import type { Env } from '../src/types'
 import { TOOLS, toolsFor, runTool, type ToolContext } from '../src/mcp/tools'
-import { runAgent, toOpenAiTool, resultText, MAX_TOOL_CALLS } from '../src/mcp/agent'
 import { externalTools, internalDataIn } from '../src/mcp/external'
 import { buildMcpServer } from '../src/mcp/server'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
@@ -51,11 +48,7 @@ const A = '00000000-0000-0000-0000-0000000000bb'
 const admin: ToolContext = { db, env, user: { userId: 'u1', role: 'tenant_admin', tenantId: T }, tenantId: T }
 
 async function main() {
-  // 1. schemas and access
-  for (const t of TOOLS) {
-    const f = toOpenAiTool(t)
-    check(`schema ${t.name}`, f.function.parameters.type === 'object' && !('$schema' in f.function.parameters))
-  }
+  // 1. access
   const names = (role: string, actions = true) => toolsFor({ userId: 'x', role, tenantId: T }, { actions }).map(t => t.name)
   check('business_owner gets aggregate and public tools only',
     JSON.stringify(names('business_owner')) === JSON.stringify(['get_security_overview', 'get_cve_coverage', 'lookup_attack_technique', 'lookup_cwe']),
@@ -102,62 +95,6 @@ async function main() {
     console.log('SKIP  EXPLAIN (no DATABASE_URL)')
   }
 
-  // 3. the agent loop against a fake model
-  const script: Array<Record<string, unknown>> = []
-  const sse = (chunks: unknown[]) => new Response(chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n')
-  const toolCall = (i: number, name: string, args: unknown) => ({ choices: [{ delta: { tool_calls: [{ index: i, id: `c${i}`, function: { name, arguments: JSON.stringify(args) } }] } }] })
-  const bodies: Array<{ tools?: unknown[]; messages: unknown[] }> = []
-  globalThis.fetch = (async (_url: string, init: { body: string }) => {
-    bodies.push(JSON.parse(init.body))
-    return sse((script.shift() as { chunks: unknown[] }).chunks)
-  }) as never
-
-  script.push({ chunks: [{ choices: [{ delta: { content: 'Checking. ' } }] }, toolCall(0, 'list_alerts', { limit: 3 }), toolCall(1, 'resolve_advisory', { advisory_id: '3f2a91c0', reason: 'patched yesterday' })] })
-  script.push({ chunks: [{ choices: [{ delta: { content: 'Done.' } }] }] })
-  const events: Array<Record<string, unknown>> = []
-  const answer = await runAgent(admin, 'what is open?', [], async e => { events.push(e) })
-  check('answer streams across rounds, one paragraph per round', answer === 'Checking. \n\nDone.', JSON.stringify(answer))
-  check('tool progress events', events.filter(e => e.tool).length === 4)
-  check('tool results go back as untrusted data', JSON.stringify(bodies[1]!.messages).includes('UNTRUSTED TOOL DATA'))
-  check('resolve_advisory errors cleanly when nothing matches (no proposal)', !events.some(e => e.proposal))
-  check('first call offers tools', Array.isArray(bodies[0]!.tools) && bodies[0]!.tools!.length === toolsFor(admin.user, { actions: true }).length)
-
-  bodies.length = 0
-  script.push({ chunks: Array.from({ length: MAX_TOOL_CALLS + 2 }, (_, i) => toolCall(i, 'get_security_overview', {})) })
-  script.push({ chunks: [{ choices: [{ delta: { content: 'Summary.' } }] }] })
-  const ev2: Array<Record<string, unknown>> = []
-  const a2 = await runAgent(admin, 'overview x8', [], async e => { ev2.push(e) })
-  const ran = ev2.filter(e => (e.tool as { status?: string } | undefined)?.status === 'done').length
-  check(`tool calls capped at ${MAX_TOOL_CALLS}`, ran === MAX_TOOL_CALLS, String(ran))
-  check('calls over the cap get an error result', JSON.stringify(bodies[1]!.messages).includes('Tool call limit reached'))
-  check('after the cap no tools are offered, so it answers', bodies[1]!.tools === undefined && a2 === 'Summary.', a2)
-
-  bodies.length = 0
-  script.push({ chunks: [toolCall(0, 'nope', {})] })
-  script.push({ chunks: [{ choices: [{ delta: { content: 'OK.' } }] }] })
-  await runAgent(admin, 'x', [], async () => {})
-  check('unknown tool answered with an error', JSON.stringify(bodies[1]!.messages).includes('Unknown tool nope'))
-
-  bodies.length = 0
-  for (let i = 0; i < 3; i++) script.push({ chunks: [toolCall(0, 'get_cve_coverage', {})] })
-  script.push({ chunks: [{ choices: [{ delta: { content: 'Final.' } }] }] })
-  const a4 = await runAgent(admin, 'loop', [], async () => {})
-  check('a model that keeps calling tools is stopped at the last round', bodies.length === 4 && bodies[3]!.tools === undefined && a4 === 'Final.', `${bodies.length} ${a4}`)
-
-  // continuation: an answer cut by the output limit carries on, at most twice
-  bodies.length = 0
-  script.push({ chunks: [{ choices: [{ delta: { content: 'Step 1. Step 2' }, finish_reason: 'length' }] }] })
-  script.push({ chunks: [{ choices: [{ delta: { content: '. Step 3' }, finish_reason: 'length' }] }] })
-  script.push({ chunks: [{ choices: [{ delta: { content: '. Done.' }, finish_reason: 'stop' }] }] })
-  const a6 = await runAgent(admin, 'long', [], async () => {})
-  check('a cut-off answer is continued to the end', a6 === 'Step 1. Step 2. Step 3. Done.' && bodies.length === 3, JSON.stringify(a6))
-  check('the continuation asks to carry on, without tools', JSON.stringify(bodies[1]!.messages).includes('Continue exactly where you stopped') && bodies[1]!.tools === undefined)
-  bodies.length = 0
-  for (let i = 0; i < 4; i++) script.push({ chunks: [{ choices: [{ delta: { content: `p${i}` }, finish_reason: 'length' }] }] })
-  await runAgent(admin, 'endless', [], async () => {})
-  check('continuations are capped', bodies.length === 3, String(bodies.length))
-  script.length = 0
-
   // 2b. public intel without the database
   const tool = (n: string) => TOOLS.find(x => x.name === n)!
   const t1059 = await runTool(admin, tool('lookup_attack_technique'), { query: 'T1059' }) as { name?: string; sub_techniques?: unknown[] }
@@ -174,8 +111,6 @@ async function main() {
   const before2 = recorded.length
   await runTool({ ...admin, tenantId: undefined }, tool('list_alerts'), {})
   check('tenant admin without a tenant reads nothing', recorded.slice(before2).every(r => /\bfalse\b/.test(r.sql)), recorded.slice(before2).map(r => r.sql.slice(0, 80)).join(' | '))
-  const big = resultText({ rows: Array.from({ length: 2000 }, (_, i) => ({ i, text: 'x'.repeat(20) })) })
-  check('oversized tool result stays valid JSON', big.length <= 6000 && JSON.parse(big).truncated === true, String(big.length))
   check('internal data guard', [
     internalDataIn({ q: '192.168.1.5' }), internalDataIn({ q: 'fe80::1' }), internalDataIn({ q: 'aa:bb:cc:dd:ee:ff' }),
     internalDataIn({ q: 'a@b.com' }), internalDataIn({ q: 'CVE-2024-3094 openssl 3.0.1' }), internalDataIn({ q: '8.8.8.8' }),
@@ -200,21 +135,7 @@ async function main() {
   const refused = await ext.find(x => x.name === 'ext_self_search_assets')!.call({ query: '10.0.0.12' }) as { error?: string }
   check('external: private IP never sent', /private network address/.test(refused.error ?? ''), JSON.stringify(refused))
 
-  bodies.length = 0
-  script.push({ chunks: [toolCall(0, 'ext_self_lookup_cwe', { cwe_id: '79' })] })
-  script.push({ chunks: [{ choices: [{ delta: { content: 'XSS.' } }] }] })
-  const realFetch = globalThis.fetch
-  const ev5: Array<Record<string, unknown>> = []
-  await runAgent({ ...admin, env: extEnv }, 'what is cwe 79 via the external server', [], async e => { ev5.push(e) }, extFetch)
-  globalThis.fetch = realFetch
-  check('agent offers and calls external tools', JSON.stringify(bodies[0]!.tools).includes('ext_self_lookup_cwe') && JSON.stringify(bodies[1]!.messages).includes('Cross-site'))
-  const boEnv = { ...admin, env: extEnv, user: { ...admin.user, role: 'business_owner' } }
-  bodies.length = 0
-  script.push({ chunks: [{ choices: [{ delta: { content: 'ok' } }] }] })
-  await runAgent(boEnv, 'x', [], async () => {}, extFetch)
-  check('business_owner gets no external tools', !JSON.stringify(bodies[0]!.tools ?? []).includes('ext_self'))
-
-  // 4. MCP server over Streamable HTTP
+  // 3. MCP server over Streamable HTTP
   const server = buildMcpServer(admin)
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   await server.connect(transport)

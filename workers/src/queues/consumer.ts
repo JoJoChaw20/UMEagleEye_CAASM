@@ -10,7 +10,7 @@ import { runDriftAudit } from '../services/drift'
 import { runServiceCves, type ServiceCveJob } from '../services/serviceCves'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
-import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
+import { handleKgSyncMessages, signalKgSyncSafe } from '../kg/sync'
 import { recordJob } from '../kg/perf'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
 
@@ -86,7 +86,8 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
 
   for (const message of batch.messages) {
     const job = message.body as Job
-    if ((job as { type?: string })?.type === 'drift_check') continue
+    const handledApart = (job as { type?: string })?.type
+    if (handledApart === 'drift_check' || handledApart === 'kg_sync') continue
 
     const jobStart = Date.now()
     const jobName = String((job as { type?: string })?.type ?? 'unknown').slice(0, 40)
@@ -157,9 +158,6 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         }
         wrote = true
         message.ack()
-      } else if (job.type === 'kg_sync') {
-        await runKgSyncJob(env)
-        message.ack()
       } else {
         message.ack()
       }
@@ -170,6 +168,9 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
       message.retry()
     }
   }
+
+  // Last, so the sync's request budget cannot take subrequests from the jobs above.
+  await handleKgSyncMessages(env, batch.messages.filter(m => (m.body as { type?: string })?.type === 'kg_sync'))
 
   if (wrote) await signalKgSyncSafe(env)
 }
