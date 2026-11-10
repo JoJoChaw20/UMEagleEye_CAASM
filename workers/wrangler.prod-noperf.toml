@@ -1,0 +1,127 @@
+# Production deploy config WITHOUT the Analytics Engine PERF binding.
+# The Cloudflare account has Analytics Engine disabled, so wrangler.toml fails with code 10089.
+# Deploy: npx wrangler deploy -c wrangler.prod-noperf.toml --env=""  (remove once Analytics Engine is enabled)
+
+name = "umeagleeye-api"
+main = "src/index.ts"
+account_id = "6952d86b33a173095e02adcf78bc6fe1"
+compatibility_date = "2024-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# ── Workers Logs: keeps console output and uncaught errors of each request (dashboard → Logs) ──
+[observability]
+enabled = true
+
+# ── R2 bucket for PDF reports ──
+[[r2_buckets]]
+binding = "REPORTS_BUCKET"
+bucket_name = "umeagleeye-reports"
+
+# ── KV for rate-limiting / short-lived caches ──
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "d4fd3c299a5d4d4ab7e3d9061367f78e"
+
+# ── Queue: advisory generation jobs ──
+[[queues.producers]]
+queue = "advisory-queue"
+binding = "ADVISORY_QUEUE"
+
+[[queues.consumers]]
+queue = "advisory-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 2
+
+# ── Queue: PDF report generation jobs ──
+[[queues.producers]]
+queue = "report-queue"
+binding = "REPORT_QUEUE"
+
+[[queues.consumers]]
+queue = "report-queue"
+max_batch_size = 5
+max_batch_timeout = 60
+max_retries = 2
+
+# ── Cron triggers ──
+# Times are UTC; Malaysia (MYT) = UTC+8
+[triggers]
+crons = [
+  "0 */6 * * *",   # Drift audit every 6 h (scans already trigger drift; this is a safety net)
+  "0 22 * * *",    # CTI ingestion 6:00 AM MYT
+  "0 16 * * *",    # Posture snapshot + data retention, midnight MYT
+]
+
+# ── Secrets (set via: wrangler secret put VAR_NAME) ──
+# DATABASE_URL       — Neon PostgreSQL connection string
+# JWT_SECRET_KEY     — HS256 signing secret (min 32 chars)
+# GOOGLE_CLIENT_ID   — Google OAuth client ID
+# OPENROUTER_API_KEY — DeepSeek via OpenRouter
+# OTX_API_KEY        — AlienVault OTX
+# THREATFOX_API_KEY  — ThreatFox
+# NVD_API_KEY        — NIST NVD (optional; not used by any job at present)
+# TELEGRAM_BOT_TOKEN — Telegram bot
+# TELEGRAM_CHAT_ID   — Default notification chat
+
+[vars]
+APP_ENV = "production"
+OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
+SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
+JWT_EXPIRE_MINUTES = "1440"
+FRONTEND_URL = "https://umeagleeye.csnet.my"
+
+[ai]
+binding = "AI"
+
+[env.staging]
+name = "umeagleeye-api-staging"
+
+# No cron triggers on staging (crons are inheritable, so override with none).
+[env.staging.triggers]
+crons = []
+
+[env.staging.observability]
+enabled = true
+
+[env.staging.vars]
+APP_ENV = "staging"
+OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
+SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
+JWT_EXPIRE_MINUTES = "1440"
+FRONTEND_URL = "https://staging.umeagleeye.pages.dev"
+
+[[env.staging.r2_buckets]]
+binding = "REPORTS_BUCKET"
+bucket_name = "umeagleeye-reports-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "KV_CACHE"
+id = "c0db1f597ef14d7aa15aa7320c3eb2e3"
+
+[[env.staging.queues.producers]]
+queue = "advisory-queue-staging"
+binding = "ADVISORY_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "advisory-queue-staging"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 2
+
+[[env.staging.queues.producers]]
+queue = "report-queue-staging"
+binding = "REPORT_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "report-queue-staging"
+max_batch_size = 5
+max_batch_timeout = 60
+max_retries = 2
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.analytics_engine_datasets]]
+binding = "PERF"
+dataset = "umeagleeye_perf_staging"
