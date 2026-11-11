@@ -5,8 +5,8 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { agents, assets, networkLinks } from '../db/schema'
-import { buildNetworkMap, type MapDevice, type MapHost, type MapLink } from '../lib/networkMap'
-import { buildMapNetworks, type AssetAlerts, type GatewaySighting, type NetAddress, type NetAgent } from '../lib/mapNetworks'
+import { buildNetworkMap, type MapDevice, type MapHost, type MapLink, type MapNode } from '../lib/networkMap'
+import { buildMapNetworks, placeMeasured, type AssetAlerts, type GatewaySighting, type NetAddress, type NetAgent } from '../lib/mapNetworks'
 import { policyOf, reportedOf, tenantPolicies } from './agentPolicy'
 
 type Db = ReturnType<typeof getDb>
@@ -43,14 +43,16 @@ export async function loadNetworkMap(db: Db, tenantId: string) {
 
 /** The tenant's networks: each with its gateway, the agents watching it and its devices
  *  (current addresses seen in the last MAP_DAYS), with their open CVE and exposure alerts. */
-export async function loadMapNetworks(db: Db, tenantId: string) {
+export async function loadMapNetworks(db: Db, tenantId: string, measured: MapNode[]) {
   const [addressRows, agentRows, sightingRows, alertRows, policies] = await Promise.all([
     db.execute(sql`
       SELECT aa.asset_id, aa.network_key, aa.ip_address AS ip, aa.mac_address AS mac, aa.last_seen,
              COALESCE(NULLIF(a.hostname, ''), a.ip_address) AS label, a.device_type, a.criticality_score,
              a.in_my_assets,
-             (a.network_location IS NOT NULL
-               AND (a.network_location ->> 'seen_at')::timestamptz > now() - make_interval(days => ${MAP_DAYS})) AS measured
+             ((a.network_location IS NOT NULL
+                AND (a.network_location ->> 'seen_at')::timestamptz > now() - make_interval(days => ${MAP_DAYS}))
+              OR (a.network_device IS NOT NULL
+                AND (a.network_device ->> 'seen_at')::timestamptz > now() - make_interval(days => ${MAP_DAYS}))) AS measured
       FROM asset_addresses aa JOIN assets a ON a.asset_id = aa.asset_id
       WHERE aa.tenant_id = ${tenantId} AND aa.ended_at IS NULL AND aa.network_key IS NOT NULL
         AND aa.last_seen > now() - make_interval(days => ${MAP_DAYS})
@@ -110,5 +112,5 @@ export async function loadMapNetworks(db: Db, tenantId: string) {
     cve_open: Number(r.cve_open), cve_critical: Number(r.cve_critical), cve_high: Number(r.cve_high), kev: Number(r.kev),
     exposure_open: Number(r.exposure_open), exposure_severity: SEVERITY[Number(r.exposure_rank ?? 0)] ?? null,
   }]))
-  return buildMapNetworks(addresses, netAgents, sightings, alerts)
+  return placeMeasured(buildMapNetworks(addresses, netAgents, sightings, alerts), measured)
 }

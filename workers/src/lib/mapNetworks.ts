@@ -1,8 +1,9 @@
 // The tenant's networks as its agents see them, for the Network map (GET /network/map
 // `networks`): one entry per network (an address range, asset_addresses.network_key), with its
 // gateway, the agents that watch it and the devices on it. Pure; services/networkMap.ts loads
-// the inputs. The measured layer (routers, switches, cables: lib/networkMap.ts) stays as it is;
-// a device placed on a measured switch port is counted here but drawn there.
+// the inputs. placeMeasured then puts each tree the network agents measured (routers, switches,
+// cables: lib/networkMap.ts) into the network its router is on, and folds the ranges behind that
+// router (seen only through it) into the same network as its subnets.
 //
 // A network is identified by its range. When two gateways with different MACs answer at the
 // same gateway address in one range, it is probably two sites using the same range (a home and
@@ -11,6 +12,7 @@
 
 import { cidrContainsIp, cidrStrictlyContains, parseCidr, parseIpv4, type Cidr } from './networkScope'
 import { normalizeMac } from './mac'
+import type { MapNode } from './networkMap'
 
 /** A current address of a device (asset_addresses, ended_at null), with its asset's facts. */
 export interface NetAddress {
@@ -23,7 +25,7 @@ export interface NetAddress {
   device_type: string | null
   criticality: number | null
   in_my_assets: boolean
-  measured: boolean                 // placed on a switch port by a network agent (drawn in the measured layer)
+  measured: boolean                 // read or placed by a network agent (drawn in the measured tree)
 }
 
 export interface NetAgent {
@@ -54,6 +56,9 @@ export interface NetworkDevice {
 
 export interface MapNetwork {
   key: string
+  title: string | null              // a network known only from a measured tree, with no range of its own
+  subnets: string[]                 // other ranges reached only through this network's measured router
+  measured_roots: string[]          // ids of the measured trees (lib/networkMap.ts nodes) drawn in this network
   gateway: { ip: string; mac: string | null; asset_id: string | null; label: string | null } | null
   gateway_macs: string[]            // more than one: probably two sites on the same range
   agents: { agent_id: string; name: string; listens: boolean; scans: boolean }[]
@@ -141,7 +146,7 @@ export function buildMapNetworks(
 
     const listens = watchers.some((a) => a.listens), scans = watchers.some((a) => a.scans)
     out.push({
-      key,
+      key, title: null, subnets: [], measured_roots: [],
       gateway: gatewayIp ? { ip: gatewayIp, mac: gatewayMac, asset_id: gatewayRow?.asset_id ?? null, label: gatewayRow?.label ?? null } : null,
       gateway_macs: gatewayMacs,
       agents: watchers.map((a) => ({ agent_id: a.agent_id, name: a.name, listens: a.listens, scans: a.scans })),
@@ -156,4 +161,61 @@ export function buildMapNetworks(
   // Networks an agent watches first, then the biggest.
   return out.sort((x, y) => Number(y.agents.length > 0) - Number(x.agents.length > 0)
     || y.device_count - x.device_count || x.key.localeCompare(y.key))
+}
+
+/** Each measured tree (a router or switch and everything under it) goes into the network its
+ *  root is on, else the one holding most of its addresses, else a network of its own. A network
+ *  that no computer agent watches and whose devices all belong to one tree is folded into that
+ *  tree's network as a subnet (the VLANs behind a router). The trees themselves are drawn by the
+ *  page from GET /network/map nodes and edges. */
+export function placeMeasured(networks: MapNetwork[], nodes: MapNode[]): MapNetwork[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const rootOf = (n: MapNode): string => {
+    let cur = n
+    for (let i = 0; i < 64 && cur.parent && byId.has(cur.parent); i++) cur = byId.get(cur.parent)!
+    return cur.id
+  }
+  const trees = new Map<string, MapNode[]>()
+  for (const n of nodes) {
+    const r = rootOf(n)
+    trees.set(r, [...(trees.get(r) ?? []), n])
+  }
+
+  const out = networks.map((n) => ({ ...n, subnets: [...n.subnets], measured_roots: [...n.measured_roots] }))
+  const cidrs = new Map(out.map((n) => [n.key, parseCidr(n.key)]))
+  const holds = (n: MapNetwork, ip: string | null) => {
+    const c = cidrs.get(n.key), v = parseIpv4(ip)
+    return !!c && v !== null && cidrContainsIp(c, v)
+  }
+  const removed = new Set<string>()
+  for (const [rootId, members] of trees) {
+    const root = byId.get(rootId)!
+    const ips = members.map((m) => m.ip).filter((ip): ip is string => !!ip)
+    let home = out.find((n) => holds(n, root.ip))
+    if (!home) {
+      const scored = out.map((n) => ({ n, hits: ips.filter((ip) => holds(n, ip)).length })).filter((x) => x.hits > 0)
+      home = scored.sort((a, b) => b.hits - a.hits || a.n.key.localeCompare(b.n.key))[0]?.n
+    }
+    if (!home) {
+      home = {
+        key: `measured:${rootId}`, title: root.label, subnets: [], measured_roots: [], gateway: null, gateway_macs: [],
+        agents: [], phones: [], coverage: 'none', device_count: 0, measured_count: 0, devices: [], last_seen: root.seen_at,
+      }
+      out.push(home)
+    }
+    home.measured_roots.push(rootId)
+
+    const inTree = new Set(members.map((m) => m.asset_id).filter(Boolean))
+    for (const n of out) {
+      if (n === home || removed.has(n.key) || n.agents.length > 0 || n.measured_roots.length > 0 || n.device_count === 0) continue
+      if (n.device_count > n.devices.length || !n.devices.every((d) => inTree.has(d.asset_id))) continue
+      removed.add(n.key)
+      home.subnets.push(n.key)
+      home.devices.push(...n.devices)               // drawn in the tree; kept for their alerts
+      home.device_count += n.device_count
+      home.measured_count += n.measured_count
+      home.last_seen = later(home.last_seen, n.last_seen)
+    }
+  }
+  return out.filter((n) => !removed.has(n.key))
 }

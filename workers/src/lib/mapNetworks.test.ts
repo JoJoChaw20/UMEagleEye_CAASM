@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildMapNetworks, type AssetAlerts, type NetAddress, type NetAgent } from './mapNetworks'
+import { buildMapNetworks, placeMeasured, type AssetAlerts, type NetAddress, type NetAgent } from './mapNetworks'
+import type { MapNode } from './networkMap'
 
 const at = '2026-11-11T08:00:00Z'
 const addr = (asset_id: string, ip: string, extra: Partial<NetAddress> = {}): NetAddress => ({
@@ -74,4 +75,34 @@ test('devices on measured switch ports are counted, and the list is capped', () 
     { network_key: '10.1.0.0/16', measured: i < 5 }))
   const [n] = buildMapNetworks(many, [], [], new Map())
   assert.deepEqual([n!.device_count, n!.devices.length, n!.measured_count], [520, 500, 5])
+})
+
+const node = (id: string, kind: MapNode['kind'], ip: string | null, parent: string | null, asset_id: string | null = id): MapNode => ({
+  id, kind, label: id, asset_id, ip, mac: null, device_type: null, detail: null, vlan: null, criticality: null,
+  seen_at: at, parent, depth: parent ? 1 : 0,
+})
+
+test('a measured tree goes into the network its router is on, and the ranges seen only through it fold in', () => {
+  const nets = buildMapNetworks(
+    [addr('ubuntu', '10.99.0.50', { network_key: '10.99.0.0/24' }), addr('R1', '10.99.0.1', { network_key: '10.99.0.0/24', measured: true }),
+      addr('SW1', '10.10.99.2', { network_key: '10.10.99.0/24', measured: true }),
+      addr('pc1', '10.10.10.11', { network_key: '10.10.10.0/24', measured: true }),
+      addr('pc2', '10.10.20.21', { network_key: '10.10.20.0/24', measured: true }),
+      addr('lonely', '10.10.20.99', { network_key: '10.10.20.0/24' })],             // not in the tree: 10.10.20 stays
+    [agent('ubuntu-agent', { networks: ['10.99.0.0/24'], default_gateway: '10.99.0.1', host_asset_id: 'ubuntu' })], [], new Map(),
+  )
+  const tree = [node('R1', 'router', '10.99.0.1', null), node('SW1', 'switch', '10.10.99.2', 'R1'),
+    node('pc1', 'device', '10.10.10.11', 'SW1'), node('pc2', 'device', '10.10.20.21', 'SW1')]
+  const placed = placeMeasured(nets, tree)
+  const home = placed.find((n) => n.key === '10.99.0.0/24')!
+  assert.deepEqual(home.measured_roots, ['R1'])
+  assert.deepEqual(home.subnets.sort(), ['10.10.10.0/24', '10.10.99.0/24'])
+  assert.deepEqual(placed.map((n) => n.key).sort(), ['10.10.20.0/24', '10.99.0.0/24'])
+  assert.equal(home.device_count, 3)                          // ubuntu (R1 is its gateway) and the folded subnets' 2
+  assert.deepEqual(home.devices.map((d) => d.asset_id).sort(), ['SW1', 'pc1', 'ubuntu'])
+})
+
+test('a measured tree no agent network holds gets a network of its own', () => {
+  const placed = placeMeasured([], [node('core', 'switch', '172.20.0.2', null), node('x', 'device', null, 'core')])
+  assert.deepEqual(placed.map((n) => [n.key, n.title, n.measured_roots]), [['measured:core', 'core', ['core']]])
 })

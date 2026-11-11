@@ -238,12 +238,12 @@ app.get('/map', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) => 
   }
   try {
     const db = getDb(c.env.DATABASE_URL)
-    const [map, networks, netAgents] = await Promise.all([
+    const [map, netAgents] = await Promise.all([
       loadNetworkMap(db, tenantId),
-      loadMapNetworks(db, tenantId),
       db.select({ agentId: agents.agentId, name: agents.name, lastHeartbeat: agents.lastHeartbeat }).from(agents)
         .where(and(eq(agents.tenantId, tenantId), eq(agents.kind, 'network'), isNull(agents.retiredAt))),
     ])
+    const networks = await loadMapNetworks(db, tenantId, map.nodes)
     return c.json({
       ...map, networks, days: MAP_DAYS,
       agents: netAgents.map((a) => ({ agent_id: a.agentId, name: a.name, last_heartbeat: a.lastHeartbeat })),

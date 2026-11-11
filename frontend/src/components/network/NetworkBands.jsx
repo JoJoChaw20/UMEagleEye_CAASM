@@ -1,11 +1,14 @@
 // Every network the tenant's agents see (GET /network/map `networks`, workers/src/lib/mapNetworks.ts),
-// one band each, stacked: the internet, the network's gateway, then its devices. A band opens in
-// place to show all its devices grouped by type. Dotted line: the route to the internet; dashed:
-// seen by an agent (the measured cables are in the Routers and switches section below).
+// one band each, stacked: the internet, the network's gateway, then what is on it. Where a network
+// agent reads the routers and switches, their tree is drawn in the band of the network the router
+// is on (solid line: a measured cable or switch port; dashed: a VLAN whose switch port is not
+// known, or a device an agent saw on the network; dotted: the route to the internet). A band opens
+// in place to show all its devices.
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle, ChevronDown, ChevronRight, Cpu, ExternalLink, Eye, Globe, HelpCircle, Layers, Monitor, Network,
-  Router, Server, Smartphone, X, Zap,
+  AlertTriangle, ChevronDown, ChevronRight, CircleDashed, Cpu, ExternalLink, Eye, Globe, HelpCircle, Layers, Monitor,
+  Network, Router, Server, Smartphone, X, Zap,
 } from 'lucide-react'
 import { TONE } from '../common/alertMeta'
 import { formatSeen } from '../../utils/time'
@@ -16,7 +19,7 @@ export const COLOUR_MODES = [
   { id: 'exposure', label: 'Exposure' },
 ]
 
-const COLLAPSED = 3                      // devices a closed band shows
+const COLLAPSED = 3                      // devices a closed band (or switch) shows
 const TYPE_ORDER = ['server', 'workstation', 'network', 'mobile', 'iot', 'unknown']
 const TYPE_LABEL = {
   server: 'Servers', workstation: 'Workstations', network: 'Network devices', mobile: 'Phones and tablets',
@@ -26,8 +29,16 @@ const TYPE_ICON = { server: Server, workstation: Monitor, network: Network, mobi
 const TYPE_TONE = {
   server: 'text-series-3', workstation: 'text-series-2', network: 'text-series-1', mobile: 'text-series-6', iot: 'text-series-5',
 }
+const NODE_META = {
+  router: { icon: Router, tone: 'text-series-1', label: 'Router' },
+  switch: { icon: Network, tone: 'text-series-2', label: 'Switch' },
+  neighbour: { icon: CircleDashed, tone: 'text-dark-400', label: 'Not read (neighbour)', dashed: true },
+  vlan: { icon: Layers, tone: 'text-series-5', label: 'VLAN, switch port not known', dashed: true },
+}
+const NO_ALERTS = { cve_open: 0, cve_critical: 0, cve_high: 0, kev: 0, exposure_open: 0, exposure_severity: null }
 const fmt = (n) => Number(n).toLocaleString()
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`
+const GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(200px,100%),1fr))]'
 
 /** How a device looks in a colour mode: its tone (TONE entry or null), a line of text, a dashed outline. */
 export function deviceLook(d, mode) {
@@ -48,38 +59,50 @@ export function deviceLook(d, mode) {
   return { tone: null, line: null }
 }
 
-function coverageOf(net) {
-  if (net.coverage === 'none') {
-    return { text: 'No computer agent on this network', cls: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/40', Icon: AlertTriangle }
+/** The measured trees as the page needs them: nodes by id, children by parent, the edge between
+ *  a parent and a child, and each tree's node ids by its root. */
+export function treeIndex(map) {
+  const nodes = new Map(map.nodes.map((n) => [n.id, n]))
+  const children = new Map()
+  for (const n of map.nodes) if (n.parent && nodes.has(n.parent)) children.set(n.parent, [...(children.get(n.parent) ?? []), n.id])
+  const edge = new Map()
+  for (const e of map.edges) {
+    edge.set(`${e.from}>${e.to}`, { kind: e.kind, parentPort: e.from_port, childPort: e.to_port })
+    edge.set(`${e.to}>${e.from}`, { kind: e.kind, parentPort: e.to_port, childPort: e.from_port })
   }
-  const what = net.coverage === 'watched' ? 'listens and scans' : net.coverage === 'listen_only' ? 'listens only' : 'scans only'
-  return { text: `${plural(net.agents.length, 'agent')} · ${what}`, cls: 'text-eagle-400 bg-eagle-500/10 border-eagle-500/30', Icon: Eye }
+  const members = new Map()
+  const rootOf = (n) => { let c = n; for (let i = 0; i < 64 && c.parent && nodes.has(c.parent); i++) c = nodes.get(c.parent); return c.id }
+  for (const n of map.nodes) { const r = rootOf(n); members.set(r, [...(members.get(r) ?? []), n.id]) }
+  return { nodes, children, edge, members }
 }
 
-function NodeBox({ icon: Icon, tone = 'text-dark-400', title, sub, mono = true, onClick, selected, label }) {
+function NodeBox({ icon: Icon, tone = 'text-dark-400', title, sub, mono = true, onClick, selected, dashed, label, extra }) {
   const body = (
     <>
       <Icon className={`w-5 h-5 flex-shrink-0 ${tone}`} aria-hidden="true" />
       <span className="min-w-0 text-left">
         <span className="block text-sm font-semibold text-dark-50 truncate">{title}</span>
         {sub && <span className={`block text-[11px] text-dark-400 truncate ${mono ? 'font-mono' : ''}`}>{sub}</span>}
+        {extra && <span className="block text-[11px] text-dark-400 truncate font-mono">{extra}</span>}
       </span>
     </>
   )
-  const cls = `w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border bg-dark-800 ${selected ? 'border-eagle-500 ring-2 ring-eagle-500/30' : 'border-dark-700/80'}`
+  const cls = `w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border bg-dark-800 ${selected ? 'border-eagle-500 ring-2 ring-eagle-500/30'
+    : dashed ? 'border-dashed border-dark-500/70' : 'border-dark-700/80'}`
   return onClick
     ? <button type="button" onClick={onClick} aria-label={label} className={`${cls} hover:border-eagle-500/60`}>{body}</button>
     : <div className={cls}>{body}</div>
 }
 
-function DeviceCard({ d, mode, selected, onSelect }) {
+function DeviceCard({ d, mode, selected, onSelect, port, match }) {
   const look = deviceLook(d, mode)
   const Icon = TYPE_ICON[d.device_type] ?? HelpCircle
   const border = look.tone ? look.tone.border : look.dashed ? 'border-dashed border-dark-500/70' : 'border-dark-700/80'
-  const tags = [d.agent === 'host' && 'its own agent', d.agent === 'mobile' && 'phone app', d.measured && 'on a switch port'].filter(Boolean)
+  const tags = [port && `port ${port}`, d.agent === 'host' && 'its own agent', d.agent === 'mobile' && 'phone app'].filter(Boolean)
   return (
     <button type="button" onClick={() => onSelect(d)} aria-pressed={selected}
-      className={`w-full text-left flex items-start gap-2.5 px-3 py-2 rounded-lg border ${look.tone ? look.tone.bg : 'bg-dark-800'} ${border} ${selected ? 'ring-2 ring-eagle-500/50' : ''} hover:border-eagle-500/60`}>
+      className={`w-full text-left flex items-start gap-2.5 px-3 py-2 rounded-lg border ${look.tone ? look.tone.bg : 'bg-dark-800'} ${border}
+        ${selected ? 'ring-2 ring-eagle-500/50' : match ? 'ring-2 ring-accent-amber/60' : ''} hover:border-eagle-500/60`}>
       <Icon className={`w-[18px] h-[18px] mt-0.5 flex-shrink-0 ${look.tone ? look.tone.text : TYPE_TONE[d.device_type] ?? 'text-dark-400'}`} aria-hidden="true" />
       <span className="min-w-0">
         <span className="block text-sm font-semibold text-dark-50 truncate" title={d.label}>{d.label}</span>
@@ -92,37 +115,112 @@ function DeviceCard({ d, mode, selected, onSelect }) {
   )
 }
 
-const GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(210px,100%),1fr))]'
+function MoreButton({ count, sub, onClick }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border border-dashed border-dark-500/70 bg-dark-800 hover:border-eagle-500/60 text-left">
+      <Layers className="w-[18px] h-[18px] text-dark-400" aria-hidden="true" />
+      <span><span className="block text-sm font-semibold text-dark-50">{count}</span><span className="block text-xs text-dark-400">{sub}</span></span>
+    </button>
+  )
+}
 
-export function NetworkBand({ net, devices, mode, open, onToggle, selection, onSelectNetwork, onSelectDevice }) {
-  const cov = coverageOf(net)
+// One router, switch, neighbour or VLAN group of a measured tree, and what hangs under it.
+function TreeNode({ id, parentId, ctx }) {
+  const n = ctx.tree.nodes.get(id)
+  const meta = NODE_META[n.kind] ?? NODE_META.neighbour
+  const kids = ctx.tree.children.get(id) ?? []
+  const infra = kids.filter((k) => ctx.tree.nodes.get(k).kind !== 'device')
+  const devs = kids.filter((k) => ctx.tree.nodes.get(k).kind === 'device')
+  const link = parentId ? ctx.tree.edge.get(`${parentId}>${id}`) : null
+  const parent = parentId ? ctx.tree.nodes.get(parentId) : null
+  const uplink = link?.kind === 'cable' && (link.childPort || link.parentPort)
+    ? `${link.childPort ?? '?'} to ${parent?.label ?? '?'} ${link.parentPort ?? '?'}` : null
+  const showDevs = ctx.open || ctx.openNodes.has(id) || devs.length <= COLLAPSED || devs.some((k) => ctx.matches.has(k))
+  const ports = new Set(devs.map((k) => ctx.tree.edge.get(`${id}>${k}`)?.parentPort).filter(Boolean))
+  return (
+    <div className="space-y-2">
+      <div className="max-w-xs">
+        <NodeBox icon={meta.icon} tone={meta.tone} title={n.label} sub={n.ip ?? n.detail} extra={uplink} dashed={meta.dashed}
+          selected={ctx.selection?.type === 'node' && ctx.selection.id === id} onClick={() => ctx.onSelectNode(n)}
+          label={`${meta.label} ${n.label}`} />
+      </div>
+      {kids.length > 0 && (
+        <div className={`ml-4 pl-4 border-l-2 space-y-2 ${n.kind === 'vlan' ? 'border-dashed border-eagle-500/50' : 'border-eagle-500/70'}`}>
+          {infra.map((k) => <TreeNode key={k} id={k} parentId={id} ctx={ctx} />)}
+          {devs.length > 0 && (showDevs ? (
+            <div className={GRID}>
+              {devs.map((k) => {
+                const node = ctx.tree.nodes.get(k)
+                const d = ctx.deviceOf(node)
+                return <DeviceCard key={k} d={d} mode={ctx.mode} port={ctx.tree.edge.get(`${id}>${k}`)?.parentPort}
+                  selected={ctx.selection?.type === 'device' && ctx.selection.asset_id === d.asset_id}
+                  match={ctx.matches.has(k)} onSelect={ctx.onSelectDevice} />
+              })}
+            </div>
+          ) : (
+            <div className={GRID}>
+              <MoreButton count={plural(devs.length, 'device')} sub={n.kind === 'vlan' ? 'port not known' : `on ${plural(ports.size, 'port')}`}
+                onClick={() => ctx.toggleNode(id)} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function coverageChips(net) {
+  const chips = []
+  if (net.agents.length > 0) {
+    const what = net.coverage === 'watched' ? 'listens and scans' : net.coverage === 'listen_only' ? 'listens only' : net.coverage === 'scan_only' ? 'scans only' : 'neither'
+    chips.push({ text: `${plural(net.agents.length, 'agent')} · ${what}`, cls: 'text-eagle-400 bg-eagle-500/10 border-eagle-500/30', Icon: Eye })
+  }
+  if (net.measured_roots.length > 0) chips.push({ text: 'Measured by a network agent', cls: 'text-eagle-400 bg-eagle-500/10 border-eagle-500/30', Icon: Network })
+  if (chips.length === 0) chips.push({ text: 'No computer agent on this network', cls: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/40', Icon: AlertTriangle })
+  return chips
+}
+
+export function NetworkBand({ net, devices, mode, open, onToggle, selection, onSelectNetwork, onSelectDevice, onSelectNode, tree, deviceOf, matches }) {
+  const [openNodes, setOpenNodes] = useState(() => new Set())
   const netSelected = selection?.type === 'network' && selection.key === net.key
-  const isSelected = (d) => selection?.type === 'device' && selection.key === net.key && selection.asset_id === d.asset_id
-  const shown = open ? devices : devices.slice(0, COLLAPSED)
-  const hidden = net.device_count - shown.length
+  // devices drawn in this network's measured trees are not listed again as loose cards
+  const inTrees = new Set(net.measured_roots.flatMap((r) => (tree.members.get(r) ?? []).map((id) => tree.nodes.get(id)?.asset_id)).filter(Boolean))
+  const loose = devices.filter((d) => !inTrees.has(d.asset_id))
+  const shown = open ? loose : loose.slice(0, COLLAPSED)
+  const hidden = loose.length - shown.length
   const groups = open
-    ? TYPE_ORDER.map((t) => ({ t, items: devices.filter((d) => (TYPE_LABEL[d.device_type] ? d.device_type : 'unknown') === t) }))
-      .filter((g) => g.items.length)
+    ? TYPE_ORDER.map((t) => ({ t, items: loose.filter((d) => (TYPE_LABEL[d.device_type] ? d.device_type : 'unknown') === t) })).filter((g) => g.items.length)
     : [{ t: null, items: shown }]
+  const ctx = {
+    tree, mode, open, openNodes, matches, selection, deviceOf,
+    toggleNode: (id) => setOpenNodes((s) => { const t = new Set(s); if (t.has(id)) t.delete(id); else t.add(id); return t }),
+    onSelectNode: (n) => onSelectNode(net, n), onSelectDevice: (d) => onSelectDevice(net, d),
+  }
+  const title = net.title ?? net.key
+  const unwatched = net.coverage === 'none' && net.measured_roots.length === 0
 
   return (
-    <section aria-label={`Network ${net.key}`}
+    <section aria-label={`Network ${title}`}
       className={`rounded-xl border p-4 space-y-3 ${netSelected ? 'border-eagle-500 ring-1 ring-eagle-500/30 bg-eagle-500/5'
-        : net.coverage === 'none' ? 'border-dashed border-yellow-500/50 bg-dark-800' : 'border-dark-700/80 bg-dark-850'}`}>
+        : unwatched ? 'border-dashed border-yellow-500/50 bg-dark-800' : 'border-dark-700/80 bg-dark-850'}`}>
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <button type="button" onClick={() => onSelectNetwork(net)} className="text-left group">
-          <span className="block text-sm font-semibold text-dark-50 group-hover:text-eagle-400 font-mono">{net.key}</span>
+        <button type="button" onClick={() => onSelectNetwork(net)} className="text-left group min-w-0">
+          <span className={`block text-sm font-semibold text-dark-50 group-hover:text-eagle-400 ${net.title ? '' : 'font-mono'}`}>{title}</span>
           <span className="block text-xs text-dark-400">
-            {plural(net.device_count, 'device')}{net.last_seen && ` · seen ${formatSeen(net.last_seen).text}`}
+            {plural(net.device_count, 'device')}
+            {net.subnets.length > 0 && <> · with <span className="font-mono">{net.subnets.join(', ')}</span></>}
+            {net.last_seen && ` · seen ${formatSeen(net.last_seen).text}`}
           </span>
         </button>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${cov.cls}`}>
-            <cov.Icon className="w-3.5 h-3.5" aria-hidden="true" /> {cov.text}
-          </span>
+          {coverageChips(net).map((c) => (
+            <span key={c.text} className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${c.cls}`}>
+              <c.Icon className="w-3.5 h-3.5" aria-hidden="true" /> {c.text}
+            </span>
+          ))}
           {net.device_count > 0 && (
-            <button type="button" onClick={() => onToggle(net.key)} aria-expanded={open}
-              className="btn-secondary text-xs inline-flex items-center gap-1">
+            <button type="button" onClick={() => onToggle(net.key)} aria-expanded={open} className="btn-secondary text-xs inline-flex items-center gap-1">
               {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
               {open ? 'Close' : 'Open'}
             </button>
@@ -133,12 +231,14 @@ export function NetworkBand({ net, devices, mode, open, onToggle, selection, onS
       <div className="flex flex-wrap gap-x-6 gap-y-3 items-start">
         <div className="w-44 flex-shrink-0 flex flex-col items-stretch">
           <NodeBox icon={Globe} title="Internet" />
-          <div className="mx-auto h-5 border-l-2 border-dotted border-dark-500" aria-hidden="true" />
-          {net.gateway ? (
-            <NodeBox icon={Router} tone="text-series-1" title={net.gateway.label && net.gateway.label !== net.gateway.ip ? net.gateway.label : 'Gateway'}
-              sub={net.gateway.ip} onClick={() => onSelectNetwork(net)} label={`Gateway ${net.gateway.ip}`} />
-          ) : (
-            <NodeBox icon={Router} title="Gateway not known" sub="no agent reported one" mono={false} />
+          {(net.gateway || net.measured_roots.length === 0) && (
+            <>
+              <div className="mx-auto h-4 border-l-2 border-dotted border-dark-500" aria-hidden="true" />
+              {net.gateway ? (
+                <NodeBox icon={Router} tone="text-series-1" sub={net.gateway.ip} onClick={() => onSelectNetwork(net)} label={`Gateway ${net.gateway.ip}`}
+                  title={net.gateway.label && net.gateway.label !== net.gateway.ip ? net.gateway.label : 'Gateway'} />
+              ) : <NodeBox icon={Router} title="Gateway not known" sub="no agent reported one" mono={false} dashed />}
+            </>
           )}
           {net.gateway_macs.length > 1 && (
             <p className="mt-2 text-[11px] text-yellow-400 flex gap-1"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
@@ -146,32 +246,27 @@ export function NetworkBand({ net, devices, mode, open, onToggle, selection, onS
           )}
         </div>
 
-        <div className="flex-1 min-w-[16rem] border-l-2 border-dashed border-dark-500/50 pl-4 space-y-3">
-          {net.device_count === 0 && <p className="text-sm text-dark-400 py-2">Nothing found here yet.</p>}
-          {groups.map((g) => (
-            <div key={g.t ?? 'all'} className="space-y-1.5">
-              {g.t && <h4 className="text-xs font-semibold text-dark-300">{TYPE_LABEL[g.t]} <span className="font-normal text-dark-400">{g.items.length}</span></h4>}
-              <div className={GRID}>
-                {g.items.map((d) => <DeviceCard key={d.asset_id} d={d} mode={mode} selected={isSelected(d)} onSelect={(x) => onSelectDevice(net, x)} />)}
-                {!open && hidden > 0 && (
-                  <button type="button" onClick={() => onToggle(net.key)}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border border-dashed border-dark-500/70 bg-dark-800 hover:border-eagle-500/60 text-left">
-                    <Layers className="w-[18px] h-[18px] text-dark-400" aria-hidden="true" />
-                    <span><span className="block text-sm font-semibold text-dark-50">+{fmt(hidden)} more</span>
-                      <span className="block text-xs text-dark-400">Open the network</span></span>
-                  </button>
-                )}
-              </div>
+        <div className="flex-1 min-w-[16rem] space-y-3">
+          {net.measured_roots.map((r) => <TreeNode key={r} id={r} parentId={null} ctx={ctx} />)}
+          {(loose.length > 0 || net.measured_roots.length === 0) && (
+            <div className="border-l-2 border-dashed border-dark-500/50 pl-4 space-y-3">
+              {net.device_count === 0 && net.measured_roots.length === 0 && <p className="text-sm text-dark-400 py-1">Nothing found here yet.</p>}
+              {groups.map((g) => g.items.length > 0 && (
+                <div key={g.t ?? 'all'} className="space-y-1.5">
+                  {g.t && <h4 className="text-xs font-semibold text-dark-300">{TYPE_LABEL[g.t]} <span className="font-normal text-dark-400">{g.items.length}</span></h4>}
+                  <div className={GRID}>
+                    {g.items.map((d) => (
+                      <DeviceCard key={d.asset_id} d={d} mode={mode} onSelect={ctx.onSelectDevice}
+                        selected={selection?.type === 'device' && selection.key === net.key && selection.asset_id === d.asset_id} />
+                    ))}
+                    {!open && hidden > 0 && <MoreButton count={`+${fmt(hidden)} more`} sub="Open the network" onClick={() => onToggle(net.key)} />}
+                  </div>
+                </div>
+              ))}
+              {open && net.device_count > net.devices.length && (
+                <p className="text-xs text-dark-400">Showing {fmt(net.devices.length)} of {fmt(net.device_count)}: find the others with the search above.</p>
+              )}
             </div>
-          ))}
-          {open && net.device_count > devices.length && (
-            <p className="text-xs text-dark-400">
-              Showing {fmt(devices.length)} of {fmt(net.device_count)}. Find the others with the search above, or in{' '}
-              <Link to={`/inventory?q=${encodeURIComponent(net.key.split('/')[0].split('.').slice(0, 3).join('.') + '.')}`} className="text-eagle-400 hover:underline">Inventory</Link>.
-            </p>
-          )}
-          {net.measured_count > 0 && (
-            <p className="text-xs text-dark-400">{plural(net.measured_count, 'device')} here {net.measured_count === 1 ? 'is' : 'are'} also on a measured switch port (Routers and switches, below).</p>
           )}
         </div>
       </div>
@@ -188,21 +283,51 @@ function Row({ k, children }) {
   )
 }
 
+function PanelShell({ kind, title, onClose, children }) {
+  return (
+    <aside className="glass-card p-4 space-y-4" aria-label={`${kind} details`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-dark-400">{kind}</p>
+          <p className="text-base font-semibold text-dark-50 break-all">{title}</p>
+        </div>
+        <button type="button" onClick={onClose} className="text-dark-400 hover:text-dark-50" aria-label="Close"><X className="w-4 h-4" /></button>
+      </div>
+      {children}
+    </aside>
+  )
+}
+
+function AssetButtons({ assetId, onBlast }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Link to={`/inventory/${assetId}`} className="btn-primary text-sm inline-flex items-center gap-2">Open asset <ExternalLink className="w-3.5 h-3.5" /></Link>
+      <button type="button" onClick={() => onBlast(assetId)} className="btn-secondary text-sm inline-flex items-center gap-2"
+        title="What would be affected if this device were compromised or went down (assets in My Assets)">
+        <Zap className="w-3.5 h-3.5" /> Blast radius
+      </button>
+    </div>
+  )
+}
+
 export function NetworkPanel({ net, open, onToggle, onClose }) {
   const cves = net.devices.reduce((s, d) => s + d.alerts.cve_open, 0)
   const critical = net.devices.reduce((s, d) => s + d.alerts.cve_critical, 0)
   const exposures = net.devices.reduce((s, d) => s + d.alerts.exposure_open, 0)
   const withAgent = net.devices.filter((d) => d.agent).length
   return (
-    <PanelShell kind="Network" title={net.key} onClose={onClose}>
+    <PanelShell kind="Network" title={net.title ?? net.key} onClose={onClose}>
       <dl className="text-sm space-y-2">
+        {net.subnets.length > 0 && <Row k="Also">{net.subnets.map((k) => <span key={k} className="block font-mono">{k}</span>)}</Row>}
         <Row k="Gateway">
           {net.gateway ? <><span className="font-mono">{net.gateway.ip}</span>
             {net.gateway.mac && <span className="block font-mono text-xs text-dark-400 lowercase">{net.gateway.mac}</span>}</> : 'Not known'}
         </Row>
         <Row k="Devices">{fmt(net.device_count)}{withAgent > 0 && <span className="text-dark-400">, {withAgent} with an agent</span>}</Row>
         <Row k="Watched by">
-          {net.agents.length === 0 ? <span className="text-yellow-400">No computer agent: nothing listens or scans here</span>
+          {net.agents.length === 0
+            ? <span className={net.measured_roots.length ? 'text-dark-300' : 'text-yellow-400'}>
+              {net.measured_roots.length ? 'A network agent reads its routers and switches; no computer agent listens or scans here' : 'No computer agent: nothing listens or scans here'}</span>
             : net.agents.map((a) => (
               <span key={a.agent_id} className="block">{a.name}{' '}
                 <span className="text-dark-400">{a.listens && a.scans ? 'listens and scans' : a.listens ? 'listens' : a.scans ? 'scans' : 'neither (both off)'}</span>
@@ -229,43 +354,60 @@ export function NetworkPanel({ net, open, onToggle, onClose }) {
 }
 
 export function DevicePanel({ net, device: d, onClose, onBlast }) {
-  const a = d.alerts
+  const a = d.alerts ?? NO_ALERTS
   return (
     <PanelShell kind={d.device_type ? `Device (${d.device_type})` : 'Device'} title={d.label} onClose={onClose}>
       <dl className="text-sm space-y-2">
-        <Row k="Address"><span className="font-mono">{d.ip}</span>{d.mac && <span className="block font-mono text-xs text-dark-400 lowercase">{d.mac}</span>}</Row>
-        <Row k="Network"><span className="font-mono">{net.key}</span>{net.gateway && <span className="text-dark-400"> via {net.gateway.ip}</span>}</Row>
+        <Row k="Address"><span className="font-mono">{d.ip ?? '—'}</span>{d.mac && <span className="block font-mono text-xs text-dark-400 lowercase">{d.mac}</span>}</Row>
+        <Row k="Network"><span className={net.title ? '' : 'font-mono'}>{net.title ?? net.key}</span>{net.gateway && <span className="text-dark-400"> via {net.gateway.ip}</span>}</Row>
         <Row k="Agent">{d.agent === 'host' ? 'Its own agent (inventory and SBOM)' : d.agent === 'mobile' ? 'The EagleEye phone app' : 'None: seen on the network'}</Row>
         <Row k="Open CVEs">{a.cve_open > 0
           ? <><b className="text-red-400">{fmt(a.cve_open)}</b><span className="text-dark-400">{a.cve_critical > 0 && `, ${fmt(a.cve_critical)} critical`}{a.kev > 0 && `, ${fmt(a.kev)} known exploited`}</span></>
           : d.agent === 'host' ? 'None' : 'Not checked (no SBOM)'}</Row>
         <Row k="Exposure">{a.exposure_open > 0 ? `${plural(a.exposure_open, 'open alert')}${a.exposure_severity ? ` (${a.exposure_severity})` : ''}` : 'None'}</Row>
         {d.criticality != null && <Row k="Criticality">{d.criticality}/10</Row>}
-        {d.measured && <Row k="Switch port">Measured: see Routers and switches</Row>}
-        <Row k="Last seen">{formatSeen(d.last_seen).text}</Row>
+        {d.last_seen && <Row k="Last seen">{formatSeen(d.last_seen).text}</Row>}
       </dl>
-      <div className="flex flex-wrap gap-2">
-        <Link to={`/inventory/${d.asset_id}`} className="btn-primary text-sm inline-flex items-center gap-2">Open asset <ExternalLink className="w-3.5 h-3.5" /></Link>
-        <button type="button" onClick={() => onBlast(d.asset_id)} className="btn-secondary text-sm inline-flex items-center gap-2"
-          title="What would be affected if this device were compromised or went down (assets in My Assets)">
-          <Zap className="w-3.5 h-3.5" /> Blast radius
-        </button>
-      </div>
+      {d.asset_id && <AssetButtons assetId={d.asset_id} onBlast={onBlast} />}
     </PanelShell>
   )
 }
 
-function PanelShell({ kind, title, onClose, children }) {
+/** A router, switch, neighbour or VLAN group of a measured tree, with its connections. */
+export function NodePanel({ node, tree, map, onClose, onBlast }) {
+  const meta = NODE_META[node.kind] ?? NODE_META.neighbour
+  const connections = map.edges.filter((e) => e.from === node.id || e.to === node.id).map((e) => {
+    const mine = e.from === node.id
+    return { other: tree.nodes.get(mine ? e.to : e.from), myPort: mine ? e.from_port : e.to_port, theirPort: mine ? e.to_port : e.from_port, kind: e.kind, ambiguous: e.ambiguous }
+  })
   return (
-    <aside className="glass-card p-4 space-y-4" aria-label={`${kind} details`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-dark-400">{kind}</p>
-          <p className="text-base font-semibold text-dark-50 break-all">{title}</p>
+    <PanelShell kind={meta.label} title={node.label} onClose={onClose}>
+      <dl className="text-sm space-y-2">
+        {node.ip && <Row k="Address"><span className="font-mono">{node.ip}</span></Row>}
+        {node.mac && <Row k="MAC"><span className="font-mono lowercase">{node.mac}</span></Row>}
+        {node.detail && <Row k={node.kind === 'router' || node.kind === 'switch' ? 'System' : 'Note'}>{node.detail}</Row>}
+        {node.vlan != null && <Row k="VLAN">{node.vlan}</Row>}
+        {node.seen_at && <Row k="Read">{formatSeen(node.seen_at).text}</Row>}
+      </dl>
+      {connections.length > 0 && (
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-dark-400 mb-1">Connections</p>
+          <ul className="space-y-1 text-sm max-h-64 overflow-y-auto">
+            {connections.map((c, i) => (
+              <li key={i} className="text-dark-200">
+                {c.myPort && <span className="font-mono text-xs text-dark-400">{c.myPort} → </span>}
+                {c.other?.label ?? '?'}
+                {c.theirPort && <span className="font-mono text-xs text-dark-400"> {c.theirPort}</span>}
+                {c.kind === 'vlan' && <span className="text-xs text-dark-400"> (routed, port not known)</span>}
+                {c.ambiguous && <span className="text-xs text-yellow-400"> (seen on two switches)</span>}
+              </li>
+            ))}
+          </ul>
         </div>
-        <button type="button" onClick={onClose} className="text-dark-400 hover:text-dark-50" aria-label="Close"><X className="w-4 h-4" /></button>
-      </div>
-      {children}
-    </aside>
+      )}
+      {node.asset_id && <AssetButtons assetId={node.asset_id} onBlast={onBlast} />}
+    </PanelShell>
   )
 }
+
+export { NO_ALERTS }
