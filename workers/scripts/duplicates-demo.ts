@@ -105,7 +105,8 @@ console.log('=== findDuplicateGroups ===')
   check('(g) generic hostnames ignored', findDuplicateGroups(assets, []).length, 0)
 }
 
-// (g2) Short "Android-2" is SPECIFIC → two assets with it + different MACs → REVIEW.
+// (g2) "Android-2" is a platform default name since 25 Oct (a0441bb, lib/hostnames.ts): three
+// different phones were grouped by it. Generic → never duplicate evidence.
 {
   const assets = [
     A({ assetId: 'an1', hostname: 'Android-2', macAddress: GLOBAL }),
@@ -113,7 +114,7 @@ console.log('=== findDuplicateGroups ===')
   ]
   const addrs = [AD('an1', GLOBAL, '10.0.0.0/24', '10.0.0.7'), AD('an2', 'aa:bb:cc:00:00:03', '10.9.0.0/24', '10.9.0.7')]
   const g = findDuplicateGroups(assets, addrs)
-  check('(g2) Android-2 hostname review', [g.length, g[0]?.confidence, g[0]?.reasons[0]], [1, 'review', 'same hostname "android-2", different MACs'])
+  check('(g2) Android-2 is generic: not grouped', g.length, 0)
 }
 
 console.log('\n=== planMerge ===')

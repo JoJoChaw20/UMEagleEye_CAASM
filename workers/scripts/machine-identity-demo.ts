@@ -156,9 +156,15 @@ const C0: MatcherCandidates = { macAddresses: [], hostKeyAssetIds: [], netIpAddr
 check('global MAC only known from the agent -> its asset (rule 1-agent)',
   matchAsset({ macClass: 'global', mac: 'a4:bb:cc:dd:ee:01', ip: '192.168.100.90', hostKey: null, networkKey: NET }, { ...C0, agentMacAssetIds: ['laptop'] }),
   { rule: '1-agent', assetId: 'laptop', matchedAddressId: null })
-check('a current address with the MAC still wins (rule 1 unchanged)',
+// Since 9 Nov (cd1c61b) the machine's own agent wins over another asset's current address with
+// that MAC: the lab VM's second card, first seen in a router's ARP table, kept making a duplicate.
+check("the agent's own NIC MAC wins over another asset's current address (rule 1-agent)",
   matchAsset({ macClass: 'global', mac: 'a4:bb:cc:dd:ee:01', ip: '192.168.100.90', hostKey: null, networkKey: NET },
-    { ...C0, macAddresses: [{ addressId: 'x', assetId: 'scanned', networkKey: NET, ipAddress: '192.168.100.90', macAddress: 'a4:bb:cc:dd:ee:01', assetDeviceType: 'workstation' }], agentMacAssetIds: ['laptop'] }).rule,
+    { ...C0, macAddresses: [{ addressId: 'x', assetId: 'scanned', networkKey: NET, ipAddress: '192.168.100.90', macAddress: 'a4:bb:cc:dd:ee:01', assetDeviceType: 'workstation' }], agentMacAssetIds: ['laptop'] }),
+  { rule: '1-agent', assetId: 'laptop', matchedAddressId: null })
+check("a current address on the agent's own asset is still rule 1",
+  matchAsset({ macClass: 'global', mac: 'a4:bb:cc:dd:ee:01', ip: '192.168.100.90', hostKey: null, networkKey: NET },
+    { ...C0, macAddresses: [{ addressId: 'y', assetId: 'laptop', networkKey: NET, ipAddress: '192.168.100.90', macAddress: 'a4:bb:cc:dd:ee:01', assetDeviceType: 'workstation' }], agentMacAssetIds: ['laptop'] }).rule,
   1)
 check('a locally administered MAC never uses agent identifiers',
   matchAsset({ macClass: 'local', mac: '06:00:59:e5:9a:c6', ip: '192.168.100.90', hostKey: null, networkKey: NET }, { ...C0, agentMacAssetIds: ['laptop'] }).rule,
