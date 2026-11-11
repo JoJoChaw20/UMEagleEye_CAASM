@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, sql, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
@@ -65,122 +65,6 @@ async function getTenantAssetIds(db: ReturnType<typeof getDb>, tenantId: string)
 function anyOfUuids(col: any, ids: string[]) {
   return sql`${col} = ANY(ARRAY[${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)}])`
 }
-
-// ── Graph data loader (constant queries) ─────────────────────────
-// Loads the My Assets member nodes + edges in a constant number of queries
-// (tenant-scoped: getTenantAssetIds + nodes + edges = 3; superadmin unscoped:
-// nodes + edges = 2). The nodes query LEFT JOINs topology_nodes for each node's layer
-// (the graph may read topology) — still ONE query; an asset with >1 node yields >1 row
-// which is collapsed to the lowest layer in memory. Exported so the demo can assert
-// the query count with a stub.
-type GraphNodeRow = typeof assets.$inferSelect & { topoLayer: number | null }
-
-function collapseByLowestLayer(rows: GraphNodeRow[]): GraphNodeRow[] {
-  const m = new Map<string, GraphNodeRow>()
-  for (const r of rows) {
-    const ex = m.get(r.assetId)
-    if (!ex) m.set(r.assetId, { ...r })
-    else if (r.topoLayer != null && (ex.topoLayer == null || r.topoLayer < ex.topoLayer)) ex.topoLayer = r.topoLayer
-  }
-  return [...m.values()]
-}
-
-export async function loadGraphData(
-  db: ReturnType<typeof getDb>,
-  params: { tenantScopeId: string | null },
-): Promise<{ rawNodes: GraphNodeRow[]; rawEdges: (typeof assetRelationships.$inferSelect)[] }> {
-  const nodeSel = { ...getTableColumns(assets), topoLayer: topologyNodes.layer }
-  if (params.tenantScopeId) {
-    const allowed = await getTenantAssetIds(db, params.tenantScopeId)
-    if (allowed.length === 0) return { rawNodes: [], rawEdges: [] }
-    const nodeRows = await db.select(nodeSel).from(assets)
-      .leftJoin(topologyNodes, eq(topologyNodes.assetId, assets.assetId))
-      .where(and(eq(assets.tenantId, params.tenantScopeId), eq(assets.inMyAssets, true)))
-    const rawEdges = await db.select().from(assetRelationships).where(
-      and(anyOfUuids(assetRelationships.sourceAssetId, allowed), anyOfUuids(assetRelationships.targetAssetId, allowed)))
-    return { rawNodes: collapseByLowestLayer(nodeRows as GraphNodeRow[]), rawEdges }
-  }
-  const nodeRows = await db.select(nodeSel).from(assets)
-    .leftJoin(topologyNodes, eq(topologyNodes.assetId, assets.assetId))
-    .where(eq(assets.inMyAssets, true))
-  const rawEdges = await db.select().from(assetRelationships)
-  return { rawNodes: collapseByLowestLayer(nodeRows as GraphNodeRow[]), rawEdges }
-}
-
-export interface UnconnectedMember { id: string; hostname: string | null; ip: string | null; device_type: string; reason: 'unknown_type' | 'no_network_device' }
-
-// PURE: the My Assets members that have NO edge to another member (both endpoints must
-// be members — an edge to a non-member doesn't count). reason distinguishes an
-// unclassified device (scan it to classify) from a known-type device whose /24 has no
-// gateway/switch in My Assets to link to (add/scan its gateway). Both are the two only
-// ways a member ends up edgeless now that a host is never cross-subnet parented, so
-// the old `no_relationships` code is gone. No DB.
-export function computeUnconnected(
-  members: { assetId: string; hostname: string | null; ipAddress: string | null; deviceType: string }[],
-  edges: { sourceAssetId: string; targetAssetId: string }[],
-): UnconnectedMember[] {
-  const memberIds = new Set(members.map(m => m.assetId))
-  const connected = new Set<string>()
-  for (const e of edges) {
-    if (memberIds.has(e.sourceAssetId) && memberIds.has(e.targetAssetId)) {
-      connected.add(e.sourceAssetId); connected.add(e.targetAssetId)
-    }
-  }
-  return members
-    .filter(m => !connected.has(m.assetId))
-    .map(m => ({
-      id: m.assetId, hostname: m.hostname, ip: m.ipAddress, device_type: m.deviceType,
-      reason: m.deviceType === 'unknown' ? 'unknown_type' : 'no_network_device',
-    }))
-}
-
-// PURE: build the /graph response body from the member nodes + edges. Only edges with
-// BOTH endpoints in My Assets are shown; `unconnected` lists members with no such edge.
-// Exported so the demo can assert the response shape without a DB.
-export function buildGraphResponse(
-  rawNodes: (typeof assets.$inferSelect & { topoLayer?: number | null })[],
-  rawEdges: (typeof assetRelationships.$inferSelect)[],
-) {
-  const nodeIdSet = new Set(rawNodes.map(n => n.assetId))
-  const visibleEdges = rawEdges.filter(e => nodeIdSet.has(e.sourceAssetId) && nodeIdSet.has(e.targetAssetId))
-  const edgeCounts = new Map<string, number>()
-  for (const e of visibleEdges) {
-    edgeCounts.set(e.sourceAssetId, (edgeCounts.get(e.sourceAssetId) ?? 0) + 1)
-    edgeCounts.set(e.targetAssetId, (edgeCounts.get(e.targetAssetId) ?? 0) + 1)
-  }
-  const nodes = rawNodes.map(n => toSnakeNode(n, edgeCounts.get(n.assetId) ?? 0))
-  const edges = visibleEdges.map(e => ({ source: e.sourceAssetId, target: e.targetAssetId, relationship_type: e.relationshipType }))
-  const unconnected = computeUnconnected(rawNodes, visibleEdges)
-  return { nodes, edges, total_nodes: nodes.length, total_edges: edges.length, unconnected }
-}
-
-// ── GET /graph ───────────────────────────────────────────────────
-// Returns nodes + edges with snake_case field names and edge_count per node, plus an
-// `unconnected` list of My Assets members with no edge to another member (so they are
-// not silently hidden — the graph tab shows them as a notice, not as graph nodes).
-app.get('/graph', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
-  try {
-    const user = c.get('user')
-    const db = getDb(c.env.DATABASE_URL)
-    const tenantIdParam = c.req.query('tenant_id')
-
-    // Determine the effective tenant scope
-    let tenantScopeId: string | null = null
-    if (user.role !== 'superadmin') {
-      tenantScopeId = user.tenantId ?? null
-    } else if (tenantIdParam) {
-      tenantScopeId = tenantIdParam
-    }
-
-    const { rawNodes, rawEdges } = await loadGraphData(db, { tenantScopeId })
-    // Only edges with BOTH endpoints in My Assets are shown; members with no such edge
-    // go in `unconnected` so they aren't silently hidden. All built in memory.
-    return c.json(buildGraphResponse(rawNodes, rawEdges))
-  } catch (err) {
-    console.error('GET /graph error:', err)
-    return c.json({ detail: 'Failed to fetch graph' }, 500)
-  }
-})
 
 // ── GET /graph/:assetId — subgraph for one asset ─────────────────
 app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {

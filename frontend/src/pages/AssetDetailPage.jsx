@@ -188,7 +188,6 @@ export default function AssetDetailPage() {
     if (!confirm(
       `Move ${assetName(asset)} to Discovered?\n\n` +
       '• It keeps its history, owner and criticality.\n' +
-      '• It will be hidden from the relationship graph.\n' +
       '• You can adopt it again at any time.'
     )) return
     try { await setMembership(false) } catch (err) { alert(err?.response?.data?.detail || 'Failed to remove asset from My Assets') }

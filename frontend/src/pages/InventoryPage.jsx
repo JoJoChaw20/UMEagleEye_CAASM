@@ -7,7 +7,6 @@ import {
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
-import AssetGraph from '../components/common/AssetGraph'
 import CriticalityBadge from '../components/common/CriticalityBadge'
 import { AddressCellInfo, AddressTimelineRow } from '../components/common/AssetAddressInfo'
 import { AddAssetModal, EditAssetModal, ImportModal } from '../components/assets/AssetModals'
@@ -96,10 +95,6 @@ function MenuButton({ label, icon: Icon, items, primary = false, title }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────
-// The Relationship graph tab is hidden for now; its code stays, as the whole-network picture may
-// move to the Network map page (routers, switches and what each agent found).
-const SHOW_RELATIONSHIP_GRAPH = false
-
 export default function InventoryPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -114,7 +109,6 @@ export default function InventoryPage() {
   // way back to it stays after switching tabs; normally the page has the two lists.
   const [showAllTab, setShowAllTab] = useState(() => readScope(searchParams) === 'any')
   const [linkFilter, setLinkFilter] = useState(() => readLinkFilter(searchParams))
-  const [activeTab, setActiveTab] = useState('inventory') // 'inventory' | 'graph'
   const [search, setSearch] = useState(() => searchParams.get('q') ?? '')
   const [deviceTypeFilter, setDeviceTypeFilter] = useState(() => searchParams.get('device_type') ?? '')
   const [sourceFilter, setSourceFilter] = useState(() => searchParams.get('source') ?? '')
@@ -135,7 +129,6 @@ export default function InventoryPage() {
   const [showImport, setShowImport] = useState(false)
   const [editingAsset, setEditingAsset] = useState(null)
   const [adoptTarget, setAdoptTarget] = useState(null)   // { asset, matches, reasons }
-  const [graphBlastId, setGraphBlastId] = useState(null)
   const [showDuplicates, setShowDuplicates] = useState(false)
 
   // Follow in-app links that change the query while this page is open.
@@ -152,7 +145,6 @@ export default function InventoryPage() {
   }, [searchParams])
 
   const changeScope = (next) => {
-    setActiveTab('inventory')
     // Switching scope drops link filters but keeps the search term.
     const params = new URLSearchParams()
     if (next !== 'mine') params.set('scope', next)
@@ -255,7 +247,6 @@ export default function InventoryPage() {
     if (!confirm(
       `Move ${assetName(asset)} to Discovered?\n\n` +
       '• It keeps its history, owner and criticality.\n' +
-      '• It will be hidden from the relationship graph.\n' +
       '• You can adopt it again at any time.'
     )) return
     try { await setMembership(asset, false) } catch (err) { alert(err?.response?.data?.detail || 'Failed to remove asset from My Assets') }
@@ -321,17 +312,9 @@ export default function InventoryPage() {
   const filterSummary = activeFilterBits.join(', ')
   const hasFilters = !!(search || deviceTypeFilter || sourceFilter)
 
-  const subtitle = activeTab === 'graph'
-    ? 'Relationships between the assets you manage'
-    : scope === 'mine' ? 'Assets you manage and track'
-      : scope === 'discovered' ? 'Found by scans and not yet adopted. Review them and adopt the ones you manage.'
-        : 'Linked results from both My Assets and Discovered'
-
-  const selectTab = (id) => {
-    if (id === 'graph') { setActiveTab('graph'); return }
-    changeScope(id)
-  }
-  const currentTab = activeTab === 'graph' ? 'graph' : scope
+  const subtitle = scope === 'mine' ? 'Assets you manage and track'
+    : scope === 'discovered' ? 'Found by scans and not yet adopted. Review them and adopt the ones you manage.'
+      : 'Linked results from both My Assets and Discovered'
   const tabs = [
     { id: 'mine', label: SCOPES.mine.label, count: scopeCounts.mine },
     { id: 'discovered', label: SCOPES.discovered.label, count: scopeCounts.discovered },
@@ -339,7 +322,6 @@ export default function InventoryPage() {
       id: 'any', label: 'All known',
       count: scopeCounts.mine != null && scopeCounts.discovered != null ? scopeCounts.mine + scopeCounts.discovered : null,
     }] : []),
-    ...(SHOW_RELATIONSHIP_GRAPH ? [{ id: 'graph', label: 'Relationship graph' }] : []),
   ]
 
   return (
@@ -380,10 +362,10 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      <Tabs label="Inventory views" active={currentTab} onChange={selectTab} tabs={tabs} />
+      <Tabs label="Inventory views" active={scope} onChange={changeScope} tabs={tabs} />
 
       {/* One notice at most: the filter a link opened, else the "looks like My Assets" hint */}
-      {activeTab === 'inventory' && linkFilter ? (
+      {linkFilter ? (
         <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-eagle-500/40">
           <Filter className="w-4 h-4 text-eagle-400" />
           <span className="text-dark-400">Showing</span>
@@ -393,7 +375,7 @@ export default function InventoryPage() {
             <X className="w-3.5 h-3.5" /> Clear
           </button>
         </div>
-      ) : activeTab === 'inventory' && scope === 'discovered' && matchedDiscoveredCount > 0 ? (
+      ) : scope === 'discovered' && matchedDiscoveredCount > 0 ? (
         <div className="glass-card px-4 py-2.5 flex items-center gap-2 text-sm border-yellow-500/30">
           <Link2 className="w-4 h-4 text-yellow-400" />
           <span className="text-dark-200">
@@ -403,219 +385,204 @@ export default function InventoryPage() {
         </div>
       ) : null}
 
-      {/* Graph */}
-      {activeTab === 'graph' && (
-        <div className="glass-card p-5">
-          <AssetGraph
-            onSelectAsset={(id) => setGraphBlastId((prev) => (prev === id ? null : id))}
-            blastRadiusId={graphBlastId}
-            tenantFilter={tenantFilter}
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+          <input
+            type="text"
+            placeholder="Search hostname, vendor, IP or MAC"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+            className="input-field w-full pl-10 text-sm sm:w-80"
+            aria-label="Search assets"
           />
+        </div>
+        <select value={deviceTypeFilter} onChange={(e) => changeDeviceType(e.target.value)} className="input-field text-sm py-1.5 w-44" aria-label="Device type">
+          <option value="">All Types</option>
+          {Object.entries(DEVICE_TYPE_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+        </select>
+        <select value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPage(1) }} className="input-field text-sm py-1.5 w-40" aria-label="Source">
+          <option value="">All Sources</option>
+          <option value="scan_active">Active scan</option>
+          <option value="scan_passive">Passive scan</option>
+          <option value="scan_network">Network agent</option>
+          <option value="manual">Manual</option>
+          <option value="agent">Agent</option>
+        </select>
+        {(hasFilters || linkFilter) && (
+          <button onClick={clearFilters} className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2">Clear filters</button>
+        )}
+        <span className="text-dark-400 text-sm ml-auto">{total} assets</span>
+      </div>
+
+      {error && (
+        <div className="glass-card p-4 border border-red-500/30">
+          <p className="text-red-400 text-sm">{error}</p>
+          <button onClick={loadAssets} className="btn-secondary text-sm mt-2">Retry</button>
         </div>
       )}
 
-      {activeTab === 'inventory' && (
-        <>
-          {/* Filters */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-              <input
-                type="text"
-                placeholder="Search hostname, vendor, IP or MAC"
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                className="input-field w-full pl-10 text-sm sm:w-80"
-                aria-label="Search assets"
-              />
-            </div>
-            <select value={deviceTypeFilter} onChange={(e) => changeDeviceType(e.target.value)} className="input-field text-sm py-1.5 w-44" aria-label="Device type">
-              <option value="">All Types</option>
-              {Object.entries(DEVICE_TYPE_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-            </select>
-            <select value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPage(1) }} className="input-field text-sm py-1.5 w-40" aria-label="Source">
-              <option value="">All Sources</option>
-              <option value="scan_active">Active scan</option>
-              <option value="scan_passive">Passive scan</option>
-              <option value="scan_network">Network agent</option>
-              <option value="manual">Manual</option>
-              <option value="agent">Agent</option>
-            </select>
-            {(hasFilters || linkFilter) && (
-              <button onClick={clearFilters} className="text-xs text-dark-400 hover:text-dark-200 underline underline-offset-2">Clear filters</button>
-            )}
-            <span className="text-dark-400 text-sm ml-auto">{total} assets</span>
+      {/* Table */}
+      <div className="glass-card overflow-visible">
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-
-          {error && (
-            <div className="glass-card p-4 border border-red-500/30">
-              <p className="text-red-400 text-sm">{error}</p>
-              <button onClick={loadAssets} className="btn-secondary text-sm mt-2">Retry</button>
-            </div>
-          )}
-
-          {/* Table */}
-          <div className="glass-card overflow-visible">
-            {loading ? (
-              <div className="flex items-center justify-center py-20">
-                <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
-              </div>
-            ) : assets.length > 0 ? (
-              // Scrolls sideways on narrow screens so Actions stays inside the card
-              // (the criticality and device-type menus are portals, so nothing is clipped).
-              <div className="overflow-x-auto">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Asset</th>
-                    <th>Owner</th>
-                    <th>Vendor</th>
-                    <th className="criticality-col">Criticality</th>
-                    <th>Source</th>
-                    <th>First / Last seen</th>
-                    {showActions && <th className="actions-col">Actions</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {assets.map((a) => {
-                    const deviceMeta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
-                    const srcMeta = SOURCE_META[a.source] ?? SOURCE_META.scan_passive
-                    const matches = a.inMyAssets ? [] : myAssetMatches(a.assetId)
-                    const first = formatSeen(a.createdAt)
-                    const last = formatSeen(a.lastScanned, { nullText: 'Never scanned' })
-                    const stop = (fn) => (e) => { e.stopPropagation(); fn() }
-                    return (
-                      <Fragment key={a.assetId}>
-                        <tr onClick={() => navigate(`/inventory/${a.assetId}`)} className="cursor-pointer">
-                          <td>
-                            {isReadOnly ? (
-                              <span className="flex items-center gap-1.5 whitespace-nowrap">
-                                <span className="text-base leading-none">{deviceMeta.icon}</span>
-                                <span className="text-xs text-dark-300">{deviceMeta.label}</span>
-                              </span>
-                            ) : (
-                              <DeviceTypePicker asset={a} compact onChanged={loadAssets} />
-                            )}
-                          </td>
-                          <td>
-                            <Link to={`/inventory/${a.assetId}`} onClick={(e) => e.stopPropagation()} className="font-medium text-dark-50 hover:text-eagle-400">
-                              {a.hostname || '—'}
-                            </Link>
-                            <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
-                            <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                              {a.isInternetFacing && (
-                                <span className="text-[11px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-400 border-yellow-500/30">Internet-facing</span>
-                              )}
-                              {scope === 'any' && a.inMyAssets && (
-                                <span className="text-[11px] px-1.5 py-0.5 rounded border bg-green-500/20 text-green-400 border-green-500/30">My Assets</span>
-                              )}
-                              {matches.length > 0 && (
-                                <span
-                                  className="text-[11px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
-                                  title={`Matches ${matches.map(assetName).join(', ')}`}
-                                >
-                                  Matches {matches.length === 1 ? assetName(matches[0]) : `${matches.length} of My Assets`}
-                                </span>
-                              )}
-                            </div>
-                            <div onClick={(e) => e.stopPropagation()}>
-                              <AddressCellInfo asset={a} searchTerm={search} expanded={expandedId === a.assetId} onToggle={() => setExpandedId((cur) => (cur === a.assetId ? null : a.assetId))} />
-                            </div>
-                          </td>
-                          <td className="text-sm text-dark-200 max-w-[160px] break-words">{a.owner || <span className="text-dark-500">—</span>}</td>
-                          <td className="text-dark-300 text-sm max-w-[180px] break-words">
-                            {a.hardwareVendor
-                              ? a.hardwareVendor
-                              : isLocallyAdministeredMac(a.macAddress)
-                                ? <span className="text-dark-400 italic">Private (randomized) MAC</span>
-                                : '—'}
-                            {a.macAddress && <div className="font-mono text-[11px] text-dark-400 mt-0.5 lowercase">{a.macAddress}</div>}
-                          </td>
-                          <td className="criticality-col" onClick={(e) => e.stopPropagation()}>
-                            <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} footer="computed" />
-                          </td>
-                          <td className="whitespace-nowrap">
-                            <span className={`text-xs px-2 py-0.5 rounded-md border font-medium ${srcMeta.cls}`}>{srcMeta.label}</span>
-                          </td>
-                          <td className="text-xs">
-                            <div className="space-y-0.5 whitespace-nowrap">
-                              <div className="text-dark-400"><span className="text-dark-500">First</span> <span title={first.title || ''}>{first.text}</span></div>
-                              <div className={last.stale ? 'text-amber-400' : 'text-dark-400'}><span className="text-dark-500">Last</span> <span title={last.title || ''}>{last.text}</span></div>
-                            </div>
-                          </td>
-                          {showActions && (
-                            <td className="actions-col">
-                              <div className="flex items-center justify-end gap-1">
-                                {!isReadOnly && a.inMyAssets && (
-                                  <>
-                                    <button onClick={stop(() => setEditingAsset(a))} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="Edit asset" aria-label="Edit asset">
-                                      <Pencil className="w-4 h-4" />
-                                    </button>
-                                    <button onClick={stop(() => handleBaseline(a))} className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`} title="Set baseline to the asset's current state" aria-label="Set baseline to the asset's current state">
-                                      <Bookmark className="w-4 h-4" />
-                                    </button>
-                                    <button onClick={stop(() => handleRemove(a))} className="p-1.5 hover:bg-amber-500/10 rounded text-dark-400 hover:text-amber-400 transition-colors" title="Move to Discovered" aria-label="Move to Discovered">
-                                      <MinusCircle className="w-4 h-4" />
-                                    </button>
-                                  </>
-                                )}
-                                {!isReadOnly && !a.inMyAssets && (
-                                  <button onClick={stop(() => handleAdopt(a))} className="px-2 py-1 hover:bg-green-500/10 rounded text-green-400 transition-colors flex items-center gap-1 text-xs font-medium" title="Adopt into My Assets" aria-label="Adopt into My Assets">
-                                    <CheckCircle className="w-4 h-4" /> Adopt
-                                  </button>
-                                )}
-                                {canDelete && !a.inMyAssets && (
-                                  <button onClick={stop(() => handleDelete(a))} className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors" title="Delete permanently" aria-label="Delete permanently">
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                        {expandedId === a.assetId && (
-                          <AddressTimelineRow asset={a} colSpan={colCount} searchTerm={search} tenantId={tenantFilter || undefined} />
+        ) : assets.length > 0 ? (
+          // Scrolls sideways on narrow screens so Actions stays inside the card
+          // (the criticality and device-type menus are portals, so nothing is clipped).
+          <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Asset</th>
+                <th>Owner</th>
+                <th>Vendor</th>
+                <th className="criticality-col">Criticality</th>
+                <th>Source</th>
+                <th>First / Last seen</th>
+                {showActions && <th className="actions-col">Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {assets.map((a) => {
+                const deviceMeta = DEVICE_TYPE_META[a.deviceType] ?? DEVICE_TYPE_META.unknown
+                const srcMeta = SOURCE_META[a.source] ?? SOURCE_META.scan_passive
+                const matches = a.inMyAssets ? [] : myAssetMatches(a.assetId)
+                const first = formatSeen(a.createdAt)
+                const last = formatSeen(a.lastScanned, { nullText: 'Never scanned' })
+                const stop = (fn) => (e) => { e.stopPropagation(); fn() }
+                return (
+                  <Fragment key={a.assetId}>
+                    <tr onClick={() => navigate(`/inventory/${a.assetId}`)} className="cursor-pointer">
+                      <td>
+                        {isReadOnly ? (
+                          <span className="flex items-center gap-1.5 whitespace-nowrap">
+                            <span className="text-base leading-none">{deviceMeta.icon}</span>
+                            <span className="text-xs text-dark-300">{deviceMeta.label}</span>
+                          </span>
+                        ) : (
+                          <DeviceTypePicker asset={a} compact onChanged={loadAssets} />
                         )}
-                      </Fragment>
-                    )
-                  })}
-                </tbody>
-              </table>
-              </div>
-            ) : (
-              <div className="text-center py-20 text-dark-400">
-                <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                {search ? (
-                  <p>No assets match “{search}”{filterSummary ? ` with ${filterSummary}` : ''}. Searched hostname, vendor, and current &amp; historical IPs/MACs.</p>
-                ) : filterSummary || linkFilter ? (
-                  <p>No assets match the current filters.</p>
-                ) : scope === 'mine' ? (
-                  <>
-                    <p className="text-lg font-medium mb-2">No assets in My Assets yet</p>
-                    <p className="text-sm mb-4">Add assets by hand, import a CSV, or adopt them from Discovered.</p>
-                    <div className="flex items-center justify-center gap-2">
-                      {!isReadOnly && (
-                        <button onClick={() => setShowAdd(true)} className="btn-primary text-sm flex items-center gap-2"><Plus className="w-4 h-4" /> Add Asset</button>
+                      </td>
+                      <td>
+                        <Link to={`/inventory/${a.assetId}`} onClick={(e) => e.stopPropagation()} className="font-medium text-dark-50 hover:text-eagle-400">
+                          {a.hostname || '—'}
+                        </Link>
+                        <div className="font-mono text-xs text-accent-cyan">{a.ipAddress}</div>
+                        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          {a.isInternetFacing && (
+                            <span className="text-[11px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-400 border-yellow-500/30">Internet-facing</span>
+                          )}
+                          {scope === 'any' && a.inMyAssets && (
+                            <span className="text-[11px] px-1.5 py-0.5 rounded border bg-green-500/20 text-green-400 border-green-500/30">My Assets</span>
+                          )}
+                          {matches.length > 0 && (
+                            <span
+                              className="text-[11px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
+                              title={`Matches ${matches.map(assetName).join(', ')}`}
+                            >
+                              Matches {matches.length === 1 ? assetName(matches[0]) : `${matches.length} of My Assets`}
+                            </span>
+                          )}
+                        </div>
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <AddressCellInfo asset={a} searchTerm={search} expanded={expandedId === a.assetId} onToggle={() => setExpandedId((cur) => (cur === a.assetId ? null : a.assetId))} />
+                        </div>
+                      </td>
+                      <td className="text-sm text-dark-200 max-w-[160px] break-words">{a.owner || <span className="text-dark-500">—</span>}</td>
+                      <td className="text-dark-300 text-sm max-w-[180px] break-words">
+                        {a.hardwareVendor
+                          ? a.hardwareVendor
+                          : isLocallyAdministeredMac(a.macAddress)
+                            ? <span className="text-dark-400 italic">Private (randomized) MAC</span>
+                            : '—'}
+                        {a.macAddress && <div className="font-mono text-[11px] text-dark-400 mt-0.5 lowercase">{a.macAddress}</div>}
+                      </td>
+                      <td className="criticality-col" onClick={(e) => e.stopPropagation()}>
+                        <CriticalityBadge score={a.criticalityScore} assetId={a.assetId} footer="computed" />
+                      </td>
+                      <td className="whitespace-nowrap">
+                        <span className={`text-xs px-2 py-0.5 rounded-md border font-medium ${srcMeta.cls}`}>{srcMeta.label}</span>
+                      </td>
+                      <td className="text-xs">
+                        <div className="space-y-0.5 whitespace-nowrap">
+                          <div className="text-dark-400"><span className="text-dark-500">First</span> <span title={first.title || ''}>{first.text}</span></div>
+                          <div className={last.stale ? 'text-amber-400' : 'text-dark-400'}><span className="text-dark-500">Last</span> <span title={last.title || ''}>{last.text}</span></div>
+                        </div>
+                      </td>
+                      {showActions && (
+                        <td className="actions-col">
+                          <div className="flex items-center justify-end gap-1">
+                            {!isReadOnly && a.inMyAssets && (
+                              <>
+                                <button onClick={stop(() => setEditingAsset(a))} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="Edit asset" aria-label="Edit asset">
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                                <button onClick={stop(() => handleBaseline(a))} className={`p-1.5 rounded transition-colors ${a.baselineState ? 'text-eagle-400 hover:bg-eagle-500/10' : 'text-dark-400 hover:bg-dark-700'}`} title="Set baseline to the asset's current state" aria-label="Set baseline to the asset's current state">
+                                  <Bookmark className="w-4 h-4" />
+                                </button>
+                                <button onClick={stop(() => handleRemove(a))} className="p-1.5 hover:bg-amber-500/10 rounded text-dark-400 hover:text-amber-400 transition-colors" title="Move to Discovered" aria-label="Move to Discovered">
+                                  <MinusCircle className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                            {!isReadOnly && !a.inMyAssets && (
+                              <button onClick={stop(() => handleAdopt(a))} className="px-2 py-1 hover:bg-green-500/10 rounded text-green-400 transition-colors flex items-center gap-1 text-xs font-medium" title="Adopt into My Assets" aria-label="Adopt into My Assets">
+                                <CheckCircle className="w-4 h-4" /> Adopt
+                              </button>
+                            )}
+                            {canDelete && !a.inMyAssets && (
+                              <button onClick={stop(() => handleDelete(a))} className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors" title="Delete permanently" aria-label="Delete permanently">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       )}
-                      <button onClick={() => changeScope('discovered')} className="btn-secondary text-sm">Go to Discovered</button>
-                    </div>
-                  </>
-                ) : (
-                  <p>Nothing waiting for review. New devices found by scans appear here.</p>
-                )}
-              </div>
+                    </tr>
+                    {expandedId === a.assetId && (
+                      <AddressTimelineRow asset={a} colSpan={colCount} searchTerm={search} tenantId={tenantFilter || undefined} />
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+          </div>
+        ) : (
+          <div className="text-center py-20 text-dark-400">
+            <Server className="w-16 h-16 mx-auto mb-4 opacity-20" />
+            {search ? (
+              <p>No assets match “{search}”{filterSummary ? ` with ${filterSummary}` : ''}. Searched hostname, vendor, and current &amp; historical IPs/MACs.</p>
+            ) : filterSummary || linkFilter ? (
+              <p>No assets match the current filters.</p>
+            ) : scope === 'mine' ? (
+              <>
+                <p className="text-lg font-medium mb-2">No assets in My Assets yet</p>
+                <p className="text-sm mb-4">Add assets by hand, import a CSV, or adopt them from Discovered.</p>
+                <div className="flex items-center justify-center gap-2">
+                  {!isReadOnly && (
+                    <button onClick={() => setShowAdd(true)} className="btn-primary text-sm flex items-center gap-2"><Plus className="w-4 h-4" /> Add Asset</button>
+                  )}
+                  <button onClick={() => changeScope('discovered')} className="btn-secondary text-sm">Go to Discovered</button>
+                </div>
+              </>
+            ) : (
+              <p>Nothing waiting for review. New devices found by scans appear here.</p>
             )}
           </div>
+        )}
+      </div>
 
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-2">
-              <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Previous</button>
-              <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
-              <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Next</button>
-            </div>
-          )}
-        </>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Previous</button>
+          <span className="text-dark-400 text-sm">Page {page} of {totalPages}</span>
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="btn-secondary text-sm py-1 px-3 disabled:opacity-30">Next</button>
+        </div>
       )}
 
       {showAdd && <AddAssetModal onClose={() => setShowAdd(false)} onSave={handleAddAsset} />}
