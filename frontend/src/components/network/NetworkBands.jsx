@@ -20,17 +20,14 @@ export const COLOUR_MODES = [
   { id: 'exposure', label: 'Exposure' },
 ]
 
-const COLLAPSED = 3                      // devices a closed band (or switch) shows
-const TYPE_ORDER = ['server', 'workstation', 'network', 'mobile', 'iot', 'unknown']
-const TYPE_LABEL = {
-  server: 'Servers', workstation: 'Workstations', network: 'Network devices', mobile: 'Phones and tablets',
-  iot: 'IoT devices', unknown: 'Not identified yet',
-}
 const TYPE_ICON = { server: Server, workstation: Monitor, network: Network, mobile: Smartphone, iot: Cpu }
 const TYPE_TONE = {
   server: 'text-series-3', workstation: 'text-series-2', network: 'text-series-1', mobile: 'text-series-6', iot: 'text-series-5',
 }
 const NODE_META = {
+  internet: { icon: Globe, tone: 'text-dark-400', label: 'Internet' },
+  gateway: { icon: Router, tone: 'text-series-1', label: 'Gateway' },
+  nogateway: { icon: Router, tone: 'text-dark-400', label: 'Gateway not known', dashed: true },
   router: { icon: Router, tone: 'text-series-1', label: 'Router' },
   switch: { icon: Network, tone: 'text-series-2', label: 'Switch' },
   neighbour: { icon: CircleDashed, tone: 'text-dark-400', label: 'Not read (neighbour)', dashed: true },
@@ -39,7 +36,6 @@ const NODE_META = {
 const NO_ALERTS = { cve_open: 0, cve_critical: 0, cve_high: 0, kev: 0, exposure_open: 0, exposure_severity: null }
 const fmt = (n) => Number(n).toLocaleString()
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`
-const GRID = 'grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(200px,100%),1fr))]'
 
 /** How a device looks in a colour mode: its tone (TONE entry or null), a line of text, a dashed outline. */
 export function deviceLook(d, mode) {
@@ -66,6 +62,8 @@ export function treeIndex(map) {
   const nodes = new Map(map.nodes.map((n) => [n.id, n]))
   const children = new Map()
   for (const n of map.nodes) if (n.parent && nodes.has(n.parent)) children.set(n.parent, [...(children.get(n.parent) ?? []), n.id])
+  const byLabel = (a, b) => nodes.get(a).label.localeCompare(nodes.get(b).label, undefined, { numeric: true })
+  for (const list of children.values()) list.sort(byLabel)
   const edge = new Map()
   for (const e of map.edges) {
     edge.set(`${e.from}>${e.to}`, { kind: e.kind, parentPort: e.from_port, childPort: e.to_port })
@@ -77,62 +75,12 @@ export function treeIndex(map) {
   return { nodes, children, edge, members }
 }
 
-function NodeBox({ icon: Icon, tone = 'text-dark-400', title, sub, mono = true, onClick, selected, dashed, label, extra }) {
-  const body = (
-    <>
-      <Icon className={`w-5 h-5 flex-shrink-0 ${tone}`} aria-hidden="true" />
-      <span className="min-w-0 text-left">
-        <span className="block text-sm font-semibold text-dark-50 truncate">{title}</span>
-        {sub && <span className={`block text-[11px] text-dark-400 truncate ${mono ? 'font-mono' : ''}`}>{sub}</span>}
-        {extra && <span className="block text-[11px] text-dark-400 truncate font-mono">{extra}</span>}
-      </span>
-    </>
-  )
-  const cls = `w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border bg-dark-800 ${selected ? 'border-eagle-500 ring-2 ring-eagle-500/30'
-    : dashed ? 'border-dashed border-dark-500/70' : 'border-dark-700/80'}`
-  return onClick
-    ? <button type="button" onClick={onClick} aria-label={label} className={`${cls} hover:border-eagle-500/60`}>{body}</button>
-    : <div className={cls}>{body}</div>
-}
-
-function DeviceCard({ d, mode, selected, onSelect, port, match }) {
-  const look = deviceLook(d, mode)
-  const Icon = TYPE_ICON[d.device_type] ?? HelpCircle
-  const border = look.tone ? look.tone.border : look.dashed ? 'border-dashed border-dark-500/70' : 'border-dark-700/80'
-  const tags = [port && `port ${port}`, d.agent === 'host' && 'its own agent', d.agent === 'mobile' && 'phone app'].filter(Boolean)
-  return (
-    <button type="button" onClick={() => onSelect(d)} aria-pressed={selected}
-      className={`w-full text-left flex items-start gap-2.5 px-3 py-2 rounded-lg border ${look.tone ? look.tone.bg : 'bg-dark-800'} ${border}
-        ${selected ? 'ring-2 ring-eagle-500/50' : match ? 'ring-2 ring-accent-amber/60' : ''} hover:border-eagle-500/60`}>
-      <Icon className={`w-[18px] h-[18px] mt-0.5 flex-shrink-0 ${look.tone ? look.tone.text : TYPE_TONE[d.device_type] ?? 'text-dark-400'}`} aria-hidden="true" />
-      <span className="min-w-0">
-        <span className="block text-sm font-semibold text-dark-50 truncate" title={d.label}>{d.label}</span>
-        {look.line && <span className={`block text-xs ${look.tone ? look.tone.text : 'text-dark-300'}`}>{look.line}</span>}
-        <span className="block text-[11px] text-dark-400 truncate">
-          <span className="font-mono">{d.ip}</span>{tags.length > 0 && ` · ${tags.join(' · ')}`}
-        </span>
-      </span>
-    </button>
-  )
-}
-
-function MoreButton({ count, sub, onClick }) {
-  return (
-    <button type="button" onClick={onClick}
-      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border border-dashed border-dark-500/70 bg-dark-800 hover:border-eagle-500/60 text-left">
-      <Layers className="w-[18px] h-[18px] text-dark-400" aria-hidden="true" />
-      <span><span className="block text-sm font-semibold text-dark-50">{count}</span><span className="block text-xs text-dark-400">{sub}</span></span>
-    </button>
-  )
-}
-
 // A measured tree, drawn top-down like the routers and switches are cabled (utils/networkTreeLayout.js):
 // routers, switches and VLAN groups as nodes, the devices under each in one box. Solid lines are
 // measured cables and switch ports, dashed ones a VLAN whose switch port is not known.
 function Topology({ roots, ctx }) {
-  const wanted = (id) => (ctx.tree.children.get(id) ?? []).some((k) => ctx.matches.has(k))
-  const allIds = roots.flatMap((r) => ctx.tree.members.get(r) ?? [])
-  const openBoxes = new Set(allIds.filter((id) => ctx.open || ctx.openBoxes.has(id) || wanted(id)))
+  // a box lists everything when the network is open, when it was opened, or when it holds a search match
+  const openBoxes = { has: (id) => ctx.open || ctx.openBoxes.has(id) || (ctx.tree.children.get(id) ?? []).some((k) => ctx.matches.has(k)) }
   const layout = layoutTree(roots, ctx.tree, openBoxes)
   return (
     <div className="overflow-x-auto pb-1">
@@ -141,10 +89,11 @@ function Topology({ roots, ctx }) {
           {layout.edges.map((e, i) => {
             const mid = (e.y1 + e.y2) / 2
             const stroke = e.kind === 'cable' ? 'rgb(var(--eagle-500))' : e.kind === 'port' ? 'rgb(var(--series-2) / 0.85)' : 'rgb(var(--dark-400) / 0.8)'
+            const dash = e.kind === 'internet' ? '1 5' : e.kind === 'vlan' || e.kind === 'seen' ? '5 4' : undefined
             return (
               <g key={i}>
                 <path d={`M${e.x1},${e.y1} V${mid} H${e.x2} V${e.y2}`} fill="none" stroke={stroke}
-                  strokeWidth={e.kind === 'cable' ? 2 : 1.5} strokeDasharray={e.kind === 'vlan' ? '5 4' : undefined} />
+                  strokeWidth={e.kind === 'cable' || e.kind === 'internet' ? 2 : 1.5} strokeDasharray={dash} strokeLinecap="round" />
                 {e.ports && <text x={e.x2 + 6} y={e.y2 - 8} fontSize="10" fill="rgb(var(--dark-300))" className="font-mono">{e.ports}</text>}
               </g>
             )
@@ -153,7 +102,7 @@ function Topology({ roots, ctx }) {
         {layout.nodes.map((p) => {
           const n = ctx.tree.nodes.get(p.id)
           const meta = NODE_META[n.kind] ?? NODE_META.neighbour
-          const selected = ctx.selection?.type === 'node' && ctx.selection.id === p.id
+          const selected = (ctx.selection?.type === 'node' && ctx.selection.id === p.id) || (ctx.netSelected && (n.kind === 'gateway' || n.kind === 'nogateway'))
           return (
             <button key={p.id} type="button" onClick={() => ctx.onSelectNode(n)} aria-label={`${meta.label} ${n.label}`}
               style={{ left: p.left, top: p.top, width: NODE_W, height: NODE_H }}
@@ -176,7 +125,8 @@ function Topology({ roots, ctx }) {
               className="absolute rounded-lg border border-dark-700/80 bg-dark-850 p-1 flex flex-col">
               <p className="px-2 text-[11px] text-dark-400 flex-shrink-0" style={{ height: BOX_HEAD - 4, lineHeight: `${BOX_HEAD - 4}px` }}>
                 <b className="text-dark-200">{plural(b.devices.length, 'device')}</b>
-                {parent.kind === 'vlan' ? ' · port not known' : ports.size > 0 ? ` · on ${plural(ports.size, 'port')}` : ''}
+                {ctx.tree.edge.get(`${b.parent}>${b.devices[0]}`)?.kind === 'seen' ? ' · seen on the network'
+                  : parent.kind === 'vlan' ? ' · port not known' : ports.size > 0 ? ` · on ${plural(ports.size, 'port')}` : ''}
               </p>
               {b.devices.slice(0, b.shown).map((k) => {
                 const node = ctx.tree.nodes.get(k)
@@ -231,28 +181,63 @@ function coverageChips(net) {
   return chips
 }
 
+/** One network as a single top-down tree: the internet, its gateway (or the measured router that
+ *  is its gateway), the measured routers and switches, and the devices the agents saw on it in one
+ *  box under the gateway. Built over the page's measured-tree index without changing it. */
+function bandTree(net, tree, seen) {
+  const nodes = new Map(tree.nodes), children = new Map(tree.children), edge = new Map(tree.edge)
+  const link = (parent, child, kind) => {
+    children.set(parent, [...(children.get(parent) ?? []), child])
+    edge.set(`${parent}>${child}`, { kind, parentPort: null, childPort: null })
+  }
+  const internet = `internet:${net.key}`
+  nodes.set(internet, { id: internet, kind: 'internet', label: 'Internet', ip: null, detail: null, asset_id: null })
+  const roots = net.measured_roots
+  const gw = net.gateway
+  const gwRoot = gw ? roots.find((r) => {
+    const n = tree.nodes.get(r)
+    return n && (n.ip === gw.ip || (gw.asset_id && n.asset_id === gw.asset_id))
+  }) : undefined
+  let gateway = gwRoot ?? null
+  if (!gateway && (gw || roots.length === 0)) {
+    gateway = `gateway:${net.key}`
+    nodes.set(gateway, {
+      id: gateway, kind: gw ? 'gateway' : 'nogateway', asset_id: gw?.asset_id ?? null, ip: gw?.ip ?? null,
+      label: gw ? (gw.label && gw.label !== gw.ip ? gw.label : 'Gateway') : 'Gateway not known', detail: gw ? null : 'no agent reported one',
+    })
+  }
+  if (gateway) link(internet, gateway, 'internet')
+  for (const r of roots) if (r !== gateway) link(gateway && !gwRoot ? gateway : internet, r, gateway && !gwRoot ? 'seen' : 'internet')
+  const under = gateway ?? roots[0] ?? internet
+  for (const d of seen) {
+    nodes.set(d.asset_id, { id: d.asset_id, kind: 'device', label: d.label, ip: d.ip, asset_id: d.asset_id, device_type: d.device_type })
+    link(under, d.asset_id, 'seen')
+  }
+  return { root: internet, tree: { ...tree, nodes, children, edge } }
+}
+
 export function NetworkBand({ net, devices, mode, open, onToggle, selection, onSelectNetwork, onSelectDevice, onSelectNode, tree, deviceOf, matches }) {
   const [openBoxes, setOpenBoxes] = useState(() => new Set())
   const netSelected = selection?.type === 'network' && selection.key === net.key
-  // devices drawn in this network's measured trees are not listed again as loose cards
+  // devices drawn in this network's measured trees are not listed again with the ones the agents saw
   const inTrees = new Set(net.measured_roots.flatMap((r) => (tree.members.get(r) ?? []).map((id) => tree.nodes.get(id)?.asset_id)).filter(Boolean))
-  const loose = devices.filter((d) => !inTrees.has(d.asset_id))
-  const shown = open ? loose : loose.slice(0, COLLAPSED)
-  const hidden = loose.length - shown.length
-  const groups = open
-    ? TYPE_ORDER.map((t) => ({ t, items: loose.filter((d) => (TYPE_LABEL[d.device_type] ? d.device_type : 'unknown') === t) })).filter((g) => g.items.length)
-    : [{ t: null, items: shown }]
+  const seen = devices.filter((d) => !inTrees.has(d.asset_id))
+  const band = bandTree(net, tree, seen)
+  // A device's facts (alerts, its address ON this network) from this network's own list first.
+  const own = new Map(net.devices.map((d) => [d.asset_id, d]))
   const ctx = {
-    tree, mode, open, openBoxes, matches, selection, deviceOf,
+    tree: band.tree, mode, open, openBoxes, matches, selection, netSelected,
+    deviceOf: (node) => own.get(node.asset_id) ?? deviceOf(node),
     toggleBox: (id) => setOpenBoxes((s) => { const t = new Set(s); if (t.has(id)) t.delete(id); else t.add(id); return t }),
-    onSelectNode: (n) => onSelectNode(net, n), onSelectDevice: (d) => onSelectDevice(net, d),
+    onSelectNode: (n) => (['internet', 'gateway', 'nogateway'].includes(n.kind) ? onSelectNetwork(net) : onSelectNode(net, n)),
+    onSelectDevice: (d) => onSelectDevice(net, d),
   }
   const title = net.title ?? net.key
   const unwatched = net.coverage === 'none' && net.measured_roots.length === 0
 
   return (
     <section aria-label={`Network ${title}`}
-      className={`rounded-xl border p-4 space-y-3 ${netSelected ? 'border-eagle-500 ring-1 ring-eagle-500/30 bg-eagle-500/5'
+      className={`rounded-xl border p-4 space-y-2 ${netSelected ? 'border-eagle-500 ring-1 ring-eagle-500/30 bg-eagle-500/5'
         : unwatched ? 'border-dashed border-yellow-500/50 bg-dark-800' : 'border-dark-700/80 bg-dark-850'}`}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <button type="button" onClick={() => onSelectNetwork(net)} className="text-left group min-w-0">
@@ -262,6 +247,10 @@ export function NetworkBand({ net, devices, mode, open, onToggle, selection, onS
             {net.subnets.length > 0 && <> · with <span className="font-mono">{net.subnets.join(', ')}</span></>}
             {net.last_seen && ` · seen ${formatSeen(net.last_seen).text}`}
           </span>
+          {net.gateway_macs.length > 1 && (
+            <span className="mt-1 text-[11px] text-yellow-400 flex gap-1"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+              Two gateways answer at {net.gateway?.ip}: maybe two sites on one range</span>
+          )}
         </button>
         <div className="flex items-center gap-2 flex-wrap">
           {coverageChips(net).map((c) => (
@@ -278,48 +267,10 @@ export function NetworkBand({ net, devices, mode, open, onToggle, selection, onS
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-x-6 gap-y-3 items-start">
-        <div className="w-44 flex-shrink-0 flex flex-col items-stretch">
-          <NodeBox icon={Globe} title="Internet" />
-          {(net.gateway || net.measured_roots.length === 0) && (
-            <>
-              <div className="mx-auto h-4 border-l-2 border-dotted border-dark-500" aria-hidden="true" />
-              {net.gateway ? (
-                <NodeBox icon={Router} tone="text-series-1" sub={net.gateway.ip} onClick={() => onSelectNetwork(net)} label={`Gateway ${net.gateway.ip}`}
-                  title={net.gateway.label && net.gateway.label !== net.gateway.ip ? net.gateway.label : 'Gateway'} />
-              ) : <NodeBox icon={Router} title="Gateway not known" sub="no agent reported one" mono={false} dashed />}
-            </>
-          )}
-          {net.gateway_macs.length > 1 && (
-            <p className="mt-2 text-[11px] text-yellow-400 flex gap-1"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-              Two gateways answer at this address: maybe two sites on one range</p>
-          )}
-        </div>
-
-        <div className="flex-1 min-w-[16rem] space-y-3">
-          {net.measured_roots.length > 0 && <Topology roots={net.measured_roots} ctx={ctx} />}
-          {(loose.length > 0 || net.measured_roots.length === 0) && (
-            <div className="border-l-2 border-dashed border-dark-500/50 pl-4 space-y-3">
-              {net.device_count === 0 && net.measured_roots.length === 0 && <p className="text-sm text-dark-400 py-1">Nothing found here yet.</p>}
-              {groups.map((g) => g.items.length > 0 && (
-                <div key={g.t ?? 'all'} className="space-y-1.5">
-                  {g.t && <h4 className="text-xs font-semibold text-dark-300">{TYPE_LABEL[g.t]} <span className="font-normal text-dark-400">{g.items.length}</span></h4>}
-                  <div className={GRID}>
-                    {g.items.map((d) => (
-                      <DeviceCard key={d.asset_id} d={d} mode={mode} onSelect={ctx.onSelectDevice}
-                        selected={selection?.type === 'device' && selection.key === net.key && selection.asset_id === d.asset_id} />
-                    ))}
-                    {!open && hidden > 0 && <MoreButton count={`+${fmt(hidden)} more`} sub="Open the network" onClick={() => onToggle(net.key)} />}
-                  </div>
-                </div>
-              ))}
-              {open && net.device_count > net.devices.length && (
-                <p className="text-xs text-dark-400">Showing {fmt(net.devices.length)} of {fmt(net.device_count)}: find the others with the search above.</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+      <Topology roots={[band.root]} ctx={ctx} />
+      {open && net.device_count > net.devices.length && (
+        <p className="text-xs text-dark-400">Showing {fmt(net.devices.length)} of {fmt(net.device_count)}: find the others with the search above.</p>
+      )}
     </section>
   )
 }

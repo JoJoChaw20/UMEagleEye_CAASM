@@ -25,7 +25,7 @@ const byLabel = (tree) => (a, b) => tree.nodes.get(a).label.localeCompare(tree.n
 /**
  * @param {string[]} roots  the trees drawn in one band (their root node ids)
  * @param {{nodes: Map, children: Map, edge: Map}} tree  NetworkBands.treeIndex
- * @param {Set<string>} openBoxes  parents whose device box lists every device
+ * @param {{has: (id: string) => boolean}} openBoxes  parents whose device box lists every device
  * @returns {{nodes: object[], boxes: object[], edges: object[], width: number, height: number}}
  *   nodes {id, left, top}; boxes {parent, devices: id[], shown, hidden, left, top, height};
  *   edges {kind, ports, x1, y1, x2, y2} from the bottom middle of the parent to the top middle of the child
@@ -34,7 +34,7 @@ export function layoutTree(roots, tree, openBoxes = new Set()) {
   const order = byLabel(tree)
   const kidsOf = (id) => tree.children.get(id) ?? []
   const branches = (id) => kidsOf(id).filter((k) => tree.nodes.get(k).kind !== 'device').sort(order)
-  const devices = (id) => kidsOf(id).filter((k) => tree.nodes.get(k).kind === 'device').sort(order)
+  const devices = (id) => kidsOf(id).filter((k) => tree.nodes.get(k).kind === 'device')   // in the order given
   const boxHeight = (count, shown) => BOX_HEAD + shown * BOX_ROW + (count > shown ? BOX_ROW : 0) + 8
 
   const width = new Map()
