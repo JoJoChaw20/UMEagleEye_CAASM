@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, RefreshCw, Network, Radio, ScanLine, ChevronRight, Wifi, AlertTriangle } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -148,7 +148,9 @@ export default function DiscoveryPage() {
   const [networkFilter, setNetworkFilter] = useState('')
   const [loading, setLoading] = useState(false)
   const [hostsOf, setHostsOf] = useState(null)        // { scanId, agentName }
-  const [newScan, setNewScan] = useState(null)        // null | { subnet?, agentId? }
+  const [searchParams, setSearchParams] = useSearchParams()
+  // ?scan=<range> (the Network map's "New scan of this network") opens New scan for that range
+  const [newScan, setNewScan] = useState(() => (searchParams.get('scan') ? { subnet: searchParams.get('scan'), agentId: 'auto' } : null))
 
   const tParams = useMemo(() => (tenantFilter ? { tenant_id: tenantFilter } : {}), [tenantFilter])
 
@@ -348,7 +350,7 @@ export default function DiscoveryPage() {
       )}
       {newScan && (
         <NewScanModal agents={agents} networks={networks ?? []} initial={newScan}
-          onClose={() => setNewScan(null)} onSubmit={startScan} />
+          onClose={() => { setNewScan(null); if (searchParams.has('scan')) setSearchParams({}, { replace: true }) }} onSubmit={startScan} />
       )}
     </div>
   )

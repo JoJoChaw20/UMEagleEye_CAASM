@@ -51,10 +51,11 @@ export default function NetworkMapPage() {
   const tree = useMemo(() => treeIndex(map), [map])
   const byAsset = useMemo(() => new Map(networks.flatMap((n) => n.devices.map((d) => [d.asset_id, d]))), [networks])
   // A tree node as a device card: the network's facts about it when it has any (alerts, agent).
-  const deviceOf = useCallback((node) => byAsset.get(node.asset_id) ?? {
+  // Its address is the one in the tree (a device on several networks has one on each).
+  const deviceOf = useCallback((node) => (byAsset.has(node.asset_id) ? { ...byAsset.get(node.asset_id), ip: node.ip ?? byAsset.get(node.asset_id).ip } : {
     asset_id: node.asset_id, label: node.label, ip: node.ip, mac: node.mac, device_type: node.device_type,
     criticality: node.criticality, in_my_assets: false, last_seen: node.seen_at, measured: true, agent: null, alerts: NO_ALERTS,
-  }, [byAsset])
+  }), [byAsset])
 
   const q = query.trim().toLowerCase()
   const matches = useMemo(() => new Set(q ? map.nodes.filter((n) => [n.label, n.ip, n.mac].some(has(q))).map((n) => n.id) : []), [map, q])
@@ -63,6 +64,13 @@ export default function NetworkMapPage() {
     : n.devices.filter((d) => [d.label, d.ip, d.mac].some(has(q)))])), [networks, q])
   const treeHit = (n) => n.measured_roots.some((r) => (tree.members.get(r) ?? []).some((id) => matches.has(id)))
   const shownNets = q ? networks.filter((n) => n.key.includes(q) || netDevices.get(n.key).length > 0 || treeHit(n)) : networks
+
+  useEffect(() => {
+    if (!pick) return undefined
+    const onKey = (e) => { if (e.key === 'Escape') setPick(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pick])
 
   const toggleNet = (key) => setOpenNets((s) => { const t = new Set(s); if (t.has(key)) t.delete(key); else t.add(key); return t })
   const pickedNet = pick ? networks.find((n) => n.key === pick.key) : null
@@ -113,26 +121,22 @@ export default function NetworkMapPage() {
             <LineLegend />
           </div>
 
-          <div className="flex flex-wrap gap-4 items-start">
-            {/* the map scrolls inside its own box, so the page stays one screen tall */}
-            <div className="flex-[999_1_640px] min-w-0 glass-card p-3 max-h-[calc(100vh-15rem)] min-h-[24rem] overflow-y-auto space-y-3">
-              {shownNets.map((n) => (
-                <NetworkBand key={n.key} net={n} devices={netDevices.get(n.key)} mode={mode} tree={tree} deviceOf={deviceOf} matches={matches}
-                  open={openNets.has(n.key) || (!!q && !n.key.includes(q))} onToggle={toggleNet} selection={pick}
-                  onSelectNetwork={(x) => setPick({ type: 'network', key: x.key })}
-                  onSelectDevice={(x, d) => setPick({ type: 'device', key: x.key, asset_id: d.asset_id, device: d })}
-                  onSelectNode={(x, node) => setPick({ type: 'node', key: x.key, id: node.id })} />
-              ))}
-              {q && shownNets.length === 0 && <p className="text-sm text-dark-400 p-2">Nothing matches.</p>}
-            </div>
+          <Summary networks={networks} map={map} />
 
-            <div className="flex-[1_1_300px] lg:max-w-sm">
-              {pick?.type === 'device' && pickedNet ? <DevicePanel net={pickedNet} device={pick.device} onClose={() => setPick(null)} onBlast={setBlastOf} />
-                : pick?.type === 'node' && tree.nodes.get(pick.id) ? <NodePanel node={tree.nodes.get(pick.id)} tree={tree} map={map} onClose={() => setPick(null)} onBlast={setBlastOf} />
-                  : pick?.type === 'network' && pickedNet ? <NetworkPanel net={pickedNet} open={openNets.has(pickedNet.key)} onToggle={toggleNet} onClose={() => setPick(null)} />
-                    : <Summary networks={networks} map={map} />}
-            </div>
+          <div className="space-y-3">
+            {shownNets.map((n) => (
+              <NetworkBand key={n.key} net={n} devices={netDevices.get(n.key)} mode={mode} tree={tree} deviceOf={deviceOf} matches={matches}
+                open={openNets.has(n.key) || (!!q && !n.key.includes(q))} onToggle={toggleNet} selection={pick}
+                onSelectNetwork={(x) => setPick({ type: 'network', key: x.key })}
+                onSelectDevice={(x, d) => setPick({ type: 'device', key: x.key, asset_id: d.asset_id, device: d })}
+                onSelectNode={(x, node) => setPick({ type: 'node', key: x.key, id: node.id })} />
+            ))}
+            {q && shownNets.length === 0 && <p className="text-sm text-dark-400">Nothing matches.</p>}
           </div>
+
+          {pick?.type === 'device' && pickedNet && <DevicePanel net={pickedNet} device={pick.device} onClose={() => setPick(null)} onBlast={setBlastOf} />}
+          {pick?.type === 'node' && tree.nodes.get(pick.id) && <NodePanel node={tree.nodes.get(pick.id)} tree={tree} map={map} onClose={() => setPick(null)} onBlast={setBlastOf} />}
+          {pick?.type === 'network' && pickedNet && <NetworkPanel net={pickedNet} open={openNets.has(pickedNet.key)} onToggle={toggleNet} onClose={() => setPick(null)} />}
         </>
       )}
       {blastOf && <BlastRadiusModal assetId={blastOf} onClose={() => setBlastOf(null)} />}
@@ -140,21 +144,19 @@ export default function NetworkMapPage() {
   )
 }
 
+// The tenant at a glance, above the map.
 function Summary({ networks, map }) {
   const unwatched = networks.filter((n) => n.agents.length === 0 && n.measured_roots.length === 0).length
   const devices = networks.reduce((s, n) => s + n.device_count, 0)
   const infra = map.nodes.filter((n) => n.kind === 'router' || n.kind === 'switch').length
+  const chip = 'px-3 py-1 rounded-full border border-dark-600/40 bg-dark-800/40 text-dark-300'
   return (
-    <div className="glass-card p-4 space-y-3 text-sm">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-dark-400">This tenant</p>
-      <dl className="space-y-1.5">
-        <div className="flex justify-between gap-3"><dt className="text-dark-400">Networks</dt><dd className="text-dark-50 font-semibold">{networks.length}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-dark-400">Devices on them</dt><dd className="text-dark-50 font-semibold">{devices.toLocaleString()}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-dark-400">Not watched by any agent</dt>
-          <dd className={`font-semibold ${unwatched ? 'text-yellow-400' : 'text-dark-50'}`}>{unwatched}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-dark-400">Routers and switches read</dt><dd className="text-dark-50 font-semibold">{infra}</dd></div>
-      </dl>
-      <p className="text-xs text-dark-400">Pick a network, a device, a router or a switch to see who watches it and what is open on it.</p>
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className={chip}><b className="text-dark-50">{networks.length}</b> network{networks.length === 1 ? '' : 's'}</span>
+      <span className={chip}><b className="text-dark-50">{devices.toLocaleString()}</b> device{devices === 1 ? '' : 's'} on them</span>
+      {infra > 0 && <span className={chip}><b className="text-dark-50">{infra}</b> router{infra === 1 ? '' : 's'} and switches read</span>}
+      <span className={chip} title="No computer agent listens or scans there, and no network agent reads its routers">
+        <b className={unwatched ? 'text-yellow-400' : 'text-dark-50'}>{unwatched}</b> not watched by any agent</span>
     </div>
   )
 }
