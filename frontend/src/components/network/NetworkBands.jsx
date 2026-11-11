@@ -1,13 +1,13 @@
-// Every network the tenant's agents see (GET /network/map `networks`, workers/src/lib/mapNetworks.ts),
-// one band each, stacked: the internet, the network's gateway, then what is on it. Where a network
-// agent reads the routers and switches, their tree is drawn top-down in the band of the network the
-// router is on, each parent's devices in one box (solid line: a measured cable or switch port;
-// dashed: a VLAN whose switch port is not known, or a device an agent saw on the network; dotted:
-// the route to the internet). A band opens in place to show all its devices.
+// The Network page's pieces (pages/NetworkMapPage.jsx; data: GET /network/map, workers/src/lib/mapNetworks.ts).
+// One network is drawn as a single top-down tree: the internet, its gateway (or the measured router
+// that is its gateway), the routers and switches a network agent read, and the devices under each
+// in one box (solid line: a measured cable or switch port; dashed: a VLAN whose switch port is not
+// known, or devices an agent saw on the network; dotted: the route to the internet). The panels
+// describe what was picked: a network, a device, or a router or switch.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle, ChevronDown, ChevronRight, CircleDashed, Cpu, ExternalLink, Eye, Globe, HelpCircle, Layers, Monitor,
+  AlertTriangle, CircleDashed, Cpu, ExternalLink, Eye, Globe, HelpCircle, Layers, Monitor,
   Network, Router, Server, Smartphone, X, Zap,
 } from 'lucide-react'
 import { TONE } from '../common/alertMeta'
@@ -34,8 +34,8 @@ const NODE_META = {
   vlan: { icon: Layers, tone: 'text-series-5', label: 'VLAN, switch port not known', dashed: true },
 }
 const NO_ALERTS = { cve_open: 0, cve_critical: 0, cve_high: 0, kev: 0, exposure_open: 0, exposure_severity: null }
-const fmt = (n) => Number(n).toLocaleString()
-const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`
+export const fmt = (n) => Number(n).toLocaleString()
+export const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`
 
 /** How a device looks in a colour mode: its tone (TONE entry or null), a line of text, a dashed outline. */
 export function deviceLook(d, mode) {
@@ -216,66 +216,42 @@ function bandTree(net, tree, seen) {
   return { root: internet, tree: { ...tree, nodes, children, edge } }
 }
 
-export function NetworkBand({ net, devices, mode, open, onToggle, selection, onSelectNetwork, onSelectDevice, onSelectNode, tree, deviceOf, matches }) {
+/** One network's drawing. Its boxes list BOX_MAX devices until opened. */
+export function NetworkTopology({ net, devices, mode, selection, onSelectNetwork, onSelectDevice, onSelectNode, tree, deviceOf, matches }) {
   const [openBoxes, setOpenBoxes] = useState(() => new Set())
-  const netSelected = selection?.type === 'network' && selection.key === net.key
   // devices drawn in this network's measured trees are not listed again with the ones the agents saw
   const inTrees = new Set(net.measured_roots.flatMap((r) => (tree.members.get(r) ?? []).map((id) => tree.nodes.get(id)?.asset_id)).filter(Boolean))
-  const seen = devices.filter((d) => !inTrees.has(d.asset_id))
-  const band = bandTree(net, tree, seen)
+  const band = bandTree(net, tree, devices.filter((d) => !inTrees.has(d.asset_id)))
   // A device's facts (alerts, its address ON this network) from this network's own list first.
   const own = new Map(net.devices.map((d) => [d.asset_id, d]))
   const ctx = {
-    tree: band.tree, mode, open, openBoxes, matches, selection, netSelected,
+    tree: band.tree, mode, open: false, openBoxes, matches, selection,
+    netSelected: selection?.type === 'network' && selection.key === net.key,
     deviceOf: (node) => own.get(node.asset_id) ?? deviceOf(node),
     toggleBox: (id) => setOpenBoxes((s) => { const t = new Set(s); if (t.has(id)) t.delete(id); else t.add(id); return t }),
     onSelectNode: (n) => (['internet', 'gateway', 'nogateway'].includes(n.kind) ? onSelectNetwork(net) : onSelectNode(net, n)),
     onSelectDevice: (d) => onSelectDevice(net, d),
   }
-  const title = net.title ?? net.key
-  const unwatched = net.coverage === 'none' && net.measured_roots.length === 0
-
   return (
-    <section aria-label={`Network ${title}`}
-      className={`rounded-xl border p-4 space-y-2 ${netSelected ? 'border-eagle-500 ring-1 ring-eagle-500/30 bg-eagle-500/5'
-        : unwatched ? 'border-dashed border-yellow-500/50 bg-dark-800' : 'border-dark-700/80 bg-dark-850'}`}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <button type="button" onClick={() => onSelectNetwork(net)} className="text-left group min-w-0">
-          <span className={`block text-sm font-semibold text-dark-50 group-hover:text-eagle-400 ${net.title ? '' : 'font-mono'}`}>{title}</span>
-          <span className="block text-xs text-dark-400">
-            {plural(net.device_count, 'device')}
-            {net.subnets.length > 0 && <> · with <span className="font-mono">{net.subnets.join(', ')}</span></>}
-            {net.last_seen && ` · seen ${formatSeen(net.last_seen).text}`}
-          </span>
-          {net.gateway_macs.length > 1 && (
-            <span className="mt-1 text-[11px] text-yellow-400 flex gap-1"><AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-              Two gateways answer at {net.gateway?.ip}: maybe two sites on one range</span>
-          )}
-        </button>
-        <div className="flex items-center gap-2 flex-wrap">
-          {coverageChips(net).map((c) => (
-            <span key={c.text} className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${c.cls}`}>
-              <c.Icon className="w-3.5 h-3.5" aria-hidden="true" /> {c.text}
-            </span>
-          ))}
-          {net.device_count > 0 && (
-            <button type="button" onClick={() => onToggle(net.key)} aria-expanded={open} className="btn-secondary text-xs inline-flex items-center gap-1">
-              {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-              {open ? 'Close' : 'Open'}
-            </button>
-          )}
-        </div>
-      </div>
-
+    <div className="space-y-2">
       <Topology roots={[band.root]} ctx={ctx} />
-      {open && net.device_count > net.devices.length && (
-        <p className="text-xs text-dark-400">Showing {fmt(net.devices.length)} of {fmt(net.device_count)}: find the others with the search above.</p>
+      {net.device_count > net.devices.length && (
+        <p className="text-xs text-dark-400">Showing {fmt(net.devices.length)} of {fmt(net.device_count)} devices: find the others with the search above.</p>
       )}
-    </section>
+    </div>
   )
 }
 
-function Row({ k, children }) {
+/** The chips that say who watches a network. */
+export function CoverageChips({ net, small = false }) {
+  return coverageChips(net).map((c) => (
+    <span key={c.text} className={`inline-flex items-center gap-1.5 font-medium rounded-full border ${small ? 'text-[11px] px-2 py-0.5' : 'text-xs px-2.5 py-1'} ${c.cls}`}>
+      <c.Icon className="w-3.5 h-3.5" aria-hidden="true" /> {c.text}
+    </span>
+  ))
+}
+
+export function Row({ k, children }) {
   return (
     <div className="grid grid-cols-[6.5rem_1fr] gap-3">
       <dt className="text-dark-400">{k}</dt>
@@ -284,17 +260,16 @@ function Row({ k, children }) {
   )
 }
 
-// The details of what was picked: a panel fixed to the right edge, over the page but not blocking it.
-function PanelShell({ kind, title, onClose, children }) {
+// The details of what was picked, in the page's side column.
+export function PanelShell({ kind, title, onClose, children }) {
   return (
-    <aside className="fixed right-4 top-20 bottom-4 z-30 w-[22rem] max-w-[calc(100vw-2rem)] overflow-y-auto glass-card p-4 space-y-4 shadow-2xl"
-      aria-label={`${kind} details`}>
+    <aside className="glass-card p-4 space-y-4" aria-label={`${kind} details`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-dark-400">{kind}</p>
           <p className="text-base font-semibold text-dark-50 break-all">{title}</p>
         </div>
-        <button type="button" onClick={onClose} className="text-dark-400 hover:text-dark-50" aria-label="Close"><X className="w-4 h-4" /></button>
+        {onClose && <button type="button" onClick={onClose} className="text-dark-400 hover:text-dark-50" aria-label="Close"><X className="w-4 h-4" /></button>}
       </div>
       {children}
     </aside>
@@ -313,7 +288,7 @@ function AssetButtons({ assetId, onBlast }) {
   )
 }
 
-export function NetworkPanel({ net, open, onToggle, onClose }) {
+export function NetworkPanel({ net, onClose }) {
   const cves = net.devices.reduce((s, d) => s + d.alerts.cve_open, 0)
   const critical = net.devices.reduce((s, d) => s + d.alerts.cve_critical, 0)
   const exposures = net.devices.reduce((s, d) => s + d.alerts.exposure_open, 0)
@@ -349,8 +324,7 @@ export function NetworkPanel({ net, open, onToggle, onClose }) {
         </p>
       )}
       <div className="flex flex-col gap-2">
-        {net.device_count > 0 && <button type="button" onClick={() => onToggle(net.key)} className="btn-primary text-sm">{open ? 'Close this network' : 'Open this network'}</button>}
-        {!net.title && <Link to={`/discovery?scan=${encodeURIComponent(net.key)}`} className="btn-secondary text-sm text-center">New scan of this network</Link>}
+        {!net.title && <Link to={`/discovery?scan=${encodeURIComponent(net.key)}`} className="btn-primary text-sm text-center">New scan of this network</Link>}
       </div>
     </PanelShell>
   )

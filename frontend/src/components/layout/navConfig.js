@@ -18,7 +18,7 @@ export function buildNavSections(role) {
     { label: 'Assets', items: [
       { to: '/inventory', icon: Boxes, label: 'Inventory', keywords: 'assets my assets discovered devices graph' },
       ...(canSeeOps ? [{ to: '/discovery', icon: Radar, label: 'Discovery', keywords: 'scan networks nmap passive' }] : []),
-      { to: '/network-map', icon: Share2, label: 'Network map', keywords: 'topology routers switches ports cables vlan cdp lldp' },
+      { to: '/network-map', icon: Share2, label: 'Network', keywords: 'network map topology routers switches ports cables vlan cdp lldp gateways relationships' },
     ]},
     { label: 'Security', items: [
       { to: '/alerts', icon: Bell, label: 'Alerts', keywords: 'events findings cve drift' },

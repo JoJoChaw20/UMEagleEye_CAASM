@@ -1,6 +1,6 @@
 /**
  * networkTreeLayout.js: PURE layout of a measured tree (the routers and switches a network agent
- * read, GET /network/map nodes and edges) inside its network's band on the Network map. No React,
+ * read, GET /network/map nodes and edges) in one network's map on the Network page. No React,
  * no DOM.
  *
  * Routers, switches, neighbours and VLAN groups form a top-down tidy tree: each subtree gets the

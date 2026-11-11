@@ -149,7 +149,7 @@ export default function DiscoveryPage() {
   const [loading, setLoading] = useState(false)
   const [hostsOf, setHostsOf] = useState(null)        // { scanId, agentName }
   const [searchParams, setSearchParams] = useSearchParams()
-  // ?scan=<range> (the Network map's "New scan of this network") opens New scan for that range
+  // ?scan=<range> (the Network page's "New scan of this network") opens New scan for that range
   const [newScan, setNewScan] = useState(() => (searchParams.get('scan') ? { subnet: searchParams.get('scan'), agentId: 'auto' } : null))
 
   const tParams = useMemo(() => (tenantFilter ? { tenant_id: tenantFilter } : {}), [tenantFilter])
