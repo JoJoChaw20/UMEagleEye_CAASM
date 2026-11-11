@@ -93,13 +93,17 @@ export function NetworksOverview({ networks, map, matchCount, onOpen }) {
 export function OverviewPanel({ networks, map, canInfer }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)        // {ok, text}
-  const devices = networks.reduce((s, n) => s + n.device_count, 0)
-  const withAgent = networks.reduce((s, n) => s + n.devices.filter((d) => d.agent).length, 0)
+  // Each device once: a device on several networks (a VM with three cards) is in each one's list,
+  // and so are its alerts. Gateways that are recorded assets count too.
+  const unique = [...new Map(networks.flatMap((n) => [...n.devices, ...(n.gateway?.device ? [n.gateway.device] : [])])
+    .map((d) => [d.asset_id, d])).values()]
+  const devices = unique.length
+  const withAgent = unique.filter((d) => d.agent).length
   const unwatched = networks.filter((n) => n.agents.length === 0 && n.measured_roots.length === 0).length
   const infra = map.nodes.filter((n) => n.kind === 'router' || n.kind === 'switch').length
-  const cves = networks.reduce((s, n) => s + n.devices.reduce((t, d) => t + d.alerts.cve_open, 0), 0)
-  const critical = networks.reduce((s, n) => s + n.devices.reduce((t, d) => t + d.alerts.cve_critical, 0), 0)
-  const exposures = networks.reduce((s, n) => s + n.devices.reduce((t, d) => t + d.alerts.exposure_open, 0), 0)
+  const cves = unique.reduce((t, d) => t + d.alerts.cve_open, 0)
+  const critical = unique.reduce((t, d) => t + d.alerts.cve_critical, 0)
+  const exposures = unique.reduce((t, d) => t + d.alerts.exposure_open, 0)
   const computerAgents = [...new Map(networks.flatMap((n) => n.agents).map((a) => [a.agent_id, a.name])).values()]
 
   // The topology and the relationships, built again now (the server does both, one rebuild at a time).
