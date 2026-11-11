@@ -1,7 +1,7 @@
 /**
  * blastRadius.ts — PURE blast-radius traversal (no DB access).
  *
- * The route prefetches the tenant's member-to-member edges + the start asset in a
+ * The route prefetches the tenant's edges (every device, discovered ones too) + the start asset in a
  * constant number of queries, then hands them here. Keeping the walk pure lets it
  * be unit-tested with mock graphs (scripts/blast-radius-demo.ts) and keeps the
  * Cloudflare subrequest count independent of graph size.
@@ -31,7 +31,6 @@ export interface BlastNodeInput {
   ipAddress:        string | null
   deviceType:       string
   criticalityScore: number | null
-  inMyAssets:       boolean
 }
 
 export interface BlastEdgeInput {
@@ -61,7 +60,7 @@ export interface BlastResultNode {
 export interface BlastResult {
   startId:      string
   direction:    Direction
-  reason:       string | null   // 'not_in_my_assets' when the start is not a member, else null
+  reason:       string | null   // 'not_found' when the start is unknown, else null
   truncated:    boolean         // node cap hit
   skippedTypes: string[]        // unknown relationship types present but not traversed
   nodes:        BlastResultNode[]
@@ -118,11 +117,10 @@ export function computeBlastRadius(args: {
   const empty = (reason: string | null): BlastResult =>
     ({ startId: args.startId, direction, reason, truncated: false, skippedTypes: [], nodes: [] })
 
-  // Only members take part; a non-member (or unknown) start yields the handled reason.
-  if (!start || !start.inMyAssets) return empty('not_in_my_assets')
+  if (!start) return empty('not_found')
 
   // Build impact-oriented adjacency + per-node traversable degree. An edge only
-  // participates when BOTH endpoints are known members (hidden edges never traversed).
+  // participates when BOTH endpoints are known devices.
   const skipped = new Set<string>()
   const fwd = new Map<string, { to: string; via: string }[]>()  // impactFrom → impactTo
   const rev = new Map<string, { to: string; via: string }[]>()  // impactTo → impactFrom
@@ -136,7 +134,7 @@ export function computeBlastRadius(args: {
     const orient = IMPACT_ORIENTATION[e.type]
     if (orient === null) continue  // same_subnet — known, intentionally not traversed
     const s = nodeById.get(e.source), t = nodeById.get(e.target)
-    if (!s || !t || !s.inMyAssets || !t.inMyAssets) continue
+    if (!s || !t) continue
     const from = orient === 'as_stored' ? e.source : e.target
     const to   = orient === 'as_stored' ? e.target : e.source
     add(fwd, from, to, e.type)

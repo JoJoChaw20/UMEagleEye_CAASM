@@ -1,3 +1,4 @@
+import { refreshRelationships } from '../services/relationshipRefresh'
 import type { Env } from '../types'
 import { getDb } from '../db/client'
 import { runDriftAudit } from '../services/drift'
@@ -99,6 +100,12 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
           let changed = 0
           for (const id of tenantIds) changed += (await rescoreAssets(db, id)).scoresChanged
           return `${changed} criticality score(s) changed`
+        })
+        // Safety net for the relationships (they are also rebuilt when devices come or go).
+        await step(env, 'relationships', async () => {
+          let made = 0
+          for (const id of tenantIds) made += (await refreshRelationships(env, id))?.relationships ?? 0
+          return `${made} relationship(s) worked out for ${tenantIds.length} tenant(s)`
         })
         break
       }

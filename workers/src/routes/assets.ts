@@ -7,6 +7,7 @@ import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { agentLiveness } from '../lib/agentLiveness'
 import { audit } from '../services/audit'
+import { refreshRelationshipsLater } from '../services/relationshipRefresh'
 import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
@@ -516,6 +517,7 @@ app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('jso
 
     const stmts = plan.ops.flatMap(op => mergeOpToStmts(db, op, { userId: user.userId, tenantId }))
     await db.batch(stmts as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
+    refreshRelationshipsLater(c, tenantId)                 // the relationships, in the background
     return c.json({ merged: true, survivor_id, removed: uniqueLosers, counts: plan.counts })
   } catch (err) {
     console.error('assets POST /merge error:', err)
@@ -589,6 +591,7 @@ app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES),
       }
     }
 
+    if (!dry_run && merged.length) refreshRelationshipsLater(c, tenantId)
     return c.json({ dry_run: dry_run ?? false, merged, remaining, failed })
   } catch (err) {
     console.error('assets POST /duplicates/merge-safe error:', err)
@@ -849,6 +852,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', c
       await recordManualAddress(db, { assetId: asset.assetId, tenantId: targetTenantId, ip: body.ip_address, mac: normalizedMac ?? null })
       await rematch(db, asset.assetId)
     }
+    refreshRelationshipsLater(c, targetTenantId)                 // the relationships, in the background
     return c.json(asset, 201)
   } catch (err) {
     console.error('assets POST / error:', err)
@@ -1092,6 +1096,7 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
     await c.env.REPORTS_BUCKET.delete(sbomObjectKey(assetId)).catch(() => {})
     await audit(db, c, { userId: user.userId, tenantId: existing.tenantId, actionType: 'asset.delete', targetEntity: assetId,
       previousState: { ip: existing.ipAddress, mac: existing.macAddress, hostname: existing.hostname, device_type: existing.deviceType } })
+    refreshRelationshipsLater(c, existing.tenantId)                 // the relationships, in the background
 
     return c.json({
       message: 'Asset deleted',
@@ -1466,6 +1471,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
     }
     await flush(curGroups)
 
+    if (imported > 0) refreshRelationshipsLater(c, targetTenantId)
     return c.json({ imported, updated, errors })
   } catch (err) {
     console.error('assets POST /import error:', err)

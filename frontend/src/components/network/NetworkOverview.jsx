@@ -102,19 +102,14 @@ export function OverviewPanel({ networks, map, canInfer }) {
   const exposures = networks.reduce((s, n) => s + n.devices.reduce((t, d) => t + d.alerts.exposure_open, 0), 0)
   const computerAgents = [...new Map(networks.flatMap((n) => n.agents).map((a) => [a.agent_id, a.name])).values()]
 
-  // Topology first, so assets have their network layer; relationships are built even if it fails.
+  // The topology and the relationships, built again now (the server does both, one rebuild at a time).
   const update = async () => {
     setBusy(true); setResult(null)
-    let warning = ''
-    try {
-      await client.post('/topology/infer')
-    } catch (e) {
-      warning = `The topology step failed (HTTP ${e?.response?.status ?? 'error'}), so the older topology was used. `
-    }
     try {
       const res = await client.post('/relationships/infer')
-      const n = res.data?.relationships_created ?? 0
-      setResult({ ok: !warning, text: `${warning}${plural(n, 'relationship')} worked out.` })
+      setResult(res.data?.already_running
+        ? { ok: true, text: 'An update is already running; it will include the latest changes.' }
+        : { ok: true, text: `${plural(res.data?.relationships_created ?? 0, 'relationship')} worked out.` })
     } catch (err) {
       setResult({ ok: false, text: err?.response?.data?.detail || 'Could not work out the relationships' })
     } finally { setBusy(false) }
@@ -134,12 +129,12 @@ export function OverviewPanel({ networks, map, canInfer }) {
       {canInfer && (
         <div className="space-y-2 border-t border-dark-700/60 pt-3">
           <p className="text-xs text-dark-400">
-            Blast radius and each asset's Connected list use the relationships between your assets, worked out from scans and the
-            measured cables. Work them out again after new scans or a network agent crawl.
+            Blast radius and each asset's Connected list use the relationships between all your devices, worked out from scans and
+            the measured cables. They update on their own when devices are found, added or removed, and every night.
           </p>
           <button type="button" onClick={update} disabled={busy} className="btn-secondary text-sm w-full inline-flex items-center justify-center gap-2">
             {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Network className="w-4 h-4" />}
-            {busy ? 'Working out relationships…' : 'Update relationships'}
+            {busy ? 'Working out relationships…' : 'Update relationships now'}
           </button>
           {result && <p className={`text-xs ${result.ok ? 'text-emerald-400' : 'text-yellow-400'}`} role="status">{result.text}</p>}
         </div>

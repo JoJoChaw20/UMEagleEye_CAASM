@@ -284,7 +284,7 @@ function AssetButtons({ assetId, onBlast }) {
     <div className="flex flex-wrap gap-2">
       <Link to={`/inventory/${assetId}`} className="btn-primary text-sm inline-flex items-center gap-2">Open asset <ExternalLink className="w-3.5 h-3.5" /></Link>
       <button type="button" onClick={() => onBlast(assetId)} className="btn-secondary text-sm inline-flex items-center gap-2"
-        title="What would be affected if this device were compromised or went down (assets in My Assets)">
+        title="What would be affected if this device were compromised or went down">
         <Zap className="w-3.5 h-3.5" /> Blast radius
       </button>
     </div>

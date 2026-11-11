@@ -24,7 +24,7 @@ function check(label: string, actual: unknown, expected: unknown) {
 // Adapt a mock graph to the pure function inputs.
 const nodesOf = (g: MockGraph): BlastNodeInput[] => g.nodes.map(n => ({
   assetId: n.assetId, hostname: n.hostname, ipAddress: n.ip, deviceType: n.deviceType,
-  criticalityScore: n.criticalityScore ?? 5, inMyAssets: n.inMyAssets,
+  criticalityScore: n.criticalityScore ?? 5,
 }))
 const edgesOf = (g: MockGraph): BlastEdgeInput[] => g.edges.map(e => ({ source: e.source, target: e.target, type: e.type }))
 const run = (g: MockGraph, startId: string, direction: 'downstream' | 'upstream' | 'both', depth = 3, options = {}) =>
@@ -68,16 +68,16 @@ async function main() {
   check('(e) same_subnet (b) and unknown (c) are not traversed', [rE.nodes.some(n => n.assetId === 'b'), rE.nodes.some(n => n.assetId === 'c')], [false, false])
   check('(e) unknown type listed in skipped_types', rE.skippedTypes, ['mystery_link'])
 
-  // ── (f) non-member in the middle breaks the chain ──────────────────────────
-  console.log('\n=== (f) non-member in the middle ===')
-  check('(f) downstream from m1 reaches nothing (gap is not a member)', ids(run(BROKEN_CHAIN, 'm1', 'downstream')), [])
-  check('(f) m2 beyond the gap is unreachable', run(BROKEN_CHAIN, 'm1', 'both').nodes.some(n => n.assetId === 'm2'), false)
+  // ── (f) a discovered device in the middle is part of the chain ─────────────
+  // (relationships cover every device, not only My Assets)
+  console.log('\n=== (f) discovered device in the middle ===')
+  check('(f) downstream from m1 reaches the discovered gap and m2 beyond it', ids(run(BROKEN_CHAIN, 'm1', 'downstream')), ['gap', 'm2'])
 
-  // ── (g) start not a member ─────────────────────────────────────────────────
-  console.log('\n=== (g) non-member start ===')
+  // ── (g) a discovered start works like any other ─────────────────────────────
+  console.log('\n=== (g) discovered start ===')
   const rG = run(NON_MEMBER_START, 'out', 'downstream')
-  check('(g) empty result', rG.nodes.length, 0)
-  check('(g) reason = not_in_my_assets', rG.reason, 'not_in_my_assets')
+  check('(g) reaches its neighbour', ids(rG), ['in'])
+  check('(g) reason = null', rG.reason, null)
 
   // ── (h) cycle terminates, each node once, depths correct ───────────────────
   console.log('\n=== (h) cycle ===')
@@ -114,7 +114,7 @@ async function main() {
     }
     return { db: { select: () => makeChain() } as never, state }
   }
-  const startResp = [{ assetId: 's', tenantId: 't', hostname: 'h', ipAddress: '10.0.0.1', deviceType: 'server', criticalityScore: 5, inMyAssets: true }]
+  const startResp = [{ assetId: 's', tenantId: 't', hostname: 'h', ipAddress: '10.0.0.1', deviceType: 'server', criticalityScore: 5 }]
   const edgeResp = (n: number) => Array.from({ length: n }, (_, k) => ({
     source: `a${k}`, target: `b${k}`, type: 'connects_to',
     srcHostname: 'h', srcIp: '10.0.0.2', srcDeviceType: 'server', srcCrit: 5,

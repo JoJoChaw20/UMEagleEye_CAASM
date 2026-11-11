@@ -118,9 +118,9 @@ export const MIXED_TYPES: MockGraph = {
   ],
 }
 
-// ── NON-MEMBER IN THE MIDDLE ──────────────────────────────────────
-// m1 → gap(non-member) → m2, all connects_to. The gap breaks both edges (both
-// endpoints must be members), so m1 reaches nothing and m2 is unreachable.
+// ── A DISCOVERED DEVICE IN THE MIDDLE ─────────────────────────────
+// m1 -> gap (not in My Assets) -> m2, all connects_to. Relationships cover every
+// device, so the chain holds: m1 reaches gap and m2.
 export const BROKEN_CHAIN: MockGraph = {
   name: 'broken-chain',
   nodes: [node('m1', 'server'), node('gap', 'server', { inMyAssets: false }), node('m2', 'server')],
@@ -130,7 +130,7 @@ export const BROKEN_CHAIN: MockGraph = {
   ],
 }
 
-// ── NON-MEMBER START ──────────────────────────────────────────────
+// ── A DISCOVERED START ──────────────────────────────────────────────
 export const NON_MEMBER_START: MockGraph = {
   name: 'non-member-start',
   nodes: [node('out', 'server', { inMyAssets: false }), node('in', 'server')],

@@ -31,6 +31,7 @@ import { applyExposures } from '../services/exposure'
 import { routeAgents, unmanagedHostIps } from '../services/agentRouting'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
+import { refreshRelationshipsLater } from '../services/relationshipRefresh'
 import {
   INVESTIGATE_EXPIRE_HOURS, INVESTIGATE_TRIGGER, isInvestigation, queueInvestigations, recordInvestigationFailure,
   recordInvestigationResult, type InvestigationInfo,
@@ -1454,6 +1455,9 @@ Example:
     } catch (err) {
       console.error('scan ingest: new-device investigation failed:', err)
     }
+
+    // New devices: the relationships between the tenant's devices, in the background.
+    if (plan.perHost.some((ph) => ph.isNew)) refreshRelationshipsLater(c, tenantId)
 
     return c.json({
       message: 'Scan results ingested',

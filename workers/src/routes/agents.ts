@@ -12,6 +12,7 @@ import { pendingJobsFor } from '../services/pendingJobs'
 import { agentLiveness } from '../lib/agentLiveness'
 import { getDb } from '../db/client'
 import { audit } from '../services/audit'
+import { refreshRelationshipsLater } from '../services/relationshipRefresh'
 import { networkTargetErrors } from '../services/scanTargets'
 import { agents, assets, assetAddresses, assetIdentifiers, assetSoftware, auditLogs, scanResults, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
@@ -755,6 +756,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
     } catch (err) {
       console.error('inventory: Windows patch check failed:', err)
     }
+    if (created) refreshRelationshipsLater(c, tenantId)   // a new device: the relationships, in the background
 
     return c.json({
       asset_id: assetId,

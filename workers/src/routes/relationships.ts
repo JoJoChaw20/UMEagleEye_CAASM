@@ -10,6 +10,7 @@ import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema
 import { inferForTenant, resolveParents } from './topology'
 import { measuredEdges } from '../lib/networkMap'
 import { loadNetworkMap } from '../services/networkMap'
+import { refreshRelationships } from '../services/relationshipRefresh'
 import { computeBlastRadius, clampDepth, normalizeDirection, type BlastNodeInput, type BlastEdgeInput } from '../lib/blastRadius'
 
 // Chunk size for the relationship rebuild INSERT, so one statement never grows without
@@ -54,10 +55,10 @@ export function classifyRelType(parentType: string, childType: string): (typeof 
   return 'depends_on'
 }
 
+// Relationships cover every device of the tenant, discovered ones too: the Network page shows a
+// device the moment an agent sees it, and so do Blast radius and an asset's Connected list.
 async function getTenantAssetIds(db: ReturnType<typeof getDb>, tenantId: string): Promise<string[]> {
-  const rows = await db.select({ assetId: assets.assetId }).from(assets).where(
-    and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true))
-  )
+  const rows = await db.select({ assetId: assets.assetId }).from(assets).where(eq(assets.tenantId, tenantId))
   return rows.map(r => r.assetId)
 }
 
@@ -114,8 +115,7 @@ app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c
 
 // ── Blast-radius data loader (2 queries, constant) ───────────────
 // One query for the start asset (tenant guard + its attributes), one for every
-// My-Assets-to-My-Assets edge in scope (both endpoints joined for node attributes +
-// membership), capped at BLAST_EDGE_CAP. No per-node queries. Exported so the demo
+// edge in scope (both endpoints joined for node attributes), capped at BLAST_EDGE_CAP. No per-node queries. Exported so the demo
 // can assert the query count with a counting stub.
 export const BLAST_EDGE_CAP = 5000
 
@@ -127,11 +127,11 @@ export async function loadBlastGraph(
   const [startRow] = await db
     .select({
       assetId: assets.assetId, tenantId: assets.tenantId, hostname: assets.hostname, ipAddress: assets.ipAddress,
-      deviceType: assets.deviceType, criticalityScore: assets.criticalityScore, inMyAssets: assets.inMyAssets,
+      deviceType: assets.deviceType, criticalityScore: assets.criticalityScore,
     })
     .from(assets).where(eq(assets.assetId, params.startId)).limit(1)
 
-  // Q2 — member-to-member edges, both endpoints joined for attributes (+1 to detect cap)
+  // Q2 — the edges, both endpoints joined for attributes (+1 to detect cap)
   const src = alias(assets, 'blast_src')
   const tgt = alias(assets, 'blast_tgt')
   const edgeRows = await db
@@ -143,11 +143,7 @@ export async function loadBlastGraph(
     .from(assetRelationships)
     .innerJoin(src, eq(src.assetId, assetRelationships.sourceAssetId))
     .innerJoin(tgt, eq(tgt.assetId, assetRelationships.targetAssetId))
-    .where(and(
-      params.tenantScopeId ? eq(src.tenantId, params.tenantScopeId) : undefined,
-      eq(src.inMyAssets, true),
-      eq(tgt.inMyAssets, true),
-    ))
+    .where(params.tenantScopeId ? eq(src.tenantId, params.tenantScopeId) : undefined)
     .limit(BLAST_EDGE_CAP + 1)
 
   const truncated = edgeRows.length > BLAST_EDGE_CAP
@@ -155,14 +151,13 @@ export async function loadBlastGraph(
 
   const nodeMap = new Map<string, BlastNodeInput>()
   for (const r of capped) {
-    if (!nodeMap.has(r.source)) nodeMap.set(r.source, { assetId: r.source, hostname: r.srcHostname, ipAddress: r.srcIp, deviceType: r.srcDeviceType, criticalityScore: r.srcCrit, inMyAssets: true })
-    if (!nodeMap.has(r.target)) nodeMap.set(r.target, { assetId: r.target, hostname: r.tgtHostname, ipAddress: r.tgtIp, deviceType: r.tgtDeviceType, criticalityScore: r.tgtCrit, inMyAssets: true })
+    if (!nodeMap.has(r.source)) nodeMap.set(r.source, { assetId: r.source, hostname: r.srcHostname, ipAddress: r.srcIp, deviceType: r.srcDeviceType, criticalityScore: r.srcCrit })
+    if (!nodeMap.has(r.target)) nodeMap.set(r.target, { assetId: r.target, hostname: r.tgtHostname, ipAddress: r.tgtIp, deviceType: r.tgtDeviceType, criticalityScore: r.tgtCrit })
   }
 
-  // The start may be isolated (no edges) or a non-member — seed/override it with its
-  // own authoritative row so computeBlastRadius can decide membership.
+  // The start may be isolated (no edges): seed/override it with its own row.
   const start: BlastNodeInput | null = startRow
-    ? { assetId: startRow.assetId, hostname: startRow.hostname, ipAddress: startRow.ipAddress, deviceType: startRow.deviceType, criticalityScore: startRow.criticalityScore, inMyAssets: startRow.inMyAssets }
+    ? { assetId: startRow.assetId, hostname: startRow.hostname, ipAddress: startRow.ipAddress, deviceType: startRow.deviceType, criticalityScore: startRow.criticalityScore }
     : null
   if (start) nodeMap.set(start.assetId, start)
 
@@ -171,7 +166,7 @@ export async function loadBlastGraph(
 }
 
 // ── GET /blast-radius/:assetId ───────────────────────────────────
-// Directional impact walk over My-Assets edges. Prefetches the graph in a constant
+// Directional impact walk over the tenant's edges. Prefetches the graph in a constant
 // 2 queries, then runs the pure traversal. Response is backward compatible with
 // BlastRadiusModal (origin_asset_id, affected_assets[], total_affected, max_depth)
 // with added fields: direction, reason, truncated, skipped_types, per-node hub + via.
@@ -198,7 +193,7 @@ app.get('/blast-radius/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), a
     return c.json({
       origin_asset_id: assetId,
       direction:       result.direction,
-      reason:          result.reason,                       // 'not_in_my_assets' or null
+      reason:          result.reason,                       // null (kept for older pages)
       truncated:       edgeTruncated || result.truncated,   // edge-cap OR node-cap hit
       skipped_types:   result.skippedTypes,
       affected_assets: result.nodes.map(n => ({
@@ -234,10 +229,7 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
   // Auto-build topology if missing
   let topoNodes = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
   if (topoNodes.length === 0) {
-    const tenantAssets = await db.select().from(assets).where(
-      and(eq(assets.tenantId, tenantId), eq(assets.inMyAssets, true))
-    )
-    await inferForTenant(db, tenantAssets, tenantId)
+    await inferForTenant(db, await db.select().from(assets).where(eq(assets.tenantId, tenantId)), tenantId)
     topoNodes = await db.select().from(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
   }
 
@@ -301,6 +293,8 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
 // ── POST /infer ──────────────────────────────────────────────────
 // Rebuilds relationship edges from the topology parent→child tree: infra→host and
 // infra→infra become connects_to (downstream), host→host becomes depends_on.
+// The tenant's topology and relationships built again now (services/relationshipRefresh.ts; they are
+// also rebuilt on their own when devices come or go, and every night).
 app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
   try {
     const user = c.get('user')
@@ -315,12 +309,19 @@ app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
       : [user.tenantId!]
 
     let totalCreated = 0
-
+    let busy = 0
     for (const tenantId of tenantsToProcess) {
-      totalCreated += await inferRelationshipsForTenant(db, tenantId)
+      const done = await refreshRelationships(c.env, tenantId)
+      if (done) totalCreated += done.relationships
+      else busy++
     }
 
-    return c.json({ relationships_created: totalCreated, message: `Inferred ${totalCreated} relationships across ${tenantsToProcess.length} tenant(s)` })
+    return c.json({
+      relationships_created: totalCreated, already_running: busy,
+      message: busy && tenantsToProcess.length === 1
+        ? 'An update is already running; it will include the latest changes.'
+        : `Worked out ${totalCreated} relationships across ${tenantsToProcess.length - busy} tenant(s)`,
+    })
   } catch (err) {
     console.error('POST /infer error:', err)
     return c.json({ detail: 'Failed to infer relationships' }, 500)

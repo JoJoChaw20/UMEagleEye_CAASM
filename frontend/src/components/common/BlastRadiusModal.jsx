@@ -105,12 +105,6 @@ export default function BlastRadiusModal({ assetId, onClose }) {
             <div className="flex items-center justify-center py-16">
               <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
             </div>
-          ) : data?.reason === 'not_in_my_assets' ? (
-            <div className="text-center py-12 text-dark-400">
-              <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="text-lg font-medium">Not in My Assets</p>
-              <p className="text-sm mt-1">Blast radius only covers assets that are in My Assets.</p>
-            </div>
           ) : data?.total_affected === 0 ? (
             <div className="text-center py-12 text-dark-400">
               <Shield className="w-12 h-12 mx-auto mb-3 opacity-30" />

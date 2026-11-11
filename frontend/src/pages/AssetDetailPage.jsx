@@ -578,7 +578,7 @@ export default function AssetDetailPage() {
                   </li>
                 ))}
               </ul>
-            ) : <Empty>No relationships recorded. Relationships are inferred from scans and topology.</Empty>}
+            ) : <Empty>No relationships yet. They are worked out from scans and measured cables, and updated when devices come or go.</Empty>}
           </Section>
         )}
 

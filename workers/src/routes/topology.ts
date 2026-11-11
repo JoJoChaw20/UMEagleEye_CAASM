@@ -175,6 +175,14 @@ function buildTree(rows: typeof topologyNodes.$inferSelect[]): TreeNode[] {
   return roots
 }
 
+/** The tenant's topology built again from all its devices (My Assets and Discovered alike: the
+ *  Network page shows a device the moment an agent sees it). Returns the nodes created. */
+export async function rebuildTopology(db: ReturnType<typeof getDb>, tenantId: string): Promise<number> {
+  await db.delete(topologyNodes).where(eq(topologyNodes.tenantId, tenantId))
+  const tenantAssets = await db.select().from(assets).where(eq(assets.tenantId, tenantId))
+  return inferForTenant(db, tenantAssets, tenantId)
+}
+
 // ── Infer topology for a single tenant's assets ───────────────────
 export async function inferForTenant(
   db: ReturnType<typeof getDb>,
@@ -366,29 +374,13 @@ router.post(
     if (user.role === 'superadmin') {
       // Clear ALL topology nodes then re-infer per tenant
       await db.delete(topologyNodes)
-
-      const allTenants = await db.select().from(tenants)
-      for (const tenant of allTenants) {
-        const tenantAssets = await db.select().from(assets).where(
-          and(
-            eq(assets.tenantId, tenant.tenantId),
-            eq(assets.inMyAssets, true)
-          )
-        )
-        const count = await inferForTenant(db, tenantAssets, tenant.tenantId)
+      for (const tenant of await db.select().from(tenants)) {
+        const count = await rebuildTopology(db, tenant.tenantId)
         if (count > 0) tenantsProcessed++
         totalNodes += count
       }
     } else {
-      // Clear and re-infer for this tenant only
-      await db.delete(topologyNodes).where(eq(topologyNodes.tenantId, user.tenantId!))
-      const tenantAssets = await db.select().from(assets).where(
-        and(
-          eq(assets.tenantId, user.tenantId!),
-          eq(assets.inMyAssets, true)
-        )
-      )
-      totalNodes = await inferForTenant(db, tenantAssets, user.tenantId!)
+      totalNodes = await rebuildTopology(db, user.tenantId!)
       tenantsProcessed = 1
     }
 
