@@ -15,6 +15,11 @@
  *     write all three — an empty array clears stale values.
  *  d) For every other key, a non-empty incoming value wins; an empty incoming
  *     value is dropped so the existing value survives.
+ *  e) Ports are kept per scanned address (ports_by_ip). A device with two network cards
+ *     (a Docker port bound to one) is scanned through either; each scan replaces only that
+ *     address's ports, and the device's ports/services are the union. So a scan through the
+ *     other card no longer "closes" ports and flaps their alerts. An address that is no
+ *     longer one of the device's (`currentIps`) is dropped.
  */
 
 /** Port-derived keys only an active (port-scanning) ingest may author. */
@@ -43,10 +48,29 @@ export interface MergedOsInfo {
   merged: Record<string, unknown>
 }
 
+/** What an active scan saw at one address: its ports ("22/tcp") and when. */
+export interface AddressPorts { ports: string[]; seen_at: string }
+
+const portKey = (s: Record<string, unknown>) => `${s.port}/${s.protocol ?? 'tcp'}`
+
+function addressPortsOf(v: unknown): Record<string, AddressPorts> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+  const out: Record<string, AddressPorts> = {}
+  for (const [ip, e] of Object.entries(v as Record<string, unknown>)) {
+    const r = e as Record<string, unknown> | null
+    if (r && Array.isArray(r.ports) && typeof r.seen_at === 'string') {
+      out[ip] = { ports: r.ports.filter((p): p is string => typeof p === 'string'), seen_at: r.seen_at }
+    }
+  }
+  return out
+}
+
 export function mergeOsInfo(
   existing: Record<string, unknown> | null | undefined,
   incoming: Record<string, unknown> | null | undefined,
   isPassive: boolean,
+  // the address an active scan reached, and the device's current addresses when known (rule e)
+  scanned?: { ip: string; currentIps?: string[] | null; now?: Date },
 ): MergedOsInfo {
   const base = (existing ?? {}) as Record<string, unknown>
   const src = (incoming ?? {}) as Record<string, unknown>
@@ -66,6 +90,26 @@ export function mergeOsInfo(
     for (const key of PORT_KEYS) {
       const v = src[key]
       filtered[key] = Array.isArray(v) ? v : []
+    }
+    if (scanned?.ip) {
+      // Rule (e): this address's ports replaced; the other addresses' kept (while they are
+      // still the device's), and the device's ports and services are the union.
+      const byIp: Record<string, AddressPorts> = {}
+      for (const [ip, e] of Object.entries(addressPortsOf(base.ports_by_ip))) {
+        if (ip !== scanned.ip && (!scanned.currentIps || scanned.currentIps.includes(ip))) byIp[ip] = e
+      }
+      const here = (filtered.ports as unknown[]).filter((p): p is string => typeof p === 'string')
+      byIp[scanned.ip] = { ports: here, seen_at: (scanned.now ?? new Date()).toISOString() }
+      const elsewhere = new Set(Object.entries(byIp).filter(([ip]) => ip !== scanned.ip).flatMap(([, e]) => e.ports))
+      const seenHere = new Set(here)
+      const kept = (Array.isArray(base.services) ? base.services as Record<string, unknown>[] : [])
+        .filter((s) => s && elsewhere.has(portKey(s)) && !seenHere.has(portKey(s)))
+      const services = [...(filtered.services as unknown[]), ...kept]
+      filtered.services = services
+      filtered.ports = [...new Set([...here, ...elsewhere])]
+      filtered.products = [...new Set([...(filtered.products as unknown[]), ...kept.map((s) => s.product).filter(Boolean)])]
+      filtered.versions = [...new Set([...(filtered.versions as unknown[]), ...kept.map((s) => s.version).filter(Boolean)])]
+      filtered.ports_by_ip = byIp
     }
   }
   // Rule (b): passive → port keys omitted entirely, stored values survive.

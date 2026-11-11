@@ -272,7 +272,9 @@ export function planIngest(
       assetId = decision.assetId
       isNew = false
       const st = assetState.get(assetId)!
-      const merged = mergeOsInfo(st.osInfo, host.observedOsInfo, host.isPassive).merged
+      // its ports per address (lib/osInfo.ts rule e): kept for the addresses it still has
+      const currentIps = workAddrs.filter((w) => !w.ended && w.assetId === assetId).map((w) => w.ipAddress)
+      const merged = mergeOsInfo(st.osInfo, host.observedOsInfo, host.isPassive, { ip: host.ip, currentIps: [...currentIps, host.ip], now }).merged
       // Device type: manual is protected; an auto type may be corrected by an active
       // scan (never a passive one). See resolveIngestDeviceType.
       const dt = resolveIngestDeviceType({ deviceType: st.deviceType, deviceTypeSource: st.deviceTypeSource ?? null }, host.deviceType, host.isPassive)
@@ -405,7 +407,7 @@ export function planIngest(
       // ── CREATE new asset (rule 5 / 6 / 1-possible-duplicate) ──
       assetId = newId()
       isNew = true
-      const merged = mergeOsInfo(null, host.observedOsInfo, host.isPassive).merged
+      const merged = mergeOsInfo(null, host.observedOsInfo, host.isPassive, { ip: host.ip, now }).merged
       const typeHint = deviceTypeHint({ hostname: host.hostname, mac, vendor: host.hardwareVendor, osInfo: merged })
       const createdType = applyHint({ deviceType: host.deviceType, deviceTypeSource: 'auto' }, typeHint).deviceType
       const crit = scoreAsset({

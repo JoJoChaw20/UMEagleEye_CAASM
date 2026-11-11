@@ -1282,7 +1282,7 @@ Example:
       const networkKey = resolution.networkKey
       if (resolution.assetId) {
         const [existing] = await db.select().from(assets).where(eq(assets.assetId, resolution.assetId)).limit(1)
-        const { merged } = mergeOsInfo(existing?.osInfo as Record<string, unknown> | null, p.observedOsInfo, p.isPassive)
+        const { merged } = mergeOsInfo(existing?.osInfo as Record<string, unknown> | null, p.observedOsInfo, p.isPassive, { ip: p.ip })
         const dt = resolveIngestDeviceType(existing ? { deviceType: existing.deviceType, deviceTypeSource: existing.deviceTypeSource ?? null } : null, p.deviceType, p.isPassive)
         const slowHint = deviceTypeHint({ hostname: p.hostname ?? existing?.hostname, mac: mac ?? existing?.macAddress, vendor: p.hardwareVendor ?? existing?.hardwareVendor, osInfo: merged })
         const hinted = applyHint({ deviceType: dt.deviceType, deviceTypeSource: dt.deviceTypeSource }, slowHint)
@@ -1322,7 +1322,7 @@ Example:
         return resolution.assetId
       }
       const newAssetId = crypto.randomUUID()
-      const { merged } = mergeOsInfo(null, p.observedOsInfo, p.isPassive)
+      const { merged } = mergeOsInfo(null, p.observedOsInfo, p.isPassive, { ip: p.ip })
       const newHint = deviceTypeHint({ hostname: p.hostname, mac, vendor: p.hardwareVendor, osInfo: merged })
       const newType = applyHint({ deviceType: p.deviceType, deviceTypeSource: 'auto' }, newHint).deviceType as typeof p.deviceType
       const crit = scoreAsset({ deviceType: newType, deviceTypeSource: 'auto', deviceTypeHint: newHint, isInternetFacing: p.internetFacing, hostname: p.hostname, owner: null, osInfo: merged }, criticalityModel)
