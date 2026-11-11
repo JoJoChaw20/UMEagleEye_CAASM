@@ -26,7 +26,8 @@ test('a network has its gateway, the agents watching it and its devices, most im
   )
   assert.equal(nets.length, 1)
   const n = nets[0]!
-  assert.deepEqual(n.gateway, { ip: '192.168.36.2', mac: '00:50:56:e1:2a:07', asset_id: 'gw', label: 'gw' })
+  assert.deepEqual({ ...n.gateway, device: undefined }, { ip: '192.168.36.2', mac: '00:50:56:e1:2a:07', asset_id: 'gw', label: 'gw', device: undefined })
+  assert.deepEqual([n.gateway!.device!.asset_id, n.gateway!.device!.ip], ['gw', '192.168.36.2'])   // its details, like any device's
   assert.equal(n.coverage, 'watched')
   assert.deepEqual(n.agents.map((a) => a.agent_id), ['a-ubuntu', 'a-win'])
   // the gateway is drawn as the gateway, not again as a device; agents' computers first, then alerts

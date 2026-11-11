@@ -102,7 +102,8 @@ function Topology({ roots, ctx }) {
         {layout.nodes.map((p) => {
           const n = ctx.tree.nodes.get(p.id)
           const meta = NODE_META[n.kind] ?? NODE_META.neighbour
-          const selected = (ctx.selection?.type === 'node' && ctx.selection.id === p.id) || (ctx.netSelected && (n.kind === 'gateway' || n.kind === 'nogateway'))
+          const selected = (ctx.selection?.type === 'node' && ctx.selection.id === p.id)
+            || (n.kind === 'gateway' && n.asset_id && ctx.selection?.type === 'device' && ctx.selection.asset_id === n.asset_id)
           return (
             <button key={p.id} type="button" onClick={() => ctx.onSelectNode(n)} aria-label={`${meta.label} ${n.label}`}
               style={{ left: p.left, top: p.top, width: NODE_W, height: NODE_H }}
@@ -229,7 +230,9 @@ export function NetworkTopology({ net, devices, mode, selection, onSelectNetwork
     netSelected: selection?.type === 'network' && selection.key === net.key,
     deviceOf: (node) => own.get(node.asset_id) ?? deviceOf(node),
     toggleBox: (id) => setOpenBoxes((s) => { const t = new Set(s); if (t.has(id)) t.delete(id); else t.add(id); return t }),
-    onSelectNode: (n) => (['internet', 'gateway', 'nogateway'].includes(n.kind) ? onSelectNetwork(net) : onSelectNode(net, n)),
+    // the gateway is a device like any other when it is a recorded asset; the internet stands for the network
+    onSelectNode: (n) => (n.kind === 'gateway' && net.gateway?.device ? onSelectDevice(net, net.gateway.device)
+      : ['internet', 'gateway', 'nogateway'].includes(n.kind) ? onSelectNetwork(net) : onSelectNode(net, n)),
     onSelectDevice: (d) => onSelectDevice(net, d),
   }
   return (

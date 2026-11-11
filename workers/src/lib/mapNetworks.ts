@@ -59,7 +59,8 @@ export interface MapNetwork {
   title: string | null              // a network known only from a measured tree, with no range of its own
   subnets: string[]                 // other ranges reached only through this network's measured router
   measured_roots: string[]          // ids of the measured trees (lib/networkMap.ts nodes) drawn in this network
-  gateway: { ip: string; mac: string | null; asset_id: string | null; label: string | null } | null
+  // the gateway; `device` when it is a recorded asset (its details, like any device's)
+  gateway: { ip: string; mac: string | null; asset_id: string | null; label: string | null; device: NetworkDevice | null } | null
   gateway_macs: string[]            // more than one: probably two sites on the same range
   agents: { agent_id: string; name: string; listens: boolean; scans: boolean }[]
   phones: { agent_id: string; name: string }[]
@@ -138,16 +139,20 @@ export function buildMapNetworks(
       .map((s) => normalizeMac(s.gateway_mac)).filter((m): m is string => !!m))]
     const gatewayMac = gatewayMacs[0] ?? normalizeMac(gatewayRow?.mac) ?? null
 
-    const devices: NetworkDevice[] = rows.filter((r) => r.ip !== gatewayIp).map((r) => ({
+    const asDevice = (r: NetAddress): NetworkDevice => ({
       asset_id: r.asset_id, label: r.label, ip: r.ip, mac: r.mac, device_type: r.device_type, criticality: r.criticality,
       in_my_assets: r.in_my_assets, last_seen: r.last_seen, measured: r.measured,
       agent: agentOf.get(r.asset_id) ?? null, alerts: alerts.get(r.asset_id) ?? NO_ALERTS,
-    })).sort(byImportance)
+    })
+    const devices: NetworkDevice[] = rows.filter((r) => r.ip !== gatewayIp).map(asDevice).sort(byImportance)
 
     const listens = watchers.some((a) => a.listens), scans = watchers.some((a) => a.scans)
     out.push({
       key, title: null, subnets: [], measured_roots: [],
-      gateway: gatewayIp ? { ip: gatewayIp, mac: gatewayMac, asset_id: gatewayRow?.asset_id ?? null, label: gatewayRow?.label ?? null } : null,
+      gateway: gatewayIp ? {
+        ip: gatewayIp, mac: gatewayMac, asset_id: gatewayRow?.asset_id ?? null, label: gatewayRow?.label ?? null,
+        device: gatewayRow ? asDevice(gatewayRow) : null,
+      } : null,
       gateway_macs: gatewayMacs,
       agents: watchers.map((a) => ({ agent_id: a.agent_id, name: a.name, listens: a.listens, scans: a.scans })),
       phones: phones.map((a) => ({ agent_id: a.agent_id, name: a.name })),
