@@ -437,6 +437,20 @@ export function isUnseen(observed: Date | null, createdAt: Date | string | null 
   return !!since && now.getTime() - since.getTime() >= DRIFT_UNSEEN_DAYS * 86_400_000
 }
 
+/** When the device was last seen in a way that says something about this alert. A port alert
+ *  only by an active scan (ports_seen_at): a passive upload also moves last_scanned but sees no
+ *  ports, so it must not refresh or reopen one. Anything else by any scan or the agent's inventory. */
+export function sightingFor(
+  type: string,
+  asset: { lastScanned?: Date | string | null; inventoryCollectedAt?: Date | string | null; portsSeenAt?: Date | string | null },
+): Date | null {
+  if (type === 'port_opened' || type === 'port_closed') {
+    const t = asset.portsSeenAt ? new Date(asset.portsSeenAt) : null
+    return t && !Number.isNaN(t.getTime()) ? t : null
+  }
+  return lastObservedAt(asset)
+}
+
 /** What the audit does with an open alert whose condition is still present. Re-checking
  *  stored data is not a sighting: occurrences and last_seen only move when a scan or the
  *  agent observed the device after the alert was last seen ('bump'); otherwise only a
@@ -538,12 +552,12 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
   const frozenPorts = new Set<string>()
   const unseenAssets = new Set<string>()
   const ruleRefreshedKeys = new Set<string>()
-  const observedByAsset = new Map<string, Date | null>()
+  const assetById = new Map<string, (typeof assetRows)[number]>()
   for (const asset of assetRows) {
     if (!asset.baselineState) continue
     const baseline = asset.baselineState as AssetBaseline
     const observed = lastObservedAt(asset)
-    observedByAsset.set(asset.assetId, observed)
+    assetById.set(asset.assetId, asset)
     const drifts = detectDrift(baseline, asset, { agentMacs: agentMacs.get(asset.assetId) })
     const upgrade = drifts.find(d => d.type === 'version_upgrade' && d.details.changed_attribute === 'os_version')
     const { patch, ruleRefreshed } = baselineMoves(baseline, asset, upgrade ? String(upgrade.details.to) : null)
@@ -589,7 +603,8 @@ export async function runDriftAudit(db: DB, tenantId?: string | null, assetIds?:
     if (currentKeys.has(key)) continue   // same condition twice in this run
     currentKeys.add(key)
     if (suppressed.has(key)) continue
-    const observed = observedByAsset.get(c.assetId) ?? null
+    const row = assetById.get(c.assetId)
+    const observed = row ? sightingFor(c.type, row) : null
 
     const open = openByKey.get(key)
     if (open) {

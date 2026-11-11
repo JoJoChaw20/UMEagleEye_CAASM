@@ -225,6 +225,13 @@
       "when": 1794378621997,
       "tag": "0031_agent_policy_per_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794394607530,
+      "tag": "0032_ports_seen_at",
+      "breakpoints": true
     }
   ]
 }

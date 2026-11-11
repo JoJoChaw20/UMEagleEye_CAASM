@@ -163,6 +163,9 @@ export const assets = pgTable('assets', {
   // (lib/networkTopology.ts).
   networkLocation: jsonb('network_location'),
   lastScanned: timestamp('last_scanned', { withTimezone: true }),
+  // When an active scan last checked this device's ports. Only it can open or close a port
+  // alert: a passive upload also moves last_scanned but sees no ports (services/drift.ts).
+  portsSeenAt: timestamp('ports_seen_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [

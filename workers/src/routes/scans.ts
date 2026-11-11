@@ -1376,6 +1376,12 @@ Example:
       }
     }
 
+    // An active scan checked these devices' ports: only that counts as a sighting for their port
+    // alerts (services/drift.ts sightingFor); a passive upload or a crawl sees no ports.
+    if (scan_type === 'active' && upsertedAssetIds.length) {
+      await db.update(assets).set({ portsSeenAt: new Date() }).where(inArray(assets.assetId, [...new Set(upsertedAssetIds)]))
+    }
+
     // Mark scan completed — unified for active, dashboard-triggered passive, and
     // auto-created passive records (auto-created are already 'completed' but this is idempotent)
     await db
