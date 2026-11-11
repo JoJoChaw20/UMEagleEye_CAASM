@@ -113,7 +113,7 @@ export function deriveNetworkKey(input: { ip: string; isManualSource?: boolean }
 }
 
 // ── Pure matcher ─────────────────────────────────────────────────
-export type MatchRuleLabel = 1 | '1-agent' | '1-past' | 2 | 3 | 4 | 5 | 6 | '1-possible-duplicate'
+export type MatchRuleLabel = 1 | '1-agent' | '1-past' | 2 | '2-name' | 3 | 4 | 5 | 6 | '1-possible-duplicate'
 
 export interface MatcherInput {
   macClass: MacClass
@@ -145,7 +145,16 @@ export interface MatcherCandidates {
   /** ENDED addresses with input.mac (global only), the most recently seen first: the
    *  device was here before and its address was ended since (rule 1-past). */
   pastMacAddresses?: CandidateAddress[]
+  /** Rule 2-name: current addresses on input.networkKey of assets with the same specific
+   *  (non-generic) name, whose own MAC is another private one not seen for ROTATION_GAP_MS
+   *  and not in this upload. The caller applies those conditions (ingest-plan.ts). */
+  nameAddresses?: CandidateAddress[]
 }
+
+/** A private MAC's old address must have gone quiet this long before a new private MAC with
+ *  the same name is taken for the same device (rule 2-name): two devices present at once are
+ *  both heard within a few passive uploads (5 min apart). */
+export const ROTATION_GAP_MS = 10 * 60_000
 
 export type MatchDecision =
   | { rule: 1; assetId: string; matchedAddressId: string }
@@ -153,6 +162,7 @@ export type MatchDecision =
   | { rule: '1-past'; assetId: string; matchedAddressId: null }
   | { rule: '1-possible-duplicate'; assetId: null; possibleDuplicateOf: string }
   | { rule: 2; assetId: string; matchedAddressId: string }
+  | { rule: '2-name'; assetId: string; matchedAddressId: string }
   | { rule: 3; assetId: string; matchedAddressId: null }
   | { rule: 4; assetId: string; matchedAddressId: string }
   | { rule: 5; assetId: null; endAddressId: string }
@@ -223,6 +233,18 @@ export function matchAsset(input: MatcherInput, cand: MatcherCandidates): MatchD
       a.networkKey === input.networkKey ||
       (a.networkKey === null && a.ipAddress === input.ip))
     if (hit) return { rule: 2, assetId: hit.assetId, matchedAddressId: hit.addressId }
+  }
+
+  // Rule 2-name — a private MAC the device rotated (iOS and Android give each network, and
+  // from time to time, a new random MAC): the same specific name (mDNS, NetBIOS, DHCP) on the
+  // same network as exactly ONE device whose own private MAC has gone quiet. Two candidates,
+  // or the old MAC still heard, and it is left to Duplicates review (lib/duplicates.ts).
+  if (input.macClass === 'local' && input.networkKey !== null && cand.nameAddresses?.length) {
+    const assetsNamed = new Set(cand.nameAddresses.map(a => a.assetId))
+    if (assetsNamed.size === 1) {
+      const hit = cand.nameAddresses[0]!
+      return { rule: '2-name', assetId: hit.assetId, matchedAddressId: hit.addressId }
+    }
   }
 
   // Rule 3 — host_key + same network.
@@ -478,6 +500,7 @@ export async function prefetchIdentity(
   macs: string[],
   ips: string[],
   hostKeys: string[],
+  names: string[] = [],          // specific names of hosts with a private MAC (rule 2-name), lower case
 ): Promise<IdentityPrefetch> {
   const addrById = new Map<string, IdentityPrefetch['addresses'][number]>()
   const assetById = new Map<string, IdentityPrefetch['assets'][number]>()
@@ -554,6 +577,13 @@ export async function prefetchIdentity(
     const rows = await db.select(sel).from(assetAddresses)
       .innerJoin(assets, eq(assets.assetId, assetAddresses.assetId))
       .where(and(tCondAddr, isNull(assetAddresses.endedAt), inArray(assetAddresses.macAddress, macs)))
+    for (const r of rows) absorb(r as Record<string, unknown>)
+  }
+  if (names.length > 0) {
+    const rows = await db.select(sel).from(assetAddresses)
+      .innerJoin(assets, eq(assets.assetId, assetAddresses.assetId))
+      .where(and(tCondAddr, isNull(assetAddresses.endedAt), inArray(sql`lower(${assets.hostname})`, names)))
+      .limit(200)
     for (const r of rows) absorb(r as Record<string, unknown>)
   }
   if (ips.length > 0) {

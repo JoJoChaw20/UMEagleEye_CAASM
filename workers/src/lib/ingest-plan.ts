@@ -15,7 +15,7 @@
  * Pure (no DB, no Hono). Tested by scripts/identity-demo.ts.
  */
 import {
-  identityMac, sanitizeHostKey, deriveNetworkKey, matchAsset, addressesToEnd,
+  identityMac, sanitizeHostKey, deriveNetworkKey, matchAsset, addressesToEnd, classifyMac, ROTATION_GAP_MS,
   type CandidateAddress, type MatchRuleLabel,
 } from './identity'
 import { mergeOsInfo } from './osInfo'
@@ -214,6 +214,9 @@ export function planIngest(
     addressId, assetId, tenantId, networkKey, ipAddress: ip, macAddress: mac, firstSeen: now, lastSeen: now,
   })
 
+  // every MAC in this upload: an old MAC still heard is a second device, not a rotation (rule 2-name)
+  const batchMacs = new Set(hosts.map(h => identityMac(h.rawMac).mac).filter((m): m is string => !!m))
+
   for (const host of hosts) {
     const ops: IngestOp[] = []
     const { mac, macClass } = identityMac(host.rawMac)   // a shared virtual MAC (HSRP/VRRP) identifies nothing
@@ -259,9 +262,19 @@ export function planIngest(
             macAddress: p.macAddress, assetDeviceType: assetState.get(p.assetId)?.deviceType ?? p.deviceType }))
       : []
 
+    // Rule 2-name (lib/identity.ts): the same specific name on this network, on a device whose
+    // own private MAC has gone quiet and is not in this upload.
+    const name = host.hostname && !isGenericHostname(host.hostname) ? host.hostname.trim().toLowerCase() : null
+    const nameAddresses = (macClass === 'local' && mac && name && networkKey !== null)
+      ? workAddrs.filter(w => !w.ended && w.networkKey === networkKey && !!w.macAddress && w.macAddress !== mac
+          && classifyMac(w.macAddress).macClass === 'local' && !batchMacs.has(w.macAddress)
+          && now.getTime() - w.lastSeen >= ROTATION_GAP_MS
+          && assetState.get(w.assetId)?.hostname?.trim().toLowerCase() === name).map(toCand)
+      : []
+
     const decision = matchAsset(
       { macClass, mac, ip: host.ip, hostKey, networkKey },
-      { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds, pastMacAddresses },
+      { macAddresses, hostKeyAssetIds, netIpAddresses, agentMacAssetIds, pastMacAddresses, nameAddresses },
     )
 
     let assetId: string

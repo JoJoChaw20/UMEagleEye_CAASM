@@ -950,7 +950,10 @@ app.post('/ingest', bodyLimit({ maxSize: 16 * 1024 * 1024, onError: (c) => c.jso
     // passive upload's `subnet` from 2.2.2), widening the tenant's old /24 keys inside
     // it first, so the matching below sees one network (lib/networkScope.ts).
     const scope = await resolveNetworkScope(db, tenantId ?? null, network?.lan_subnet ?? (isPassive ? network?.subnet : null))
-    const prefetch = await prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys)
+    // specific names of hosts with a private MAC: a device that rotated its MAC (rule 2-name)
+    const batchNames = [...new Set(hosts.filter(h => classifyMac(h.mac).macClass === 'local' && h.hostname && !isGenericHostname(h.hostname))
+      .map(h => String(h.hostname).trim().toLowerCase()))]
+    const prefetch = await prefetchIdentity(db, tenantId ?? null, batchMacs, batchIps, batchHostKeys, batchNames)
 
     // LLM context (existing device_type/hostname/owner per IP) — built from the
     // prefetch, no extra queries. Authoritative identity match happens via planIngest.
