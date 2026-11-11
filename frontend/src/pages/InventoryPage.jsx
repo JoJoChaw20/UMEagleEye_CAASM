@@ -96,6 +96,10 @@ function MenuButton({ label, icon: Icon, items, primary = false, title }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────
+// The Relationship graph tab is hidden for now; its code stays, as the whole-network picture may
+// move to the Network map page (routers, switches and what each agent found).
+const SHOW_RELATIONSHIP_GRAPH = false
+
 export default function InventoryPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -335,7 +339,7 @@ export default function InventoryPage() {
       id: 'any', label: 'All known',
       count: scopeCounts.mine != null && scopeCounts.discovered != null ? scopeCounts.mine + scopeCounts.discovered : null,
     }] : []),
-    { id: 'graph', label: 'Relationship graph' },
+    ...(SHOW_RELATIONSHIP_GRAPH ? [{ id: 'graph', label: 'Relationship graph' }] : []),
   ]
 
   return (
