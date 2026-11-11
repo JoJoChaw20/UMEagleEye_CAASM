@@ -300,6 +300,8 @@ export default function AssetDetailPage() {
       }) : [])
   const osRows = OS_FIELDS.filter(([k]) => os[k] != null && os[k] !== '' && !(Array.isArray(os[k]) && os[k].length === 0))
   const inv = asset.endpointInventory || null
+  // The EagleEye app on a phone reports its inventory only (no SBOM).
+  const phone = inv?.platform === 'android'
   const baseline = asset.baselineState
   const backHref = asset.inMyAssets ? '/inventory' : '/inventory?scope=discovered'
   const neighbors = graph ? graph.nodes.filter((n) => n.asset_id !== assetId) : []
@@ -363,7 +365,7 @@ export default function AssetDetailPage() {
                 <ClipboardList className={`w-4 h-4 ${invActive ? 'animate-pulse' : ''}`} /> {invActive ? 'Collecting inventory…' : 'Collect inventory'}
               </button>
             )}
-            {!isReadOnly && inv && (
+            {!isReadOnly && inv && !phone && (
               <button onClick={handleRunSbom} disabled={sbomActive} className="btn-secondary text-sm flex items-center gap-2"
                 title={sbomActive ? sbomBusyText(sbomScan?.mode) : 'The EagleEye agent on this computer lists its packages and checks them for CVEs'}>
                 <Package className={`w-4 h-4 ${sbomActive ? 'animate-pulse' : ''}`} /> {sbomActive ? 'SBOM scan running…' : 'Run SBOM scan'}

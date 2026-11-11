@@ -4,7 +4,7 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { agents, tenants } from '../db/schema'
-import { resolvePolicy, type ResolvedPolicy } from '../lib/agentPolicy'
+import { resolvePolicy, tenantDefaultsFor, type ResolvedPolicy } from '../lib/agentPolicy'
 
 type Db = ReturnType<typeof getDb>
 type AgentRow = typeof agents.$inferSelect
@@ -18,7 +18,7 @@ export function reportedOf(agent: Pick<AgentRow, 'reported'>): {
 }
 
 export function policyOf(agent: Pick<AgentRow, 'kind' | 'policy' | 'reported'>, tenant: TenantPolicyRow | null): ResolvedPolicy {
-  return resolvePolicy({ kind: agent.kind, overrides: agent.policy, tenantDefaults: tenant?.agentPolicy })
+  return resolvePolicy({ kind: agent.kind, overrides: agent.policy, tenantDefaults: tenantDefaultsFor(tenant?.agentPolicy, agent.kind) })
 }
 
 export async function tenantPolicies(db: Db, tenantIds: (string | null)[]): Promise<Map<string, TenantPolicyRow>> {

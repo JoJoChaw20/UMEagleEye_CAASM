@@ -31,6 +31,7 @@ object Agent {
                 store.apiUrl = code.apiUrl; store.agentId = id; store.apiKey = key
             }
         }
+        store.resetPolicy()                            // a new agent starts from the defaults, not the old one's settings
         store.lastInventoryAt = 0                      // the first round sends the inventory at once
         return runOnce(context, forceInventory = true)
     }
@@ -49,8 +50,8 @@ object Agent {
         // 1. Heartbeat: this phone's own settings and what it can do; back come the managed settings and jobs
         val beat = JSONObject()
             .put("version", VERSION).put("kind", KIND).put("want_jobs", true)
-            .put("settings", JSONObject().put("inventory", true).put("inventory_interval", Store.DEFAULT_INVENTORY_INTERVAL)
-                .put("inventory_user_software", false))
+            .put("settings", JSONObject().put("inventory", store.inventoryOn).put("inventory_interval", store.inventoryInterval)
+                .put("inventory_user_software", store.sendApps))
             .put("capabilities", JSONObject().put("os", "android").put("sdk", Build.VERSION.SDK_INT).put("admin", false))
         wifi?.ip?.let { beat.put("gateway_ip", it) }
         wifi?.gateway?.let { beat.put("default_gateway", it) }

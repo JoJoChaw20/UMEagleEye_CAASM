@@ -34,8 +34,6 @@ FIELDS: dict[str, tuple[str, Any]] = {
     "passive_interval": ("int", (10, 3600)),
     "inventory": ("bool", None),
     "inventory_interval": ("int", (300, 7 * 86400)),
-    "inventory_user_software": ("bool", None),
-    "inventory_admin_names": ("bool", None),
     "sbom": ("bool", None),
     "sbom_interval": ("int", (3600, 30 * 86400)),
     "scan_ports": ("enum", ("base", "consumer", "wide")),
@@ -63,7 +61,6 @@ def fields_of(kind: str) -> dict[str, tuple[str, Any]]:
 LABELS = {
     "passive": "Passive listening", "passive_interval": "Passive upload interval",
     "passive_backend": "Packet capture", "inventory": "Inventory", "inventory_interval": "Inventory interval",
-    "inventory_user_software": "Software users installed", "inventory_admin_names": "Administrator account names",
     "sbom": "SBOM", "sbom_interval": "SBOM interval", "scan_engine": "Scan engine", "scan_ports": "Scan ports",
     "network_poll": "Read the network", "network_seeds": "Seed devices", "network_ranges": "Allowed ranges",
     "network_depth": "Crawl depth", "network_interval": "Crawl interval",
@@ -153,11 +150,14 @@ def policy_path(env: Optional[Mapping[str, str]] = None) -> Path:
 
 
 class PolicyStore:
-    """The last policy applied: {"version": str, "managed": {...}}. No path = memory only."""
+    """The last policy applied: {"version": str, "managed": {...}, "agent_id": str}. No path =
+    memory only. With `agent_id`, a policy another agent applied (this computer connected
+    before as another agent, perhaps of another tenant) is not this one's."""
 
-    def __init__(self, path: Optional[Path], kind: str = "host") -> None:
+    def __init__(self, path: Optional[Path], kind: str = "host", agent_id: Optional[str] = None) -> None:
         self.path = path
         self.kind = kind
+        self.agent_id = agent_id
 
     def load(self) -> tuple[Optional[str], dict[str, Any]]:
         if self.path is None or not self.path.exists():
@@ -166,6 +166,8 @@ class PolicyStore:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             log.warning("Could not read %s (%s); waiting for the server's settings", self.path, exc)
+            return None, {}
+        if self.agent_id is not None and (not isinstance(data, dict) or data.get("agent_id") != self.agent_id):
             return None, {}
         version = data.get("version") if isinstance(data, dict) else None
         return (version if isinstance(version, str) else None), clean((data or {}).get("managed"), self.kind)
@@ -176,7 +178,10 @@ class PolicyStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"version": version, "managed": dict(managed)}, indent=2), encoding="utf-8")
+            data: dict[str, Any] = {"version": version, "managed": dict(managed)}
+            if self.agent_id is not None:
+                data["agent_id"] = self.agent_id
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp.replace(self.path)
         except OSError as exc:
             log.warning("Could not save the administrator's settings to %s: %s", self.path, exc)

@@ -37,9 +37,13 @@ export const GROUPS = [
   {
     title: 'Inventory',
     settings: [
-      { key: 'inventory', label: "Report this computer's inventory" },
-      { key: 'inventory_user_software', label: 'Include software users installed for themselves' },
-      { key: 'inventory_admin_names', label: 'Include the names of local administrator accounts' },
+      {
+        key: 'inventory', label: "Report this computer's inventory", labels: { mobile: "Report this phone's inventory" },
+        help: 'Hardware, security settings, patches and installed software (also what each user installed for themselves); administrator accounts only as a count.',
+        helps: { mobile: 'Model, Android version and patch level, screen lock, encryption and Wi-Fi address.' },
+      },
+      // a phone's own setting (a computer always reports its software)
+      { key: 'inventory_user_software', label: 'Send the list of installed apps', help: 'The apps on the phone are personal: off unless set.' },
       { key: 'inventory_interval', label: 'Inventory every', unit: 's', format: hours, advanced: true },
     ],
   },
@@ -74,6 +78,10 @@ export const SOURCE_LABEL = {
   default: 'default',
 }
 
+// A setting's label and help for one kind of agent ("this phone's" instead of "this computer's").
+export const labelOf = (meta, kind) => meta.labels?.[kind] ?? meta.label
+export const helpOf = (meta, kind) => (meta.helps && kind in meta.helps ? meta.helps[kind] : meta.help)
+
 // The label of a setting (for messages and fallbacks).
 export function metaOf(key) {
   for (const g of GROUPS) {
@@ -92,9 +100,8 @@ export function show(meta, spec, value) {
 }
 
 // One setting: "default" (no value set here) or a value. `fallback` describes what
-// "default" means for it (e.g. "Tenant default: On").
-export function PolicyInput({ meta, spec, value, onChange, disabled, fallback }) {
-  const id = `policy-${meta.key}`
+// "default" means for it (e.g. "Tenant default: On"). `id` when one page shows a setting twice.
+export function PolicyInput({ meta, spec, value, onChange, disabled, fallback, id = `policy-${meta.key}` }) {
   if (spec.type === 'list') return <ListInput id={id} meta={meta} value={value} onChange={onChange} disabled={disabled} fallback={fallback} />
   if (spec.type === 'int') {
     return (

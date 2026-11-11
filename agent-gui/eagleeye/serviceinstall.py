@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .config import ConfigError, default_config_path, load_settings, save_settings
+from .config import ConfigError, another_agent, default_config_path, load_settings, save_settings, with_credentials
 from .keychain import Keychain
 from .machine import (DESCRIPTION, DISPLAY_NAME, MachineSecrets, machine_config_path, machine_dir, machine_log_dir,
                       secure, service_name)
@@ -257,7 +257,7 @@ def enrol(code: str, instance: str = "", kind: Optional[str] = None) -> str:
     if kind:
         current.kind = kind
     url, agent_id, key, new = credentials_from_code(code, agent_name(), current.kind, current)
-    current.api_url, current.agent_id, current.api_key = url, agent_id, key
+    current = with_credentials(current, url, agent_id, key)       # as another agent: its own settings
     save_settings(current, target, keychain=store)
     secure(target)
     try:
@@ -293,6 +293,9 @@ def apply_settings_file(path: Path, instance: str = "") -> str:
         value = getattr(settings, name)
         if not value or value == SAVED_SECRET:
             setattr(settings, name, getattr(current, name) if current.agent_id == settings.agent_id else "")
+    # Connected as another agent (a new connection code): not with the old agent's settings.
+    if another_agent(current, settings.api_url, settings.agent_id):
+        settings = with_credentials(current, settings.api_url, settings.agent_id, settings.api_key)
     save_settings(settings, target, keychain=store)
     secure(target)
     try:

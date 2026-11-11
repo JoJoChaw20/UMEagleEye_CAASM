@@ -2,8 +2,8 @@
 # Install, update or remove the EagleEye agent on a Mac (macOS 12 or later), from the agent's source
 # package (eagleeye-agent-<version>.tar.gz, the dashboard's Agents > Install > macOS download).
 #
-#   sudo bash install-macos.sh eagleeye-agent-2.5.1.tar.gz --code-file code.txt   # first install: connects it
-#   sudo bash install-macos.sh eagleeye-agent-2.5.1.tar.gz                        # update (keeps its connection)
+#   sudo bash install-macos.sh eagleeye-agent-0.1.0.tar.gz --code-file code.txt   # first install: connects it
+#   sudo bash install-macos.sh eagleeye-agent-0.1.0.tar.gz                        # update (keeps its connection)
 #   sudo bash install-macos.sh --uninstall [--purge]                               # remove (--purge: and its settings)
 #   add --no-gui to leave out the desktop window (a Mac without anyone signed in)
 #

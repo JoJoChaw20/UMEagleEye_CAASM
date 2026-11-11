@@ -1,16 +1,20 @@
 // The tenant's default agent settings (GET/PATCH /tenants/:id/agent-policy), on the Agents
-// page's Defaults tab. A default applies to every agent of the tenant without a setting of
-// its own; a setting with no default here is the built-in default.
+// page's Defaults tab. A default applies to every agent of that kind in the tenant without a
+// setting of its own; a setting with no default here is the built-in default. Computers,
+// network agents and phones each have their own defaults.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Monitor, Network, Smartphone } from 'lucide-react'
 import client from '../../api/client'
-import { GROUPS, PolicyInput, invalid, same, show } from './policy'
+import { GROUPS, PolicyInput, helpOf, invalid, labelOf, same, show } from './policy'
 
 const KINDS = [
   { kind: 'host', title: 'Computers', icon: Monitor, help: 'The agent installed on each computer.' },
   { kind: 'network', title: 'Network agents', icon: Network, help: 'Agents that read the routers and switches.' },
   { kind: 'mobile', title: 'Phones', icon: Smartphone, help: 'The EagleEye app on Android phones and tablets.' },
 ]
+
+// A draft value per kind and setting: "host.passive".
+const slot = (kind, key) => `${kind}.${key}`
 
 export default function AgentDefaultsCard({ tenantId, onSaved }) {
   const [data, setData] = useState(null)
@@ -20,9 +24,11 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [rev, setRev] = useState(0)                 // remounts the inputs when the draft is reset
 
+  // Every setting of every kind: {kind, key, value, builtin, spec}.
+  const all = useMemo(() => (data?.kinds ?? []).flatMap((k) => k.settings.map((s) => ({ ...s, kind: k.kind }))), [data])
   const take = (d) => {
     setData(d)
-    setDraft(Object.fromEntries(d.settings.map((s) => [s.key, s.value])))
+    setDraft(Object.fromEntries(d.kinds.flatMap((k) => k.settings.map((s) => [slot(k.kind, s.key), s.value]))))
     setRev((r) => r + 1)
   }
   const load = useCallback(async () => {
@@ -31,19 +37,20 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
   }, [tenantId])
   useEffect(() => { load() }, [load])
 
-  const byKey = useMemo(() => Object.fromEntries((data?.settings ?? []).map((s) => [s.key, s])), [data])
+  const byKey = useMemo(() => Object.fromEntries(all.map((s) => [slot(s.kind, s.key), s])), [all])
   if (!tenantId) {
     return <div className="glass-card p-6 text-sm text-dark-400">Pick a tenant above to see its default agent settings.</div>
   }
   if (!data) return null
-  const changed = data.settings.filter((s) => !same(draft[s.key], s.value))
-  const problems = data.settings.filter((s) => invalid(s.spec, draft[s.key]))
+  const changed = all.filter((s) => !same(draft[slot(s.kind, s.key)], s.value))
+  const problems = all.filter((s) => invalid(s.spec, draft[slot(s.kind, s.key)]))
   const canEdit = data.can_edit
 
   const save = async () => {
     setSaving(true); setError(null)
     try {
-      const settings = Object.fromEntries(changed.map((s) => [s.key, draft[s.key] ?? null]))
+      const settings = {}
+      for (const s of changed) (settings[s.kind] ??= {})[s.key] = draft[slot(s.kind, s.key)] ?? null
       take((await client.patch(`/tenants/${tenantId}/agent-policy`, { settings })).data)
       onSaved?.()
     } catch (err) {
@@ -53,20 +60,21 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
     } finally { setSaving(false) }
   }
 
-  const row = (m) => {
-    const s = byKey[m.key]
-    const problem = invalid(s.spec, draft[s.key])
+  const row = (kind, m) => {
+    const id = slot(kind, m.key)
+    const s = byKey[id]
+    const problem = invalid(s.spec, draft[id])
     return (
-      <div key={m.key} className="flex items-start justify-between gap-3">
+      <div key={id} className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <label htmlFor={`policy-${m.key}`} className="text-sm text-dark-50">{m.label}</label>
-          {m.help && <p className="text-xs text-dark-400">{m.help}</p>}
+          <label htmlFor={`policy-${id}`} className="text-sm text-dark-50">{labelOf(m, kind)}</label>
+          {helpOf(m, kind) && <p className="text-xs text-dark-400">{helpOf(m, kind)}</p>}
           {problem && <p className="text-[11px] text-red-400">Must be {problem}</p>}
         </div>
         <PolicyInput
-          key={`${m.key}-${rev}`} meta={m} spec={s.spec} value={draft[s.key] ?? null} disabled={!canEdit || saving}
+          key={`${id}-${rev}`} id={`policy-${id}`} meta={m} spec={s.spec} value={draft[id] ?? null} disabled={!canEdit || saving}
           fallback={`Default: ${show(m, s.spec, s.builtin)}`}
-          onChange={(v) => setDraft((d) => ({ ...d, [s.key]: v }))}
+          onChange={(v) => setDraft((d) => ({ ...d, [id]: v }))}
         />
       </div>
     )
@@ -78,7 +86,7 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
         <h2 className="font-semibold text-dark-50 text-base">Default agent settings</h2>
         <p className="text-xs text-dark-400 mt-0.5 max-w-3xl">
           {canEdit
-            ? 'For every agent of this tenant without a setting of its own (set in its panel on the Agents tab). Agents apply a change within a minute, between jobs.'
+            ? 'For every agent of that kind in this tenant without a setting of its own (set in its panel on the Agents tab). Agents apply a change within a minute, between jobs.'
             : 'Only the tenant superadmin can change these.'}
         </p>
       </div>
@@ -89,7 +97,7 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
       )}
       {KINDS.map(({ kind, title, icon: Icon, help }) => {
         const groups = GROUPS.map((g) => ({
-          ...g, items: g.settings.filter((m) => byKey[m.key]?.kinds?.includes(kind) && (advanced || !m.advanced)),
+          ...g, items: g.settings.filter((m) => byKey[slot(kind, m.key)] && (advanced || !m.advanced)),
         })).filter((g) => g.items.length)
         if (!groups.length) return null
         return (
@@ -103,7 +111,7 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
               {groups.map((g) => (
                 <div key={g.title} className="space-y-3">
                   <h4 className="text-xs font-semibold uppercase tracking-wide text-dark-400">{g.title}</h4>
-                  {g.items.map(row)}
+                  {g.items.map((m) => row(kind, m))}
                 </div>
               ))}
             </div>

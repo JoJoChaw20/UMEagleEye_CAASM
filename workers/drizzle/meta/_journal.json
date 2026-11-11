@@ -218,6 +218,13 @@
       "when": 1794230000000,
       "tag": "0030_kg_outbox_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794378621997,
+      "tag": "0031_agent_policy_per_kind",
+      "breakpoints": true
     }
   ]
 }

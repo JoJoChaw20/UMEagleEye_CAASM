@@ -1,5 +1,5 @@
-// Agent policy: what an admin sets for agents from the dashboard, per tenant (defaults)
-// and per agent (overrides). Pure functions; routes/agents.ts and routes/tenants.ts store
+// Agent policy: what an admin sets for agents from the dashboard, per tenant (defaults, kept
+// apart for each kind of agent) and per agent (overrides). Pure functions; routes/agents.ts and routes/tenants.ts store
 // and serve it, the heartbeat delivers it, and job creation checks it.
 //
 // A setting resolves as: this agent's override > the tenant's default > the built-in default
@@ -28,8 +28,9 @@ export const POLICY_SPECS = {
   passive_interval: { type: 'int', min: 10, max: 3600 },
   inventory: { type: 'bool' },
   inventory_interval: { type: 'int', min: 300, max: 7 * 86400 },
+  // A phone's list of installed apps (personal: off unless set). A computer always reports its
+  // software, per-user installs included; administrator accounts only as a count.
   inventory_user_software: { type: 'bool' },
-  inventory_admin_names: { type: 'bool' },
   sbom: { type: 'bool' },
   sbom_interval: { type: 'int', min: 3600, max: 30 * 86400 },
   // The network agent (agent-gui/eagleeye/netagent): it reads the seed routers and switches,
@@ -49,16 +50,23 @@ export const POLICY_KEYS = Object.keys(POLICY_SPECS) as PolicyKey[]
 // agent (mobile-agent/, Android): a phone only reports its own inventory (apps only when allowed).
 const NETWORK_KEYS = ['network_poll', 'network_seeds', 'network_ranges', 'network_depth', 'network_interval'] as const
 const MOBILE_KEYS = ['inventory', 'inventory_interval', 'inventory_user_software'] as const
+const NOT_HOST: readonly string[] = [...NETWORK_KEYS, 'inventory_user_software']
 export const KIND_KEYS: Record<string, readonly PolicyKey[]> = {
-  host: POLICY_KEYS.filter((k) => !(NETWORK_KEYS as readonly string[]).includes(k)),
+  host: POLICY_KEYS.filter((k) => !NOT_HOST.includes(k)),
   network: NETWORK_KEYS,
   mobile: MOBILE_KEYS,
 }
 export const AGENT_KINDS = Object.keys(KIND_KEYS)
 
-/** The kinds of agent a setting belongs to (the tenant defaults page groups them). */
-export function kindsOf(key: PolicyKey): string[] {
-  return AGENT_KINDS.filter((kind) => KIND_KEYS[kind]!.includes(key))
+/** The tenant defaults of one kind of agent. tenants.agent_policy keeps them apart per kind
+ *  ({host: {...}, network: {...}, mobile: {...}}, migration 0031), so a phone default never
+ *  changes the computers; a flat object (before 0031) is read as the defaults of every kind. */
+export function tenantDefaultsFor(stored: unknown, kind: string | null | undefined): Partial<Record<PolicyKey, PolicyValue>> {
+  const keys = kindKeys(kind)
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {}
+  const byKind = stored as Record<string, unknown>
+  if (!AGENT_KINDS.some((k) => k in byKind)) return cleanPolicy(stored, keys)
+  return cleanPolicy(byKind[kind ?? 'host'], keys)
 }
 
 export const ROLE_KEYS = {
@@ -72,7 +80,7 @@ export type Role = keyof typeof ROLE_KEYS
 // What an agent does when nobody set a value (the agent's own built-in defaults, config.py).
 export const DEFAULTS: Record<PolicyKey, PolicyValue> = {
   scanner: true, scan_ports: 'base', passive: false, passive_interval: 300,
-  inventory: true, inventory_interval: 21600, inventory_user_software: false, inventory_admin_names: false,
+  inventory: true, inventory_interval: 21600, inventory_user_software: false,
   sbom: true, sbom_interval: 86400,
   network_poll: true, network_seeds: [], network_ranges: [], network_depth: 3, network_interval: 900,
 }
@@ -173,7 +181,7 @@ function describe(key: PolicyKey): string {
 export interface ResolveInput {
   kind?: string | null
   overrides?: unknown                 // agents.policy
-  tenantDefaults?: unknown            // tenants.agent_policy
+  tenantDefaults?: unknown            // this kind's tenant defaults (tenantDefaultsFor)
 }
 
 export interface ResolvedPolicy {

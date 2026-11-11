@@ -161,6 +161,7 @@ class ServiceHost:
         out.update({
             "last_heartbeat_at": _iso(getattr(svc, "last_heartbeat_at", None)),
             "last_heartbeat_ok": getattr(svc, "last_heartbeat_ok", None),
+            "rejected": getattr(svc, "rejected", None),
             "current": getattr(svc, "current", None),
             "active_running": bool(getattr(svc, "active_running", False)),
             "inventory_running": bool(getattr(svc, "inventory_running", False)),

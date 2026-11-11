@@ -47,12 +47,12 @@ class NetworkAgentService:
                  vendor: Optional[Callable[[Optional[str]], Optional[str]]] = None,
                  clock: Callable[[], float] = time.time) -> None:
         self.local_settings = settings
-        self.policy_store = policy.PolicyStore(policy_path, kind=KIND)
+        self.policy_store = policy.PolicyStore(policy_path, kind=KIND, agent_id=settings.agent_id)
         self.applied_policy_version, self.managed = self.policy_store.load()
         self.settings = policy.apply(settings, self.managed, KIND)
         self.client = client or AgentClient(settings.api_url, settings.api_key, settings.agent_id)
         self.client.kind = KIND
-        self.state = ScheduleState(state_path)
+        self.state = ScheduleState(state_path, settings.agent_id)
         self._open_session = open_session
         self._vendor = vendor
         self._clock = clock

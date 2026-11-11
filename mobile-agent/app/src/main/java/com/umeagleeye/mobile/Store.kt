@@ -58,6 +58,12 @@ class Store(context: Context) {
         get() = prefs.getString("last_message", null)
         set(v) = prefs.edit().putString("last_message", v).apply()
 
+    /** The administrator's settings back to the defaults (connected as another agent). */
+    fun resetPolicy() {
+        prefs.edit().remove("inventory").remove("inventory_interval").remove("inventory_user_software")
+            .remove("policy_version").apply()
+    }
+
     fun forget() {
         prefs.edit().clear().apply()
     }

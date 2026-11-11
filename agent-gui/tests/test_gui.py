@@ -44,10 +44,10 @@ def test_the_notice_lists_what_is_collected_with_personal_data_off(qapp):
     assert needs_consent(s)
     dlg = ConsentDialog(s)
     on = {text[4:].strip() for text in dlg.items if text.startswith("On ")}
-    assert "This computer's inventory" in on
+    assert "This computer's inventory, with the software each user installed" in on
     assert not any("personal data" in item for item in on) and not any("Passive" in item for item in on)
     dlg.apply()                                 # read: the settings stay as they are
-    assert (s.inventory, s.inventory_user_software, s.inventory_admin_names, s.passive) == (True, False, False, False)
+    assert (s.inventory, s.passive) == (True, False)
     assert (s.consent_version, bool(s.consent_at), needs_consent(s)) == (CONSENT_VERSION, True, False)
 
 
@@ -196,13 +196,12 @@ def test_privacy_page_shows_the_dashboard_values_read_only(window, tmp_path):
     privacy.reload()
     assert privacy.values["inventory"].text() == "Yes, every 6 hours"            # this computer's, until the server answers
     assert privacy.values["passive"].text() == "No"
-    store = PolicyStore(policy_path())
+    store = PolicyStore(policy_path(), agent_id=window.store.settings.agent_id)
     assert store.path.parent == tmp_path                                       # beside the test config, not the real one
-    store.save("0a1b2c3d", {"inventory": True, "inventory_interval": 3600, "inventory_user_software": True,
-                            "sbom": False, "passive": True})
+    store.save("0a1b2c3d", {"inventory": True, "inventory_interval": 3600, "sbom": False, "passive": True})
     privacy.reload()
     assert privacy.values["inventory"].text() == "Yes, every 1 hour"
-    assert privacy.values["inventory_user_software"].text() == "Yes" and privacy.values["sbom"].text() == "No"
+    assert "inventory_admin_names" not in privacy.values and privacy.values["sbom"].text() == "No"
     assert privacy.values["passive"].text() == "Yes"
     from PySide6.QtWidgets import QCheckBox
     assert not privacy.findChildren(QCheckBox)                                 # nothing to change here

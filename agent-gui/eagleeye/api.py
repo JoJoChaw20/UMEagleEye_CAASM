@@ -51,6 +51,10 @@ class InventoryResult:
     error: Optional[str] = None
 
 
+# What the agent says when the server no longer accepts it.
+REJECTED = ("The dashboard no longer accepts this agent: it was deleted, or a new connection code replaced "
+            "its key. Paste a new connection code from the Agents page on the Setup page.")
+
 class AgentClient:
     def __init__(
         self,
@@ -76,6 +80,9 @@ class AgentClient:
         self._jobs: list[dict[str, Any]] = []
         self._jobs_lock = threading.Lock()
         self._heartbeat_ok = True
+        # Why the server refuses this agent (deleted on the dashboard, or a new connection code
+        # replaced its key), from the last heartbeat; None while it is accepted.
+        self.rejected: Optional[str] = None
         # No redirects: the API key must never be sent anywhere but the configured server.
         self.session = session or httpclient.Session(follow_redirects=False)
         self.session.headers.update({
@@ -132,8 +139,11 @@ class AgentClient:
         except httpclient.RequestException as exc:
             log.warning("Heartbeat failed: %s", exc)
             self._heartbeat_ok = False
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            self.rejected = REJECTED if status in (401, 403, 404) else None
             return False
         self._heartbeat_ok = True
+        self.rejected = None
         try:
             policy = resp.json().get("policy") or {}
         except (ValueError, AttributeError):

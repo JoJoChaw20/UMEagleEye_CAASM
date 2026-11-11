@@ -133,7 +133,7 @@ class AgentService:
         # The adapter passive listening is set to is also the network the agent reports
         # itself on (its LAN address and gateway), not the NAT adapter next to it
         netinfo.set_lan_interface(settings.passive_interface)
-        self.policy_store = policy.PolicyStore(policy_path)
+        self.policy_store = policy.PolicyStore(policy_path, agent_id=settings.agent_id)
         self.applied_policy_version, self.managed = self.policy_store.load()
         self.settings = policy.apply(settings, self.managed)
         self._policy_deferred = False
@@ -141,11 +141,12 @@ class AgentService:
         self.client = client or AgentClient(settings.api_url, settings.api_key, settings.agent_id)
         self.on_event = on_event
         self.suite: Optional[PassiveSuite] = None
-        self.schedule_state = ScheduleState(state_path)
+        self.schedule_state = ScheduleState(state_path, settings.agent_id)
         self.schedules_enabled = SCHEDULES_ENABLED
         self.history: deque[RunRecord] = deque(maxlen=50)
         self.last_heartbeat_at: Optional[datetime] = None
         self.last_heartbeat_ok: Optional[bool] = None
+        self.rejected: Optional[str] = None            # the server refuses this agent (api.REJECTED)
         self.current: Optional[str] = None             # what the active worker is doing, for display
         self._requests: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._wake = threading.Event()
@@ -155,7 +156,9 @@ class AgentService:
         self._active_future: Optional[Future[None]] = None
         self._inventory_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inventory")
         self._inventory_future: Optional[Future[PipelineResult]] = None
-        # When the inventory last ran, kept across restarts (0 = never: collect on the first poll).
+        # When an inventory last reached the server, kept across restarts (0 = never: collect on
+        # the first poll). Only an upload that worked counts, so a failed one is tried again after
+        # a restart (a new connection code) instead of waiting a whole interval.
         self._last_inventory = self.schedule_state.job_time("inventory")
         self._inventory_retry_at = 0.0       # set after a failed run: retry then
         self._inventory_retry_delay = INVENTORY_RETRY_SECONDS
@@ -283,6 +286,7 @@ class AgentService:
         elif result.ok:
             self._inventory_retry_at = 0.0
             self._inventory_retry_delay = INVENTORY_RETRY_SECONDS
+            self.schedule_state.mark_job("inventory", self._last_inventory)
         self._finish(scan_id, result)
         self._record("inventory", trigger, "this computer", result)
         return result
@@ -430,7 +434,6 @@ class AgentService:
         retry_due = 0 < self._inventory_retry_at <= now
         if force or retry_due or now - self._last_inventory >= self.settings.inventory_interval:
             self._last_inventory = now
-            self.schedule_state.mark_job("inventory", now)
             self._inventory_retry_at = 0.0
             try:
                 self._inventory_future = self._inventory_pool.submit(
@@ -720,6 +723,7 @@ class AgentService:
             report = None
         self.last_heartbeat_ok = self.client.send_heartbeat(report) if report is not None else self.client.send_heartbeat()
         self.last_heartbeat_at = datetime.now()
+        self.rejected = getattr(self.client, "rejected", None)
         if getattr(self.client, "jobs_in_heartbeat", False) and self.client.has_jobs():
             self._wake.set()                            # run what it brought now, not at the next poll
 

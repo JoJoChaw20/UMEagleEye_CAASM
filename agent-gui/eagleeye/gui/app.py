@@ -401,6 +401,8 @@ class MainWindow(QMainWindow):
             tone, state, detail = "down", "Stopped", "Press Start to connect to the server"
         elif svc.last_heartbeat_at is None:
             tone, state, detail = "warn", "Running", "Connecting to the server..."
+        elif getattr(svc, "rejected", None):
+            tone, state, detail = "down", "Not connected", "The dashboard no longer accepts this agent: paste a new connection code on the Setup page"
         elif svc.last_heartbeat_ok:
             tone, state, detail = "live", "Running", f"Heartbeat OK at {svc.last_heartbeat_at:%H:%M:%S}"
         else:

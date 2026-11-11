@@ -240,7 +240,7 @@ def test_service_stops_trying_on_unsupported_platform(monkeypatch):
     assert svc._inventory_supported is False
     svc._maybe_inventory()                      # no new attempt is scheduled
     assert svc._inventory_future is None and len(calls) == 1
-    assert calls[0] == {"user_software": False, "admin_names": False}     # minimised by default
+    assert calls[0] == {"user_software": True, "admin_names": False}      # per-user software; administrators counted only
 
 
 def test_first_poll_runs_inventory_then_waits_for_the_interval(monkeypatch):

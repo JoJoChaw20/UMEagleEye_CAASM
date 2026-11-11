@@ -61,3 +61,16 @@ def test_corrupt_state_file_is_ignored(tmp_path):
     path = tmp_path / "state.json"
     path.write_text("{nope")
     assert ScheduleState(path).last_runs == {}
+
+
+def test_times_another_agent_recorded_are_not_this_ones(tmp_path):
+    path = tmp_path / "state.json"
+    old = ScheduleState(path, "old-id")
+    old.mark_job("inventory", 1000.0)
+    old.mark("a", T)
+    assert ScheduleState(path, "old-id").job_time("inventory") == 1000.0
+    new = ScheduleState(path, "new-id")                       # connected as another agent: inventory at once
+    assert (new.job_time("inventory"), new.last_runs) == (0.0, {})
+    new.mark_job("inventory", 2000.0)
+    assert ScheduleState(path, "new-id").job_time("inventory") == 2000.0
+    assert ScheduleState(path, "old-id").job_time("inventory") == 0.0

@@ -125,3 +125,25 @@ def test_service_enrol_writes_the_service_settings(server, tmp_path, monkeypatch
     # running it again (an upgrade, a second deployment) keeps the agent
     assert cli.main(["service", "enrol", "--connection-code-file", str(tmp_path / "code.txt")]) == 0
     assert len(calls) == 1
+
+
+def test_service_enrol_as_another_agent_starts_from_the_defaults(tmp_path, monkeypatch):
+    # A reinstall keeps C:\ProgramData\EagleEye: a code for a new agent (another tenant) must not
+    # carry the old agent's settings, which its first heartbeat would hand to the new tenant.
+    from eagleeye.config import save_settings
+    from eagleeye.machine import MachineSecrets
+    secrets = lambda: MachineSecrets(tmp_path / "secrets.json", restrict=False)   # noqa: E731
+    target = tmp_path / "machine" / "config.json"
+    target.parent.mkdir()
+    monkeypatch.setattr(serviceinstall, "machine_config_path", lambda instance="": target)
+    monkeypatch.setattr(serviceinstall, "MachineSecrets", secrets)
+    monkeypatch.setattr(serviceinstall, "secure", lambda *a, **k: None)
+    save_settings(Settings(api_url="https://old/api/v1", agent_id="2f5d3fee-ebef-4904-b404-b6a8a18d835a", api_key="old",
+                           passive=True, inventory_interval=86400, schedules=[{"subnet": "192.168.100.0/24"}],
+                           sbom_extra_paths="D:/Tools"), target, keychain=secrets())
+    new_id = "bc9323f6-3fab-408a-aa4f-732850bc81ff"
+    body = json.dumps({"u": "https://new/api/v1", "i": new_id, "k": "new-key"}).encode()
+    serviceinstall.enrol("EE1." + base64.urlsafe_b64encode(body).decode().rstrip("="))
+    s = load_settings(target, env={}, keychain=secrets())
+    assert (s.api_url, s.agent_id, s.api_key) == ("https://new/api/v1", new_id, "new-key")
+    assert (s.passive, s.inventory_interval, s.schedules, s.sbom_extra_paths) == (False, 21600, [], "D:/Tools")

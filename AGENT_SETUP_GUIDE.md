@@ -70,10 +70,10 @@ to 1.0 replaces the 2.x development builds):
 ```powershell
 cd workers
 # staging; production: the same into umeagleeye-reports/agent-installer/
-npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAgent-Setup-2.5.1.exe `
-  --file ..\agent-gui\dist\EagleEyeAgent-Setup-2.5.1.exe --content-type application/vnd.microsoft.portable-executable --remote
-npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/eagleeye-agent-2.5.1.tar.gz `
-  --file ..\agent-gui\dist\eagleeye-agent-2.5.1.tar.gz --content-type application/gzip --remote
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAgent-Setup-0.1.0.exe `
+  --file ..\agent-gui\dist\EagleEyeAgent-Setup-0.1.0.exe --content-type application/vnd.microsoft.portable-executable --remote
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/eagleeye-agent-0.1.0.tar.gz `
+  --file ..\agent-gui\dist\eagleeye-agent-0.1.0.tar.gz --content-type application/gzip --remote
 ```
 
 Uploading the same file name again replaces it (and makes it the newest). To go back to an older build, upload it

@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   DEFAULTS, adoptLocal, applyChange, cleanPolicy, cleanReport, jobRefusal, kindKeys, policyVersion, resolvePolicy, roleChange,
+  tenantDefaultsFor,
 } from './agentPolicy'
 
 const DEFAULTS_HOST = Object.fromEntries(kindKeys('host').map((k) => [k, DEFAULTS[k]]))
@@ -126,4 +127,27 @@ test('an agent own choices become its settings once, without overriding the admi
   assert.deepEqual(adopted, { scanner: false, passive: true })
   const net = adoptLocal('network', { network_seeds: ['10.99.0.1'], network_depth: 3 }, {}, {})
   assert.deepEqual(net, { network_seeds: ['10.99.0.1'] })
+})
+
+test('tenant defaults are kept apart per kind of agent', () => {
+  const stored = { host: { inventory_interval: 21600, passive: true }, mobile: { inventory_interval: 86400 } }
+  assert.deepEqual(tenantDefaultsFor(stored, 'host'), { inventory_interval: 21600, passive: true })
+  assert.deepEqual(tenantDefaultsFor(stored, 'mobile'), { inventory_interval: 86400 })
+  assert.deepEqual(tenantDefaultsFor(stored, 'network'), {})
+  assert.deepEqual(tenantDefaultsFor(stored, null), tenantDefaultsFor(stored, 'host'))
+  // a flat object (before migration 0031) is every kind's, cleaned to that kind's settings
+  const flat = { inventory: false, passive: true, network_depth: 2 }
+  assert.deepEqual(tenantDefaultsFor(flat, 'host'), { inventory: false, passive: true })
+  assert.deepEqual(tenantDefaultsFor(flat, 'mobile'), { inventory: false })
+  assert.deepEqual(tenantDefaultsFor(flat, 'network'), { network_depth: 2 })
+  assert.deepEqual(tenantDefaultsFor(null, 'host'), {})
+  assert.deepEqual(tenantDefaultsFor([1], 'host'), {})
+})
+
+test('a computer always reports its software; only a phone has the app-list setting', () => {
+  assert.ok(!kindKeys('host').includes('inventory_user_software'))
+  assert.ok(kindKeys('mobile').includes('inventory_user_software'))
+  assert.ok(!(kindKeys('host') as readonly string[]).includes('inventory_admin_names'))
+  assert.deepEqual(cleanPolicy({ inventory_admin_names: true, inventory_user_software: true }, kindKeys('host')), {})
+  assert.deepEqual(resolvePolicy({ kind: 'mobile' }).managed, { inventory: true, inventory_interval: 21600, inventory_user_software: false })
 })

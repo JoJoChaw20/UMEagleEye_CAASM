@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from eagleeye.config import ConfigError, Settings, load_settings, save_settings
+from eagleeye.config import ConfigError, Settings, load_settings, save_settings, with_credentials
 
 
 def test_defaults(tmp_path):
@@ -87,11 +87,29 @@ def test_redacted_masks_secrets():
     assert "abcdef" not in json.dumps(red)
 
 
-def test_inventory_privacy_options_default_off_and_can_be_enabled(tmp_path):
-    s = load_settings(tmp_path / "x", env={})
-    assert s.inventory_options == {"user_software": False, "admin_names": False}
-    s = load_settings(tmp_path / "x", env={"EAGLEEYE_INVENTORY_USER_SOFTWARE": "1"}, overrides={"inventory_admin_names": True})
-    assert s.inventory_options == {"user_software": True, "admin_names": True}
+def test_inventory_always_includes_user_software_and_never_admin_names(tmp_path):
+    path = tmp_path / "c.json"
+    # an old config that had them set: no longer settings (only the count of administrators is sent)
+    path.write_text(json.dumps({"inventory_user_software": False, "inventory_admin_names": True}), encoding="utf-8")
+    s = load_settings(path, env={"EAGLEEYE_INVENTORY_ADMIN_NAMES": "1"})
+    assert s.inventory_options == {"user_software": True, "admin_names": False}
+    assert not hasattr(s, "inventory_admin_names")
+
+
+def test_a_new_agent_starts_from_the_defaults_and_keeps_what_belongs_to_the_computer():
+    old = Settings(api_url="https://a/api/v1", agent_id="old-id", api_key="k1", passive=True, inventory_interval=86400,
+                   schedules=[{"subnet": "10.0.0.0/24"}], scan_ports="wide", passive_interface="Ethernet 2",
+                   sbom_extra_paths="D:/Tools", fingerbank_key="fb", consent_version=6, kind="host")
+    same = with_credentials(old, "https://a/api/v1/", "OLD-ID", "k2")           # a new key for the same agent
+    assert same is old and (same.api_key, same.passive, same.schedules) == ("k2", True, [{"subnet": "10.0.0.0/24"}])
+    new = with_credentials(old, "https://a/api/v1", "new-id", "k3")
+    assert (new.api_url, new.agent_id, new.api_key) == ("https://a/api/v1", "new-id", "k3")
+    assert (new.passive, new.inventory_interval, new.schedules, new.scan_ports) == (False, 21600, [], "base")
+    kept = (new.passive_interface, new.sbom_extra_paths, new.fingerbank_key, new.consent_version)
+    assert kept == ("Ethernet 2", "D:/Tools", "fb", 6)
+    assert with_credentials(old, "https://b/api/v1", "old-id", "k").passive is False   # another server
+    fresh = Settings(passive=True)                                                 # not connected yet: kept
+    assert with_credentials(fresh, "https://a", "id", "k").passive is True
 
 
 def test_save_and_reload_roundtrip(tmp_path):

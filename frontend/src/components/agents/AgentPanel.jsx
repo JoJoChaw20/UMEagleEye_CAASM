@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, KeyRound, Monitor, Pencil, Play, RefreshCw, Trash2, X } from 'lucide-react'
 import client from '../../api/client'
-import { GROUPS, PolicyInput, ROLES, SOURCE_LABEL, invalid, metaOf, same, show } from './policy'
+import { GROUPS, PolicyInput, ROLES, SOURCE_LABEL, helpOf, invalid, labelOf, metaOf, same, show } from './policy'
 import { CopyButton, NetworkBadge, Seen, StatusBadge } from './parts'
 
 export default function AgentPanel({ agent, tenantName, canManage, busy, onClose, onSaved, onRename, onRotate, onDelete, onRunNow }) {
@@ -213,8 +213,8 @@ function AgentSettings({ agent, onSaved }) {
                 <div key={m.key} className="space-y-1">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <label htmlFor={`policy-${m.key}`} className="text-sm text-dark-50">{m.label}</label>
-                      {m.help && <p className="text-xs text-dark-400">{m.help}</p>}
+                      <label htmlFor={`policy-${m.key}`} className="text-sm text-dark-50">{labelOf(m, agent.kind)}</label>
+                      {helpOf(m, agent.kind) && <p className="text-xs text-dark-400">{helpOf(m, agent.kind)}</p>}
                     </div>
                     <PolicyInput key={`${m.key}-${rev}`} meta={m} spec={s.spec} value={draft[s.key] ?? null} disabled={!canEdit || saving}
                       fallback={fallback(s)} onChange={(v) => setDraft((d) => ({ ...d, [s.key]: v }))} />

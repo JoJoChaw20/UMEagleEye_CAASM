@@ -200,7 +200,10 @@ def test_a_restart_does_not_collect_the_inventory_again(tmp_path):
     def started(runs):
         svc = AgentService(settings(inventory=True, inventory_interval=6 * 3600), client=Client(),
                            on_event=lambda e: None, state_path=tmp_path / "state.json")
-        svc.run_inventory = lambda trigger="auto", scan_id=None: runs.append(trigger)
+        def collected(trigger="auto", scan_id=None):           # a successful run records its time
+            runs.append(trigger)
+            svc.schedule_state.mark_job("inventory", svc._last_inventory)
+        svc.run_inventory = collected
         svc._maybe_sbom = svc._maybe_schedules = svc._maybe_flush_passive = lambda: None
         return svc
     runs: list = []
@@ -214,3 +217,18 @@ def test_a_restart_does_not_collect_the_inventory_again(tmp_path):
     second._maybe_inventory(force=True)                             # the dashboard asks: collect
     second._inventory_future.result(5)
     assert runs == ["auto", "manual"]
+
+
+def test_a_policy_another_agent_applied_is_not_this_ones(tmp_path):
+    path = tmp_path / "policy.json"
+    policy.PolicyStore(path, agent_id="old-id").save("0a1b2c3d", {"passive": True})
+    assert policy.PolicyStore(path, agent_id="old-id").load() == ("0a1b2c3d", {"passive": True})
+    assert policy.PolicyStore(path, agent_id="new-id").load() == (None, {})       # connected as another agent
+    path.write_text('{"version": "0a1b2c3d", "managed": {"passive": true}}')      # before agents kept their ID
+    assert policy.PolicyStore(path, agent_id="new-id").load() == (None, {})
+    assert policy.PolicyStore(path).load() == ("0a1b2c3d", {"passive": True})
+
+
+def test_user_software_and_admin_names_are_no_longer_settings():
+    assert "inventory_user_software" not in policy.FIELDS and "inventory_admin_names" not in policy.FIELDS
+    assert policy.clean({"inventory_admin_names": True, "inventory": False}) == {"inventory": False}

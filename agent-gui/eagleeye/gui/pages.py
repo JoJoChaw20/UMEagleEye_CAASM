@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import sys
+from dataclasses import fields as dataclass_fields
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from .. import deps
 from ..api import AgentClient
+from ..config import Settings, with_credentials
 from ..enrol import ConnectionCodeError, credentials_from_code
 from ..netinfo import local_ip, local_network
 from ..pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent
@@ -265,7 +267,12 @@ class StatusPage(QWidget):
         s = self.win.store.settings
         ctrl = self.win.controller
         svc = ctrl.service if ctrl.running else None
-        if s.problems():
+        rejected = getattr(svc, "rejected", None) if svc is not None else None
+        if rejected:
+            self.banner.setText(rejected)
+            self.banner.set_action("Open Setup", lambda: self.win.show_page(self.win.settings_page))
+            self.banner.show()
+        elif s.problems():
             self.banner.setText("Not set up yet: open <b>Setup</b> and paste the code from your administrator "
                                 "(the dashboard's Agents page).")
             self.banner.set_action("Open Setup", lambda: self.win.show_page(self.win.settings_page))
@@ -502,7 +509,7 @@ def managed_now(win: "MainWindow") -> dict[str, Any]:
     if svc is not None:
         return dict(getattr(svc, "managed", {}) or {})
     from ..policy import PolicyStore, policy_path
-    return PolicyStore(policy_path()).load()[1]
+    return PolicyStore(policy_path(), agent_id=win.store.settings.agent_id).load()[1]
 
 
 
@@ -715,9 +722,11 @@ class SettingsPage(QWidget):
     def _save(self) -> None:
         s = self.win.store.settings
         before = (s.api_url, s.agent_id, s.api_key)
-        s.api_url = self.api_url.text().strip()
-        s.agent_id = self.agent_id.text().strip()
-        s.api_key = self._secret(self.api_key, s.api_key)
+        url, agent_id = self.api_url.text().strip(), self.agent_id.text().strip()
+        # Connected as another agent (a new code): the settings start again from the defaults.
+        fresh = with_credentials(s, url, agent_id, self._secret(self.api_key, s.api_key))
+        for f in dataclass_fields(Settings):
+            setattr(s, f.name, getattr(fresh, f.name))
         failed = self.win.save_store()
         if failed:
             self.save_result.setText(failed)
@@ -749,7 +758,7 @@ def effective_settings(win: "MainWindow") -> dict[str, Any]:
     computer's settings until the dashboard has answered."""
     s = win.store.settings
     managed = managed_now(win)
-    keys = ("inventory", "inventory_interval", "inventory_user_software", "inventory_admin_names", "sbom", "passive")
+    keys = ("inventory", "inventory_interval", "sbom", "passive")
     return {k: managed.get(k, getattr(s, k)) for k in keys}
 
 
@@ -765,16 +774,15 @@ class PrivacyPage(QWidget):
         grid = FieldGrid(1)
         self.values: dict[str, QLabel] = {}
         for key, title in (("inventory", "Collects this computer's inventory"),
-                           ("inventory_user_software", "Software users installed for themselves (personal data)"),
-                           ("inventory_admin_names", "Names of administrator accounts (personal data)"),
                            ("sbom", "Lists its software packages and checks them for vulnerabilities (SBOM)"),
                            ("passive", "Listens for the devices on its network")):
             value = label("", "value", wrap=True)
             grid.add(title, value)
             self.values[key] = value
         what.add_layout(grid)
-        what.add(_hint("Set by your administrator on the EagleEye dashboard (Agents page). For the SBOM only package "
-                       "names, versions and licences are sent; no files or file paths."))
+        what.add(_hint("Set by your administrator on the EagleEye dashboard (Agents page). The inventory lists the "
+                       "software installed for everyone and by each signed-in user, and only the number of administrator "
+                       "accounts. For the SBOM only package names, versions and licences are sent; no files or file paths."))
         what.add(divider())
         self.preview_btn = button("Preview what would be sent...", None, "eye", self._preview)
         self.preview_note = label("", "hint", wrap=True)
@@ -807,8 +815,6 @@ class PrivacyPage(QWidget):
         yes_no = lambda on: "Yes" if on else "No"          # noqa: E731
         hours = max(1, round(int(e["inventory_interval"]) / 3600))
         self.values["inventory"].setText(f"Yes, every {hours} hour{'s' if hours != 1 else ''}" if e["inventory"] else "No")
-        for key in ("inventory_user_software", "inventory_admin_names"):
-            self.values[key].setText(yes_no(e["inventory"] and e[key]))
         for key in ("sbom", "passive"):
             self.values[key].setText(yes_no(e[key]))
         s = self.win.store.settings
@@ -819,9 +825,7 @@ class PrivacyPage(QWidget):
         self.consent.setText(f"Notice read on {accepted}." if accepted else "Notice not yet read.")
 
     def _preview(self) -> None:
-        e = effective_settings(self.win)
-        options = {"user_software": bool(e["inventory"] and e["inventory_user_software"]),
-                   "admin_names": bool(e["inventory"] and e["inventory_admin_names"])}
+        options = self.win.store.settings.inventory_options
         self.preview_btn.setEnabled(False)
         self.preview_note.setText("Collecting (this takes up to a minute)...")
         set_tone(self.preview_note, None)

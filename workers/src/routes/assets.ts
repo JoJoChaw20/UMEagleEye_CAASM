@@ -1662,6 +1662,7 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES), as
       const [agent] = await db
         .select({
           agentId: agents.agentId,
+          kind: agents.kind,
           online: sql<boolean>`(${agents.lastHeartbeat} > now() - interval '2 minutes')`,
         })
         .from(agents)
@@ -1671,6 +1672,9 @@ app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES), as
       if (!agent) {
         return c.json({ detail: 'No EagleEye agent is installed on this device, so it cannot build an SBOM. '
           + 'Install the agent on it (its first inventory links the agent to this asset).' }, 409)
+      }
+      if (agent.kind === 'mobile') {
+        return c.json({ detail: 'The EagleEye app on a phone reports its inventory only; it does not build an SBOM.' }, 409)
       }
       const sbomRefusal = jobRefusal((await agentPolicy(db, agent.agentId))?.resolved.effective ?? {}, 'sbom')
       if (sbomRefusal) return c.json({ detail: `${sbomRefusal} Change it on the Agents page.` }, 409)

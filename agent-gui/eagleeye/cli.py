@@ -24,6 +24,7 @@ from typing import Any, Optional
 from . import VERSION, deps
 from .config import (
     ConfigError, Settings, default_config_path, env_value, load_settings, save_settings, sbom_cache_path, state_path,
+    with_credentials,
 )
 from .enrol import ConnectionCodeError, credentials_from_code, is_install_code, parse_connection_code
 from .keychain import Keychain
@@ -68,10 +69,6 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
                    help="do not collect the endpoint inventory of this machine")
     g.add_argument("--inventory-interval", dest="inventory_interval", type=int,
                    help="seconds between endpoint inventories (default 21600 = 6 h)")
-    g.add_argument("--include-user-software", dest="inventory_user_software", action="store_true", default=None,
-                   help="also report software installed per user (personal data; off by default)")
-    g.add_argument("--include-admin-names", dest="inventory_admin_names", action="store_true", default=None,
-                   help="report local administrator account names instead of only their count (off by default)")
     g.add_argument("--no-sbom", dest="sbom", action="store_false", default=None,
                    help="do not build this machine's SBOM (package list checked for CVEs)")
     g.add_argument("--sbom-interval", dest="sbom_interval", type=int,
@@ -257,8 +254,8 @@ def _enrol_settings(args: argparse.Namespace, code: str, overrides: dict[str, An
     except ConnectionCodeError as exc:
         raise ConfigError(str(exc)) from None
     if new:
-        saved = load_settings(path, env={})
-        saved.api_url, saved.agent_id, saved.api_key, saved.kind = url, agent_id, key, settings.kind
+        saved = with_credentials(load_settings(path, env={}), url, agent_id, key)
+        saved.kind = settings.kind
         save_settings(saved, path, keychain=Keychain())
         log.info("Registered this computer as a new agent %s at %s", agent_id, url)
     settings.api_url, settings.agent_id, settings.api_key = url, agent_id, key

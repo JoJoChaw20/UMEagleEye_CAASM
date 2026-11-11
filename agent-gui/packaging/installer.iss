@@ -59,7 +59,7 @@ CloseApplicationsFilter=EagleEyeAgent.exe,eagleeye.exe
 RestartApplications=no
 
 [Tasks]
-Name: "autostart"; Description: "Open the EagleEye Agent app in the tray when anyone signs in (the agent itself always runs as a service)"
+Name: "autostart"; Description: "Show the EagleEye Agent status app in the tray when anyone signs in. The agent itself runs as a Windows service either way, from start-up to shutdown."
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]

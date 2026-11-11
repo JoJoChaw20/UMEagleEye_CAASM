@@ -142,6 +142,7 @@ class RemoteService:
         self.instance = instance
         self.last_heartbeat_at = _when(status.get("last_heartbeat_at"))
         self.last_heartbeat_ok = status.get("last_heartbeat_ok")
+        self.rejected = status.get("rejected")
         self.current = status.get("current")
         self.active_running = bool(status.get("active_running"))
         self.inventory_running = bool(status.get("inventory_running"))

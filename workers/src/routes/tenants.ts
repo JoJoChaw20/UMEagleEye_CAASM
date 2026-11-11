@@ -6,7 +6,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles, requireTenantAccess } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { tenants, users, assets, auditLogs } from '../db/schema'
-import { DEFAULTS, POLICY_KEYS, POLICY_SPECS, ROLE_KEYS, applyChange, cleanPolicy, kindsOf } from '../lib/agentPolicy'
+import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { addRefusal, mayGrantRole, type Refusal } from '../lib/userAdmin'
 import { audit } from '../services/audit'
 import { networkTargetErrors } from '../services/scanTargets'
@@ -176,18 +176,23 @@ router.patch(
 )
 
 // ── Default agent settings of a tenant (lib/agentPolicy.ts) ────────
-// A setting set here applies to every agent of the tenant that has no override of its
-// own; one not set here is the built-in default (DEFAULTS, shown as `builtin`).
+// A setting set here applies to every agent of that kind in the tenant that has no override
+// of its own; one not set here is the built-in default (DEFAULTS, shown as `builtin`). Each
+// kind of agent (computers, network agents, phones) has defaults of its own.
+type KindDefaults = Record<string, Partial<Record<PolicyKey, PolicyValue>>>
+
+const defaultsByKind = (stored: unknown): KindDefaults =>
+  Object.fromEntries(AGENT_KINDS.map((kind) => [kind, tenantDefaultsFor(stored, kind)]))
+
 function agentPolicyOut(t: typeof tenants.$inferSelect, canEdit: boolean) {
-  const defaults = cleanPolicy(t.agentPolicy)
+  const defaults = defaultsByKind(t.agentPolicy)
   return {
     tenant_id: t.tenantId,
-    settings: POLICY_KEYS.map((key) => ({
-      key,
-      value: defaults[key] ?? null,
-      builtin: DEFAULTS[key],
-      spec: POLICY_SPECS[key],
-      kinds: kindsOf(key),          // host / network: the page shows them apart
+    kinds: AGENT_KINDS.map((kind) => ({
+      kind,
+      settings: kindKeys(kind).map((key) => ({
+        key, value: defaults[kind]![key] ?? null, builtin: DEFAULTS[key], spec: POLICY_SPECS[key],
+      })),
     })),
     role_settings: ROLE_KEYS,
     can_edit: canEdit,
@@ -202,11 +207,11 @@ router.get('/:tenantId/agent-policy', ...tenantViewAccess, async (c) => {
   return c.json(agentPolicyOut(tenant, user.role === 'superadmin' || user.role === 'tenant_superadmin'))
 })
 
-// {settings: {setting: value | null}}: null = no tenant default (each agent's own).
+// {settings: {kind: {setting: value | null}}}: null = no tenant default (each agent's own).
 router.patch(
   '/:tenantId/agent-policy',
   ...tenantAdminAccess,
-  zValidator('json', z.object({ settings: z.record(z.string(), z.unknown()) })),
+  zValidator('json', z.object({ settings: z.record(z.string(), z.record(z.string(), z.unknown())) })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
@@ -214,9 +219,17 @@ router.patch(
     const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
 
-    const { policy, errors } = applyChange(tenant.agentPolicy, c.req.valid('json').settings, POLICY_KEYS)
+    const changes = c.req.valid('json').settings
+    const policy = defaultsByKind(tenant.agentPolicy)
+    const errors: string[] = []
+    for (const [kind, change] of Object.entries(changes)) {
+      if (!AGENT_KINDS.includes(kind)) { errors.push(`${kind}: not a kind of agent`); continue }
+      const applied = applyChange(policy[kind], change, kindKeys(kind))
+      policy[kind] = applied.policy
+      errors.push(...applied.errors.map((e) => `${kind} ${e}`))
+    }
     if (errors.length) return c.json({ detail: errors.join('; ') }, 400)
-    const targetErrors = await networkTargetErrors(db, tenantId, c.req.valid('json').settings)
+    const targetErrors = await networkTargetErrors(db, tenantId, changes.network ?? {})
     if (targetErrors.length) return c.json({ detail: targetErrors.join('; ') }, 400)
 
     const [updated] = await db.update(tenants)

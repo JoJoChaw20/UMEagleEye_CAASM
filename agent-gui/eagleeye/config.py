@@ -57,12 +57,10 @@ class Settings:
     network_ranges: list[str] = field(default_factory=list)     # where the crawl may go
     network_depth: int = 3              # CDP/LLDP hops from a seed
     network_interval: int = 900         # seconds between crawls (15 min)
+    # The endpoint inventory of this machine: its software includes what each signed-in user
+    # installed for themselves; local administrator accounts are sent only as a count.
     inventory: bool = True              # collect the endpoint inventory of this machine
     inventory_interval: int = 21600     # seconds between inventories (6 h)
-    # Personal data, off by default (data minimisation): per-user software installs
-    # and the names of local administrator accounts (only their count is sent).
-    inventory_user_software: bool = False
-    inventory_admin_names: bool = False
     # SBOM of this computer (Syft + Grype, see sbom.py): daily, plus when the dashboard asks.
     sbom: bool = True
     sbom_interval: int = 86400          # seconds between SBOMs (24 h)
@@ -82,7 +80,7 @@ class Settings:
 
     @property
     def inventory_options(self) -> dict[str, bool]:
-        return {"user_software": self.inventory_user_software, "admin_names": self.inventory_admin_names}
+        return {"user_software": True, "admin_names": False}
 
     def problems(self) -> list[str]:
         """Reasons the agent cannot talk to the server yet (empty list = ready)."""
@@ -143,8 +141,6 @@ _ENV_VARS = {
     "snmp_priv_protocol": "EAGLEEYE_SNMP_PRIV_PROTOCOL",
     "inventory": "EAGLEEYE_INVENTORY",
     "inventory_interval": "EAGLEEYE_INVENTORY_INTERVAL",
-    "inventory_user_software": "EAGLEEYE_INVENTORY_USER_SOFTWARE",
-    "inventory_admin_names": "EAGLEEYE_INVENTORY_ADMIN_NAMES",
     "sbom": "EAGLEEYE_SBOM",
     "sbom_interval": "EAGLEEYE_SBOM_INTERVAL",
     "sbom_extra_paths": "EAGLEEYE_SBOM_EXTRA_PATHS",
@@ -164,6 +160,37 @@ _ENV_VARS = {
 # Settings that are lists of text (addresses, ranges): a JSON list in the config file, a
 # comma-separated list in an EAGLEEYE_* variable.
 STRING_LISTS = ("network_seeds", "network_ranges")
+
+
+# What belongs to this computer rather than to the organisation it reports to: kept when the
+# computer is connected as a different agent. Everything else (what the dashboard sets, local
+# schedules) starts again from the built-in defaults, so a new agent does not carry the old
+# one's settings into another tenant (the server adopts an agent's own values once).
+LOCAL_FIELDS = (
+    "kind", "poll_interval", "heartbeat_interval", "passive_interface", "fingerbank_key",
+    "snmp_user", "snmp_auth_key", "snmp_priv_key", "snmp_auth_protocol", "snmp_priv_protocol",
+    "snmp_version", "snmp_community", "sbom_extra_paths", "sbom_include_binaries",
+    "consent_version", "consent_at",
+)
+
+
+def another_agent(current: Settings, api_url: str, agent_id: str) -> bool:
+    """Whether these credentials make an agent that was already connected a different one
+    (another agent ID or server). A computer not yet connected keeps what it was set up with."""
+    if not current.agent_id:
+        return False
+    return (current.agent_id.lower() != agent_id.lower()
+            or current.api_url.rstrip("/").lower() != api_url.rstrip("/").lower())
+
+
+def with_credentials(current: Settings, api_url: str, agent_id: str, api_key: str) -> Settings:
+    """`current` connected with these credentials; as another agent, from the built-in
+    defaults plus what belongs to this computer (LOCAL_FIELDS)."""
+    out = current
+    if another_agent(current, api_url, agent_id):
+        out = Settings(**{name: getattr(current, name) for name in LOCAL_FIELDS})
+    out.api_url, out.agent_id, out.api_key = api_url, agent_id, api_key
+    return out
 
 
 def env_value(name: str, env: Optional[Mapping[str, str]] = None) -> Optional[str]:

@@ -98,10 +98,13 @@ class Schedule:
 
 class ScheduleState:
     """When each schedule last ran, kept in a small JSON file next to the config so
-    restarting the agent does not repeat or skip runs."""
+    restarting the agent does not repeat or skip runs. With `agent_id`, times another agent
+    recorded (this computer connected before as another agent) are not this one's: a new
+    agent collects its inventory at once."""
 
-    def __init__(self, path: Optional[Path]) -> None:
+    def __init__(self, path: Optional[Path], agent_id: Optional[str] = None) -> None:
         self.path = path
+        self.agent_id = agent_id
         self.last_runs: dict[str, datetime] = {}
         # When the agent's own periodic jobs last ran (e.g. "inventory": epoch seconds), so
         # restarting the agent (a settings change, the service starting) does not repeat them.
@@ -113,6 +116,8 @@ class ScheduleState:
             return
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
+            if self.agent_id is not None and data.get("agent_id") != self.agent_id:
+                return
             self.last_runs = {k: datetime.fromisoformat(v) for k, v in data.get("schedules", {}).items()}
             self.jobs = {k: float(v) for k, v in (data.get("jobs") or {}).items()}
         except (OSError, ValueError, AttributeError, TypeError):
@@ -125,6 +130,8 @@ class ScheduleState:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             data = {"schedules": {k: v.isoformat(timespec="seconds") for k, v in self.last_runs.items()},
                     "jobs": {k: round(v, 1) for k, v in self.jobs.items()}}
+            if self.agent_id is not None:
+                data["agent_id"] = self.agent_id
             self.path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         except OSError:
             pass

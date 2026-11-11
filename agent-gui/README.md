@@ -166,16 +166,13 @@ The endpoint inventory describes the machine the agent is installed on. On an or
 normal asset-management data; on a device a person uses, parts of it identify that person, which makes it personal
 data under Malaysia's Personal Data Protection Act 2010. The agent is built to collect only what security needs.
 
-**Collected by default:** hardware model and serial number, OS version and patches, security settings (firewall,
-antivirus, encryption, Secure Boot, TPM, UAC, RDP, SMBv1), the **number** of local administrator accounts, network
-interfaces and their addresses, network-reachable listening ports with the program behind them, and software
-installed for all users of the machine.
-
-**Off unless switched on (personal data):**
-| Setting | Flag / variable | What it adds |
-|---|---|---|
-| `inventory_user_software` | `--include-user-software`, `EAGLEEYE_INVENTORY_USER_SOFTWARE=1` | Software one user installed for themselves (Windows HKCU) |
-| `inventory_admin_names` | `--include-admin-names`, `EAGLEEYE_INVENTORY_ADMIN_NAMES=1` | The names of the local administrator accounts |
+**Collected:** hardware model and serial number, OS version and patches, security settings (firewall,
+antivirus, encryption, Secure Boot, TPM, UAC, RDP, SMBv1), the **number** of local administrator accounts (never
+their names), network interfaces and their addresses, network-reachable listening ports with the program behind
+them, and the installed software: what is installed for all users and what each signed-in user installed for
+themselves (on Windows every loaded user hive under `HKEY_USERS`; browser web-app shortcuts are skipped), because
+out-of-date per-user programs (browsers, editors, chat apps) are a common way in. The dashboard's only inventory
+settings for a computer are whether it reports one and how often.
 
 **Never collected:** files or documents, browsing history, passwords or credentials, keystrokes, screenshots, email
 or messages, location, and the contents of network traffic. For ports that only listen on the machine itself

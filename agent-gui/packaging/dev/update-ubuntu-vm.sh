@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install or update the agent on an Ubuntu test VM from a Linux package built on the PC.
 #
-#   sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-2.5.1.tar.gz                      # update (keeps its connection)
-#   sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-2.5.1.tar.gz --code-file ~/code.txt   # first install: connect it
+#   sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-0.1.0.tar.gz                      # update (keeps its connection)
+#   sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-0.1.0.tar.gz --code-file ~/code.txt   # first install: connect it
 #   sudo bash ~/update-ubuntu-vm.sh --purge                                           # remove the agent and its settings
 #
 # The service runs the code in /opt/eagleeye-dev with the system python3 (its unit points there), so

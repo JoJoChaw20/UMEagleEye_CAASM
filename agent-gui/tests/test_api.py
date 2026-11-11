@@ -131,6 +131,18 @@ def test_heartbeat_payload_and_failure(monkeypatch):
     assert c2.send_heartbeat() is False
 
 
+def test_a_heartbeat_the_server_refuses_says_to_paste_a_new_code(monkeypatch):
+    from eagleeye.api import REJECTED
+    monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.1.20")
+    c, _, _ = client(FakeResponse(404, {"detail": "Agent not found"}))          # deleted on the dashboard
+    assert c.send_heartbeat() is False and c.rejected == REJECTED
+    c, _, _ = client(FakeResponse(401, {"detail": "Invalid API key"}), FakeResponse(200))   # key replaced, then fixed
+    assert c.send_heartbeat() is False and c.rejected == REJECTED
+    assert c.send_heartbeat() and c.rejected is None
+    c, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
+    assert c.send_heartbeat() is False and c.rejected is None                  # offline is not refused
+
+
 def test_heartbeat_answer_carries_the_local_scan_policy(monkeypatch):
     monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.1.20")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)

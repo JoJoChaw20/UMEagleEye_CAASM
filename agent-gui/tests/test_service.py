@@ -558,6 +558,24 @@ def test_inventory_retry_runs_before_the_interval_is_up(monkeypatch):
     assert calls == ["auto"] and svc._inventory_retry_at == 0.0
 
 
+def test_only_an_inventory_that_reached_the_server_counts_after_a_restart(monkeypatch, tmp_path):
+    from eagleeye.pipeline import PipelineResult
+    results = ["failed", "ok"]
+    monkeypatch.setattr("eagleeye.service.Pipeline.run",
+                        lambda self, ctx: PipelineResult(results.pop(0), error="Agent not found"))
+
+    def started():
+        return AgentService(Settings(api_url="http://x", api_key="k", agent_id="a", inventory=True, inventory_interval=86400),
+                            client=FakeClient(), on_event=lambda e: None, state_path=tmp_path / "state.json")
+    svc = started()
+    svc._maybe_inventory()                               # due at once: never sent
+    svc._inventory_future.result(timeout=5)
+    assert started()._last_inventory == 0.0               # failed (e.g. before a new code): due again after a restart
+    svc._maybe_inventory(force=True)
+    svc._inventory_future.result(timeout=5)
+    assert started()._last_inventory == pytest.approx(time.time(), abs=10)
+
+
 def test_inventory_request_is_ignored_when_inventory_is_off(monkeypatch):
     svc = service(FakeClient(), inventory=False)
     svc.request_inventory()

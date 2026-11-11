@@ -6,7 +6,7 @@ import type { R2Bucket } from '@cloudflare/workers-types'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
-import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys, roleChange, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
+import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys, roleChange, tenantDefaultsFor, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
 import { pendingJobsFor } from '../services/pendingJobs'
 import { agentLiveness } from '../lib/agentLiveness'
@@ -451,8 +451,9 @@ router.post(
     const policies = await tenantPolicies(db, [agent.tenantId])
     const config = ((updateData.config ?? agent.config ?? {}) as Record<string, unknown>)
     if (body.settings !== undefined && config.adopted_local !== true) {
-      updateData.policy = adoptLocal(report.kind ?? agent.kind, report.settings, agent.policy,
-        policies.get(agent.tenantId ?? '')?.agentPolicy)
+      const kind = report.kind ?? agent.kind
+      updateData.policy = adoptLocal(kind, report.settings, agent.policy,
+        tenantDefaultsFor(policies.get(agent.tenantId ?? '')?.agentPolicy, kind))
       updateData.config = { ...config, adopted_local: true }
     }
 

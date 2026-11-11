@@ -2,8 +2,9 @@
 # CIM/WMI, the registry and built-in cmdlets. Prints one JSON document on stdout.
 # Each section is independent; a failing section is reported in "errors" and left null.
 #
-# Data minimisation: per-user software (HKCU) and local administrator account names are
-# personal data and are only read when explicitly requested with the switches below.
+# Per-user software (every signed-in user's hive under HKEY_USERS; the agent always asks for
+# it) and local administrator account names (the agent never asks: only their count is sent)
+# are read only when requested with the switches below.
 param(
     [switch]$IncludeUserSoftware,
     [switch]$IncludeAdminNames
@@ -66,14 +67,21 @@ $pendingReboot = Section 'pending_reboot' {
 $software = Section 'software' {
     $roots = @(
         @{ path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*';             scope = 'machine'; arch = 'x64' },
-        @{ path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; scope = 'machine'; arch = 'x86' },
-        @{ path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*';             scope = 'user';    arch = $null }
+        @{ path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; scope = 'machine'; arch = 'x86' }
     )
-    if (-not $IncludeUserSoftware) { $roots = @($roots | Where-Object { $_.scope -ne 'user' }) }
+    # Per-user installs of every signed-in user (their registry hives are loaded under HKEY_USERS).
+    # Not HKCU: the agent service runs as SYSTEM, whose own HKCU holds no one's programs.
+    if ($IncludeUserSoftware) {
+        Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -match '^S-1-(5-21|12-1)-[\d-]+$' } | ForEach-Object {
+                $roots += @{ path = "Registry::HKEY_USERS\$($_.PSChildName)\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"; scope = 'user'; arch = $null }
+            }
+    }
     ,@(foreach ($root in $roots) {
         Get-ItemProperty -Path $root.path -ErrorAction SilentlyContinue | Where-Object {
             $_.DisplayName -and $_.SystemComponent -ne 1 -and -not $_.ParentKeyName -and
-            $_.ReleaseType -notin @('Update', 'Hotfix', 'Security Update')
+            $_.ReleaseType -notin @('Update', 'Hotfix', 'Security Update') -and
+            [string]$_.UninstallString -notmatch '--uninstall-app-id='      # a Chrome/Edge web-app shortcut, not a program
         } | ForEach-Object {
             [ordered]@{
                 name = [string]$_.DisplayName; version = [string]$_.DisplayVersion; publisher = [string]$_.Publisher

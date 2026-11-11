@@ -79,8 +79,9 @@ export const tenants = pgTable('tenants', {
   autoInvestigateNewDevices: boolean('auto_investigate_new_devices').notNull().default(false),
   // Unused since 2.6 (every scan starts from the dashboard; scans POST /agent-start refuses).
   allowLocalScans: boolean('allow_local_scans').notNull().default(false),
-  // Default agent settings of this tenant ({setting: value}, lib/agentPolicy.ts). A
-  // setting not here is the built-in default (DEFAULTS) unless the agent has an override.
+  // Default agent settings of this tenant, per kind of agent ({host|network|mobile: {setting:
+  // value}}, lib/agentPolicy.ts tenantDefaultsFor). A setting not here is the built-in default
+  // (DEFAULTS) unless the agent has an override.
   agentPolicy: jsonb('agent_policy').notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])

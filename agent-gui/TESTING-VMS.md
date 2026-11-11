@@ -9,7 +9,7 @@ them on the staging dashboard. Each machine takes one command. The scripts are i
 | Windows VM | the VMware shared folder `\\vmware-host\Shared Folders\agent-gui` | service `EagleEyeAgent` (the installer) |
 | Ubuntu VM (`user@192.168.36.50`) | `scp` from the PC | systemd `eagleeye-agent`, code in `/opt/eagleeye-dev` |
 
-The version number stays 2.5.1 while developing (it becomes 1.0 at release), so tell builds apart by the
+The version number stays 0.1.0 while developing (every agent, the phone app too; it is renumbered at release), so tell builds apart by the
 time the scripts print ("built 2026-11-09 14:05") and the start line in the agent's log.
 
 ## One-time setup
@@ -78,7 +78,7 @@ and the last lines of `C:\ProgramData\EagleEye\logs\agent.log`.
 
 **3. Ubuntu VM:**
 ```bash
-sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-2.5.1.tar.gz
+sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-0.1.0.tar.gz
 ```
 First install, or after a purge: add `--code-file ~/code.txt`. It ends with the service status and the last
 lines of `/var/lib/eagleeye/logs/agent.log`.
@@ -109,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File "\\vmware-host\Shared Folders\agent-gui
 ```bash
 # Ubuntu VM
 sudo bash ~/update-ubuntu-vm.sh --purge
-sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-2.5.1.tar.gz --code-file ~/code.txt
+sudo bash ~/update-ubuntu-vm.sh ~/eagleeye-agent-0.1.0.tar.gz --code-file ~/code.txt
 ```
 A purge removes the agent and its settings; with the install code it registers as a NEW agent. Delete the old
 one on the Agents tab (its panel → Delete).

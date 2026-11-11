@@ -5,9 +5,11 @@ dashboard), as with any company device-management tool; the notice says what it 
 
 from __future__ import annotations
 
-CONSENT_VERSION = 5     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
+CONSENT_VERSION = 6     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
                         # 4: automatic scan of newly heard devices (tenant setting), dashboard inventory requests;
-                        # 5: the administrator sets what is collected from the dashboard (agent settings)
+                        # 5: the administrator sets what is collected from the dashboard (agent settings);
+                        # 6: the inventory always includes software users installed for themselves, and
+                        #    administrator account names are never sent
 
 NOTICE_TITLE = "What this agent collects"
 
@@ -29,14 +31,13 @@ so administrators can see what it is.</p>
 <p>Reads only broadcast discovery messages (ARP, mDNS, NetBIOS, DHCP, SSDP/UPnP) to learn device
 names, addresses and what kind of device each one says it is. It never reads the contents of anyone's traffic.</p>
 
-<h3>This computer's inventory (optional)</h3>
+<h3>This computer's inventory (on by default)</h3>
 <p>Hardware model and serial number, operating system and patches, security settings
 (firewall, antivirus, disk encryption, Secure Boot, TPM, UAC, remote desktop, SMBv1), the
-<b>number</b> of local administrator accounts, network interfaces, network-reachable
-listening ports with the program behind them, and software installed for all users.</p>
-<p>Two items identify a person more directly and are <b>off by default</b>: software one
-user installed only for themselves, and the names of the administrator accounts. Your
-organisation's administrator may switch them on.</p>
+<b>number</b> of local administrator accounts (never their names), network interfaces,
+network-reachable listening ports with the program behind them, and the installed software:
+the programs installed for everyone and those each signed-in user installed for themselves
+(name, version and publisher), because out-of-date programs are a common way in for attackers.</p>
 
 <h3>Software packages (SBOM, on by default)</h3>
 <p>Every day (only the folders that changed), once a week in full, and when you or an
