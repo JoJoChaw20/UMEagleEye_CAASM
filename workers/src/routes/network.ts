@@ -19,7 +19,7 @@ import { getDb } from '../db/client'
 import { agents, assetAddresses, assets, auditLogs, networkLinks, scanResults } from '../db/schema'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
-import { MAP_DAYS, loadNetworkMap } from '../services/networkMap'
+import { MAP_DAYS, loadMapNetworks, loadNetworkMap } from '../services/networkMap'
 import { normalizeMac } from '../lib/mac'
 import {
   assetIndex, crawlSubnets, deviceAssets, linkRows, planLocations, topologySchema, type AssetRef, type CrawlHost,
@@ -228,22 +228,24 @@ app.post('/run/:agentId', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), a
   return c.json({ scan_id: job?.scanId, status: 'pending' }, 201)
 })
 
-// ── GET /map ── routers, switches, cables and where each device is plugged in ───
+// ── GET /map ── routers, switches, cables and where each device is plugged in, and every
+// network the tenant's agents see (its gateway, the agents watching it, its devices) ───
 app.get('/map', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) => {
   const user = c.get('user')
   const tenantId = user.role === 'superadmin' ? c.req.query('tenant_id') : user.tenantId
   if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
-    return c.json({ nodes: [], edges: [], agents: [], days: MAP_DAYS })
+    return c.json({ nodes: [], edges: [], agents: [], networks: [], days: MAP_DAYS })
   }
   try {
     const db = getDb(c.env.DATABASE_URL)
-    const [map, netAgents] = await Promise.all([
+    const [map, networks, netAgents] = await Promise.all([
       loadNetworkMap(db, tenantId),
+      loadMapNetworks(db, tenantId),
       db.select({ agentId: agents.agentId, name: agents.name, lastHeartbeat: agents.lastHeartbeat }).from(agents)
         .where(and(eq(agents.tenantId, tenantId), eq(agents.kind, 'network'), isNull(agents.retiredAt))),
     ])
     return c.json({
-      ...map, days: MAP_DAYS,
+      ...map, networks, days: MAP_DAYS,
       agents: netAgents.map((a) => ({ agent_id: a.agentId, name: a.name, last_heartbeat: a.lastHeartbeat })),
     })
   } catch (err) {

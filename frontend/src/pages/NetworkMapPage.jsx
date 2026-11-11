@@ -1,7 +1,9 @@
-// The network as the network agents measured it (GET /network/map): routers and switches
-// joined by their cables (port at each end), every device under the switch port it is
-// plugged into, and devices whose port is not known grouped by VLAN under their router.
-// Layout: utils/networkMapLayout.js. Unlike the Inventory graph, nothing here is guessed.
+// The tenant's whole network (GET /network/map). First every network its agents see, one band
+// each (components/network/NetworkBands.jsx): the internet, the gateway, the devices, which agent
+// watches it. Then, where a network agent reads them, the routers and switches joined by their
+// cables (port at each end), every device under the switch port it is plugged into, and devices
+// whose port is not known grouped by VLAN under their router (utils/networkMapLayout.js).
+// Nothing here is guessed: each line was measured or seen by an agent.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -14,6 +16,7 @@ import TenantSelector from '../components/common/TenantSelector'
 import BlastRadiusModal from '../components/common/BlastRadiusModal'
 import { layoutNetworkMap, NODE_W, NODE_H } from '../utils/networkMapLayout'
 import { formatSeen } from '../utils/time'
+import { COLOUR_MODES, DevicePanel, NetworkBand, NetworkPanel } from '../components/network/NetworkBands'
 
 const KIND = {
   router:    { icon: Router,       label: 'Router',            tone: 'series-1' },
@@ -62,8 +65,12 @@ export default function NetworkMapPage() {
   const [query, setQuery] = useState('')
   const [vlan, setVlan] = useState('')
   const [blastOf, setBlastOf] = useState(null)
+  const [mode, setMode] = useState('kind')                  // colour devices by kind, open CVEs or exposure
+  const [openNets, setOpenNets] = useState(() => new Set())
+  const [pick, setPick] = useState(null)                    // {type: 'network', key} | {type: 'device', key, asset_id}
 
-  const map = data ?? { nodes: [], edges: [], agents: [] }
+  const map = data ?? { nodes: [], edges: [], agents: [], networks: [] }
+  const networks = map.networks ?? []
   const vlans = useMemo(() => [...new Set(map.nodes.map((n) => n.vlan).filter((v) => v != null))].sort((a, b) => a - b), [map])
   const q = query.trim().toLowerCase()
   const matches = useMemo(() => new Set(q ? map.nodes.filter((n) =>
@@ -91,6 +98,14 @@ export default function NetworkMapPage() {
     }
   }, [map])
 
+  // Search narrows each network to its matching devices (a network whose range matches keeps them all).
+  const netDevices = useMemo(() => new Map(networks.map((n) => [n.key, !q || n.key.includes(q) ? n.devices
+    : n.devices.filter((d) => [d.label, d.ip, d.mac].some((v) => v && String(v).toLowerCase().includes(q)))])), [networks, q])
+  const shownNets = q ? networks.filter((n) => netDevices.get(n.key).length > 0 || n.key.includes(q)) : networks
+  const toggleNet = (key) => setOpenNets((s) => { const t = new Set(s); if (t.has(key)) t.delete(key); else t.add(key); return t })
+  const pickedNet = pick ? networks.find((n) => n.key === pick.key) : null
+  const pickedDevice = pick?.type === 'device' ? pickedNet?.devices.find((d) => d.asset_id === pick.asset_id) : null
+
   const clickNode = (n) => {
     if (n.kind === 'more') {
       setExpanded((s) => new Set(s).add(n.parent))
@@ -105,12 +120,12 @@ export default function NetworkMapPage() {
         <div>
           <h1 className="page-title">Network map</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-3xl">
-            The routers and switches your network agents read, the cables between them, and the switch port every
-            device is plugged into. Measured, not guessed: it comes from the devices' own CDP/LLDP, MAC and ARP tables.
+            Every network your agents are on, with its gateway and devices, and the routers and switches your network
+            agents read. Nothing is guessed: each line was measured or seen by an agent in the last {map.days ?? 30} days.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {isSuperadmin && <TenantSelector value={tenantId} onChange={(id) => { setTenantId(id); setSelected(null) }} />}
+          {isSuperadmin && <TenantSelector value={tenantId} onChange={(id) => { setTenantId(id); setSelected(null); setPick(null) }} />}
           <button onClick={load} className="btn-secondary flex items-center gap-2 text-sm" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
@@ -120,48 +135,114 @@ export default function NetworkMapPage() {
       {error && <div className="glass-card p-4 border border-red-500/30 text-red-400 text-sm">{error}</div>}
       {isSuperadmin && !tenantId && <div className="glass-card p-6 text-sm text-dark-300">Pick a tenant to see its network.</div>}
 
-      {data && map.nodes.length === 0 && <EmptyMap agents={map.agents} days={map.days} />}
+      {data && map.nodes.length === 0 && networks.length === 0 && <EmptyMap />}
 
-      {data && map.nodes.length > 0 && (
+      {data && (map.nodes.length > 0 || networks.length > 0) && (
         <>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <Stat label={plural(counts.routers, 'router')} value={counts.routers} />
-            <Stat label={plural(counts.switches, 'switch', 'switches')} value={counts.switches} />
-            <Stat label={plural(counts.cables, 'cable')} value={counts.cables} />
-            <Stat label={`${plural(counts.onPorts, 'device')} on switch ports`} value={counts.onPorts} />
-            {counts.noPort > 0 && <Stat label={`${plural(counts.noPort, 'device')} with no known port`} value={counts.noPort} tone="text-yellow-400"
-              title="Their router knows them, but no switch's MAC table placed them (e.g. a switch that keeps no table per VLAN)" />}
-            <span className="text-dark-500 ml-auto">
-              {map.agents.length} network agent{map.agents.length === 1 ? '' : 's'} · last {map.days} days
-            </span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="glass-card px-3 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="relative">
               <Search className="w-4 h-4 text-dark-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a device, IP or MAC"
-                className="input-field pl-9 text-sm w-64" aria-label="Find a device" />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a device, IP, MAC or network"
+                className="input-field pl-9 text-sm w-72" aria-label="Find a device or network" />
             </div>
-            {vlans.length > 0 && (
-              <select value={vlan} onChange={(e) => setVlan(e.target.value)} className="input-field text-sm w-40" aria-label="VLAN">
-                <option value="">All VLANs</option>
-                {vlans.map((v) => <option key={v} value={String(v)}>VLAN {v}</option>)}
-              </select>
-            )}
-            {expanded.size > 0 && (
-              <button onClick={() => setExpanded(new Set())} className="btn-secondary text-xs">Collapse device groups</button>
-            )}
-            {q && <span className="text-xs text-dark-400">{matches.size} match{matches.size === 1 ? '' : 'es'}</span>}
+            <div className="flex items-center gap-2" role="group" aria-label="Colour devices by">
+              <span className="text-xs text-dark-400">Colour by</span>
+              <div className="inline-flex rounded-lg border border-dark-700/80 overflow-hidden">
+                {COLOUR_MODES.map((m) => (
+                  <button key={m.id} type="button" onClick={() => setMode(m.id)} aria-pressed={mode === m.id}
+                    className={`px-3 py-1.5 text-xs border-l border-dark-700/80 first:border-l-0 ${mode === m.id
+                      ? 'bg-eagle-500 text-white font-semibold' : 'bg-dark-800 text-dark-300 hover:text-dark-50'}`}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <LineLegend />
           </div>
 
-          <div className="relative">
-            <MapCanvas layout={layout} selectedId={selected?.id} matches={matches} dimmed={dimmed} onClickNode={clickNode} />
-            {selected && <Details node={selected} map={map} onClose={() => setSelected(null)} onBlast={setBlastOf} />}
+          <div className="flex flex-wrap gap-5 items-start">
+            <div className="flex-[999_1_640px] min-w-0 space-y-4">
+              {shownNets.map((n) => (
+                <NetworkBand key={n.key} net={n} devices={netDevices.get(n.key)} mode={mode}
+                  open={openNets.has(n.key) || (!!q && !n.key.includes(q))} onToggle={toggleNet} selection={pick}
+                  onSelectNetwork={(x) => setPick({ type: 'network', key: x.key })}
+                  onSelectDevice={(x, d) => setPick({ type: 'device', key: x.key, asset_id: d.asset_id })} />
+              ))}
+              {q && shownNets.length === 0 && matches.size === 0 && <p className="text-sm text-dark-400">Nothing matches.</p>}
+
+              {map.nodes.length > 0 && (
+                <section className="space-y-3" aria-label="Routers and switches">
+                  <div>
+                    <h2 className="text-base font-semibold text-dark-50">Routers and switches</h2>
+                    <p className="text-xs text-dark-400">
+                      Read over SNMP by {map.agents.map((a) => a.name).join(', ') || 'your network agents'}: the cables between them
+                      and the switch port each device is plugged into.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <Stat label={plural(counts.routers, 'router')} value={counts.routers} />
+                    <Stat label={plural(counts.switches, 'switch', 'switches')} value={counts.switches} />
+                    <Stat label={plural(counts.cables, 'cable')} value={counts.cables} />
+                    <Stat label={`${plural(counts.onPorts, 'device')} on switch ports`} value={counts.onPorts} />
+                    {counts.noPort > 0 && <Stat label={`${plural(counts.noPort, 'device')} with no known port`} value={counts.noPort} tone="text-yellow-400"
+                      title="Their router knows them, but no switch's MAC table placed them (e.g. a switch that keeps no table per VLAN)" />}
+                    {vlans.length > 0 && (
+                      <select value={vlan} onChange={(e) => setVlan(e.target.value)} className="input-field text-xs w-36 ml-auto" aria-label="VLAN">
+                        <option value="">All VLANs</option>
+                        {vlans.map((v) => <option key={v} value={String(v)}>VLAN {v}</option>)}
+                      </select>
+                    )}
+                    {expanded.size > 0 && (
+                      <button onClick={() => setExpanded(new Set())} className="btn-secondary text-xs">Collapse device groups</button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <MapCanvas layout={layout} selectedId={selected?.id} matches={matches} dimmed={dimmed} onClickNode={clickNode} />
+                    {selected && <Details node={selected} map={map} onClose={() => setSelected(null)} onBlast={setBlastOf} />}
+                  </div>
+                  <Legend />
+                </section>
+              )}
+            </div>
+
+            <div className="flex-[1_1_300px] lg:max-w-sm lg:sticky lg:top-4">
+              {pickedDevice ? <DevicePanel net={pickedNet} device={pickedDevice} onClose={() => setPick(null)} onBlast={setBlastOf} />
+                : pickedNet ? <NetworkPanel net={pickedNet} open={openNets.has(pickedNet.key)} onToggle={toggleNet} onClose={() => setPick(null)} />
+                  : <Summary networks={networks} map={map} />}
+            </div>
           </div>
-          <Legend />
         </>
       )}
       {blastOf && <BlastRadiusModal assetId={blastOf} onClose={() => setBlastOf(null)} />}
+    </div>
+  )
+}
+
+function Summary({ networks, map }) {
+  const unwatched = networks.filter((n) => n.coverage === 'none').length
+  const devices = networks.reduce((s, n) => s + n.device_count, 0)
+  const infra = map.nodes.filter((n) => n.kind === 'router' || n.kind === 'switch').length
+  return (
+    <div className="glass-card p-4 space-y-3 text-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-dark-400">This tenant</p>
+      <dl className="space-y-1.5">
+        <div className="flex justify-between gap-3"><dt className="text-dark-400">Networks</dt><dd className="text-dark-50 font-semibold">{networks.length}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-dark-400">Devices on them</dt><dd className="text-dark-50 font-semibold">{devices.toLocaleString()}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-dark-400">Without a computer agent</dt>
+          <dd className={`font-semibold ${unwatched ? 'text-yellow-400' : 'text-dark-50'}`}>{unwatched}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-dark-400">Routers and switches</dt><dd className="text-dark-50 font-semibold">{infra}</dd></div>
+      </dl>
+      <p className="text-xs text-dark-400">Pick a network or a device to see who watches it and what is open on it.</p>
+    </div>
+  )
+}
+
+function LineLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 ml-auto text-xs text-dark-400">
+      <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-2 border-eagle-500" aria-hidden="true" />Measured cable</span>
+      <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-2 border-dashed border-dark-400" aria-hidden="true" />Seen by an agent</span>
+      <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-2 border-dotted border-dark-400" aria-hidden="true" />Route to the internet</span>
     </div>
   )
 }
@@ -174,29 +255,16 @@ function Stat({ label, value, tone = 'text-dark-50', title }) {
   )
 }
 
-function EmptyMap({ agents, days }) {
+function EmptyMap() {
   return (
     <div className="glass-card p-10 text-center space-y-3">
       <Share2 className="w-12 h-12 mx-auto text-dark-500" />
-      {agents.length === 0 ? (
-        <>
-          <p className="text-dark-100 font-medium">No network agent yet</p>
-          <p className="text-sm text-dark-400 max-w-xl mx-auto">
-            The map comes from a network agent reading your routers and switches over SNMP. Register one on the
-            Agents page, install it next to your network equipment (Docker or a Linux service), then set the devices it
-            starts from in its Settings.
-          </p>
-          <Link to="/agents" className="btn-primary inline-flex items-center gap-2 text-sm">Go to Agents</Link>
-        </>
-      ) : (
-        <>
-          <p className="text-dark-100 font-medium">Nothing measured in the last {days} days</p>
-          <p className="text-sm text-dark-400 max-w-xl mx-auto">
-            {agents.map((a) => a.name).join(', ')} {agents.length === 1 ? 'has' : 'have'} not sent a crawl yet. Check that
-            its Settings give the routers or switches to start from, then use Run now on the Agents page.
-          </p>
-        </>
-      )}
+      <p className="text-dark-100 font-medium">No network seen yet</p>
+      <p className="text-sm text-dark-400 max-w-xl mx-auto">
+        The map shows the networks your agents are on. Install the agent on a computer (it reports the network it is on
+        and the devices it hears), or a network agent next to your routers and switches to add the cables and switch ports.
+      </p>
+      <Link to="/agents" className="btn-primary inline-flex items-center gap-2 text-sm">Go to Agents</Link>
     </div>
   )
 }
