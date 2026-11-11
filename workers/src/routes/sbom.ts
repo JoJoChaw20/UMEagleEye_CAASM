@@ -239,8 +239,8 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 })
 
 // ── GET /computers ───────────────────────────────────────────────
-// The SBOM page's main list: one row per computer, i.e. every asset with an agent bound to
-// it plus any other asset that has an SBOM. Computers with an agent but no SBOM are
+// The SBOM page's main list: one row per computer, i.e. every asset with a computer's agent
+// (kind host: a phone's app and the network agent build no SBOM) plus any other asset that has an SBOM. Computers with an agent but no SBOM are
 // listed too (coverage). Each row carries its SBOM summary, its open CVE alerts and its
 // latest SBOM job. Query: tenant_id (superadmin). Defined BEFORE /:sbomId.
 app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
@@ -254,7 +254,7 @@ app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => 
     const result = await db.execute(sql`
       WITH comp AS (
         SELECT g.host_asset_id AS asset_id FROM agents g JOIN assets a ON a.asset_id = g.host_asset_id
-          WHERE g.retired_at IS NULL AND ${inTenant}
+          WHERE g.retired_at IS NULL AND g.kind = 'host' AND ${inTenant}
         UNION
         SELECT s.asset_id FROM sboms s JOIN assets a ON a.asset_id = s.asset_id WHERE ${inTenant}
       )
@@ -272,7 +272,7 @@ app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => 
       FROM comp JOIN assets a ON a.asset_id = comp.asset_id
       LEFT JOIN LATERAL (
         SELECT g.agent_id, g.name, g.status, g.version, g.last_heartbeat FROM agents g
-        WHERE g.host_asset_id = a.asset_id AND g.retired_at IS NULL
+        WHERE g.host_asset_id = a.asset_id AND g.retired_at IS NULL AND g.kind = 'host'
         ORDER BY g.last_heartbeat DESC NULLS LAST LIMIT 1
       ) ag ON true
       LEFT JOIN LATERAL (
