@@ -616,7 +616,11 @@ app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
       return c.json({ detail: 'Asset not found' }, 404)
     }
 
-    return c.json(asset)
+    // The EagleEye agents running on this machine (a network agent sends no inventory, so this is
+    // how its machine shows it).
+    const agentsHere = await db.select({ agent_id: agents.agentId, name: agents.name, kind: agents.kind })
+      .from(agents).where(and(eq(agents.hostAssetId, assetId), isNull(agents.retiredAt)))
+    return c.json({ ...asset, agents_here: agentsHere })
   } catch (err) {
     console.error('assets GET /:assetId error:', err)
     return c.json({ detail: 'Failed to fetch asset' }, 500)

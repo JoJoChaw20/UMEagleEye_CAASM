@@ -48,6 +48,9 @@ export const topologySchema = z.object({
     unreachable: z.array(z.object({ address: z.string().max(45), error: z.string().max(300) })).max(500).optional(),
     skipped: z.number().int().optional(),
   }).optional(),
+  // The machine the agent runs on, as its routers see it (lib/networkAgentHost.ts). Lenient: a bad
+  // value is dropped there, never a reason to refuse the crawl.
+  self: z.unknown().optional(),
 })
 
 export interface LinkEnd { device: string; port: string }

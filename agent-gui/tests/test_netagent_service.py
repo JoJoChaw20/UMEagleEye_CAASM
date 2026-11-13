@@ -131,11 +131,39 @@ class FakeClient:
         self.running.append(scan_id)
 
 
-def make(tmp_path, now, **kw):
+VM = {"ip": "10.99.0.20", "mac": "00:0c:29:aa:bb:cc", "hostname": "netvm"}
+
+
+def make(tmp_path, now, whoami=lambda seed: VM, **kw):
     client = FakeClient()
     svc = NetworkAgentService(settings(**kw), client=client, policy_path=tmp_path / "policy.json",
-                              state_path=tmp_path / "state.json", open_session=lab_session, clock=lambda: now[0])
+                              state_path=tmp_path / "state.json", open_session=lab_session, clock=lambda: now[0],
+                              whoami=whoami)
     return svc, client
+
+
+def test_the_topology_upload_says_which_machine_it_runs_on(tmp_path):
+    now, asked = [10_000.0], []
+
+    def whoami(router):
+        asked.append(router)
+        return VM
+    svc, client = make(tmp_path, now, whoami=whoami)
+    svc.poll_once()
+    assert client.topologies[-1]["self"] == VM
+    assert asked == ["10.99.0.1"]                                                # toward the router that answered
+    svc._heartbeat()
+    assert "self" not in client.reports[-1]                                      # the heartbeat does not say it
+
+
+def test_a_failed_lookup_only_leaves_self_out(tmp_path):
+    now = [10_000.0]
+
+    def broken(router):
+        raise OSError("no route")
+    svc, client = make(tmp_path, now, whoami=broken)
+    svc.poll_once()
+    assert "self" not in client.topologies[-1] and len(client.topologies[-1]["links"]) == 2
 
 
 def test_it_crawls_on_time_and_uploads_both_parts(tmp_path):

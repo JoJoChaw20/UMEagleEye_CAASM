@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, RefreshCw, Network, Radio, ScanLine, ChevronRight, Wifi, AlertTriangle } from 'lucide-react'
+import { Plus, RefreshCw, Network, Radio, ScanLine, ChevronRight, Wifi, AlertTriangle, Router } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
@@ -10,8 +10,8 @@ import NewScanModal from '../components/discovery/NewScanModal'
 import { KIND_LABEL, KIND_HINT, crawlSummary } from '../components/discovery/discoveryMeta'
 
 // Asset Discovery: the networks the agents have been on (and whether each has been
-// fully scanned), the history of every scan, and an active-vs-passive comparison.
-// Server: GET /scans/networks, GET /scans (paged), GET /scans/:id/hosts.
+// fully scanned), each network agent's crawls once (with the networks they reached), and
+// the history of every scan. Server: GET /scans/networks, GET /scans (paged), GET /scans/:id/hosts.
 
 const PAGE_SIZE = 25
 const QUIET_MINUTES = 15       // passive records arrive about every 5 min while an agent is on the network
@@ -33,23 +33,35 @@ const COVERAGE = {
   covered: ['Covered', 'border-green-500/30 bg-green-500/10 text-green-400', 'An agent listens and an agent scans here'],
   scan_only: ['Scan only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'No agent listens here: new devices are noticed only by scans. Turn on the Sensor role of an agent on it.'],
   listen_only: ['Listen only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'No agent here runs scans: turn on the Scanner role of an agent on it.'],
-  no_agent: ['No agent', 'border-red-500/30 bg-red-500/10 text-red-400', 'No online agent is on this network: install one on a computer here.'],
+  offline: ['Agents offline', 'border-red-500/30 bg-red-500/10 text-red-400', 'The agents on this network have not checked in for over 10 minutes: check that the computer is on and the agent is running.'],
+  no_agent: ['No agent', 'border-red-500/30 bg-red-500/10 text-red-400', 'No agent is on this network: install one on a computer here.'],
 }
 
-const CRAWLED_ONLY = ['Network agent only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400',
-  'A network agent reads this network from its routers and switches (every 15 minutes): devices appear from their ARP tables. No agent here listens or runs port scans.']
+// No computer agent on it, but a network agent reads its routers: devices still appear, nothing listens or port-scans
+const ROUTERS_ONLY = ['No computer agent', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400',
+  'No computer agent is on this network, so nothing listens to it or port-scans it. A network agent reads it from its routers and switches every 15 minutes: devices appear from their ARP tables.']
 
 function Coverage({ n, agentName }) {
   const c = n.coverage
   if (!c) return null
-  // No computer agent on it, but a network agent reads its routers: not uncovered
-  const [label, cls, help] = c.state === 'no_agent' && n.last_crawl ? CRAWLED_ONLY : COVERAGE[c.state] ?? COVERAGE.no_agent
-  const names = (list) => list.map((a) => a.name || agentName(a.agent_id)).join(', ')
+  const [label, cls, help] = c.state === 'no_agent' && n.mapped_by?.length ? ROUTERS_ONLY : COVERAGE[c.state] ?? COVERAGE.no_agent
+  const names = (list) => list.map((a) => `${a.name || agentName(a.agent_id)}${a.late ? ' (late)' : ''}`).join(', ')
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
       <span title={help} className={`px-2 py-0.5 rounded-full border ${cls}`}>{label}</span>
+      {c.late && (
+        <span className="px-2 py-0.5 rounded-full border border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+          title="Its agents last checked in 2 to 10 minutes ago (a paused VM, a sleeping laptop). They still count; after 10 minutes they are offline.">
+          Reporting late
+        </span>
+      )}
       {c.sensors.length > 0 && <span className="text-dark-300">Listening: {names(c.sensors)}</span>}
       {c.scanners.length > 0 && <span className="text-dark-300">Scans: {names(c.scanners)}</span>}
+      {c.offline?.length > 0 && (
+        <span className="text-dark-400">
+          Not checking in: {c.offline.map((a) => `${a.name}${a.last_heartbeat ? ` (${ago(a.last_heartbeat)})` : ''}`).join(', ')}
+        </span>
+      )}
       {c.duplicate_sensors && (
         <span className="text-dark-400" title="Each sensor uploads what it hears; one is enough per network">
           {c.sensors.length} agents listen here: one can stop (Agents page, Sensor role)
@@ -65,7 +77,10 @@ function Coverage({ n, agentName }) {
 }
 
 function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
-  const listening = n.last_heard_at && (Date.now() - new Date(n.last_heard_at).getTime()) < QUIET_MINUTES * 60000
+  // Listening now: heard lately AND a listening agent is checking in on time (its last upload can
+  // be minutes old while the agent itself has stopped)
+  const heardLately = n.last_heard_at && (Date.now() - new Date(n.last_heard_at).getTime()) < QUIET_MINUTES * 60000
+  const listening = heardLately && (!n.coverage || n.coverage.sensors.some((s) => !s.late))
   return (
     <div className="glass-card p-4 space-y-3">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -82,9 +97,9 @@ function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
             <span className={`w-1.5 h-1.5 rounded-full ${listening ? 'bg-green-400 animate-pulse' : 'bg-dark-500'}`} />
             {listening ? 'Agent listening now' : n.last_heard_at ? `Last heard ${ago(n.last_heard_at)}` : 'Not heard passively'}
           </span>
-          {n.last_crawl && (
-            <span className="text-xs text-dark-400" title="The last crawl of its routers and switches by a network agent">
-              Read by {agentName(n.last_crawl.agent_id)} · {ago(n.last_crawl.at)} · {n.last_crawl.devices} device{n.last_crawl.devices === 1 ? '' : 's'}
+          {n.mapped_by?.length > 0 && (
+            <span className="text-xs text-dark-400" title="A network agent also reads this network from its routers (its card below)">
+              Also mapped by {n.mapped_by.map(agentName).join(', ')}
             </span>
           )}
         </div>
@@ -130,6 +145,89 @@ function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
   )
 }
 
+const routerCount = (n) => `${n} router${n === 1 ? '' : 's'} and switch${n === 1 ? '' : 'es'}`
+
+// One network agent: its crawls once, with the networks they reached. A network a computer
+// agent is also on keeps its own card (named here); the others are rows in this card.
+function CrawlCard({ c, netsBySubnet, agentName, canScan, onScan, onHosts, onHistory }) {
+  const reached = c.subnets.map((s) => netsBySubnet.get(s.subnet)
+    ?? { subnet: s.subnet, gateway: s.gateway, hosts_24h: 0, new_devices: 0, last_full_scan: null, crawl_only: true })
+  const rows = reached.filter((n) => n.crawl_only)
+  const ownCards = reached.filter((n) => !n.crawl_only)
+  const last = c.last_crawl
+  const failed = c.latest.status === 'failed'
+  return (
+    <div className="glass-card p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-base text-dark-50 inline-flex items-center gap-2">
+            <Router className="w-4 h-4 text-eagle-400" /> Network agent · {agentName(c.agent_id)}
+          </h3>
+          <p className="text-xs text-dark-400 mt-0.5 max-w-xl">
+            Reads the routers and switches; the devices on the networks below come from their ARP tables. No port scans.
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1 text-xs">
+          {last
+            ? (
+              <span className="text-dark-200" title={new Date(last.at).toLocaleString()}>
+                Last crawl {ago(last.at)} · {routerCount(last.devices)} · {last.links} link{last.links === 1 ? '' : 's'}
+              </span>
+            )
+            : <span className="text-amber-400">No completed crawl yet</span>}
+          {failed && <span className="text-red-400">Latest crawl failed {ago(c.latest.at)}</span>}
+          <span className="text-dark-400">{c.subnets.length} network{c.subnets.length === 1 ? '' : 's'} reached</span>
+        </div>
+      </div>
+
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr><th>Network</th><th>Gateway</th><th>Hosts seen (24 h)</th><th>New devices</th><th>Last full scan</th><th className="w-px" /></tr>
+            </thead>
+            <tbody>
+              {rows.map((n) => (
+                <tr key={n.subnet}>
+                  <td className="font-mono text-xs text-dark-50">{n.subnet}</td>
+                  <td className="font-mono text-xs text-dark-300">{n.gateway ?? '—'}</td>
+                  <td className="text-xs text-dark-100">{n.hosts_24h}</td>
+                  <td className="text-xs">
+                    {n.new_devices > 0
+                      ? <Link to="/alerts?view=new_devices" className="text-amber-400 hover:underline">{n.new_devices} to review</Link>
+                      : <span className="text-dark-100">0</span>}
+                  </td>
+                  <td className={`text-xs ${n.last_full_scan ? 'text-dark-100' : 'text-amber-400'}`}>
+                    {n.last_full_scan ? <>{ago(n.last_full_scan.at)} · {n.last_full_scan.hosts} hosts</> : 'Never'}
+                  </td>
+                  <td>
+                    {canScan && (
+                      <button onClick={() => onScan(n.subnet)} title="A full scan by a computer agent that can reach this network"
+                        className="btn-secondary text-xs py-1 px-2.5 inline-flex items-center gap-1.5 whitespace-nowrap">
+                        <Wifi className="w-3.5 h-3.5" /> Scan
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {ownCards.length > 0 && (
+        <p className="text-xs text-dark-400">
+          Also reached {ownCards.map((n) => n.subnet).join(', ')}, which {ownCards.length === 1 ? 'has its own card' : 'have their own cards'} above: a computer agent is on {ownCards.length === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-2 justify-end">
+        <button onClick={onHistory} className="btn-secondary text-xs py-1 px-2.5">Crawl history</button>
+        {last && <button onClick={onHosts} className="btn-secondary text-xs py-1 px-2.5">Latest crawl</button>}
+      </div>
+    </div>
+  )
+}
+
 export default function DiscoveryPage() {
   const { user } = useAuth()
   const isSuperadmin = user?.role === 'superadmin'
@@ -139,6 +237,7 @@ export default function DiscoveryPage() {
   const [tenantFilter, setTenantFilter] = useState('')
   const [agents, setAgents] = useState([])
   const [networks, setNetworks] = useState(null)
+  const [crawls, setCrawls] = useState([])
   const [networkDays, setNetworkDays] = useState(30)
   const [scans, setScans] = useState(null)
   const [total, setTotal] = useState(0)
@@ -161,6 +260,7 @@ export default function DiscoveryPage() {
     ])
     setAgents((agentsRes.data.agents || []).filter((a) => a.status !== 'retired' && (!tenantFilter || a.tenant_id === tenantFilter)))
     setNetworks(netRes.data.networks || [])
+    setCrawls(netRes.data.crawls || [])
     setNetworkDays(netRes.data.days ?? 30)
   }, [tParams, tenantFilter])
 
@@ -206,6 +306,10 @@ export default function DiscoveryPage() {
   }
 
   const showHistory = (subnet) => { setNetworkFilter(subnet); setKind(''); setStatus(''); setPage(1); setTab('history') }
+  const showCrawls = () => { setNetworkFilter(''); setKind('snmp'); setStatus(''); setPage(1); setTab('history') }
+  const netsBySubnet = useMemo(() => new Map((networks ?? []).map((n) => [n.subnet, n])), [networks])
+  // Networks known only from crawls are rows in their network agent's card
+  const ownNetworks = (networks ?? []).filter((n) => !n.crawl_only)
   const clearFilters = () => { setKind(''); setStatus(''); setNetworkFilter(''); setPage(1) }
   const hasFilters = kind || status || networkFilter
   const neverScanned = (networks ?? []).filter((n) => !n.last_full_scan).length
@@ -254,11 +358,17 @@ export default function DiscoveryPage() {
               Networks seen in the last {networkDays} days, most recent first.
               {neverScanned > 0 && <span className="text-amber-400"> {neverScanned} never had a full scan.</span>}
             </p>
-            {networks.map((n) => (
+            {ownNetworks.map((n) => (
               <NetworkCard key={n.subnet} n={n} agentName={agentName} canScan={canScan}
                 onScan={() => setNewScan({ subnet: n.subnet, agentId: 'auto' })}
                 onHosts={() => setHostsOf({ scanId: n.last_heard_scan_id, agentName: agentName(n.latest_agent_id) })}
                 onHistory={() => showHistory(n.subnet)} />
+            ))}
+            {crawls.map((c) => (
+              <CrawlCard key={c.agent_id ?? 'unknown'} c={c} netsBySubnet={netsBySubnet} agentName={agentName} canScan={canScan}
+                onScan={(subnet) => setNewScan({ subnet, agentId: 'auto' })}
+                onHosts={() => setHostsOf({ scanId: c.last_crawl.scan_id, agentName: agentName(c.agent_id) })}
+                onHistory={showCrawls} />
             ))}
           </div>
         )
@@ -313,7 +423,13 @@ export default function DiscoveryPage() {
                             {s.kind === 'snmp' ? (crawlSummary(s) ?? '—') : s.kind === 'passive' ? '—' : s.subnet}
                           </td>
                           <td className="font-mono text-xs text-dark-300">
-                            {s.network ?? <span className="text-dark-500" title={s.kind === 'snmp' ? 'A crawl reads every network its routers know' : undefined}>{s.kind === 'snmp' ? 'all it reached' : 'unknown'}</span>}
+                            {s.kind === 'snmp'
+                              ? (
+                                <span className="text-dark-400 font-sans" title={(s.networks_reached ?? []).join(', ') || 'A crawl reads every network its routers know'}>
+                                  {s.networks_reached?.length ? `${s.networks_reached.length} network${s.networks_reached.length === 1 ? '' : 's'}` : 'all it reached'}
+                                </span>
+                              )
+                              : s.network ?? <span className="text-dark-500">unknown</span>}
                           </td>
                           <td className="text-xs text-dark-300">{agentName(s.agentId)}</td>
                           <td>

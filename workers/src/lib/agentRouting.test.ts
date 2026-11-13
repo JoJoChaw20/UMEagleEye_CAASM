@@ -76,5 +76,21 @@ test('coverage of a network', () => {
   const c = coverageOf('192.168.36.0/24', [sensor, both, away])!
   assert.deepEqual([c.state, c.duplicate_sensors, c.scanners.map((s) => s.agent_id)], ['covered', true, ['b']])
   assert.equal(coverageOf('172.16.0.0/24', [sensor])!.state, 'no_agent')
-  assert.equal(coverageOf('192.168.36.0/24', [agent({ networks: nets, passive: true, online: false })])!.state, 'no_agent')
+  // on it but not checking in: not the same as no agent at all
+  const gone = coverageOf('192.168.36.0/24', [agent({ name: 'ubuntu', networks: nets, passive: true, online: false })])!
+  assert.equal(gone.state, 'offline')
+  assert.deepEqual(gone.offline.map((o) => o.name), ['ubuntu'])
+})
+
+test('an agent reporting late still covers its network; the card says it is late', () => {
+  const nets = ['192.168.36.0/24']
+  const late = agent({ agent_id: 'u', name: 'ubuntu', networks: nets, passive: true, online: false, liveness: 'degraded' })
+  const c = coverageOf('192.168.36.0/24', [late])!
+  assert.equal(c.state, 'covered')
+  assert.equal(c.late, true)
+  assert.deepEqual(c.sensors, [{ agent_id: 'u', name: 'ubuntu', late: true }])
+  const mixed = coverageOf('192.168.36.0/24', [late, agent({ agent_id: 'w', name: 'win', networks: nets, passive: true })])!
+  assert.equal(mixed.late, false, 'one agent on time: the network is not late')
+  // a scan still goes only to an online agent
+  assert.equal(chooseAgent('192.168.36.0/24', [late]).agent_id, null)
 })

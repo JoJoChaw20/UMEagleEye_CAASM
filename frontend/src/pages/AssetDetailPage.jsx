@@ -337,6 +337,13 @@ export default function AssetDetailPage() {
                     Agent installed
                   </span>
                 )}
+                {(asset.agents_here ?? []).filter((g) => g.kind === 'network').map((g) => (
+                  <Link key={g.agent_id} to="/agents"
+                    className="text-xs px-2 py-0.5 rounded-md border font-medium bg-eagle-500/10 text-eagle-400 border-eagle-500/30 hover:underline"
+                    title="The EagleEye network agent runs on this machine: it reads the routers and switches">
+                    Runs network agent {g.name}
+                  </Link>
+                ))}
                 <span className={`text-xs ${lastSeen.stale ? 'text-amber-400' : 'text-dark-400'}`} title={lastSeen.title || ''}>Last seen {lastSeen.text}</span>
               </div>
             </div>

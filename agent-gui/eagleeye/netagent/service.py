@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .. import policy
+from .. import netinfo, policy
 from ..api import AgentClient
 from ..config import Settings
 from ..schedule import ScheduleState
@@ -31,6 +32,17 @@ from .upload import ingest_hosts, topology_payload
 log = logging.getLogger("eagleeye.netagent")
 KIND = "network"
 JOB = "network"                                 # ScheduleState job name: when the last crawl started
+
+
+def own_address(seed: Optional[str]) -> Optional[dict[str, Any]]:
+    """This machine as its first router sees it: the address it reaches the seed from, that
+    adapter's MAC, and its name. The server links the agent to its asset with them (a network
+    agent sends no inventory). In a container this is the container's address, which matches
+    no device, so nothing is linked."""
+    ip = netinfo.source_ip_for(seed)
+    if not ip or ip.startswith("127."):
+        return None
+    return {"ip": ip, "mac": netinfo.own_mac(ip), "hostname": socket.gethostname() or None}
 
 
 def credentials_of(settings: Settings) -> Credentials:
@@ -45,7 +57,8 @@ class NetworkAgentService:
                  on_event: Optional[Callable[[Any], None]] = None, policy_path: Optional[Path] = None,
                  state_path: Optional[Path] = None, open_session: Optional[Callable[[str], Any]] = None,
                  vendor: Optional[Callable[[Optional[str]], Optional[str]]] = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 whoami: Callable[[Optional[str]], Optional[dict[str, Any]]] = own_address) -> None:
         self.local_settings = settings
         self.policy_store = policy.PolicyStore(policy_path, kind=KIND, agent_id=settings.agent_id)
         self.applied_policy_version, self.managed = self.policy_store.load()
@@ -56,6 +69,7 @@ class NetworkAgentService:
         self._open_session = open_session
         self._vendor = vendor
         self._clock = clock
+        self._whoami = whoami
         self._stop, self._wake = threading.Event(), threading.Event()
         self.last_heartbeat_at: Optional[datetime] = None
         self.last_heartbeat_ok: Optional[bool] = None
@@ -81,6 +95,15 @@ class NetworkAgentService:
         if self.applied_policy_version:
             report["policy_version"] = self.applied_policy_version
         return report
+
+    def _own_address(self, router: Optional[str]) -> Optional[dict[str, Any]]:
+        """own_address toward a router that has just answered: the route the crawl used is up
+        then (asked at another time, Windows may pick another adapter). A failure leaves it out."""
+        try:
+            return self._whoami(router) if router else None
+        except Exception as exc:  # noqa: BLE001 - the upload must go on
+            log.debug("Own address not found: %s", exc)
+            return None
 
     def _heartbeat(self) -> None:
         try:
@@ -184,7 +207,11 @@ class NetworkAgentService:
         if not ingest.ok:
             failed(ingest.error or "the server did not take the addresses")
             return result
-        ok, detail = self.client.send_topology(topology_payload(result, ingest.scan_id or scan_id))
+        topology = topology_payload(result, ingest.scan_id or scan_id)
+        me = self._own_address(result.devices[0].address)
+        if me:
+            topology["self"] = me                # the server links this agent to its machine's asset
+        ok, detail = self.client.send_topology(topology)
         if not ok:
             log.warning("Topology not stored: %s", detail)
         log.info("Crawl: %d device(s), %d link(s), %d address(es) in %.1fs (%d requests); %s",

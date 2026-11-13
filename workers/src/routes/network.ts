@@ -16,9 +16,11 @@ import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
 import { getDb } from '../db/client'
-import { agents, assetAddresses, assets, auditLogs, networkLinks, scanResults } from '../db/schema'
+import { agents, assetAddresses, assetIdentifiers, assets, auditLogs, networkLinks, scanResults } from '../db/schema'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
+import { cleanSelf, pickHostAsset } from '../lib/networkAgentHost'
+import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { MAP_DAYS, loadMapNetworks, loadNetworkMap } from '../services/networkMap'
 import { normalizeMac } from '../lib/mac'
 import {
@@ -75,6 +77,37 @@ async function assetRefs(db: Db, tenantId: string, ips: string[], macs: string[]
     refs.push(...addrs, ...own)
   }
   return refs
+}
+
+/**
+ * Links a network agent to the asset it runs on (lib/networkAgentHost.ts), from what its crawl
+ * upload said about itself. Its MAC is kept as the agent's own identifier (scan ingest rule 1-agent
+ * then knows the machine by it) and its name fills an empty hostname; an agent's machine is a
+ * managed device, so its new-device alert closes.
+ */
+async function bindOwnMachine(db: Db, agent: typeof agents.$inferSelect, tenantId: string, raw: unknown, now: Date): Promise<void> {
+  const self = cleanSelf(raw)
+  if (!self) return
+  const refs = await assetRefs(db, tenantId, self.ip ? [self.ip] : [], self.mac ? [self.mac] : [])
+  const ids = [...new Set(refs.map((r) => r.assetId))]
+  if (!ids.length) return
+  const polled = new Set((await db.select({ assetId: assets.assetId }).from(assets)
+    .where(and(inArray(assets.assetId, ids), sql`${assets.networkDevice} IS NOT NULL`))).map((r) => r.assetId))
+  const assetId = pickHostAsset(self, refs.map((r) => ({ ...r, networkDevice: polled.has(r.assetId) })))
+  if (!assetId) return
+  const statements = [
+    ...(assetId !== agent.hostAssetId ? [db.update(agents).set({ hostAssetId: assetId }).where(eq(agents.agentId, agent.agentId))] : []),
+    ...(self.hostname ? [db.update(assets).set({ hostname: self.hostname })
+      .where(and(eq(assets.assetId, assetId), sql`NULLIF(trim(${assets.hostname}), '') IS NULL`))] : []),
+    ...(self.mac ? [db.insert(assetIdentifiers)
+      .values({ assetId, tenantId, kind: 'mac', value: self.mac, source: 'agent', firstSeen: now, lastSeen: now })
+      .onConflictDoUpdate({ target: [assetIdentifiers.assetId, assetIdentifiers.kind, assetIdentifiers.value], set: { lastSeen: now } })] : []),
+  ]
+  if (statements.length) await db.batch(statements as [typeof statements[0], ...typeof statements])
+  if (assetId !== agent.hostAssetId) {
+    await closeReviewedNewDevices(db, { assetIds: [assetId] })
+    console.log(`[network] ${agent.name}: runs on asset ${assetId}`)
+  }
 }
 
 // ── POST /topology ── the network agent's devices, cables and locations ───────
@@ -153,6 +186,13 @@ app.post('/topology', zValidator('json', topologySchema, (result, c) => {
         UPDATE assets AS a SET network_location = v.loc
         FROM (VALUES ${values}) AS v(id, loc)
         WHERE a.asset_id = v.id AND a.tenant_id = ${tenantId}`)
+    }
+
+    // The machine this agent runs on, now that the crawl has put it on the inventory.
+    try {
+      await bindOwnMachine(db, agent, tenantId, body.self, seenAt)
+    } catch (err) {
+      console.error('network POST /topology: linking the agent to its machine failed:', err)
     }
 
     // The crawl's numbers on its Discovery record (only the agent's own record).

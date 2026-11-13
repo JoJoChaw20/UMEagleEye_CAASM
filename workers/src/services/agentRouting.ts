@@ -6,12 +6,16 @@ import type { getDb } from '../db/client'
 import { agents, scanResults } from '../db/schema'
 import type { RouteAgent } from '../lib/agentRouting'
 import { policyOf, reportedOf, tenantPolicies } from './agentPolicy'
+import { agentLiveness } from '../lib/agentLiveness'
 
 type Db = ReturnType<typeof getDb>
 const ONLINE_MS = 2 * 60_000
 
+// A network agent is left out: it runs no scans (it refuses them) and listens to no network,
+// so it neither takes a scan nor covers a network here (Discovery shows its crawls apart).
 export async function routeAgents(db: Db, tenantId: string): Promise<RouteAgent[]> {
-  const rows = await db.select().from(agents).where(and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt)))
+  const rows = await db.select().from(agents).where(and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt),
+    sql`${agents.kind} IS DISTINCT FROM 'network'`))
   if (!rows.length) return []
   const tenant = (await tenantPolicies(db, [tenantId])).get(tenantId) ?? null
   const queued = await db.select({ agentId: scanResults.agentId })
@@ -31,6 +35,7 @@ export async function routeAgents(db: Db, tenantId: string): Promise<RouteAgent[
       agent_id: a.agentId,
       name: a.name,
       online: !!a.lastHeartbeat && now - new Date(a.lastHeartbeat).getTime() < ONLINE_MS,
+      liveness: agentLiveness(a.lastHeartbeat, a.kind, now),
       scanner: typeof effective.scanner === 'boolean' ? effective.scanner : null,
       passive: typeof effective.passive === 'boolean' ? effective.passive : null,
       networks: Array.isArray(reported.networks) ? reported.networks.filter((n): n is string => typeof n === 'string') : [],

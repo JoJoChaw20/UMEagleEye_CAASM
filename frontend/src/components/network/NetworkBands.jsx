@@ -163,7 +163,7 @@ function DeviceRow({ d, mode, port, selected, match, onSelect }) {
       <span className="min-w-0 flex-1">
         <span className="block text-xs font-semibold text-dark-50 truncate">{d.label}</span>
         <span className="block text-[10.5px] text-dark-400 truncate">
-          <span className="font-mono">{d.ip}</span>{look.line ? ` · ${look.line}` : d.agent === 'host' ? ' · its own agent' : ''}
+          <span className="font-mono">{d.ip}</span>{look.line ? ` · ${look.line}` : d.agent === 'host' ? ' · its own agent' : d.agent === 'network' ? ' · runs the network agent' : ''}
         </span>
       </span>
       {port && <span className="font-mono text-[10.5px] text-dark-400 flex-shrink-0">{port}</span>}
@@ -340,7 +340,8 @@ export function DevicePanel({ net, device: d, onClose, onBlast }) {
       <dl className="text-sm space-y-2">
         <Row k="Address"><span className="font-mono">{d.ip ?? '—'}</span>{d.mac && <span className="block font-mono text-xs text-dark-400 lowercase">{d.mac}</span>}</Row>
         <Row k="Network"><span className={net.title ? '' : 'font-mono'}>{net.title ?? net.key}</span>{net.gateway && <span className="text-dark-400"> via {net.gateway.ip}</span>}</Row>
-        <Row k="Agent">{d.agent === 'host' ? 'Its own agent (inventory and SBOM)' : d.agent === 'mobile' ? 'The EagleEye phone app' : 'None: seen on the network'}</Row>
+        <Row k="Agent">{d.agent === 'host' ? 'Its own agent (inventory and SBOM)' : d.agent === 'mobile' ? 'The EagleEye phone app'
+          : d.agent === 'network' ? 'Runs the network agent (reads the routers and switches)' : 'None: seen on the network'}</Row>
         <Row k="Open CVEs">{a.cve_open > 0
           ? <><b className="text-red-400">{fmt(a.cve_open)}</b><span className="text-dark-400">{a.cve_critical > 0 && `, ${fmt(a.cve_critical)} critical`}{a.kev > 0 && `, ${fmt(a.kev)} known exploited`}</span></>
           : d.agent === 'host' ? 'None' : 'Not checked (no SBOM)'}</Row>

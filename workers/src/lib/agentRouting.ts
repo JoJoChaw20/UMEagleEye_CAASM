@@ -13,6 +13,9 @@ export interface RouteAgent {
   agent_id: string
   name: string
   online: boolean              // heartbeat in the last 2 minutes
+  // the Agents page's rule (lib/agentLiveness.ts): 'degraded' = reporting late (2 to 10 minutes);
+  // coverage counts a late agent, scans go only to an online one. Absent: from `online`.
+  liveness?: 'online' | 'degraded' | 'offline'
   scanner: boolean | null      // effective policy; null = not reported (runs dashboard scans)
   passive: boolean | null
   networks: string[]           // reported by the agent (2.5.1+)
@@ -110,25 +113,40 @@ export function chooseAgent(target: string, agents: RouteAgent[]): RouteDecision
   }
 }
 
-export type CoverageState = 'covered' | 'scan_only' | 'listen_only' | 'no_agent'
+// 'offline': agents are on it, but none has checked in for over 10 minutes (not the same as none).
+export type CoverageState = 'covered' | 'scan_only' | 'listen_only' | 'offline' | 'no_agent'
+export interface AgentBrief { agent_id: string; name: string; late: boolean }
 export interface NetworkCoverage {
   state: CoverageState
-  sensors: { agent_id: string; name: string }[]     // online, passive listening, on the network
-  scanners: { agent_id: string; name: string }[]    // online, Scanner role, on the network
+  sensors: AgentBrief[]                               // online or late, passive listening, on the network
+  scanners: AgentBrief[]                              // online or late, Scanner role, on the network
   duplicate_sensors: boolean                          // more than one sensor: one can stop listening
+  late: boolean                                       // every agent counted is reporting late
+  offline: { agent_id: string; name: string; last_heartbeat: string | null }[]   // on it, not checking in
 }
 
-/** How a network is covered by the online agents on it. */
+const livenessOf = (a: RouteAgent) => a.liveness ?? (a.online ? 'online' : 'offline')
+
+/**
+ * How a network is covered by the agents on it. An agent reporting late still counts (a VM that
+ * paused for a few minutes does not make its network "No agent"); one offline is listed apart.
+ */
 export function coverageOf(network: string, agents: RouteAgent[]): NetworkCoverage | null {
   const n = parseCidr(network)
   if (!n) return null
-  const onIt = agents.filter((a) => a.online && agentNetworks(a).nets.some((net) => contains(net, n) || contains(n, net)))
-  const brief = (a: RouteAgent) => ({ agent_id: a.agent_id, name: a.name })
-  const sensors = onIt.filter((a) => a.passive === true).map(brief)
-  const scanners = onIt.filter((a) => a.scanner !== false).map(brief)
+  const onIt = agents.filter((a) => agentNetworks(a).nets.some((net) => contains(net, n) || contains(n, net)))
+  const counted = onIt.filter((a) => livenessOf(a) !== 'offline')
+  const brief = (a: RouteAgent): AgentBrief => ({ agent_id: a.agent_id, name: a.name, late: livenessOf(a) === 'degraded' })
+  const sensors = counted.filter((a) => a.passive === true).map(brief)
+  const scanners = counted.filter((a) => a.scanner !== false).map(brief)
   const state: CoverageState = sensors.length && scanners.length ? 'covered' : scanners.length ? 'scan_only'
-    : sensors.length ? 'listen_only' : 'no_agent'
-  return { state, sensors, scanners, duplicate_sensors: sensors.length > 1 }
+    : sensors.length ? 'listen_only' : onIt.length ? 'offline' : 'no_agent'
+  return {
+    state, sensors, scanners, duplicate_sensors: sensors.length > 1,
+    late: counted.length > 0 && counted.every((a) => livenessOf(a) === 'degraded'),
+    offline: onIt.filter((a) => livenessOf(a) === 'offline')
+      .map((a) => ({ agent_id: a.agent_id, name: a.name, last_heartbeat: a.last_heartbeat })),
+  }
 }
 
 /** How many of these addresses are in the network. */

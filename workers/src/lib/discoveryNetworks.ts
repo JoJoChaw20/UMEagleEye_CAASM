@@ -103,6 +103,7 @@ export interface NetworkRecord extends ScanRecordFacts {
 export interface NetworkSummary {
   subnet: string
   gateway: string | null
+  /** Computer agents with records on it (a network agent's crawl is in mapped_by) */
   agent_ids: string[]
   /** Last passive upload heard on it, and that record (its hosts) */
   last_heard_at: string | null
@@ -113,66 +114,118 @@ export interface NetworkSummary {
   hosts_24h: number
   /** Open new-device alerts whose IP is in the range */
   new_devices: number
-  /** Agent that was on it most recently (the one "Scan this network" uses) */
+  /** Computer agent that was on it most recently (the one "Scan this network" uses) */
   latest_agent_id: string | null
   latest_at: string
-  /** Last completed crawl by a network agent that reached it */
-  last_crawl: { scan_id: string; at: string; agent_id: string | null; devices: number } | null
+  /** Network agents whose crawl reached it */
+  mapped_by: string[]
+  /** Known only from network agents' crawls: Discovery shows it inside the crawl's card */
+  crawl_only: boolean
+}
+
+/** One network agent's crawls: shown once on Discovery, with every network they reached. */
+export interface CrawlSummary {
+  agent_id: string | null
+  /** Newest completed crawl: what it read */
+  last_crawl: { scan_id: string; at: string; devices: number; links: number; located: number } | null
+  /** Newest crawl of any outcome */
+  latest: { scan_id: string; at: string; status: string }
+  crawls: number
+  /** Every network its crawls reached in the window, by address */
+  subnets: { subnet: string; gateway: string | null }[]
 }
 
 const iso = (v: Date | string | null): string | null => (v == null ? null : new Date(v).toISOString())
+const whenOf = (r: NetworkRecord) => new Date(r.completedAt ?? r.startedAt).getTime()
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 
 /**
  * One summary per network, most recently active first. ipsByScan: the IPs in each record
- * of the last 24 hours. newDeviceIps: the IPs of open new-device alerts.
+ * of the last 24 hours. newDeviceIps: the IPs of open new-device alerts. A crawl reads every
+ * network its routers are on: it adds its hosts there and names its agent in mapped_by, but its
+ * time and agent are not the network's own (one crawl would otherwise repeat on every card).
  */
 export function buildNetworks(
   records: NetworkRecord[], ipsByScan: Map<string, string[]>, newDeviceIps: string[],
 ): NetworkSummary[] {
-  const nets = new Map<string, NetworkSummary & { ips: Set<string>; agents: Set<string>; latestTs: number }>()
+  type Acc = NetworkSummary & { ips: Set<string>; agents: Set<string>; mappers: Set<string>; ownTs: number; crawlTs: number }
+  const nets = new Map<string, Acc>()
   for (const r of records) {
     const kind = scanKind(r)
-    // A crawl reads every network its routers are on; any other record belongs to one
     const own = kind === 'snmp' ? crawlSubnetsOf(r) : [networkOf(r)].filter((x) => x !== null)
+    const when = whenOf(r)
     for (const net of own) {
-    const when = new Date(r.completedAt ?? r.startedAt).getTime()
-    let n = nets.get(net.subnet)
-    if (!n) {
-      n = {
-        subnet: net.subnet, gateway: net.gateway, agent_ids: [], last_heard_at: null, last_heard_scan_id: null, last_full_scan: null,
-        hosts_24h: 0, new_devices: 0, latest_agent_id: null, latest_at: new Date(when).toISOString(), last_crawl: null,
-        ips: new Set(), agents: new Set(), latestTs: -Infinity,
+      let n = nets.get(net.subnet)
+      if (!n) {
+        n = {
+          subnet: net.subnet, gateway: net.gateway, agent_ids: [], last_heard_at: null, last_heard_scan_id: null, last_full_scan: null,
+          hosts_24h: 0, new_devices: 0, latest_agent_id: null, latest_at: new Date(when).toISOString(), mapped_by: [], crawl_only: true,
+          ips: new Set(), agents: new Set(), mappers: new Set(), ownTs: -Infinity, crawlTs: -Infinity,
+        }
+        nets.set(net.subnet, n)
       }
-      nets.set(net.subnet, n)
-    }
-    if (!n.gateway && net.gateway) n.gateway = net.gateway
-    if (r.agentId) n.agents.add(r.agentId)
-    if (when > n.latestTs) {
-      n.latestTs = when
-      n.latest_at = new Date(when).toISOString()
-      if (r.agentId) n.latest_agent_id = r.agentId
-    }
-    if (kind === 'passive' && (!n.last_heard_at || when > Date.parse(n.last_heard_at))) {
-      n.last_heard_at = iso(new Date(when))
-      n.last_heard_scan_id = r.scanId
-    }
-    if (kind === 'network' && r.status === 'completed' && (!n.last_full_scan || when > Date.parse(n.last_full_scan.at))) {
-      n.last_full_scan = { scan_id: r.scanId, at: new Date(when).toISOString(), hosts: r.hostsDiscovered }
-    }
-    if (kind === 'snmp' && r.status === 'completed' && (!n.last_crawl || when > Date.parse(n.last_crawl.at))) {
-      const crawl = info(r)['crawl'] as Record<string, unknown> | undefined
-      n.last_crawl = { scan_id: r.scanId, at: new Date(when).toISOString(), agent_id: r.agentId,
-        devices: typeof crawl?.['devices'] === 'number' ? crawl['devices'] as number : 0 }
-    }
-    for (const ip of ipsByScan.get(r.scanId) ?? []) if (ipInCidr(ip, net.subnet)) n.ips.add(ip)
+      if (!n.gateway && net.gateway) n.gateway = net.gateway
+      for (const ip of ipsByScan.get(r.scanId) ?? []) if (ipInCidr(ip, net.subnet)) n.ips.add(ip)
+      if (kind === 'snmp') {
+        if (r.agentId) n.mappers.add(r.agentId)
+        n.crawlTs = Math.max(n.crawlTs, when)
+        continue
+      }
+      n.crawl_only = false
+      if (r.agentId) n.agents.add(r.agentId)
+      if (when > n.ownTs) {
+        n.ownTs = when
+        if (r.agentId) n.latest_agent_id = r.agentId
+      }
+      if (kind === 'passive' && (!n.last_heard_at || when > Date.parse(n.last_heard_at))) {
+        n.last_heard_at = iso(new Date(when))
+        n.last_heard_scan_id = r.scanId
+      }
+      if (kind === 'network' && r.status === 'completed' && (!n.last_full_scan || when > Date.parse(n.last_full_scan.at))) {
+        n.last_full_scan = { scan_id: r.scanId, at: new Date(when).toISOString(), hosts: r.hostsDiscovered }
+      }
     }
   }
   return [...nets.values()]
-    .map(({ ips, agents, latestTs: _latest, ...n }) => ({
+    .map(({ ips, agents, mappers, ownTs, crawlTs, ...n }) => ({
       ...n,
       agent_ids: [...agents],
+      mapped_by: [...mappers],
+      latest_at: new Date(Number.isFinite(ownTs) ? ownTs : crawlTs).toISOString(),
       hosts_24h: ips.size,
       new_devices: newDeviceIps.filter((ip) => ipInCidr(ip, n.subnet)).length,
     }))
     .sort((a, b) => Date.parse(b.latest_at) - Date.parse(a.latest_at))
+}
+
+/** One summary per network agent from its crawl records, most recent first. */
+export function buildCrawls(records: NetworkRecord[]): CrawlSummary[] {
+  const byAgent = new Map<string, CrawlSummary & { ts: number; doneTs: number; nets: Map<string, string | null> }>()
+  for (const r of records) {
+    if (scanKind(r) !== 'snmp') continue
+    const when = whenOf(r)
+    const key = r.agentId ?? ''
+    let c = byAgent.get(key)
+    if (!c) {
+      c = { agent_id: r.agentId, last_crawl: null, latest: { scan_id: r.scanId, at: new Date(when).toISOString(), status: r.status },
+        crawls: 0, subnets: [], ts: -Infinity, doneTs: -Infinity, nets: new Map() }
+      byAgent.set(key, c)
+    }
+    c.crawls++
+    if (when > c.ts) { c.ts = when; c.latest = { scan_id: r.scanId, at: new Date(when).toISOString(), status: r.status } }
+    if (r.status === 'completed' && when > c.doneTs) {
+      c.doneTs = when
+      const crawl = (info(r)['crawl'] ?? {}) as Record<string, unknown>
+      c.last_crawl = { scan_id: r.scanId, at: new Date(when).toISOString(),
+        devices: num(crawl['devices']), links: num(crawl['links']), located: num(crawl['located']) }
+    }
+    for (const s of crawlSubnetsOf(r)) if (!c.nets.get(s.subnet)) c.nets.set(s.subnet, s.gateway)
+  }
+  const order = (cidr: string) => ipToInt(cidr.split('/')[0]!) ?? 0
+  return [...byAgent.values()]
+    .sort((a, b) => b.ts - a.ts)
+    .map(({ ts: _ts, doneTs: _done, nets, ...c }) => ({
+      ...c,
+      subnets: [...nets].map(([subnet, gateway]) => ({ subnet, gateway })).sort((a, b) => order(a.subnet) - order(b.subnet)),
+    }))
 }

@@ -29,7 +29,9 @@ function validateSubnet(value) {
   return null
 }
 
-export default function NewScanModal({ agents, networks, initial, onClose, onSubmit }) {
+export default function NewScanModal({ agents: allAgents, networks, initial, onClose, onSubmit }) {
+  // A network agent reads routers and switches; it does not run scans (the server refuses it)
+  const agents = useMemo(() => allAgents.filter((a) => a.kind !== 'network'), [allAgents])
   const online = agents.filter((a) => a.status === 'online')
   // The network each agent was last on (networks are newest first)
   const lastNetwork = useMemo(() => {

@@ -18,7 +18,7 @@ import { reopenReturnedNewDevices, runAlertHygiene } from '../services/alertHygi
 import { isIPv4, resolveInternetFacing } from '../lib/exposure'
 import { inferDeviceType, isNetworkBySnmp, type NmapPort } from '../lib/deviceClassify'
 import { PASSIVE_FOLD_MINUTES, mergePassiveHosts, resolveHostAssets, type HostAssetCandidate } from '../lib/scanLog'
-import { buildNetworks, networkOf, passiveNetworkOf, scanKind, type ScanKind } from '../lib/discoveryNetworks'
+import { buildCrawls, buildNetworks, crawlSubnetsOf, networkOf, passiveNetworkOf, scanKind, type ScanKind } from '../lib/discoveryNetworks'
 import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostEvidence'
 import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
 import { resolveNetworkScope } from '../lib/networkScope'
@@ -259,6 +259,8 @@ app.get('/', authMiddleware, async (c) => {
         ...r,
         kind: scanKind(r),
         network: net?.subnet ?? null,
+        // a crawl: every network it reached
+        networks_reached: r.scanType === 'snmp' ? crawlSubnetsOf(r).map((x) => x.subnet) : undefined,
         gateway: net?.gateway ?? null,
         // a new-device check: its alert
         event_id: typeof info['event_id'] === 'string' ? info['event_id'] : null,
@@ -292,8 +294,8 @@ function networkCondition(subnet: string): SQL {
     and(eq(scanResults.scanType, 'passive'), sql`COALESCE(${lan}, ${scanResults.networkInfo}->>'subnet') = ${subnet}`),
     and(eq(scanResults.scanType, 'active'), kindCondition('network'), eq(scanResults.subnet, subnet)),
     and(eq(scanResults.scanType, 'active'), sql`NOT (${kindCondition('network')})`, sql`${lan} = ${subnet}`),
-    // a crawl that reached it (lib/discoveryNetworks.ts crawlSubnetsOf)
-    and(eq(scanResults.scanType, 'snmp'), sql`${scanResults.networkInfo}->'crawl'->'subnets' @> ${JSON.stringify([{ subnet }])}::jsonb`),
+    // Not a network agent's crawl: one crawl reads many networks and would repeat under each
+    // (Discovery lists crawls once, under the network agent; kind=snmp filters them).
   )!
 }
 
@@ -352,15 +354,16 @@ app.get('/networks', authMiddleware, async (c) => {
     const ipsByScan = new Map<string, string[]>()
     for (const row of recentIps.rows as { scan_id: string; ips: string[] }[]) ipsByScan.set(row.scan_id, row.ips ?? [])
     const networks = buildNetworks(records, ipsByScan, newDevices.map((d) => d.ip).filter((ip): ip is string => !!ip))
+    const crawls = buildCrawls(records)
     // How each network is covered by the agents on it, and its PCs/servers without an agent.
     if (tenantId) {
       const [routing, unmanaged] = await Promise.all([routeAgents(db, tenantId), unmanagedHostIps(db, tenantId)])
       return c.json({
         networks: networks.map((n) => ({ ...n, coverage: coverageOf(n.subnet, routing), unmanaged_hosts: countIn(n.subnet, unmanaged) })),
-        days: NETWORK_DAYS,
+        crawls, days: NETWORK_DAYS,
       })
     }
-    return c.json({ networks, days: NETWORK_DAYS })
+    return c.json({ networks, crawls, days: NETWORK_DAYS })
   } catch (err) {
     console.error('scans GET /networks error:', err)
     return c.json({ detail: 'Failed to fetch networks' }, 500)
@@ -685,10 +688,14 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
       agent_id = decision.agent_id
     }
     if (agent_id) {
-      const [agent] = await db.select({ tenantId: agents.tenantId, retiredAt: agents.retiredAt })
+      const [agent] = await db.select({ tenantId: agents.tenantId, retiredAt: agents.retiredAt, kind: agents.kind })
         .from(agents).where(eq(agents.agentId, agent_id)).limit(1)
       if (!agent || agent.retiredAt || !effectiveTenantId || agent.tenantId !== effectiveTenantId) {
         return c.json({ detail: 'Agent not found' }, 404)
+      }
+      // It would only refuse the job (netagent/service.py): it reads routers, it does not port-scan.
+      if (agent.kind === 'network') {
+        return c.json({ detail: 'A network agent reads routers and switches; it does not run scans. Choose a computer agent.' }, 409)
       }
       if (effectiveScanType === 'active') {
         const refusal = jobRefusal((await agentPolicy(db, agent_id))?.resolved.effective ?? {}, 'active')

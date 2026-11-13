@@ -50,7 +50,7 @@ export interface AssetAlerts {
 export interface NetworkDevice {
   asset_id: string; label: string; ip: string; mac: string | null; device_type: string | null
   criticality: number | null; in_my_assets: boolean; last_seen: string; measured: boolean
-  agent: 'host' | 'mobile' | null    // an EagleEye agent runs on it (a computer's or the phone app)
+  agent: 'host' | 'mobile' | 'network' | null    // an EagleEye agent runs on it (a computer's, the phone app, a network agent)
   alerts: AssetAlerts
 }
 
@@ -94,11 +94,14 @@ export function buildMapNetworks(
   addresses: NetAddress[], agents: NetAgent[], sightings: GatewaySighting[], alerts: Map<string, AssetAlerts>,
 ): MapNetwork[] {
   const hostAgents = agents.filter((a) => a.kind === 'host')
-  const agentOf = new Map<string, 'host' | 'mobile'>()
+  // The agent each machine runs; a computer agent wins over the others on the same machine.
+  const RANK = { host: 3, mobile: 2, network: 1 } as const
+  const agentOf = new Map<string, keyof typeof RANK>()
   for (const a of agents) {
-    if (a.host_asset_id && (a.kind === 'host' || a.kind === 'mobile')) {
-      if (agentOf.get(a.host_asset_id) !== 'host') agentOf.set(a.host_asset_id, a.kind)
-    }
+    if (!a.host_asset_id || !(a.kind in RANK)) continue
+    const kind = a.kind as keyof typeof RANK
+    const had = agentOf.get(a.host_asset_id)
+    if (!had || RANK[kind] > RANK[had]) agentOf.set(a.host_asset_id, kind)
   }
 
   // The networks: every range a device has a current address in, and every range a computer
