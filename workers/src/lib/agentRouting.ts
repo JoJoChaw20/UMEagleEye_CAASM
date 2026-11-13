@@ -114,7 +114,8 @@ export function chooseAgent(target: string, agents: RouteAgent[]): RouteDecision
 }
 
 // 'offline': agents are on it, but none has checked in for over 10 minutes (not the same as none).
-export type CoverageState = 'covered' | 'scan_only' | 'listen_only' | 'offline' | 'no_agent'
+// 'left': no agent is on it now, but one was (a laptop taken to another network): see withLeft.
+export type CoverageState = 'covered' | 'scan_only' | 'listen_only' | 'offline' | 'left' | 'no_agent'
 export interface AgentBrief { agent_id: string; name: string; late: boolean }
 export interface NetworkCoverage {
   state: CoverageState
@@ -123,6 +124,7 @@ export interface NetworkCoverage {
   duplicate_sensors: boolean                          // more than one sensor: one can stop listening
   late: boolean                                       // every agent counted is reporting late
   offline: { agent_id: string; name: string; last_heartbeat: string | null }[]   // on it, not checking in
+  left?: { agent_id: string; name: string; at: string; now_on: string | null }[]  // were on it, now elsewhere
 }
 
 const livenessOf = (a: RouteAgent) => a.liveness ?? (a.online ? 'online' : 'offline')
@@ -147,6 +149,17 @@ export function coverageOf(network: string, agents: RouteAgent[]): NetworkCovera
     offline: onIt.filter((a) => livenessOf(a) === 'offline')
       .map((a) => ({ agent_id: a.agent_id, name: a.name, last_heartbeat: a.last_heartbeat })),
   }
+}
+
+/**
+ * A network no agent is on now: the agents whose records are on it (Discovery's agent_ids, last at
+ * `lastAt`) and which still exist are listed as having left it, with the network each is on now.
+ */
+export function withLeft(c: NetworkCoverage | null, agentIds: string[], lastAt: string, agents: RouteAgent[]): NetworkCoverage | null {
+  if (!c || c.state !== 'no_agent') return c
+  const left = agents.filter((a) => agentIds.includes(a.agent_id))
+    .map((a) => ({ agent_id: a.agent_id, name: a.name, at: lastAt, now_on: agentNetworks(a).nets[0]?.text ?? null }))
+  return left.length ? { ...c, state: 'left', left } : c
 }
 
 /** How many of these addresses are in the network. */

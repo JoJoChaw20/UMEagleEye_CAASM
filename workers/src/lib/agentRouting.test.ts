@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chooseAgent, contains, countIn, coverageOf, parseCidr, type RouteAgent } from './agentRouting'
+import { chooseAgent, contains, countIn, coverageOf, parseCidr, withLeft, type RouteAgent } from './agentRouting'
 
 const agent = (over: Partial<RouteAgent>): RouteAgent => ({
   agent_id: 'a', name: 'a', online: true, scanner: null, passive: null, networks: [], local_ip: null,
@@ -93,4 +93,16 @@ test('an agent reporting late still covers its network; the card says it is late
   assert.equal(mixed.late, false, 'one agent on time: the network is not late')
   // a scan still goes only to an online agent
   assert.equal(chooseAgent('192.168.36.0/24', [late]).agent_id, null)
+})
+
+test('a network the laptop left says where its agent went, not "No agent"', () => {
+  const laptop = agent({ agent_id: 'jo', name: 'jo agent', networks: ['192.168.100.0/24'], passive: true })
+  const uni = withLeft(coverageOf('10.179.32.0/19', [laptop]), ['jo'], '2026-11-13T12:09:14.000Z', [laptop])!
+  assert.equal(uni.state, 'left')
+  assert.deepEqual(uni.left, [{ agent_id: 'jo', name: 'jo agent', at: '2026-11-13T12:09:14.000Z', now_on: '192.168.100.0/24' }])
+  // still covered where it is now; a network no agent ever reported stays No agent
+  assert.equal(withLeft(coverageOf('192.168.100.0/24', [laptop]), ['jo'], 'x', [laptop])!.state, 'covered')
+  assert.equal(withLeft(coverageOf('10.0.0.0/24', [laptop]), [], 'x', [laptop])!.state, 'no_agent')
+  // an agent since removed is not named
+  assert.equal(withLeft(coverageOf('10.179.32.0/19', [laptop]), ['gone'], 'x', [laptop])!.state, 'no_agent')
 })

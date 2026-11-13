@@ -6,7 +6,7 @@ import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { agents, assets, networkLinks } from '../db/schema'
 import { buildNetworkMap, type MapDevice, type MapHost, type MapLink, type MapNode } from '../lib/networkMap'
-import { buildMapNetworks, placeMeasured, type AssetAlerts, type GatewaySighting, type NetAddress, type NetAgent } from '../lib/mapNetworks'
+import { buildMapNetworks, placeMeasured, type AgentVisit, type AssetAlerts, type GatewaySighting, type NetAddress, type NetAgent } from '../lib/mapNetworks'
 import { policyOf, reportedOf, tenantPolicies } from './agentPolicy'
 
 type Db = ReturnType<typeof getDb>
@@ -44,7 +44,7 @@ export async function loadNetworkMap(db: Db, tenantId: string) {
 /** The tenant's networks: each with its gateway, the agents watching it and its devices
  *  (current addresses seen in the last MAP_DAYS), with their open CVE and exposure alerts. */
 export async function loadMapNetworks(db: Db, tenantId: string, measured: MapNode[]) {
-  const [addressRows, agentRows, sightingRows, alertRows, policies] = await Promise.all([
+  const [addressRows, agentRows, sightingRows, alertRows, policies, visitRows] = await Promise.all([
     db.execute(sql`
       SELECT aa.asset_id, aa.network_key, aa.ip_address AS ip, aa.mac_address AS mac, aa.last_seen,
              COALESCE(NULLIF(a.hostname, ''), a.ip_address) AS label, a.device_type, a.criticality_score,
@@ -81,6 +81,16 @@ export async function loadMapNetworks(db: Db, tenantId: string, measured: MapNod
         AND e.event_type IN ('cve_detected', 'exposure', 'vulnerable_service')
       GROUP BY e.asset_id`),
     tenantPolicies(db, [tenantId]),
+    // When each agent was last on each network (a laptop's networks it has left)
+    db.execute(sql`
+      SELECT agent_id, COALESCE(network_info ->> 'lan_subnet', network_info ->> 'subnet') AS subnet,
+             max(COALESCE(completed_at, started_at)) AS at
+      FROM scan_results
+      WHERE tenant_id = ${tenantId} AND agent_id IS NOT NULL AND scan_type IN ('passive', 'active')
+        AND started_at > now() - make_interval(days => ${MAP_DAYS})
+        AND COALESCE(network_info ->> 'lan_subnet', network_info ->> 'subnet') IS NOT NULL
+      GROUP BY 1, 2
+      LIMIT 2000`),
   ])
 
   const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v))
@@ -112,5 +122,8 @@ export async function loadMapNetworks(db: Db, tenantId: string, measured: MapNod
     cve_open: Number(r.cve_open), cve_critical: Number(r.cve_critical), cve_high: Number(r.cve_high), kev: Number(r.kev),
     exposure_open: Number(r.exposure_open), exposure_severity: SEVERITY[Number(r.exposure_rank ?? 0)] ?? null,
   }]))
-  return placeMeasured(buildMapNetworks(addresses, netAgents, sightings, alerts), measured)
+  const visits: AgentVisit[] = (visitRows.rows as Record<string, unknown>[]).map((r) => ({
+    agent_id: String(r.agent_id), subnet: String(r.subnet), at: iso(r.at),
+  }))
+  return placeMeasured(buildMapNetworks(addresses, netAgents, sightings, alerts, visits), measured)
 }

@@ -33,6 +33,7 @@ const COVERAGE = {
   covered: ['Covered', 'border-green-500/30 bg-green-500/10 text-green-400', 'An agent listens and an agent scans here'],
   scan_only: ['Scan only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'No agent listens here: new devices are noticed only by scans. Turn on the Sensor role of an agent on it.'],
   listen_only: ['Listen only', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'No agent here runs scans: turn on the Scanner role of an agent on it.'],
+  left: ['Agent moved away', 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400', 'The agent that was on this network is on another one now (a laptop that moved): nothing listens to or scans this network until an agent is on it again.'],
   offline: ['Agents offline', 'border-red-500/30 bg-red-500/10 text-red-400', 'The agents on this network have not checked in for over 10 minutes: check that the computer is on and the agent is running.'],
   no_agent: ['No agent', 'border-red-500/30 bg-red-500/10 text-red-400', 'No agent is on this network: install one on a computer here.'],
 }
@@ -57,6 +58,11 @@ function Coverage({ n, agentName }) {
       )}
       {c.sensors.length > 0 && <span className="text-dark-300">Listening: {names(c.sensors)}</span>}
       {c.scanners.length > 0 && <span className="text-dark-300">Scans: {names(c.scanners)}</span>}
+      {c.left?.length > 0 && (
+        <span className="text-dark-300">
+          {c.left.map((a) => `${a.name} was here ${ago(a.at)}${a.now_on ? ` · now on ${a.now_on}` : ''}`).join('; ')}
+        </span>
+      )}
       {c.offline?.length > 0 && (
         <span className="text-dark-400">
           Not checking in: {c.offline.map((a) => `${a.name}${a.last_heartbeat ? ` (${ago(a.last_heartbeat)})` : ''}`).join(', ')}

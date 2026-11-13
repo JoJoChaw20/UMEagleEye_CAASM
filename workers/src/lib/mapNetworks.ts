@@ -42,6 +42,9 @@ export interface NetAgent {
 /** A gateway an agent reported with an upload (scan_results.network_info). */
 export interface GatewaySighting { subnet: string | null; gateway_ip: string; gateway_mac: string | null; at: string }
 
+/** When an agent was last on a network (its newest Discovery record there). */
+export interface AgentVisit { agent_id: string; subnet: string; at: string }
+
 export interface AssetAlerts {
   cve_open: number; cve_critical: number; cve_high: number; kev: number
   exposure_open: number; exposure_severity: string | null
@@ -65,6 +68,8 @@ export interface MapNetwork {
   agents: { agent_id: string; name: string; listens: boolean; scans: boolean }[]
   phones: { agent_id: string; name: string }[]
   coverage: 'watched' | 'listen_only' | 'scan_only' | 'none'
+  // No computer agent on it now, but one was (a laptop that moved): who, when, and where it is now
+  left: { agent_id: string; name: string; at: string; now_on: string | null } | null
   device_count: number
   measured_count: number
   devices: NetworkDevice[]          // at most MAX_DEVICES, most important first
@@ -92,6 +97,7 @@ function byImportance(x: NetworkDevice, y: NetworkDevice): number {
 
 export function buildMapNetworks(
   addresses: NetAddress[], agents: NetAgent[], sightings: GatewaySighting[], alerts: Map<string, AssetAlerts>,
+  visits: AgentVisit[] = [],
 ): MapNetwork[] {
   const hostAgents = agents.filter((a) => a.kind === 'host')
   // The agent each machine runs; a computer agent wins over the others on the same machine.
@@ -150,6 +156,16 @@ export function buildMapNetworks(
     const devices: NetworkDevice[] = rows.filter((r) => r.ip !== gatewayIp).map(asDevice).sort(byImportance)
 
     const listens = watchers.some((a) => a.listens), scans = watchers.some((a) => a.scans)
+    // Watched by nobody now: the computer agent that was here last, if any
+    let left: MapNetwork['left'] = null
+    if (!watchers.length && cidr) {
+      for (const v of visits) {
+        const agent = hostAgents.find((a) => a.agent_id === v.agent_id)
+        const c = parseCidr(v.subnet)
+        if (!agent || !c || !overlaps(c, cidr) || (left && left.at >= v.at)) continue
+        left = { agent_id: agent.agent_id, name: agent.name, at: v.at, now_on: agent.networks[0] ?? null }
+      }
+    }
     out.push({
       key, title: null, subnets: [], measured_roots: [],
       gateway: gatewayIp ? {
@@ -160,6 +176,7 @@ export function buildMapNetworks(
       agents: watchers.map((a) => ({ agent_id: a.agent_id, name: a.name, listens: a.listens, scans: a.scans })),
       phones: phones.map((a) => ({ agent_id: a.agent_id, name: a.name })),
       coverage: listens && scans ? 'watched' : listens ? 'listen_only' : scans ? 'scan_only' : 'none',
+      left,
       device_count: devices.length,
       measured_count: devices.filter((d) => d.measured).length,
       devices: devices.slice(0, MAX_DEVICES),
@@ -207,7 +224,7 @@ export function placeMeasured(networks: MapNetwork[], nodes: MapNode[]): MapNetw
     if (!home) {
       home = {
         key: `measured:${rootId}`, title: root.label, subnets: [], measured_roots: [], gateway: null, gateway_macs: [],
-        agents: [], phones: [], coverage: 'none', device_count: 0, measured_count: 0, devices: [], last_seen: root.seen_at,
+        agents: [], phones: [], coverage: 'none', left: null, device_count: 0, measured_count: 0, devices: [], last_seen: root.seen_at,
       }
       out.push(home)
     }

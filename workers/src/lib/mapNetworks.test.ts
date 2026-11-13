@@ -107,3 +107,18 @@ test('a measured tree no agent network holds gets a network of its own', () => {
   const placed = placeMeasured([], [node('core', 'switch', '172.20.0.2', null), node('x', 'device', null, 'core')])
   assert.deepEqual(placed.map((n) => [n.key, n.title, n.measured_roots]), [['measured:core', 'core', ['core']]])
 })
+
+test('a network the laptop left names the agent, when it was there last and where it is now', () => {
+  const laptop = agent('jo', { name: 'jo agent', networks: ['192.168.100.0/24'] })
+  const nets = buildMapNetworks(
+    [addr('pc', '10.179.40.9', { network_key: '10.179.32.0/19' }), addr('home-tv', '192.168.100.5', { network_key: '192.168.100.0/24' }),
+      addr('cafe', '172.16.0.4', { network_key: '172.16.0.0/24' })],
+    [laptop], [], new Map(),
+    [{ agent_id: 'jo', subnet: '10.179.32.0/19', at: '2026-11-13T10:00:00Z' }, { agent_id: 'jo', subnet: '10.179.32.0/19', at: '2026-11-13T12:09:14Z' },
+      { agent_id: 'jo', subnet: '192.168.100.0/24', at: '2026-11-13T16:00:00Z' }, { agent_id: 'removed', subnet: '172.16.0.0/24', at }],
+  )
+  const by = Object.fromEntries(nets.map((n) => [n.key, n]))
+  assert.deepEqual(by['10.179.32.0/19']!.left, { agent_id: 'jo', name: 'jo agent', at: '2026-11-13T12:09:14Z', now_on: '192.168.100.0/24' })
+  assert.equal(by['192.168.100.0/24']!.left, null, 'watched now: nothing left')
+  assert.equal(by['172.16.0.0/24']!.left, null, 'an agent since removed is not named')
+})

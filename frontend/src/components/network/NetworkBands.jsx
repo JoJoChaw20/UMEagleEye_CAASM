@@ -178,6 +178,11 @@ function coverageChips(net) {
     chips.push({ text: `${plural(net.agents.length, 'agent')} · ${what}`, cls: 'text-eagle-400 bg-eagle-500/10 border-eagle-500/30', Icon: Eye })
   }
   if (net.measured_roots.length > 0) chips.push({ text: 'Measured by a network agent', cls: 'text-eagle-400 bg-eagle-500/10 border-eagle-500/30', Icon: Network })
+  // A laptop's agent that moved to another network: say so instead of "no agent"
+  if (net.agents.length === 0 && net.left) {
+    chips.push({ text: `${net.left.name} left · ${formatSeen(net.left.at).text}`, cls: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/40', Icon: Eye,
+      title: `${net.left.name} was last on this network ${formatSeen(net.left.at).text}${net.left.now_on ? `; it is now on ${net.left.now_on}` : ''}. Nothing listens to or scans this network until an agent is on it again.` })
+  }
   if (chips.length === 0) chips.push({ text: 'No computer agent on this network', cls: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/40', Icon: AlertTriangle })
   return chips
 }
@@ -248,7 +253,7 @@ export function NetworkTopology({ net, devices, mode, selection, onSelectNetwork
 /** The chips that say who watches a network. */
 export function CoverageChips({ net, small = false }) {
   return coverageChips(net).map((c) => (
-    <span key={c.text} className={`inline-flex items-center gap-1.5 font-medium rounded-full border ${small ? 'text-[11px] px-2 py-0.5' : 'text-xs px-2.5 py-1'} ${c.cls}`}>
+    <span key={c.text} title={c.title} className={`inline-flex items-center gap-1.5 font-medium rounded-full border ${small ? 'text-[11px] px-2 py-0.5' : 'text-xs px-2.5 py-1'} ${c.cls}`}>
       <c.Icon className="w-3.5 h-3.5" aria-hidden="true" /> {c.text}
     </span>
   ))
@@ -308,7 +313,9 @@ export function NetworkPanel({ net, onClose }) {
         <Row k="Watched by">
           {net.agents.length === 0
             ? <span className={net.measured_roots.length ? 'text-dark-300' : 'text-yellow-400'}>
-              {net.measured_roots.length ? 'A network agent reads its routers and switches; no computer agent listens or scans here' : 'No computer agent: nothing listens or scans here'}</span>
+              {net.measured_roots.length ? 'A network agent reads its routers and switches; no computer agent listens or scans here'
+                : net.left ? `Nobody now: ${net.left.name} was here ${formatSeen(net.left.at).text}${net.left.now_on ? ` and is now on ${net.left.now_on}` : ''}`
+                  : 'No computer agent: nothing listens or scans here'}</span>
             : net.agents.map((a) => (
               <span key={a.agent_id} className="block">{a.name}{' '}
                 <span className="text-dark-400">{a.listens && a.scans ? 'listens and scans' : a.listens ? 'listens' : a.scans ? 'scans' : 'neither (both off)'}</span>

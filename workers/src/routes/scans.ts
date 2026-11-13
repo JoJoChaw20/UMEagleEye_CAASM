@@ -23,7 +23,7 @@ import { aiEvidenceKey, resolveVendors, reusableDescription } from '../lib/hostE
 import { isGenericHostname, newDeviceSeverity, pickHostname } from '../lib/hostnames'
 import { resolveNetworkScope } from '../lib/networkScope'
 import { expireStaleActiveScans, pendingJobsFor } from '../services/pendingJobs'
-import { chooseAgent, countIn, coverageOf } from '../lib/agentRouting'
+import { chooseAgent, countIn, coverageOf, withLeft } from '../lib/agentRouting'
 import { bodyLimit } from 'hono/body-limit'
 import { scanTargetRefusal } from '../lib/scanTarget'
 import { cleanFacts } from '../lib/exposureRules'
@@ -359,7 +359,10 @@ app.get('/networks', authMiddleware, async (c) => {
     if (tenantId) {
       const [routing, unmanaged] = await Promise.all([routeAgents(db, tenantId), unmanagedHostIps(db, tenantId)])
       return c.json({
-        networks: networks.map((n) => ({ ...n, coverage: coverageOf(n.subnet, routing), unmanaged_hosts: countIn(n.subnet, unmanaged) })),
+        networks: networks.map((n) => ({
+          ...n, coverage: withLeft(coverageOf(n.subnet, routing), n.agent_ids, n.latest_at, routing),
+          unmanaged_hosts: countIn(n.subnet, unmanaged),
+        })),
         crawls, days: NETWORK_DAYS,
       })
     }
