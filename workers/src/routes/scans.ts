@@ -1399,17 +1399,17 @@ Example:
       })
       .where(eq(scanResults.scanId, effectiveScanId))
 
-    // Trigger drift checks — one sendBatch per 100 assets (not one send per asset),
-    // keeping queue subrequests constant. The hosts are stored by now: a queue problem (its daily
-    // quota, say) must not fail the upload, or the agent sends the whole upload again; the 6-hourly
-    // drift audit checks every asset anyway.
+    // Trigger drift checks: one message per 1,000 assets, not one per asset. The queue's free tier
+    // counts every message (about 3 operations each), and a message per asset on every 5-minute
+    // passive upload used up the 10,000 a day (12 Nov 2026). 1,000 ids stay under 64 KB, one
+    // billed unit. The hosts are stored by now: a queue problem (its daily quota, say) must not
+    // fail the upload, or the agent sends the whole upload again; the 6-hourly drift audit checks
+    // every asset anyway.
     const driftIds = [...new Set(upsertedAssetIds)]
     try {
-      for (let i = 0; i < driftIds.length; i += 100) {
-        const slice = driftIds.slice(i, i + 100)
-        await c.env.ADVISORY_QUEUE.sendBatch(
-          slice.map(assetId => ({ body: { type: 'drift_check', assetId, scanId: effectiveScanId, agentId: agent_id } })),
-        )
+      for (let i = 0; i < driftIds.length; i += 1000) {
+        await c.env.ADVISORY_QUEUE.send(
+          { type: 'drift_check', assetIds: driftIds.slice(i, i + 1000), scanId: effectiveScanId, agentId: agent_id })
       }
     } catch (err) {
       console.error(`scan ingest: queueing drift checks failed (${driftIds.length} assets; the drift audit covers them):`, err)

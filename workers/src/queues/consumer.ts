@@ -36,9 +36,11 @@ interface CtiIngestJob {
   step?: CtiStep
 }
 
+// A scan upload sends all its assets in one message (assetIds); an inventory upload sends one (assetId).
 interface DriftCheckJob {
   type: 'drift_check'
-  assetId: string
+  assetId?: string
+  assetIds?: string[]
   scanId?: string
   agentId?: string
 }
@@ -66,7 +68,10 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
   // the next 15-minute cron.
   const driftMsgs = batch.messages.filter(m => (m.body as { type?: string })?.type === 'drift_check')
   if (driftMsgs.length > 0) {
-    const ids = [...new Set(driftMsgs.map(m => (m.body as DriftCheckJob).assetId).filter(Boolean))]
+    const ids = [...new Set(driftMsgs.flatMap(m => {
+      const job = m.body as DriftCheckJob
+      return [...(job.assetIds ?? []), ...(job.assetId ? [job.assetId] : [])]
+    }))]
     try {
       const driftStart = Date.now()
       const created = await runDriftAudit(db, null, ids)
