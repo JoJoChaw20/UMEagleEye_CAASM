@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { secureHeaders } from 'hono/secure-headers'
-import { logger } from 'hono/logger'
 import type { Env } from './types'
 
 import authRoutes from './routes/auth'
@@ -33,7 +32,8 @@ import { perfMiddleware } from './kg/perf'
 const app = new Hono<{ Bindings: Env }>()
 
 // ── Global middleware ─────────────────────────────────────────────
-app.use('*', logger())
+// No request logger: Workers Logs already keeps one invocation log per request (method, URL, status,
+// duration), and the logger's two extra lines tripled the events counted against the free 200,000 a day.
 
 // Speed history: route pattern, status, total and database time per request (kg/perf.ts). Never fails a request.
 app.use('*', perfMiddleware)
