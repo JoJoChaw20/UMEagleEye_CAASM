@@ -103,13 +103,19 @@ export function historicalScoreChange(history = [], days = 7, now = Date.now()) 
   return previous ? { previous: Number(previous.overall_score), current: Number(current.overall_score), delta: Number(current.overall_score) - Number(previous.overall_score) } : null
 }
 
+// Changes worth a look on the dashboard: a device, port or risky setup that appeared, an OS
+// rollback, and a device whose identity or exposure changed. (Upgrades and package changes are
+// no longer alerts: workers/src/services/drift.ts.)
+const CHANGE_TYPES = new Set(['new_device', 'port_opened', 'exposure', 'version_downgrade'])
+const CHANGED_ATTRIBUTES = new Set(['mac_address', 'hostname', 'firmware'])
+
 export function classifyRecentChanges(events = []) {
   return events.filter(event => {
     const details = event.details ?? {}
-    if (event.event_type === 'new_device') return true
-    if (event.event_type === 'port_opened') return true
-    if (event.event_type === 'config_change' && details.changed_attribute === 'internet_facing' && details.to === true) return true
-    return ['version_downgrade', 'version_upgrade', 'new_package', 'removed_package'].includes(event.event_type)
+    if (CHANGE_TYPES.has(event.event_type)) return true
+    if (event.event_type !== 'config_change') return false
+    if (details.changed_attribute === 'internet_facing') return details.to === true
+    return CHANGED_ATTRIBUTES.has(details.changed_attribute)
   }).slice(0, 8)
 }
 

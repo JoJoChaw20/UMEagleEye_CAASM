@@ -11,7 +11,7 @@ import WhyAlert from '../components/common/WhyAlert'
 import WindowsCveList from '../components/common/WindowsCveList'
 import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
 import {
-  SEVERITY_COLORS, cvssColor, EVENT_TYPE_LABELS, DRIFT_TYPES, alertLabel, renderDetail, playbook,
+  SEVERITY_COLORS, cvssColor, EVENT_TYPE_LABELS, TYPE_GROUPS, RETIRED_TYPES, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
   affectedVersions, versionList, fixFor,
 } from '../components/common/alertMeta'
@@ -445,7 +445,16 @@ export default function AlertsPage() {
         {!activeView.params.event_type && !activeView.params.concern && (
           <select value={typeFilter} onChange={e => resetPage(setTypeFilter)(e.target.value)} className="input-field text-sm py-1.5 w-44">
             <option value="">All types</option>
-            {Object.entries(EVENT_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            {TYPE_GROUPS.map(g => (
+              <optgroup key={g.label} label={g.label}>
+                {Object.entries(g.types).map(([v, hint]) => <option key={v} value={v} title={hint}>{EVENT_TYPE_LABELS[v]}</option>)}
+              </optgroup>
+            ))}
+            {(activeView.params.status === 'closed' || RETIRED_TYPES.includes(typeFilter)) && (
+              <optgroup label="No longer raised">
+                {RETIRED_TYPES.map(v => <option key={v} value={v}>{EVENT_TYPE_LABELS[v]}</option>)}
+              </optgroup>
+            )}
           </select>
         )}
         <select value={deviceType} onChange={e => resetPage(setDeviceType)(e.target.value)} className="input-field text-sm py-1.5 w-36">

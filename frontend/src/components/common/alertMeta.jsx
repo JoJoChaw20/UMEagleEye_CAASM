@@ -34,6 +34,33 @@ export const EVENT_TYPE_LABELS = {
   vulnerable_service: 'Vulnerable Service',
 }
 
+// The Alerts page's type filter: the types the server raises today, by what they are about.
+// What each one is (title of its option): workers/src/services and lib/exposureRules.ts.
+export const TYPE_GROUPS = [
+  { label: 'Vulnerabilities', types: {
+    cve_detected:       'A known flaw in a package from the device\'s SBOM',
+    vulnerable_service: 'A service version with known CVEs, from its network banner (devices without an SBOM)',
+    os_patch_missing:   'A Windows machine behind on the fixes Microsoft released',
+  } },
+  { label: 'Threats', types: {
+    cti_match:          'A threat feed lists this device\'s address or name, or software on a watchlist',
+  } },
+  { label: 'Exposure', types: {
+    exposure:           'A risky setup a scan saw now: Telnet, a database without a password, RDP from the internet…',
+    port_opened:        'A port open that was not in the device\'s baseline',
+  } },
+  { label: 'Changes', types: {
+    config_change:      'Hostname, MAC, device type, internet exposure or firmware changed',
+    version_downgrade:  'The operating system went back to an older version',
+  } },
+  { label: 'Devices', types: {
+    new_device:         'A device seen for the first time',
+  } },
+]
+// No longer raised (workers/src/services/drift.ts): only older alerts have them, so the filter
+// offers them on the closed views.
+export const RETIRED_TYPES = ['port_closed', 'version_upgrade', 'new_package', 'removed_package']
+
 const CONFIG_CHANGE_LABELS = {
   hostname:        'Hostname Changed',
   mac_address:     'MAC Address Changed',
@@ -123,8 +150,8 @@ export const CONCERNS = [
     action: 'Isolate and escalate now',
   },
   {
-    id: 'exposed_services', title: 'Risky services opened', short: 'Risky services', icon: Radio, tone: 'critical',
-    why: 'Newly opened ports attackers scan for first (SMB, RDP, databases…), or a host newly reachable from the internet.',
+    id: 'exposed_services', title: 'Risky services exposed', short: 'Risky services', icon: Radio, tone: 'critical',
+    why: 'Services attackers try first: a newly opened risky port (SMB, RDP, databases…), a risky setup (Telnet, a database without a password, RDP from the internet), a service version with known CVEs, or a host newly reachable from the internet.',
     action: 'Close or firewall within 24h',
   },
   {

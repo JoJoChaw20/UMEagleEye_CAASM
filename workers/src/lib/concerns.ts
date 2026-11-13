@@ -34,9 +34,11 @@ export function concernCondition(id: ConcernId): SQL {
       )!
     case 'exposed_services':
       // Risky/low ports newly opened (severity already folds in risky port and
-      // internet exposure), or a host that just became internet-facing.
+      // internet exposure), a risky setup an active scan saw (Telnet, a database without a
+      // password, RDP from the internet: lib/exposureRules.ts), a service version with known
+      // CVEs (services/serviceCves.ts), or a host that just became internet-facing.
       return or(
-        and(eq(events.eventType, 'port_opened'), inArray(events.severity, ['critical', 'high'])),
+        and(inArray(events.eventType, ['port_opened', 'exposure', 'vulnerable_service']), inArray(events.severity, ['critical', 'high'])),
         and(eq(events.eventType, 'config_change'),
           sql`${events.details}->>'changed_attribute' = 'internet_facing'`,
           sql`${events.details}->'to' = 'true'::jsonb`),
