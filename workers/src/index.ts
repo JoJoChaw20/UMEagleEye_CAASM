@@ -59,11 +59,12 @@ app.use('*', async (c, next) => {
 })
 
 // After a successful write, ask for one debounced graph sync (kg/sync.ts). Runs after the response
-// is sent and cannot fail it. Agent ingest (/api/v1/agents/*) passes through here like any route.
+// is sent and cannot fail it. Agent uploads (X-Agent-ID header) use the longer agent window.
 app.use('*', async (c, next) => {
   await next()
   if (!shouldSignalKg(c.req.method, c.req.path, c.res.status)) return
-  try { c.executionCtx.waitUntil(signalKgSyncSafe(c.env)) } catch { /* no execution context: skip */ }
+  const fromAgent = !!c.req.header('X-Agent-ID')
+  try { c.executionCtx.waitUntil(signalKgSyncSafe(c.env, fromAgent)) } catch { /* no execution context: skip */ }
 })
 
 // ── Health ────────────────────────────────────────────────────────

@@ -7,9 +7,11 @@
  * 90 seconds so concurrent drains split the work, and a drain that dies leaves them to the next.
  *
  * The debounce drops the signal of any write inside its window, so every signalled job is followed
- * by one sweep once the window has passed. A sweep that applies rows looks once more, and a sweep
- * that finds nothing ends the chain, so an idle database is left asleep. Rows that only fail apply
- * nothing, so they cannot keep a chain going either.
+ * by one sweep once the window has passed. The sweep ends the chain: a write after the window sends
+ * its own signal. (A sweep that looked again whenever it applied rows never stopped while agents
+ * uploaded every few minutes, about 1,400 queue messages a day; the free tier is 10,000 operations.)
+ * Agent uploads have their own 30-minute window: the chatbot applies what is outstanding before it
+ * answers, so the graph need not follow every 5-minute passive upload.
  */
 import type { Env } from '../types'
 import {
@@ -307,6 +309,8 @@ const MAX_REFRESH_PER_JOB = 6
 
 const SIGNAL_KEY = 'kg:sync:signal'
 const SIGNAL_TTL = 120
+const AGENT_SIGNAL_KEY = 'kg:sync:signal:agent'
+const AGENT_SIGNAL_TTL = 1800
 
 /** Whether a finished API request may have changed graph tables. Heartbeats, chat and sign-in write none. */
 export function shouldSignalKg(method: string, path: string, status: number): boolean {
@@ -314,10 +318,11 @@ export function shouldSignalKg(method: string, path: string, status: number): bo
   return !/\/heartbeat$/.test(path) && !/\/chatbot(\/|$)/.test(path) && !/\/auth(\/|$)/.test(path)
 }
 
-/** Asks for a sync soon. Many writes in a row send one message. */
-export async function signalKgSync(env: Env): Promise<void> {
-  if (await env.KV_CACHE.get(SIGNAL_KEY)) return
-  await env.KV_CACHE.put(SIGNAL_KEY, '1', { expirationTtl: SIGNAL_TTL })
+/** Asks for a sync soon. Many writes in a row send one message; an agent's writes, one per 30 minutes. */
+export async function signalKgSync(env: Env, fromAgent = false): Promise<void> {
+  const [key, ttl] = fromAgent ? [AGENT_SIGNAL_KEY, AGENT_SIGNAL_TTL] : [SIGNAL_KEY, SIGNAL_TTL]
+  if (await env.KV_CACHE.get(key)) return
+  await env.KV_CACHE.put(key, '1', { expirationTtl: ttl })
   await env.ADVISORY_QUEUE.send({ type: 'kg_sync' }, { delaySeconds: 30 })
 }
 
@@ -345,10 +350,10 @@ export async function runKgSync(q: Q, env: Env, refresh: (tenantId: string) => P
   const filled = r.remaining === 0 ? await backfillEmbeddings(q, env) : 0
   // Requeue only when progress was made: a drain that applied nothing (all claimed by others, or
   // failing) waits for the cron instead of spinning. A failed embedding fills nothing, so an outage cannot loop.
-  const owesSweep = !!flags.signalled || !!flags.owesSweep || r.processed > 0
+  const owesSweep = !!flags.signalled || !!flags.owesSweep
   if ((r.remaining > 0 && r.processed > 0) || filled > 0) await env.ADVISORY_QUEUE.send({ type: 'kg_sync', followUp: true, ...(owesSweep ? { owesSweep } : {}) }, { delaySeconds: 1 })
-  // Writes during the signal's debounce window send no signal of their own, so a finished drain looks
-  // once more after that window. It stops by itself: a sweep that applies nothing schedules nothing.
+  // Writes during the signal's debounce window send no signal of their own, so a signalled drain looks
+  // once more after that window. The sweep, and a cron run, schedule nothing after themselves.
   else if (owesSweep) await env.ADVISORY_QUEUE.send({ type: 'kg_sync', followUp: true }, { delaySeconds: SIGNAL_TTL + 5 })
   console.log(`[kg_sync] processed ${r.processed}, remaining ${r.remaining}, quarantined ${r.quarantined}, embedded ${filled}`)
 }
@@ -382,6 +387,6 @@ export async function handleKgSyncMessages(
 }
 
 /** Signals after work that wrote graph tables. A failed signal is logged, never thrown. */
-export async function signalKgSyncSafe(env: Env): Promise<void> {
-  try { await signalKgSync(env) } catch (err) { console.error('[kg] signal failed:', err) }
+export async function signalKgSyncSafe(env: Env, fromAgent = false): Promise<void> {
+  try { await signalKgSync(env, fromAgent) } catch (err) { console.error('[kg] signal failed:', err) }
 }

@@ -118,17 +118,12 @@ test('the relationship source query keeps same-company pairs only', async () => 
   assert.ok(sql.includes('s.tenant_id IS NOT DISTINCT FROM d.tenant_id'))
 })
 
-test('a drain that finishes schedules one later sweep for what arrived during the debounce window', async () => {
+test('a run from the cron schedules no sweep, even when it applied rows', async () => {
   const sent: Array<{ m: unknown; o: { delaySeconds?: number } }> = []
   const e = { ...env, ADVISORY_QUEUE: { send: async (m: unknown, o: { delaySeconds?: number }) => { sent.push({ m, o }) } } } as unknown as Env
   const done = fake({ claimed: [claim('a1')], assets: [asset('a1', 'h')], left: { n: 0, quarantined: 0 } })
   await runKgSync(done.q, e, async () => {})
-  assert.equal(sent.length, 1)
-  assert.ok((sent[0]!.o.delaySeconds ?? 0) >= 120, 'the sweep runs after the signal debounce has expired')
-  sent.length = 0
-  const idle = fake({ claimed: [], left: { n: 0, quarantined: 0 } })
-  await runKgSync(idle.q, e, async () => {})
-  assert.equal(sent.length, 0, 'an idle sweep stops the chain')
+  assert.equal(sent.length, 0)
 })
 
 test('a row whose extractor throws fails alone: the others are applied and it is not taken for deleted', async () => {
@@ -165,12 +160,21 @@ test('a signalled job that finds nothing still schedules one sweep, and that swe
   assert.equal(sent.length, 0)
 })
 
-test('a sweep that applied rows looks once more, because those rows prove writes are still arriving', async () => {
+test('a sweep that applied rows still ends the chain: later writes send their own signal', async () => {
+  // Looking again whenever a sweep applied rows never stopped while agents uploaded every 5 minutes.
   const { sent, env: e } = recording()
   const busy = fake({ claimed: [claim('a1')], assets: [asset('a1', 'h')], left: { n: 0, quarantined: 0 } })
   await runKgSync(busy.q, e, noRefresh, kgSyncFlags([{ type: 'kg_sync', followUp: true }]))
-  assert.equal(sent.length, 1)
-  assert.ok((sent[0]!.o.delaySeconds ?? 0) >= 120)
+  assert.equal(sent.length, 0)
+})
+
+test('steady writes cost one signal and one sweep per debounce window, not a message every 2 minutes', async () => {
+  const { sent, env: e } = recording()
+  const busy = fake({ claimed: [claim('a1')], assets: [asset('a1', 'h')], left: { n: 0, quarantined: 0 } })
+  await runKgSync(busy.q, e, noRefresh, kgSyncFlags([signal]))
+  let runs = 0
+  while (sent.length > 0 && runs++ < 10) await runKgSync(busy.q, e, noRefresh, kgSyncFlags([sent.shift()!.m]))
+  assert.equal(runs, 1, 'the one sweep, then nothing')
 })
 
 test('filling embeddings does not cost the drain its sweep', async () => {
