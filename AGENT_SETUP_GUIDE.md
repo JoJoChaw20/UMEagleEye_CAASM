@@ -17,7 +17,7 @@ One agent runs on each computer. It:
 2. runs the network scans you start from the dashboard (**New scan**), with its own scan engine;
 3. optionally listens passively for device announcements (ARP, mDNS, NetBIOS, DHCP) on the network the computer
    uses, and reports what it heard once an hour per agent in the Discovery log;
-4. reports its own computer's **endpoint inventory** every 6 hours: hardware, Windows/Linux version and updates,
+4. reports its own computer's **endpoint inventory** every 6 hours: hardware, Windows/Linux/macOS version and updates,
    firewall, antivirus, disk encryption, Secure Boot, TPM, listening services and installed software. The
    dashboard turns this into the computer's posture score.
 
@@ -65,7 +65,7 @@ to 1.0 replaces the 2.x development builds):
 | Download | File | Built with |
 |---|---|---|
 | Windows | `EagleEyeAgent-Setup-<version>.exe` | `agent-gui\packaging\build.ps1` (needs Inno Setup 6) |
-| Linux and the network agent | `eagleeye-agent-<version>.tar.gz` | `python agent-gui\packaging\make_source.py` |
+| Linux, macOS and the network agent | `eagleeye-agent-<version>.tar.gz` | `python agent-gui\packaging\make_source.py` |
 
 ```powershell
 cd workers
@@ -81,7 +81,7 @@ again or delete the newer file (`npx wrangler r2 object delete <bucket>/agent-in
 
 ---
 
-## 3. Install on Linux (servers, no desktop)
+## 3. Install on Linux (servers, no desktop) or macOS
 
 Download the Linux package from Agents → Install → Linux (`eagleeye-agent-<version>.tar.gz`; Python 3.12+ and
 systemd needed), then, as root:
@@ -96,6 +96,21 @@ sudo .venv/bin/python -m eagleeye service status
 
 The network agent comes from the same package (its Docker image is built from it): see Agents → Install →
 Network agent, or the agent README, "Network agent".
+
+### On a Mac
+
+The same package (Agents → Install → macOS; macOS 12 or later, Python 3.12+ from python.org or Homebrew), in
+Terminal, with the connection code saved in `~/code.txt`:
+
+```bash
+cd ~/Downloads && tar xzf eagleeye-agent-<version>.tar.gz
+sudo bash eagleeye-agent-<version>/packaging/macos/install-macos.sh eagleeye-agent-<version>.tar.gz --code-file ~/code.txt
+sudo eagleeye service status          # "passive listening on <adapter> with macOS BPF device (built in)"
+```
+
+It runs as the launchd daemon `com.umeagleeye.agent`; passive listening uses macOS's own BPF devices, so nothing
+else needs installing (`brew install syft grype` adds the SBOM). The macOS agent has not yet run on a real Mac:
+`agent-gui/TESTING-MACOS.md` is the checklist for its first run.
 
 ---
 

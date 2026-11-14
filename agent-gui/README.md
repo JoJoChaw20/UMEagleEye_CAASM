@@ -16,15 +16,15 @@ and API key). Paste it into Settings > Connection code > **Use code**, or pass `
 
 ## Requirements
 - Python 3.12 or newer
-- Optional: Nmap, and Npcap (Windows) / libpcap (macOS). They are **not** bundled (their licences restrict
-  redistribution). `check-deps` tells you what is missing and where to get it. Without Nmap, scans use the agent's
-  own engine (`scan_engine`) or a built-in sweep.
+- Optional: Nmap, and Npcap (Windows) / libpcap (Linux, macOS), only to compare against. They are **not** bundled
+  (their licences restrict redistribution). `check-deps` tells you what is missing and where to get it. Without Nmap,
+  scans use the agent's own engine (`scan_engine`) or a built-in sweep.
 - Passive listening needs Administrator/root but no capture library: the built-in capture reads Microsoft's own
-  NDIS capture driver on Windows and a packet socket (with a kernel filter) on Linux, and decodes the frames itself.
-  `passive_backend` (`--capture`): `auto` (Npcap when it is installed **and** scapy is available, else built in),
-  `npcap` (the original scapy + Npcap/libpcap sniffers) or `native`. `eagleeye listen --compare` runs both side by
-  side. The packaged agent is built without scapy (set `EAGLEEYE_WITH_SCAPY=1` for the old build), so it uses the
-  built-in capture.
+  NDIS capture driver on Windows, a packet socket on Linux and a BPF device (`/dev/bpf*`) on macOS, with the
+  listeners' rules as a kernel filter, and decodes the frames itself. `passive_backend` (`--capture`): `auto` and
+  `native` (the built-in capture; on any other system, Npcap/libpcap) or `npcap` (the original scapy +
+  Npcap/libpcap sniffers). `eagleeye listen --compare` runs both side by side. The Windows package is built without
+  scapy (set `EAGLEEYE_WITH_SCAPY=1` for the old build); the macOS install keeps scapy for that comparison.
 - For the SBOM: [Syft](https://github.com/anchore/syft) and [Grype](https://github.com/anchore/grype), also not
   bundled (`winget install Anchore.Syft` and `winget install Anchore.Grype` on Windows). Without both, the daily
   SBOM is skipped and a dashboard request fails with that reason. Grype downloads its vulnerability database on
@@ -109,7 +109,8 @@ and security updates count, not the XProtect/MRT data files), FileVault (`fdeset
 Sharing / Remote Desktop listening, and the admin group (`dscl`). Secure Boot, the Secure Enclave, UAC and SMBv1 have
 no readable equivalent and are reported as unknown (left out of the score). Apps under `/System` are macOS's own and
 left out; apps in a user's folder only with `user_software`. Tested against recorded output
-(`tests/test_macos_inventory.py`), not yet on a real Mac.
+(`tests/test_macos_inventory.py`), not yet on a real Mac: [TESTING-MACOS.md](TESTING-MACOS.md) is the guide for a
+first run (install, built-in capture, a side-by-side listen with libpcap, the dashboard checks).
 
 ## Desktop app
 `python -m eagleeye gui`, or `EagleEyeAgent.exe` from the installer. One copy runs per user; it keeps running in the
@@ -217,15 +218,17 @@ the service's state (over a local named pipe / Unix socket) and changes its sett
 
 On a Mac, `packaging/macos/install-macos.sh` (in the source package) does it all: it finds Python 3.12+ (python.org
 or Homebrew; macOS's own `python3` is too old), puts the agent in `/usr/local/eagleeye` with its own environment
-(keyring, truststore, scapy, PySide6 unless `--no-gui`), adds the `eagleeye` command, connects it
+(keyring, truststore, scapy for the libpcap comparison, PySide6 unless `--no-gui`), adds the `eagleeye` command, connects it
 (`--code-file`) and registers the daemon:
 ```bash
 sudo bash packaging/macos/install-macos.sh eagleeye-agent-<version>.tar.gz --code-file ~/code.txt
 eagleeye gui                                      # its window; settings changes ask for the administrator password
 sudo bash packaging/macos/install-macos.sh --uninstall --purge
 ```
-The daemon restarts after a crash (not after `eagleeye service stop`). Passive listening uses libpcap, which comes
-with macOS; Syft, Grype and Nmap are found in Homebrew's folders (`brew install syft grype nmap`).
+The daemon restarts after a crash (not after `eagleeye service stop`). Passive listening uses the built-in BPF
+capture (`sudo eagleeye service status` says "macOS BPF device (built in)"); Syft, Grype and Nmap are found in
+Homebrew's folders (`brew install syft grype nmap`). Active scans use the agent's own engine on macOS too: ARP from
+`arp -an`, ping, and the same port probes and UDP questions (SNMP, NetBIOS, mDNS) as on Windows and Linux.
 
 The Windows installer sets it up. By hand, as an administrator (Windows: an elevated PowerShell; Linux: sudo,
 from the agent's folder):

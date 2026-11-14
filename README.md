@@ -20,9 +20,9 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 - **Duplicate Detection & Merge** — Legacy IP-keyed duplicates are grouped (`SAFE` auto-mergeable vs `REVIEW`) and merged into one survivor from the Asset Inventory "Duplicates" panel; merge moves addresses/events/SBOMs/relationships/topology, merges fields, and writes an audit log — all in one atomic batch ([Asset Identity & Deduplication](#asset-identity--deduplication))
 
 ### Network Discovery
-- **Active Scanning** — EagleEye agent dispatches Nmap (`-sV -T4` + NSE scripts: `smb-os-discovery`, `banner`) on demand; discovered hosts are AI-enriched and upserted as assets. Hosts that are up but expose none of the scanned ports are still reported (no `--open`), so port-less devices (phones, many IoT) appear in active results and a host that closes its last port correctly records `ports: []`
-- **SNMPv3 Device Detection** — When authPriv credentials are configured, the agent polls each active-scan host over UDP 161 for `sysDescr`/`sysObjectID` and walks the interface table; the backend classifies routers/switches (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) as `network` devices — signal Nmap's TCP-only port list cannot see
-- **Passive Scanning (ARP + mDNS/NetBIOS + DHCP + SSDP/UPnP)** — Four parallel daemon sniffers on the agent: ARP for host discovery, mDNS/NetBIOS for hostnames and the services a device announces, DHCP fingerprinting, and SSDP/UPnP (agent 2.2.0) for what smart TVs, media boxes, printers and routers say they are (their `SERVER` header and UPnP device types, from their multicast announcements and their answers to this computer's own searches); no active probing required. In practice DHCP is rarely visible from a PC (renewals go straight to the router), while SSDP announcements repeat every few minutes, so SSDP and announced mDNS services are the useful passive device-type signals. Fingerbank (optional DHCP lookup, agent setting) is kept but adds little for the same reason
+- **Active Scanning** — The EagleEye agent scans on demand with its own engine (Windows, Linux and macOS; Nmap optional): ARP finds every device on its own network, even one with every port closed, then a port scan, one identification probe per open port, and per device an SNMPv3 engine discovery, a NetBIOS node status and, on its own network, an mDNS question that names phones and tablets with no open port. What the same agent heard passively is added, and each device's own facts (SMB/NTLM, NetBIOS name and workgroup, SNMP engine, mDNS name and services, an OS a banner names) are uploaded with it; hosts are AI-enriched and upserted as assets. Hosts that are up but expose none of the scanned ports are still reported, so a host that closes its last port correctly records `ports: []`
+- **SNMPv3 Device Detection** — The network agent (`netagent/`) reads routers and switches with SNMPv3 authPriv (ARP and MAC tables, CDP/LLDP neighbours, interfaces) and links each device to its switch port; the backend classifies routers/switches (Cisco IOS/NX-OS/ASA, JunOS, Arista, MikroTik, FortiGate, PAN-OS, Aruba) as `network` devices. A computer agent's active scan only asks SNMPv3 engine discovery, which needs no credentials and names the vendor
+- **Passive Scanning (ARP + mDNS/NetBIOS + DHCP + SSDP/UPnP)** — One built-in capture per agent with no capture library to install (Microsoft's NDIS capture driver on Windows, a packet socket on Linux, a BPF device on macOS) feeds four listeners: ARP for host discovery, mDNS/NetBIOS for hostnames and the services a device announces, DHCP fingerprinting, and SSDP/UPnP (agent 2.2.0) for what smart TVs, media boxes, printers and routers say they are (their `SERVER` header and UPnP device types, from their multicast announcements and their answers to this computer's own searches); no active probing required. In practice DHCP is rarely visible from a PC (renewals go straight to the router), while SSDP announcements repeat every few minutes, so SSDP and announced mDNS services are the useful passive device-type signals. Fingerbank (optional DHCP lookup, agent setting) is kept but adds little for the same reason
 - **Autonomous Passive Flush** — Agent drains the ARP buffer every `--passive-interval` seconds (default 60 s) and auto-creates scan records without dashboard interaction; uploads from one agent on one network within an hour share one Discovery record (a laptop that moves to another network starts a new one)
 - **Discovery page** — *Networks* (default): one card per network the agents were on in the last 30 days (`GET /scans/networks`, `lib/discoveryNetworks.ts`), showing the agents and gateway, whether an agent is listening now, the last full scan ("Never" stands out), hosts seen in 24 h and open new-device alerts in the range, with *Scan this network*. *Scan history*: every record, paged and filtered on the server by kind (passive listening, full scan, new-device check, host scan), status and network; a new-device check links to its alert. Clicking a record lists its hosts with the asset each one became (`GET /scans/:id/hosts`); *Add to My Assets* moves that asset to My Assets with the Inventory page's "may already be in My Assets" check. *Compare*: active vs passive results. *New scan* runs a full scan from a chosen online agent, starting from the network that agent was last on
 - **MAC Vendor Lookup** — The agent (2.2.2+) resolves the vendor offline from Wireshark's manufacturer list; real MACs it cannot name (IEEE MA-M/MA-S blocks, newer prefixes) and older agents' hosts fall back to `api.macvendors.com` at ingest, cached in KV for 30 days; private MACs are never looked up; feeds the AI classification prompt
@@ -118,11 +118,11 @@ UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** pla
 ### EagleEye Agent — Python (`agent-gui/`)
 | Component | Technology |
 |-----------|------------|
-| Runtime | Python 3.12+; Windows desktop app (PySide6, system tray) and `eagleeye` command line; packaged with PyInstaller + Inno Setup |
-| Active Scanner | Nmap CLI (`-oX -`, own XML parser); built-in ping/port sweep when Nmap is missing |
-| SNMPv3 Polling | pysnmp (authPriv — SHA/MD5/SHA-2 auth, AES/DES priv); network-device detection during active scans |
-| Passive Sniffers | scapy (ARP, mDNS/NetBIOS-NS UDP 137/5353, DHCP UDP 67/68, SSDP UDP 1900) on the adapter the OS routes through |
-| Endpoint Inventory | Windows (PowerShell/CIM) and Linux collectors: hardware, OS and patches, security settings, interfaces, listening services, installed software |
+| Runtime | Python 3.12+ on Windows, Linux and macOS; system service (Windows service, systemd unit, launchd daemon); desktop app (PySide6) and `eagleeye` command line; Windows packaged with PyInstaller + Inno Setup, Linux/macOS as a source package (`install-macos.sh` on a Mac) |
+| Active Scanner | The agent's own engine (`engine/`): ARP/ping presence, TCP port scan, one probe per open port (SSH, HTTP/TLS, SMB/NTLM, RDP, databases), UDP questions per host (SNMPv3 engine discovery, NetBIOS node status, mDNS name and services), plus what passive listening heard; Nmap optional |
+| SNMP | Host agent: unauthenticated SNMPv3 engine discovery (vendor, uptime, reboots). Network agent (`netagent/`): SNMPv3 authPriv crawl of routers and switches (ARP, MAC tables, CDP/LLDP) |
+| Passive Sniffers | ARP, mDNS/NetBIOS-NS (UDP 5353/137), DHCP (UDP 67/68), SSDP (UDP 1900) on the adapter the OS routes through, from the built-in capture: NDIS capture driver via ETW on Windows, packet socket on Linux, BPF device on macOS (no Npcap/libpcap needed; scapy + Npcap/libpcap only for a side-by-side comparison) |
+| Endpoint Inventory | Windows (PowerShell/CIM), Linux and macOS (`system_profiler`, `sw_vers`, `fdesetup`…) collectors: hardware, OS and patches, security settings, interfaces, listening services, installed software |
 | Transport | standard-library HTTPS client (no redirects, per-address timeouts) |
 | Auth | Bearer API key + agent ID (SHA-256 verified); key kept in the OS credential store |
 | Optional | Fingerbank API (DHCP-based device fingerprinting) |
@@ -143,9 +143,9 @@ Local Network ──► EagleEye Agent (Python, one per computer)
                     ├── POST /agents/:id/heartbeat     (every 30 s)
                     ├── Active scans
                     │     ├── GET  /scans/pending       (poll every 30 s) or POST /scans/agent-start
-                    │     └── POST /scans/ingest        (Nmap / built-in sweep + SNMPv3 results)
+                    │     └── POST /scans/ingest        (own engine: ports, probes, SNMP/NetBIOS/mDNS facts)
                     ├── Passive listening
-                    │     ├── ARP, mDNS/NetBIOS, DHCP, SSDP sniffers on the adapter the OS uses
+                    │     ├── ARP, mDNS/NetBIOS, DHCP, SSDP listeners on the built-in capture (NDIS / packet socket / BPF)
                     │     └── POST /scans/ingest        (one Discovery record per agent per hour)
                     └── Endpoint inventory of its own computer
                           └── POST /agents/:id/inventory (every 6 h and on demand)
@@ -272,7 +272,7 @@ Secrets are not kept in files in the repository: the Worker's secrets live in Cl
 
 > SLA breaches are not a cron job: they are computed when the Notification Centre is read.
 >
-> There is no scheduled active scan. Active scans (Nmap) are triggered manually from the Discovery page. Passive scanning runs autonomously on the agent at a configurable interval.
+> There is no scheduled active scan. Active scans are triggered manually from the Discovery page (and automatically for a new device, when the tenant's policy says so). Passive scanning runs autonomously on the agent at a configurable interval.
 
 ## Network Topology Inference
 
@@ -331,8 +331,9 @@ The score is always computed, never set by hand: it is recalculated on every sca
 
 ## EagleEye Agent
 
-The agent (`agent-gui/`) runs on each computer: it scans that computer's network (active Nmap scans, optional
-passive listening and SNMPv3 polling) and reports the computer's own endpoint inventory and security settings.
+The agent (`agent-gui/`) runs on each computer (Windows, Linux or macOS): it scans that computer's network (active
+scans with its own engine, optional passive listening) and reports the computer's own endpoint inventory and security
+settings. A separate network agent reads routers and switches over SNMPv3; a phone agent (Android) reports its phone.
 Rolling it out is described in [AGENT_SETUP_GUIDE.md](AGENT_SETUP_GUIDE.md); its design, settings, privacy rules and
 command line in [agent-gui/README.md](agent-gui/README.md).
 
@@ -451,7 +452,7 @@ Assets have a `source` field that controls upsert precedence:
 | Source | Set by | Description |
 |--------|--------|-------------|
 | `manual` | My Assets page or CSV import | User-managed; shown in My Assets count |
-| `scan_active` | Active Nmap scan | Discovered by active scanning |
+| `scan_active` | Active scan (the agent's own engine, or Nmap) | Discovered by active scanning |
 | `scan_passive` | Passive ARP/mDNS/DHCP scan | Discovered by passive sniffing |
 
 `manual` is **sticky / terminal** — once a human accepts a host into My Assets (via the Discovery scan modal's *Accept* action) or imports it via CSV, later rescans never flip it back to `scan_active`/`scan_passive`, so accepted assets are never silently evicted from My Assets. `scan_active` and `scan_passive` freely update each other on rescans of not-yet-accepted hosts. Accepting an asset also **merges** the incoming `os_info` onto the existing record — scan-derived fields (SNMP `sysDescr`/interfaces, product/version data) are preserved rather than overwritten. The Tenants page asset count shows only `source = 'manual'` assets.
