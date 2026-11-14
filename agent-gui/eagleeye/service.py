@@ -179,8 +179,13 @@ class AgentService:
 
     # ── pipelines ──
     def _active_pipeline(self, subnet: str) -> Pipeline:
-        # Routers and switches are read by the network agent (netagent/), not here.
-        stages: list[Any] = [active_scan_stage(subnet, self.settings), UploadStage(self.client, "active")]
+        # Routers and switches are read by the network agent (netagent/), not here. When this
+        # computer also listens, what it heard (names, services, DHCP and UPnP details) is added
+        # to the scan's hosts: a phone with no open port is otherwise only an address and a MAC.
+        stages: list[Any] = [active_scan_stage(subnet, self.settings)]
+        if self.suite is not None:
+            stages.append(PassiveEnrichStage(self.suite, after_active=True))
+        stages.append(UploadStage(self.client, "active"))
         return Pipeline("active", stages, self.on_event)
 
     def _passive_pipeline(self, batch: Optional[tuple[Any, list[Any]]] = None) -> Pipeline:

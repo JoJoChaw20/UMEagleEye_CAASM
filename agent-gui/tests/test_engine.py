@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import struct
 
 import pytest
 
 from eagleeye import vendor
 from eagleeye.config import Settings
-from eagleeye.engine import names, portscan, presence
+from eagleeye.engine import names, portscan, presence, probes, udp
 from eagleeye.engine.ports import BASE_PORTS, CONSUMER_PORTS, PING_PORTS, WIDE_PORTS, ports_for, service_name
 from eagleeye.engine.scan import Probes, run_own_scan
 from eagleeye.pipeline import PipelineContext
@@ -108,11 +109,17 @@ def test_format_mac_refuses_empty_and_broadcast():
 
 
 # ── the engine ──
-def lab_probes(table=None, names_by_ip=None, ping_answers=(), networks=None, findings=None, snmp=None, netbios=None):
+def lab_probes(table=None, names_by_ip=None, ping_answers=(), networks=None, findings=None, snmp=None, netbios=None,
+               mdns=None, mdns_asked=None):
+    def ask_mdns(ip):
+        if mdns_asked is not None:
+            mdns_asked.append(ip)
+        return (mdns or {}).get(ip)
     return Probes(
         identify=lambda ip, port: (findings or {}).get((ip, port)),
         snmp=lambda ip: (snmp or {}).get(ip),
         netbios=lambda ip: (netbios or {}).get(ip),
+        mdns=ask_mdns,
         own_mac=lambda ip: "00:50:56:C0:00:01" if ip == "192.168.36.1" else None,
         networks=lambda: networks if networks is not None else [("192.168.36.1", LAB)],
         arp=lambda addrs, src, cancelled=None: {ip: mac for ip, mac in
@@ -150,6 +157,50 @@ def test_engine_names_prefer_a_specific_name_and_drop_docker_ones():
     hosts, _ = run_own_scan("192.168.36.48/29", "base",
                             probes=lab_probes(names_by_ip={"192.168.36.50": "docker-desktop.local"}))
     assert {h.ip: h.hostname for h in hosts}["192.168.36.50"] is None
+
+
+def test_a_device_with_no_open_port_is_named_by_asking_it_over_mdns():
+    asked = []
+    ipad = {"name": "Jojos-iPad", "services": ["_companion-link._tcp", "_rdlink._tcp"]}
+    hosts, stats = run_own_scan("192.168.36.48/29", "base", probes=lab_probes(mdns={"192.168.36.50": ipad}, mdns_asked=asked))
+    host = {h.ip: h for h in hosts}["192.168.36.50"]
+    assert host.hostname == "Jojos-iPad" and host.ports == []
+    assert host.os == {"mdns_name": "Jojos-iPad", "mdns_offered": ["_companion-link._tcp", "_rdlink._tcp"],
+                       "mdns_services": ["_companion-link._tcp", "_rdlink._tcp"]}
+    assert stats.details["192.168.36.50"]["name_source"] == "mdns"
+    # only devices on this computer's own network are asked (mDNS is link-local), never itself
+    beyond, _ = run_own_scan("10.9.0.0/29", "base", probes=lab_probes(ping_answers={"10.9.0.2"}, mdns_asked=asked))
+    assert asked == ["192.168.36.50"]
+
+
+def test_what_a_host_said_about_itself_is_uploaded_with_it():
+    finding = probes.Finding("ssh", "OpenSSH", "8.9p1", extra={"os_hint": "Ubuntu"})
+    snmp = {"192.168.36.50": {"vendor": "net-snmp", "enterprise": 8072, "boots": 3, "uptime_seconds": 86400,
+                              "engine_id": "80001f88"}}
+    netbios = {"192.168.36.60": {"computer": "LAB-WIN11", "workgroup": "WORKGROUP", "names": ["LAB-WIN11"]}}
+    hosts, _ = run_own_scan("192.168.36.48/28", "base", probes=lab_probes(
+        {("192.168.36.50", 22): "open"}, findings={("192.168.36.50", 22): finding}, snmp=snmp, netbios=netbios))
+    by_ip = {h.ip: h for h in hosts}
+    assert by_ip["192.168.36.50"].os == {"snmp_engine": {"vendor": "net-snmp", "enterprise": 8072, "boots": 3,
+                                                         "uptime_seconds": 86400, "engine_id": "80001f88"},
+                                         "os_hint": "Ubuntu"}
+    assert by_ip["192.168.36.60"].os == {"netbios_name": "LAB-WIN11", "netbios_workgroup": "WORKGROUP"}
+    assert by_ip["192.168.36.60"].hostname == "LAB-WIN11"
+
+
+def test_an_mdns_answer_gives_the_name_and_the_offered_services():
+    ip = "192.168.100.215"
+    req = udp.mdns_request(ip)
+    assert req[:12] == struct.pack(">HHHHHH", udp.MDNS_ID, 0, 2, 0, 0, 0)
+    assert b"\x03215\x03100\x03168\x03192\x07in-addr\x04arpa\x00" in req
+
+    def rr(owner, target):
+        return udp._qname(owner) + struct.pack(">HHIH", 12, 1, 120, len(udp._qname(target))) + udp._qname(target)
+    answer = struct.pack(">HHHHHH", udp.MDNS_ID, 0x8400, 0, 3, 0, 0) + rr("215.100.168.192.in-addr.arpa", "Jojos-iPad.local") \
+        + rr("_services._dns-sd._udp.local", "_companion-link._tcp.local") + rr("_services._dns-sd._udp.local", "_rdlink._tcp.local")
+    assert udp.parse_mdns_answer(answer, ip) == {"name": "Jojos-iPad", "services": ["_companion-link._tcp", "_rdlink._tcp"]}
+    assert udp.parse_mdns_answer(answer[:20], ip) is None                      # malformed
+    assert udp.parse_mdns_answer(req, ip) is None                              # a question, not an answer
 
 
 def test_pick_name_ranking():
@@ -468,7 +519,8 @@ def test_engine_takes_os_and_name_from_smb():
                                 probes=lab_probes({("192.168.36.60", 445): "open"}, findings={("192.168.36.60", 445): smb},
                                                   netbios={"192.168.36.60": {"computer": "OTHER"}}))
     h = {x.ip: x for x in hosts}["192.168.36.60"]
-    assert h.os == {"name": "Windows 11", "smb_computer_name": "LAB-WIN11", "ntlm_version": "10.0.26100"}
+    # its NetBIOS name is kept as a fact too, but SMB's computer name wins as the hostname
+    assert h.os == {"name": "Windows 11", "smb_computer_name": "LAB-WIN11", "ntlm_version": "10.0.26100", "netbios_name": "OTHER"}
     assert h.hostname == "LAB-WIN11" and stats.details["192.168.36.60"]["name_source"] == "smb"
 
 

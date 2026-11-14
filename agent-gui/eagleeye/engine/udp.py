@@ -1,4 +1,4 @@
-"""Two UDP questions every device is asked once per scan, with no credentials:
+"""The UDP questions every device is asked once per scan, with no credentials:
 
 SNMPv3 engine discovery (UDP 161): an unauthenticated SNMPv3 request makes any SNMPv3 agent
 answer with a report that names its engine: the vendor's enterprise number (often with a
@@ -7,14 +7,21 @@ the first step of every SNMPv3 exchange (RFC 3414 4); nothing is read from the d
 
 NetBIOS node status (UDP 137): Windows machines and Samba answer with their name table
 (computer name, workgroup) and their MAC.
+
+mDNS (UDP 5353, devices on this computer's own network only): a phone, tablet, Mac or
+smart-home device usually has no open port, so a port scan learns nothing about it; asked
+directly ("legacy unicast", RFC 6762 6.7), it answers with its own name (the reverse
+lookup of its address) and the service types it offers (DNS-SD's service list).
 """
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 import struct
 from typing import Any, Optional
 
+from ..passive import decode
 from . import asn1
 
 # IANA private enterprise numbers of common network and server vendors.
@@ -125,3 +132,58 @@ def parse_node_status(data: bytes) -> Optional[dict[str, Any]]:
 def netbios_status(ip: str, timeout: float = 1.5) -> Optional[dict[str, Any]]:
     data = _ask(ip, 137, NBSTAT_REQUEST, timeout)
     return parse_node_status(data) if data else None
+
+
+# ── mDNS (legacy unicast) ──
+MDNS_ID = 0x4D44
+SERVICES = b"_services._dns-sd._udp.local."
+
+
+def _qname(name: str) -> bytes:
+    return b"".join(bytes([len(label)]) + label.encode("ascii") for label in name.strip(".").split(".")) + b"\x00"
+
+
+def mdns_request(ip: str) -> bytes:
+    """Two PTR questions: the device's name (its address reversed) and the services it offers."""
+    reverse = ipaddress.ip_address(ip).reverse_pointer
+    questions = b"".join(_qname(q) + struct.pack(">HH", 12, 1) for q in (reverse, SERVICES.decode()))
+    return struct.pack(">HHHHHH", MDNS_ID, 0, 2, 0, 0, 0) + questions
+
+
+def _label(name: bytes) -> Optional[str]:
+    """'Jojos-iPad.local.' -> 'Jojos-iPad' (its first label, as the passive sniffer keeps it)."""
+    text = name.decode("utf-8", "replace").rstrip(".")
+    text = text[:-6] if text.lower().endswith(".local") else text
+    first = text.split(".")[0]
+    return first if 2 <= len(first) <= 63 else None
+
+
+def parse_mdns_answer(data: bytes, ip: str) -> Optional[dict[str, Any]]:
+    """{'name': ..., 'services': [...]} from a device's answer; None when it says nothing."""
+    msg = decode.dns(data)
+    if msg is None or not msg.qr:
+        return None
+    reverse = (ipaddress.ip_address(ip).reverse_pointer + ".").encode().lower()
+    out: dict[str, Any] = {}
+    services: set[str] = set()
+    for rr in msg.an + msg.ar:
+        if rr.type != 12 or not isinstance(rr.rdata, bytes):
+            continue
+        owner = rr.rrname.lower()
+        if owner == reverse and "name" not in out:
+            name = _label(rr.rdata)
+            if name:
+                out["name"] = name
+        elif owner == SERVICES.lower():
+            stype = rr.rdata.decode("utf-8", "replace").rstrip(".")
+            stype = stype[:-6] if stype.lower().endswith(".local") else stype
+            if stype.startswith("_") and len(services) < 24:
+                services.add(stype)
+    if services:
+        out["services"] = sorted(services)
+    return out or None
+
+
+def mdns_query(ip: str, timeout: float = 1.0) -> Optional[dict[str, Any]]:
+    data = _ask(ip, 5353, mdns_request(ip), timeout)
+    return parse_mdns_answer(data, ip) if data else None

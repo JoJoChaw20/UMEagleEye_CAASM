@@ -1032,6 +1032,7 @@ app.post('/ingest', bodyLimit({ maxSize: 16 * 1024 * 1024, onError: (c) => c.jso
           return {
             ip: h.ip,
             mac: h.mac,
+            hostname: h.hostname ?? null,                  // the rules below read it; it was never sent
             mac_vendor: macVendorMap.get(h.ip) ?? null,  // e.g. "TP-Link Technologies Co. Ltd."
             is_gateway: h.ip === defaultGateway,           // this network's router, as the agent reports it
             os: h.os,
@@ -1056,6 +1057,9 @@ Rules for consistent, accurate output:
 - If "os.name" is present (from nmap smb-os-discovery), use it for the exact Windows/Linux version.
 - If "mac_vendor" is present and no other signals exist, use it to identify the manufacturer.
 - If "hostname" contains words like "router", "switch", "ap", "printer", "cam" → strong device-type signal.
+- "os.mdns_services" lists mDNS services the device announced OR only looked for; "os.mdns_offered" lists the ones it announces itself. Only offered services say what the device IS: a phone or computer with a music or video app open looks for _airplay, _raop, _googlecast and _spotify-connect, so those in mdns_services but not in mdns_offered mean a device that streams TO a speaker or TV, never a media device itself.
+- "os.netbios_name" / "os.netbios_workgroup" come from a Windows PC or Samba server; "os.snmp_engine.vendor" names the maker of a device that runs SNMP (usually network equipment, printers or servers); "os.os_hint" is an operating system a service named in its banner (e.g. "Ubuntu").
+- A hostname that is a UUID, or "Android_" followed by 8 random characters, is a random privacy name, not a device name: do not describe the device from it.
 - If "existing_device_type" is "network", lean toward "Accept - Corporate Device".
 - If "is_gateway" is true, the host is this network's router/gateway: network infrastructure — use "Accept - Corporate Device".
 - Do NOT infer a router or gateway from the address alone: on many networks addresses ending in .1 or .254 are ordinary PCs and phones. A hostname like "DESKTOP-..." or "LAPTOP-..." is a Windows workstation.
@@ -1121,7 +1125,12 @@ Example:
               enhancedHosts = enhancedHosts.map(h => {
                 if (reused.has(h.ip)) return h
                 const match = answers.find((p) => p.ip?.trim() === h.ip?.trim())
-                return match ? { ...h, description: match.description, suggestion: match.suggestion, aiDescribed: true } : h
+                // Only a real description counts: an answer without one used to mark the host
+                // described, and the fallback text below was then stored and reused as the AI's.
+                const text = typeof match?.description === 'string' ? match.description.trim() : ''
+                return match && text
+                  ? { ...h, description: text.slice(0, 200), suggestion: match.suggestion, aiDescribed: true }
+                  : h
               })
             }
           } catch (parseErr) {

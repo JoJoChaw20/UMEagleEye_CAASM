@@ -144,6 +144,10 @@ export interface EvidenceInput {
   isGateway?: boolean
 }
 
+// The prompt's version (routes/scans.ts): a changed prompt describes every host once more. 2 (14
+// Nov): the hostname is sent, looked-for mDNS services are not the device, active-scan facts.
+export const AI_PROMPT_VERSION = 2
+
 /** Fingerprint of what the LLM describes a host from. */
 export function aiEvidenceKey(h: EvidenceInput): string {
   const ports = (h.ports ?? []).map((p) => {
@@ -151,6 +155,7 @@ export function aiEvidenceKey(h: EvidenceInput): string {
     return [port['port'], port['protocol'] ?? 'tcp', port['service'] ?? '', port['product'] ?? '', port['version'] ?? '']
   }).sort((a, b) => String(a).localeCompare(String(b)))
   return fnv1a64(stableStringify({
+    prompt: AI_PROMPT_VERSION,
     hostname: (h.hostname ?? '').trim().toLowerCase() || null,
     mac: normalizeMac(h.mac),
     vendor: h.vendor ?? null,

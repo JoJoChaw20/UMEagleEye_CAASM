@@ -50,6 +50,9 @@ const MOBILE_MAKERS = /\b(oppo|vivo mobile|realme|oneplus|honor device|motorola 
 const IOT_MAKERS_MEDIUM = /\b(espressif|tuya)\b/i
 const IOT_MAKERS_LOW = /\b(bilian)\b/i
 
+// SNMP engine makers (agent engine/udp.py ENTERPRISES) whose SNMP agents are network equipment.
+const NETWORK_SNMP_VENDORS = /^(Cisco|Huawei|H3C|Juniper|Aruba|MikroTik|Ubiquiti|Fortinet|Palo Alto Networks|TP-Link|Netgear|D-Link|Arista|Extreme Networks|Brocade|Nokia|3Com|F5)\b/
+
 // mDNS service types a device ANNOUNCES (os_info.mdns_offered, agent 2.2.0+) that say what
 // it is. Only announced ones count: a phone looking for a Chromecast is not one.
 const OFFERED_SERVICES: Array<[RegExp, HintType, string]> = [
@@ -138,6 +141,13 @@ export function deviceTypeHint(input: HintInput): DeviceTypeHint | null {
   if (ssdpMedium) return ssdpMedium
   for (const [re, type, label] of SSDP_SERVERS) {
     if (re.test(ssdpServer)) return hint(type, label, 'ssdp_server', 'medium', `SSDP server "${ssdpServer}"`)
+  }
+  // An SNMP agent whose engine names a network-equipment maker (an active scan's SNMPv3 engine
+  // discovery, agent engine/udp.py): servers, printers and NAS run SNMP too, so not the others.
+  const snmpEngine = os['snmp_engine'] && typeof os['snmp_engine'] === 'object' ? os['snmp_engine'] as Record<string, unknown> : null
+  const snmpVendor = str(snmpEngine?.['vendor'])
+  if (NETWORK_SNMP_VENDORS.test(snmpVendor)) {
+    return hint('network', `${snmpVendor} network device`, 'snmp_engine', 'medium', `SNMP engine of ${snmpVendor}`)
   }
   const offered = strList(os['mdns_offered'])
   for (const [re, type, label] of OFFERED_SERVICES) {

@@ -16,7 +16,7 @@ NAME_SOURCES = (("mdns", "mDNS"), ("netbios", "NetBIOS"), ("dhcp", "DHCP"),
 
 
 def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
-                         sources: Optional[Counter[str]] = None) -> list[HostRecord]:
+                         sources: Optional[Counter[str]] = None, prefer_existing: bool = False) -> list[HostRecord]:
     """Enrich ARP-discovered hosts with mDNS/NetBIOS names and services, DHCP
     fingerprints and SSDP/UPnP details, matched by MAC first (what a device said about
     itself stays true when DHCP gives its address to another device) and then by IP
@@ -31,6 +31,8 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
       os:       DHCP fingerprint fields, mdns_services, mdns_offered, mdns_name,
                 netbios_name, ssdp_server and ssdp_types merged additively; existing keys win
     `sources` counts where each host's name came from (mdns, netbios, dhcp, rdns, none).
+    `prefer_existing`: an active scan's hosts, whose own name (SMB, RDP, NetBIOS, mDNS: the
+    device's answer to a question) ranks first; what listening heard fills the rest.
     """
     unnamed: list[HostRecord] = []                      # no name, or only a platform default
     fallback_source: dict[int, Optional[str]] = {}       # where an unnamed host's default came from
@@ -46,6 +48,8 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
             dhcp_info = dhcp_info or suite.dhcp.get_info(host.ip)
 
         candidates: list[tuple[str, str]] = []                 # (name, source), best source first
+        if prefer_existing and host.hostname:
+            candidates.append((host.hostname, "existing"))
         if mac_info.get("hostname"):
             candidates.append((mac_info["hostname"], "mdns" if mac_info.get("mdns_name") else "netbios"))
         ip_name = mdns.get_hostname(host.ip) if mdns else None
@@ -53,7 +57,7 @@ def enrich_passive_hosts(hosts: list[HostRecord], suite: PassiveSuite,
             candidates.append((ip_name, mdns.name_source(host.ip) if hasattr(mdns, "name_source") else "mdns"))
         if dhcp_info.get("dhcp_hostname"):
             candidates.append((dhcp_info["dhcp_hostname"], "dhcp"))
-        if host.hostname:
+        if host.hostname and not prefer_existing:
             candidates.append((host.hostname, "existing"))
         specific = next((c for c in candidates if not is_generic_hostname(c[0])), None)
         if specific is not None:
@@ -133,13 +137,17 @@ class PassiveEnrichStage(Stage):
     label = "Add hostnames and device fingerprints"
     optional = True
 
-    def __init__(self, suite: PassiveSuite) -> None:
+    def __init__(self, suite: PassiveSuite, after_active: bool = False) -> None:
         self.suite = suite
+        # After an active scan: add what listening heard on this computer, its own names first
+        self.after_active = after_active
+        if after_active:
+            self.label = "Add what passive listening heard"
 
     def should_run(self, ctx: PipelineContext) -> bool:
         return bool(ctx.hosts)
 
     def run(self, ctx: PipelineContext) -> None:
         sources: Counter[str] = Counter()
-        enrich_passive_hosts(ctx.hosts, self.suite, sources)
+        enrich_passive_hosts(ctx.hosts, self.suite, sources, prefer_existing=self.after_active)
         ctx.progress(describe_sources(sources))

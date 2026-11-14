@@ -252,6 +252,26 @@ def test_enrichment_falls_back_to_the_mac_and_adds_services(mdns, dhcp):
     assert phone.os == {"name": "kept", "dhcp_vendor_class": "android-dhcp-13", "dhcp_device_hint": "Android"}
 
 
+def test_an_active_scan_keeps_its_own_names_and_gets_what_listening_heard(mdns):
+    mdns.feed(mdns6("fe80::10ac:16e0:5fe2:520d", IPAD_MAC, qr=1, aa=1, an=[
+        DNSRR(rrname="Jojos-iPad.local.", type="A", rdata="192.168.100.186"),
+        DNSRR(rrname="Jojos-iPad.local.", type="AAAA", rdata="fe80::10ac:16e0:5fe2:520d")]))
+    mdns.feed(mdns4("192.168.100.20", PHONE_MAC, qr=1, aa=1, an=[
+        DNSRR(rrname="Heard-Name.local.", type="A", rdata="192.168.100.20")]))
+
+    class Suite:
+        dhcp = None
+    suite = Suite()
+    suite.mdns = mdns
+    # what the active scan found: the iPad with no name (no open port), a PC named by its own SMB answer
+    hosts = [HostRecord(ip="192.168.100.186", mac=IPAD_MAC, hostname=None, ports=[]),
+             HostRecord(ip="192.168.100.20", mac=PHONE_MAC, hostname="LAB-WIN11", os={"smb_computer_name": "LAB-WIN11"})]
+    ipad, pc = enrich_passive_hosts(hosts, suite, prefer_existing=True)
+    assert ipad.hostname == "Jojos-iPad" and ipad.os["mdns_name"] == "Jojos-iPad"
+    assert pc.hostname == "LAB-WIN11"                                  # its own answer wins over what was heard
+    assert pc.os == {"smb_computer_name": "LAB-WIN11", "mdns_name": "Heard-Name"}
+
+
 # ── SSDP / UPnP ──
 TV_MAC = "70:2a:d5:11:22:33"
 ROUTER_MAC = "d4:d5:2e:44:55:66"

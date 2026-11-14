@@ -5,13 +5,18 @@ stage produces (so the server cannot tell which engine ran).
 2. ping ports: routed addresses that ignored ping are tried on a few common ports, and a
    refusal counts as an answer;
 3. port scan of every address found up, with the agent's port tier;
-4. identification: one probe per open port (probes.py), and two UDP questions per host
-   (udp.py: SNMPv3 engine discovery, NetBIOS node status);
-5. names: SMB/NTLM computer name, RDP certificate name, NetBIOS name, then reverse DNS once
-   per host, through the shared ranking; the SMB/NTLM facts become the host's OS fields.
+4. identification: one probe per open port (probes.py), and UDP questions per host
+   (udp.py: SNMPv3 engine discovery, NetBIOS node status, and mDNS for a device on this
+   computer's own network: a phone or tablet with no open port still says its name and
+   the services it offers);
+5. names: SMB/NTLM computer name, RDP certificate name, NetBIOS name, mDNS name, then
+   reverse DNS once per host, through the shared ranking.
 
-Facts the upload format has no place for yet (certificates, page titles, SNMP engine,
-OS hints) are kept per host in EngineStats.details for the comparison report.
+Each host's OS fields carry what it said about itself: the SMB/NTLM facts, its NetBIOS name
+and workgroup, its SNMP engine (vendor, reboots, uptime), its mDNS name and services, and an
+OS hint a port gave (an SSH or HTTP banner naming the OS). Port facts (certificate, page
+title, SMB signing, RDP security) go with each port. EngineStats.details keeps the rest for
+the comparison report.
 """
 
 from __future__ import annotations
@@ -69,6 +74,7 @@ class Probes:
     identify: Callable[[str, int], Optional[probes_mod.Finding]] = probes_mod.probe
     snmp: Callable[[str], Optional[dict]] = udp.snmp_engine
     netbios: Callable[[str], Optional[dict]] = udp.netbios_status
+    mdns: Callable[[str], Optional[dict]] = udp.mdns_query
     own_mac: Callable[[str], Optional[str]] = presence.own_mac
 
 
@@ -129,11 +135,15 @@ def run_own_scan(
 
     open_by_ip = {ip: sorted(port for port, st in states.get(ip, {}).items() if st == portscan.OPEN) for ip in order}
     tasks = [(ip, port) for ip in order for port in open_by_ip[ip]]
-    progress(f"Identifying {len(tasks)} open port(s) and asking {len(order)} host(s) SNMP/NetBIOS", None, None)
+    # mDNS is link-local: only devices on a network this computer is attached to answer it
+    on_link = [ip for ip in order if any(ip in group for group in local.values()) and ip not in own]
+    progress(f"Identifying {len(tasks)} open port(s) and asking {len(order)} host(s) SNMP/NetBIOS"
+             f"{f', {len(on_link)} mDNS' if on_link else ''}", None, None)
     with ThreadPoolExecutor(max_workers=PROBE_WORKERS, thread_name_prefix="probe") as pool:
         found = dict(zip(tasks, pool.map(lambda t: _safe(p.identify, *t), tasks)))
         snmp = dict(zip(order, pool.map(lambda ip: _safe(p.snmp, ip), order)))
         netbios = dict(zip(order, pool.map(lambda ip: _safe(p.netbios, ip), order)))
+        mdns = dict(zip(on_link, pool.map(lambda ip: _safe(p.mdns, ip), on_link)))
     t = phase("identify", t)
 
     rdns = p.reverse_dns(order)
@@ -158,22 +168,55 @@ def run_own_scan(
             detail["snmp_engine"] = engine
         if netbios.get(ip):
             detail["netbios"] = netbios[ip]
+        if mdns.get(ip):
+            detail["mdns"] = mdns[ip]
         stats.open_ports += len(entries)
         machine = next((f.extra["os"] for port in open_by_ip[ip] if (f := found.get((ip, port))) and "os" in f.extra), None)
         rdp_name = next((f.extra.get("rdp_computer_name") for port in open_by_ip[ip]
                          if (f := found.get((ip, port))) and f.extra.get("rdp_computer_name")), None)
         nb_name = (netbios.get(ip) or {}).get("computer")
+        mdns_name = (mdns.get(ip) or {}).get("name")
         name, source = names_mod.pick_name([((machine or {}).get("smb_computer_name"), "smb"), (rdp_name, "rdp"),
-                                            (nb_name, "netbios"), (rdns.get(ip), "rdns")])
+                                            (nb_name, "netbios"), (mdns_name, "mdns"), (rdns.get(ip), "rdns")])
         if source:
             detail["name_source"] = source
         if detail:
             stats.details[ip] = detail
         mac = macs.get(ip) or (netbios.get(ip) or {}).get("mac") or (_safe(p.own_mac, ip) if ip in own else None)
-        hosts.append(HostRecord(ip=ip, hostname=name, mac=mac, ports=entries, os=dict(machine) if machine else None))
+        os_fields = host_facts(machine, snmp.get(ip), netbios.get(ip), mdns.get(ip),
+                               [found.get((ip, port)) for port in open_by_ip[ip]])
+        hosts.append(HostRecord(ip=ip, hostname=name, mac=mac, ports=entries, os=os_fields or None))
     stats.seconds = round(time.monotonic() - t0, 2)
     stats.cpu_seconds = round(time.process_time() - cpu0, 2)
     return hosts, stats
+
+
+SNMP_ENGINE_KEYS = ("vendor", "enterprise", "boots", "uptime_seconds", "mac", "address", "text", "engine_id")
+
+
+def host_facts(machine: Optional[dict[str, Any]], snmp: Optional[dict[str, Any]], netbios: Optional[dict[str, Any]],
+               mdns: Optional[dict[str, Any]], findings: list[Optional[probes_mod.Finding]]) -> dict[str, Any]:
+    """What a host said about itself, as OS fields (the keys the passive upload uses where it
+    has the same fact, so the server stores and shows them the same way)."""
+    out: dict[str, Any] = dict(machine or {})
+    if snmp:
+        out["snmp_engine"] = {k: snmp[k] for k in SNMP_ENGINE_KEYS if snmp.get(k) is not None}
+    if netbios:
+        if netbios.get("computer"):
+            out.setdefault("netbios_name", netbios["computer"])
+        if netbios.get("workgroup"):
+            out["netbios_workgroup"] = netbios["workgroup"]
+    if mdns:
+        if mdns.get("name"):
+            out.setdefault("mdns_name", mdns["name"])
+        if mdns.get("services"):
+            # It answered with them itself: offered, not only looked for
+            out["mdns_offered"] = list(mdns["services"])
+            out["mdns_services"] = list(mdns["services"])
+    hint = next((f.extra["os_hint"] for f in findings if f is not None and f.extra.get("os_hint")), None)
+    if hint:
+        out["os_hint"] = str(hint)[:80]
+    return out
 
 
 def _safe(fn: Callable[..., Any], *args: Any) -> Any:

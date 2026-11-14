@@ -22,13 +22,33 @@ import { isLocallyAdministeredMac } from '../utils/mac'
 import DeviceTypePicker from '../components/assets/DeviceTypePicker'
 import { NetworkDeviceSection, NetworkLocationField } from '../components/assets/NetworkSections'
 
+// How long a device has been up: "18 min", "5 h", "12 days".
+function uptimeText(seconds) {
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} min`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h`
+  const days = Math.floor(seconds / 86400)
+  return `${days} day${days === 1 ? '' : 's'}`
+}
+
+// An active scan's SNMPv3 engine discovery (agent engine/udp.py): "Huawei · up 12 days · 3 reboots".
+function snmpEngineText(v) {
+  if (!v || typeof v !== 'object') return String(v)
+  return [v.vendor ?? (v.enterprise ? `enterprise ${v.enterprise}` : 'SNMPv3 agent'),
+    typeof v.uptime_seconds === 'number' && `up ${uptimeText(v.uptime_seconds)}`,
+    typeof v.boots === 'number' && `${v.boots} reboot${v.boots === 1 ? '' : 's'}`].filter(Boolean).join(' · ')
+}
+
 // Human labels for the os_info keys written by scan ingest (active, passive, SNMP).
 const OS_FIELDS = [
   ['name', 'Operating system'],
   ['accuracy', 'OS match accuracy', (v) => `${v}%`],
+  ['os_hint', 'OS named by a service'],
   ['smb_computer_name', 'SMB computer name'],
   ['smb_domain', 'SMB domain'],
   ['smb_fqdn', 'SMB FQDN'],
+  ['netbios_name', 'NetBIOS name'],
+  ['netbios_workgroup', 'NetBIOS workgroup'],
+  ['snmp_engine', 'SNMP agent', (v) => snmpEngineText(v)],
   ['dhcp_device_hint', 'DHCP device hint'],
   ['dhcp_vendor_class', 'DHCP vendor class'],
   ['fingerbank_device', 'Fingerbank device', (v, os) => (os.fingerbank_score ? `${v} (score ${os.fingerbank_score})` : v)],

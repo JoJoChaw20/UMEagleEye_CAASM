@@ -90,6 +90,14 @@ def test_active_scan_runs_and_uploads(fake_scan):
     assert client.failed == []
 
 
+def test_an_active_scan_adds_what_listening_heard_when_this_computer_listens():
+    svc = service(FakeClient())
+    assert [s.name for s in svc._active_pipeline("192.168.1.0/24").stages] == ["scan", "upload"]
+    svc.suite = object()                                  # passive listening running
+    stages = svc._active_pipeline("192.168.1.0/24").stages
+    assert [s.name for s in stages] == ["scan", "enrich", "upload"] and stages[1].after_active
+
+
 def test_new_device_investigation_runs_as_an_active_scan_of_one_ip(fake_scan):
     client = FakeClient(pending=[{"scan_id": "n1", "scan_type": "active", "subnet": "192.168.1.23",
                                   "network_info": {"trigger": "new_device", "event_id": "e1"}}])
