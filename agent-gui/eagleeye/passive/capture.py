@@ -6,8 +6,10 @@
     heard 100% of the discovery traffic Npcap heard, at under 2% of one CPU core.
   * Linux: a packet socket (AF_PACKET) bound to the adapter, with the sniffers' rules as
     a kernel filter.
+  * macOS: a Berkeley Packet Filter device (/dev/bpf*) set to the adapter, with the same
+    rules as its filter (classic BPF on Ethernet frames, as macOS gives Wi-Fi too).
 
-Both need Administrator/root, as Npcap capture does. One capture serves all the
+All need Administrator/root, as Npcap capture does. One capture serves all the
 sniffers (CaptureHub): the ETW session is one per computer, and one socket is cheaper
 than four. The old per-sniffer Npcap/libpcap capture (scapy's sniff) is untouched and
 still used when passive_backend is "npcap".
@@ -50,14 +52,15 @@ def scapy_available() -> bool:
 def resolve_backend(setting: str, platform: str = sys.platform,
                     has_npcap: Optional[Callable[[], bool]] = None,
                     has_scapy: Optional[Callable[[], bool]] = None) -> str:
-    """"npcap" (scapy's sniff on Npcap/libpcap), "ndis" or "packet" (built-in).
+    """"npcap" (scapy's sniff on Npcap/libpcap), "ndis", "packet" or "bpf" (built-in).
 
     Automatic is the built-in capture (2.6): Microsoft's own capture driver on Windows, the
-    packet socket on Linux; it heard every frame Npcap did, with less CPU and nothing to
-    install. Npcap is used only when asked for (`eagleeye listen --capture npcap`, for
-    comparison) and on systems with no built-in capture (macOS: libpcap). has_npcap and
+    packet socket on Linux, a BPF device on macOS; it heard every frame Npcap did, with less
+    CPU and nothing to install. Npcap/libpcap is used only when asked for (`eagleeye listen
+    --capture npcap`, for comparison) and on systems with no built-in capture. has_npcap and
     has_scapy are kept for callers that still pass them."""
-    native = "ndis" if platform == "win32" else "packet" if platform.startswith("linux") else None
+    native = ("ndis" if platform == "win32" else "packet" if platform.startswith("linux")
+              else "bpf" if platform == "darwin" else None)
     if setting == "npcap" or native is None:
         return "npcap"
     return native
@@ -391,6 +394,149 @@ class PacketSocketSource:
         self._close_socket()
 
 
+# ── macOS: Berkeley Packet Filter device ─────────────────────────────────────
+# macOS ioctl numbers (<net/bpf.h>, _IOW/_IOR/_IOWR with group 'B'), for 64-bit macOS
+# (struct bpf_program is a 4-byte count and a pointer: 16 bytes).
+BIOCGBLEN = 0x40044266          # _IOR('B', 102, u_int): the read buffer size
+BIOCSBLEN = 0xC0044266          # _IOWR('B', 102, u_int): ask for a size (before BIOCSETIF)
+BIOCSETF = 0x80104267           # _IOW('B', 103, struct bpf_program)
+BIOCSETIF = 0x8020426C          # _IOW('B', 108, struct ifreq)
+BIOCIMMEDIATE = 0x80044270      # _IOW('B', 112, u_int): hand over each packet at once
+BIOCSSEESENT = 0x80044277       # _IOW('B', 119, u_int): 0 = not the packets this Mac sends
+BPF_BUFFER = 1 << 20
+BPF_DEVICES = 256
+
+
+def split_bpf_buffer(buf: bytes) -> list[bytes]:
+    """The frames in one read from a BPF device. Each starts with a struct bpf_hdr: an 8-byte
+    timestamp (two 32-bit fields on macOS), caplen, datalen and hdrlen (its own length); the
+    next one starts at the word-aligned (4-byte) end of the frame."""
+    out, off = [], 0
+    while off + 18 <= len(buf):
+        caplen, _datalen, hdrlen = struct.unpack_from("=IIH", buf, off + 8)
+        start, end = off + hdrlen, off + hdrlen + caplen
+        if hdrlen < 18 or end > len(buf):
+            break                               # a damaged buffer: keep what was whole
+        out.append(bytes(buf[start:end]))
+        off += (hdrlen + caplen + 3) & ~3
+    return out
+
+
+class BpfSource:
+    """A /dev/bpf device on the selected adapter, with the sniffers' rules as its filter;
+    re-opened when the adapter changes. Needs root (or access to /dev/bpf*, as Wireshark's
+    ChmodBPF gives)."""
+
+    name = "macOS BPF device (built in)"
+
+    def __init__(self, open_device: Optional[Callable[[], int]] = None,
+                 ioctl: Optional[Callable[..., Any]] = None) -> None:
+        self.error: Optional[str] = None
+        self._open_device = open_device or self._first_free_device
+        self._ioctl = ioctl
+        self._deliver: Optional[Callable[[bytes], None]] = None
+        self._fd: Optional[int] = None
+        self._bound: Optional[str] = None
+        self._blen = BPF_BUFFER
+
+    @staticmethod
+    def _first_free_device() -> int:  # pragma: no cover - needs macOS and root
+        import os
+        busy = None
+        for n in range(BPF_DEVICES):
+            try:
+                return os.open(f"/dev/bpf{n}", os.O_RDONLY)
+            except PermissionError:
+                raise
+            except OSError as exc:              # EBUSY: another program has it
+                busy = exc
+        raise OSError(f"no free /dev/bpf device ({busy})")
+
+    def _call(self, fd: int, request: int, arg: Any) -> Any:  # pragma: no cover - needs macOS
+        if self._ioctl is not None:
+            return self._ioctl(fd, request, arg)
+        import fcntl
+        return fcntl.ioctl(fd, request, arg)
+
+    def _configure(self, fd: int, adapter: str) -> None:
+        self._call(fd, BIOCSBLEN, struct.pack("I", BPF_BUFFER))
+        self._call(fd, BIOCSETIF, struct.pack("16s16x", adapter.encode()[:15]))
+        self._call(fd, BIOCIMMEDIATE, struct.pack("I", 1))
+        self._call(fd, BIOCSSEESENT, struct.pack("I", 0))
+        code = b"".join(struct.pack("HBBI", *ins) for ins in frames.kernel_filter())
+        insns = ctypes.create_string_buffer(code, len(code))
+        self._call(fd, BIOCSETF, struct.pack("@IP", len(code) // 8, ctypes.addressof(insns)))
+        got = self._call(fd, BIOCGBLEN, struct.pack("I", 0))
+        self._blen = struct.unpack("I", got)[0] if isinstance(got, (bytes, bytearray)) and len(got) == 4 else BPF_BUFFER
+
+    def open(self, deliver: Callable[[bytes], None]) -> bool:
+        import os
+        self._deliver = deliver
+        try:
+            os.close(self._open_device())        # can we at all (root, or ChmodBPF)?
+        except PermissionError:
+            self.error = "requires root (or read access to /dev/bpf*)"
+            return False
+        except OSError as exc:
+            self.error = f"could not open a BPF device ({exc})"
+            return False
+        self.error = None
+        return True
+
+    def select(self, adapter: Optional[dict[str, Any]]) -> None:
+        import os
+        name = (adapter or {}).get("name")
+        if name == self._bound and self._fd is not None:
+            return
+        self._close_device()
+        if not name:
+            return
+        fd = None
+        try:
+            fd = self._open_device()
+            self._configure(fd, name)
+        except OSError as exc:
+            log.warning("Cannot listen on %s (%s); trying again", name, exc)
+            if fd is not None:
+                os.close(fd)
+            return
+        self._fd, self._bound = fd, name
+
+    def pump(self, stop: threading.Event, seconds: float) -> bool:
+        import os
+        import select as select_mod
+        if self._fd is None:
+            stop.wait(seconds)
+            return True
+        until = time.monotonic() + seconds
+        while not stop.is_set() and time.monotonic() < until:
+            try:
+                ready, _w, _x = select_mod.select([self._fd], [], [], 1.0)
+                if not ready:
+                    continue
+                buf = os.read(self._fd, self._blen)
+            except OSError as exc:              # the adapter went away
+                log.warning("BPF device on %s failed (%s); trying again", self._bound, exc)
+                self._close_device()
+                return True
+            for frame in split_bpf_buffer(buf):
+                if self._deliver is not None:
+                    self._deliver(frame)
+        return True
+
+    def _close_device(self) -> None:
+        import os
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+        self._fd, self._bound = None, None
+
+    def close(self) -> None:
+        self._close_device()
+
+
 # ── One capture for every sniffer ────────────────────────────────────────────
 
 def make_source(backend: str) -> Any:
@@ -398,6 +544,8 @@ def make_source(backend: str) -> Any:
         return NdisSource()
     if backend == "packet":
         return PacketSocketSource()
+    if backend == "bpf":
+        return BpfSource()
     raise ValueError(f"no built-in capture called {backend!r}")
 
 

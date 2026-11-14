@@ -60,6 +60,8 @@ if [ ! -x .venv/bin/python ] || ! .venv/bin/python -c 'import sys; raise SystemE
   rm -rf .venv
   "$PY" -m venv .venv
 fi
+# Passive listening uses macOS's own BPF devices (built in); scapy is kept for the libpcap
+# comparison (`eagleeye listen --capture npcap`).
 PACKAGES="keyring>=25.0 truststore>=0.10 scapy>=2.5.0"
 [ "$GUI" -eq 1 ] && PACKAGES="$PACKAGES PySide6>=6.7"
 .venv/bin/python -m pip install --quiet --upgrade pip

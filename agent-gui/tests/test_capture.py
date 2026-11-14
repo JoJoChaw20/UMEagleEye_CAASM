@@ -17,7 +17,9 @@ from scapy.all import ARP, BOOTP, DHCP, DNS, DNSQR, DNSRR, IP, LLC, SNAP, TCP, U
 from scapy.layers.inet6 import IPv6ExtHdrHopByHop  # noqa: E402
 
 from eagleeye.passive import capture, frames  # noqa: E402
-from eagleeye.passive.capture import CaptureHub, PacketSocketSource, as_ethernet, parse_fragment, resolve_backend  # noqa: E402
+from eagleeye.passive.capture import (  # noqa: E402
+    CaptureHub, PacketSocketSource, as_ethernet, parse_fragment, resolve_backend, split_bpf_buffer,
+)
 from eagleeye.passive.sniffers import InterfaceChooser, PassiveSuite  # noqa: E402
 
 PC_MAC, ROUTER_MAC, PHONE_MAC, TV_MAC = "14:13:33:c3:f6:03", "98:48:27:cb:55:6c", "c4:fe:5b:a9:44:05", "8c:79:f5:00:11:22"
@@ -186,11 +188,63 @@ def test_a_frame_sent_by_this_computer_over_wifi_takes_the_sender_from_addr2():
     ("auto", "linux", False, "packet"),
     ("native", "linux", False, "packet"),
     ("npcap", "linux", False, "npcap"),
-    ("auto", "darwin", False, "npcap"),        # libpcap is all macOS has
-    ("native", "darwin", False, "npcap"),
+    ("auto", "darwin", False, "bpf"),          # macOS: its own BPF device
+    ("native", "darwin", False, "bpf"),
+    ("npcap", "darwin", False, "npcap"),       # libpcap only when asked for
+    ("auto", "freebsd14", False, "npcap"),     # no built-in capture
 ])
 def test_backend_choice(setting, platform, npcap, expected):
     assert resolve_backend(setting, platform, lambda: npcap) == expected
+
+
+# ── macOS: BPF device ────────────────────────────────────────────────────────
+
+def bpf_record(frame: bytes, hdrlen: int = 18) -> bytes:
+    """One packet as a macOS BPF read gives it: bpf_hdr (8-byte timestamp, caplen, datalen,
+    hdrlen), padding to hdrlen, the frame, then padding to a 4-byte boundary."""
+    hdr = struct.pack("=IIIIH", 1, 2, len(frame), len(frame), hdrlen).ljust(hdrlen, b"\x00")
+    rec = hdr + frame
+    return rec + b"\x00" * (-len(rec) % 4)
+
+
+def test_a_bpf_read_is_split_into_its_frames():
+    a, b = b"\xff" * 42, b"\x01\x00\x5e" + b"\x11" * 70           # an ARP-sized frame, then a multicast one
+    buf = bpf_record(a) + bpf_record(b, hdrlen=20)
+    assert split_bpf_buffer(buf) == [a, b]
+    assert split_bpf_buffer(buf[:-10]) == [a]                    # a cut-off record is dropped
+    assert split_bpf_buffer(b"") == []
+
+
+def test_the_bpf_device_is_set_to_the_adapter_with_the_sniffers_filter():
+    calls = []
+
+    def ioctl(fd, request, arg):
+        calls.append((fd, request, arg))
+        return struct.pack("I", 524288) if request == capture.BIOCGBLEN else arg
+    opened = []
+
+    def open_device():
+        opened.append(len(opened) + 10)
+        return opened[-1]
+    src = capture.BpfSource(open_device=open_device, ioctl=ioctl)
+    src._configure(7, "en0")
+    requests = [r for _fd, r, _a in calls]
+    assert requests == [capture.BIOCSBLEN, capture.BIOCSETIF, capture.BIOCIMMEDIATE, capture.BIOCSSEESENT,
+                        capture.BIOCSETF, capture.BIOCGBLEN]
+    assert calls[1][2][:4] == b"en0\x00" and len(calls[1][2]) == 32          # struct ifreq
+    assert struct.unpack("I", calls[3][2])[0] == 0                          # not what this Mac sends
+    count = struct.unpack_from("@I", calls[4][2])[0]
+    assert count == len(frames.kernel_filter())                             # the same rules as on Linux
+    assert src._blen == 524288
+
+
+def test_the_bpf_device_says_why_it_cannot_listen():
+    def denied():
+        raise PermissionError("Permission denied")
+    src = capture.BpfSource(open_device=denied)
+    assert not src.open(lambda frame: None)
+    assert src.error == "requires root (or read access to /dev/bpf*)"
+    assert capture.make_source("bpf").name == "macOS BPF device (built in)"
 
 
 # ── the hub and the sniffers ─────────────────────────────────────────────────

@@ -136,7 +136,7 @@ def capabilities() -> dict[str, Any]:
         pass
     try:
         from .passive.capture import npcap_installed, scapy_available
-        out["native_capture"] = sys.platform == "win32" or sys.platform.startswith("linux")
+        out["native_capture"] = sys.platform in ("win32", "darwin") or sys.platform.startswith("linux")
         out["npcap"] = bool(scapy_available() and npcap_installed()) if sys.platform == "win32" else scapy_available()
     except Exception:  # noqa: BLE001
         pass
