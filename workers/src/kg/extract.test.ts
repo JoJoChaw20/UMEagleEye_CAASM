@@ -28,6 +28,17 @@ test('a CVE node is keyed per tenant', () => {
   assert.ok(d.nodes.some(n => n.key === `cve:${T}:CVE-2024-1234`))
 })
 
+test('an SBOM package alert links to each of its top CVEs, with their CVSS', () => {
+  const d = extractEvent({ event_id: 'e', tenant_id: T, asset_id: 'x', event_type: 'cve_detected', severity: 'high', status: 'open', ip_address: '10.0.0.1', timestamp: '2026-01-01T00:00:00Z',
+    details: { shape: 'package', package_name: 'lodash', package_version: '4.17.15', cve_count: 3, kev_count: 1, fix_to: '4.17.21',
+      top_cves: [{ id: 'CVE-2021-23337', cvss: 7.2, kev: true }, { id: 'cve-2020-8203', cvss: 7.4 }, { id: 'GHSA-xxxx' }] } })
+  const cveNodes = d.nodes.filter(n => n.key.startsWith(`cve:${T}:`)).map(n => n.key)
+  assert.deepEqual(cveNodes, [`cve:${T}:CVE-2021-23337`, `cve:${T}:CVE-2020-8203`])     // a GHSA id is not a CVE node
+  assert.equal(d.edges.filter(e => e.relation === 'ABOUT_CVE').length, 2)
+  assert.match(d.nodes.find(n => n.key === `cve:${T}:CVE-2020-8203`)!.body, /CVSS 7\.4/)
+  assert.match(d.nodes[0].body, /cve count: 3; kev count: 1; fix to: 4\.17\.21/)
+})
+
 test('a closed alert is not counted as open', () => {
   const d = extractEvent({ event_id: 'e', tenant_id: T, asset_id: 'x', event_type: 'new_device', severity: 'low', status: 'resolved', ip_address: '10.0.0.1', timestamp: '2026-01-01T00:00:00Z', details: {} })
   assert.equal(d.nodes[0].props.open, false)

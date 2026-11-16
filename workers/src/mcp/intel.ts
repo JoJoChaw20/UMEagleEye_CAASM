@@ -64,7 +64,9 @@ const lookupCve: ToolDef<{ cve_id: z.ZodString }> = {
           assetScope(ctx),
           inArray(events.status, OPEN_STATUSES),
           eq(events.eventType, 'cve_detected'),
-          sql`${events.details}->>'cve_id' = ${id}`,
+          // a package alert holds its CVEs as findings
+          sql`(${events.details}->>'cve_id' = ${id} OR EXISTS (SELECT 1 FROM cve_findings f
+            WHERE f.event_id = ${events.eventId} AND f.fixed_at IS NULL AND f.cve_id = ${id}))`,
         )),
     ])
     return {

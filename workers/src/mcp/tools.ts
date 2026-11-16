@@ -99,8 +99,10 @@ const osOf = (osInfo: unknown, inventory?: unknown) => {
 function alertFacts(details: unknown) {
   const d = (details ?? {}) as Record<string, unknown>
   const pick: Record<string, unknown> = {}
+  // SBOM package alerts (one per vulnerable package) add cve_count ... top_cves
   for (const k of ['cve_id', 'package_name', 'package_version', 'package_type', 'fix_versions', 'cvss_base_score',
-    'epss_score', 'kev', 'has_cti_match', 'ti_event_titles', 'port', 'protocol', 'service', 'match_kind', 'indicator',
+    'epss_score', 'cve_count', 'kev_count', 'no_fix_count', 'fix_to', 'max_cvss', 'max_epss', 'top_cves',
+    'kev', 'has_cti_match', 'ti_event_titles', 'port', 'protocol', 'service', 'match_kind', 'indicator',
     'missing_kb', 'exploited', 'product', 'changed_attribute', 'from', 'to', 'package', 'old_value', 'new_value',
     'description']) {
     if (d[k] !== undefined && d[k] !== null && d[k] !== '') {
@@ -249,7 +251,8 @@ const listAlerts: ToolDef<{
         a.severity?.length ? inArray(events.severity, a.severity) : undefined,
         a.event_type ? eq(events.eventType, a.event_type) : undefined,
         a.asset_id ? eq(events.assetId, a.asset_id) : undefined,
-        a.cve_id ? sql`${events.details}->>'cve_id' = ${a.cve_id.toUpperCase()}` : undefined,
+        a.cve_id ? sql`(${events.details}->>'cve_id' = ${a.cve_id.toUpperCase()} OR EXISTS (SELECT 1 FROM cve_findings f
+          WHERE f.event_id = ${events.eventId} AND f.fixed_at IS NULL AND f.cve_id = ${a.cve_id.toUpperCase()}))` : undefined,
       ))
       .orderBy(desc(priorityExpr), desc(events.firstSeen))
       .limit(a.limit ?? 10)

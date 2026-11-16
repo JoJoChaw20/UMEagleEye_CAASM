@@ -180,7 +180,9 @@ export function extractDependency(r: Row): GraphDelta {
 }
 
 const OPEN_EVENT = ['open', 'in_progress']
+// cve_count ... max_epss: an SBOM package alert (one per vulnerable package, its CVEs inside)
 const FACT_KEYS = ['cve_id', 'package_name', 'package_version', 'fix_versions', 'cvss_base_score', 'epss_score', 'kev',
+  'cve_count', 'kev_count', 'no_fix_count', 'fix_to', 'max_cvss', 'max_epss',
   'port', 'protocol', 'service', 'match_kind', 'indicator', 'missing_kb', 'exploited', 'product', 'changed_attribute',
   'from', 'to', 'package', 'old_value', 'new_value', 'description']
 
@@ -203,7 +205,11 @@ export function extractEvent(r: Row): GraphDelta {
   if (!r.tenant_id) return EMPTY
   const key = `event:${r.event_id}`, d = (r.details ?? {}) as Row
   const open = OPEN_EVENT.includes(r.status)
-  const cve = typeof d.cve_id === 'string' && /^CVE-\d{4}-\d+$/i.test(d.cve_id) ? d.cve_id.toUpperCase() : null
+  const isCveId = (v: unknown): v is string => typeof v === 'string' && /^CVE-\d{4}-\d+$/i.test(v)
+  // an SBOM package alert names its worst CVEs in top_cves (at most 10, KEV first)
+  const cves = isCveId(d.cve_id) ? [d.cve_id.toUpperCase()]
+    : (Array.isArray(d.top_cves) ? d.top_cves as Row[] : []).map((c) => c?.id).filter(isCveId).map((id) => id.toUpperCase()).slice(0, 10)
+  const cve = cves[0] ?? null
   const facts = eventFacts(d)
   const nodes: KgNode[] = [node(r.tenant_id, key, 'event',
     `${r.severity} ${r.event_type}${cve ? ` ${cve}` : ''} on ${label(r)}`,
@@ -212,9 +218,12 @@ export function extractEvent(r: Row): GraphDelta {
       cve, assetKey: `asset:${r.asset_id}`, timestamp: iso(r.timestamp),
     })]
   const edges: KgEdge[] = [{ from: key, to: `asset:${r.asset_id}`, relation: 'ALERT_ON', tenantId: r.tenant_id }]
-  if (cve) {
-    const cveKey = `cve:${r.tenant_id}:${cve}`
-    nodes.push(node(r.tenant_id, cveKey, 'cve', cve, `Vulnerability ${cve}, found in this company.${d.cvss_base_score != null ? ` CVSS ${d.cvss_base_score}.` : ''}`, { cve }))
+  const cvssOf = (id: string) => (cves.length === 1 && d.cvss_base_score != null ? d.cvss_base_score
+    : ((d.top_cves as Row[] | undefined) ?? []).find((c) => String(c?.id).toUpperCase() === id)?.cvss)
+  for (const id of cves) {
+    const cveKey = `cve:${r.tenant_id}:${id}`
+    const cvss = cvssOf(id)
+    nodes.push(node(r.tenant_id, cveKey, 'cve', id, `Vulnerability ${id}, found in this company.${cvss != null ? ` CVSS ${cvss}.` : ''}`, { cve: id }))
     edges.push({ from: key, to: cveKey, relation: 'ABOUT_CVE', tenantId: r.tenant_id })
   }
   for (const i of (Array.isArray(r.indicators) ? r.indicators : []) as Row[]) {
