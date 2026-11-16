@@ -10,6 +10,7 @@ import { audit } from '../services/audit'
 import { refreshRelationshipsLater } from '../services/relationshipRefresh'
 import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
+import { refreshCveAlertScores } from '../services/alertScores'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
 import { automaticDeviceType } from '../lib/deviceClassify'
@@ -1172,15 +1173,18 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
     const myAssetsOnly = c.req.query('scope') === 'my_assets'
     const discoveredOnly = c.req.query('scope') === 'discovered'
     const { scanned, changes, model, scoresChanged } = await rescoreAssets(db, tenantId, undefined, { myAssetsOnly, discoveredOnly })
+    // CVE alerts take the new criticality now, not at each computer's next SBOM upload
+    const alertsRescored = tenantId ? await refreshCveAlertScores(db, { tenantId }) : 0
     const changed = changes.length
     const noun = myAssetsOnly ? 'My Assets' : discoveredOnly ? 'discovered assets' : 'assets'
     // Say what moved: scores first; other refreshes (suggestion, posture, formula tag) apart.
     const refreshed = changed - scoresChanged
-    const message = changed === 0
+    const message = (changed === 0
       ? `Rescored ${scanned} ${noun}: all scores were already up to date`
       : `Rescored ${scanned} ${noun}: ${scoresChanged} score${scoresChanged === 1 ? '' : 's'} changed`
-        + (refreshed ? `, ${refreshed} other asset${refreshed === 1 ? '' : 's'} refreshed (type suggestion, posture or formula)` : '')
-    return c.json({ updated: changed, scanned, changed, scores_changed: scoresChanged, model, message })
+        + (refreshed ? `, ${refreshed} other asset${refreshed === 1 ? '' : 's'} refreshed (type suggestion, posture or formula)` : ''))
+      + (alertsRescored ? `; ${alertsRescored} CVE alert risk score${alertsRescored === 1 ? '' : 's'} updated` : '')
+    return c.json({ updated: changed, scanned, changed, scores_changed: scoresChanged, alert_scores_changed: alertsRescored, model, message })
   } catch (err) {
     console.error('assets POST /rescore error:', err)
     return c.json({ detail: 'Failed to rescore assets' }, 500)
@@ -1229,8 +1233,9 @@ app.post('/:assetId/rescore', authMiddleware, requireRoles(...WRITE_ROLES), asyn
 
     const previous = row.criticalityScore
     const { changes, model } = await rescoreAssets(db, row.tenantId, [assetId])
+    const alertsRescored = await refreshCveAlertScores(db, { assetIds: [assetId] })
     const current = changes[0]?.score ?? previous
-    return c.json({ changed: current !== previous, previous, current, model })
+    return c.json({ changed: current !== previous, previous, current, model, alert_scores_changed: alertsRescored })
   } catch (err) {
     console.error('assets POST /:assetId/rescore error:', err)
     return c.json({ detail: 'Failed to rescore asset' }, 500)

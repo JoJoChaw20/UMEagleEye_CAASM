@@ -7,6 +7,7 @@ import { purgeOldData } from '../services/retention'
 import { CTI_INGEST_LOCK } from '../services/cti'
 import { runAlertHygiene } from '../services/alertHygiene'
 import { rescoreAssets } from '../lib/rescore'
+import { refreshCveAlertScores } from '../services/alertScores'
 import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
 import { kgQuery } from '../kg/store'
 import { recordJob, refreshPerf, timedJob } from '../kg/perf'
@@ -96,10 +97,15 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
         // Criticality is recomputed on every scan, inventory and edit; this applies a
         // scoring-rule change to assets nothing has touched since (manual ones, say).
         // One read per tenant, writes only for scores that moved.
+        // Then CVE alerts are rescored with the criticality their asset has now, also
+        // catching changes made by scans since the alert's last SBOM upload.
         await step(env, 'rescore', async () => {
-          let changed = 0
-          for (const id of tenantIds) changed += (await rescoreAssets(db, id)).scoresChanged
-          return `${changed} criticality score(s) changed`
+          let changed = 0, alerts = 0
+          for (const id of tenantIds) {
+            changed += (await rescoreAssets(db, id)).scoresChanged
+            alerts += await refreshCveAlertScores(db, { tenantId: id })
+          }
+          return `${changed} criticality score(s) changed, ${alerts} CVE alert risk score(s) updated`
         })
         // Safety net for the relationships (they are also rebuilt when devices come or go).
         await step(env, 'relationships', async () => {

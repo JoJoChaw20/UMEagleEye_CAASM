@@ -17,6 +17,7 @@ import { matchIocs } from '../services/iocMatch'
 import { isStoredInR2, licenseNames, sbomObjectKey, sbomSummary } from '../lib/sbomStore'
 import { computerState, SBOM_STALE_HOURS } from '../lib/sbomCoverage'
 import { collectAffectedVersions } from '../lib/affectedVersions'
+import { computeRiskScore, mapSeverity } from '../lib/riskScore'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -785,29 +786,6 @@ const cveIngestSchema = z.object({
 export const MAX_CVE_ALERTS = 1500
 const WRITE_BATCH = 300
 const MAX_EPSS_LOOKUPS = 300      // FIRST.org calls are 30 CVEs each: at most 10 subrequests
-
-function mapSeverity(cvss: number, grypeSev: string): 'critical' | 'high' | 'medium' | 'low' {
-  if (cvss >= 9.0) return 'critical'
-  if (cvss >= 7.0) return 'high'
-  if (cvss >= 4.0) return 'medium'
-  if (cvss === 0) {
-    const s = grypeSev.toLowerCase()
-    if (s === 'critical') return 'critical'
-    if (s === 'high') return 'high'
-    if (s === 'medium') return 'medium'
-  }
-  return 'low'
-}
-
-function computeRiskScore(cvss: number, epss: number, criticality: number, ctiMatch: boolean): number {
-  // Normalise all components to 0-100 scale before weighting:
-  // CVSS (0-10) → *10 → 0-100, weight 40%
-  // EPSS (0-1)  → *100 → 0-100, weight 35%
-  // Criticality (1-10) → *10 → 0-100, weight 15%
-  // CTI match flat 10 pts
-  const score = (cvss * 10 * 0.40) + (epss * 100 * 0.35) + (Math.max(criticality, 1) * 10 * 0.15) + (ctiMatch ? 10 : 0)
-  return Math.round(Math.min(score, 100) * 100) / 100
-}
 
 async function fetchEpssScores(cveIds: string[]): Promise<Map<string, number>> {
   const scores = new Map<string, number>()
