@@ -66,6 +66,9 @@ class Settings:
     sbom_interval: int = 86400          # seconds between SBOMs (24 h)
     sbom_extra_paths: str = ""          # extra folders to scan, one per line
     sbom_include_binaries: bool = False # also read compiled programs (Go binaries, .exe/.dll, Linux kernel)
+    # Threat sightings (sightings/): this computer's DNS answers and outbound connections are
+    # checked here against the organisation's bad domains and IPs; only matches are sent.
+    sightings: bool = False
     # Active scan engine (stages/scan_own.py): auto = the agent's own engine; nmap (the Nmap
     # stage) and compare (both, with a local report) are evaluation tools for the command line.
     # Port tier ("Scan depth" on the dashboard): base | consumer | wide (engine/ports.py).
@@ -145,6 +148,7 @@ _ENV_VARS = {
     "sbom_interval": "EAGLEEYE_SBOM_INTERVAL",
     "sbom_extra_paths": "EAGLEEYE_SBOM_EXTRA_PATHS",
     "sbom_include_binaries": "EAGLEEYE_SBOM_INCLUDE_BINARIES",
+    "sightings": "EAGLEEYE_SIGHTINGS",
     "scan_engine": "EAGLEEYE_SCAN_ENGINE",
     "scan_ports": "EAGLEEYE_SCAN_PORTS",
     "kind": "EAGLEEYE_KIND",
@@ -251,6 +255,12 @@ def sbom_cache_path(env: Optional[Mapping[str, str]] = None) -> Path:
     """What this instance's SBOM runs learned per folder (sbom.FolderCache), next to its config."""
     name = instance_name(env)
     return default_config_path(env).with_name(f"sbom-cache-{name}.json" if name else "sbom-cache.json")
+
+
+def sightings_list_path(env: Optional[Mapping[str, str]] = None) -> Path:
+    """This instance's copy of the organisation's bad domains and IPs (sightings/indicators.py)."""
+    name = instance_name(env)
+    return default_config_path(env).with_name(f"sightings-list-{name}.json.gz" if name else "sightings-list.json.gz")
 
 
 def _coerce(name: str, raw: Any, default: Any) -> Any:

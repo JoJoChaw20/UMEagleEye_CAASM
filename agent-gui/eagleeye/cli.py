@@ -23,8 +23,8 @@ from typing import Any, Optional
 
 from . import VERSION, deps
 from .config import (
-    ConfigError, Settings, default_config_path, env_value, load_settings, save_settings, sbom_cache_path, state_path,
-    with_credentials,
+    ConfigError, Settings, default_config_path, env_value, load_settings, save_settings, sbom_cache_path,
+    sightings_list_path, state_path, with_credentials,
 )
 from .enrol import ConnectionCodeError, credentials_from_code, is_install_code, parse_connection_code
 from .keychain import Keychain
@@ -322,7 +322,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         log.warning("%s: %s. %s", d.name, d.detail, d.hint)
 
     service = AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path(),
-                           policy_path=policy_path())
+                           policy_path=policy_path(), sightings_path=sightings_list_path())
     if SCHEDULES_ENABLED:
         for sched in settings.schedules:
             log.info("Schedule     : %s %s", sched.get("subnet"), Schedule.from_dict(sched).describe())

@@ -89,7 +89,7 @@ class Question:
 class Record:
     rrname: bytes
     type: int
-    rdata: Any                                    # str for A/AAAA, bytes name for PTR, raw bytes otherwise
+    rdata: Any                                    # str for A/AAAA, bytes name for PTR/CNAME, raw bytes otherwise
 
 
 @dataclass
@@ -136,7 +136,7 @@ def _name(msg: bytes, off: int) -> tuple[bytes, int]:
 
 
 def dns(msg: bytes) -> Optional[Dns]:
-    """A DNS-format message (mDNS), or None when it is malformed."""
+    """A DNS-format message (mDNS, or a DNS answer for threat sightings), or None when it is malformed."""
     if len(msg) < 12:
         return None
     _id, flags, qdcount, ancount, nscount, arcount = struct.unpack_from(">HHHHHH", msg, 0)
@@ -164,7 +164,7 @@ def dns(msg: bytes) -> Optional[Dns]:
                     rdata = str(ipaddress.IPv4Address(raw))
                 elif rtype == 28 and rdlen == 16:
                     rdata = str(ipaddress.IPv6Address(raw))
-                elif rtype == 12:                         # PTR: a name
+                elif rtype in (5, 12):                    # CNAME, PTR: a name
                     rdata = _name(msg, off)[0]
                 section.append(Record(name, rtype, rdata))
                 off += rdlen

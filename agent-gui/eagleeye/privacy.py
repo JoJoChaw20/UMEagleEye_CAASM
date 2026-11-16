@@ -5,11 +5,12 @@ dashboard), as with any company device-management tool; the notice says what it 
 
 from __future__ import annotations
 
-CONSENT_VERSION = 6     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
+CONSENT_VERSION = 7     # 2: software packages (SBOM) added; 3: SSDP/UPnP device announcements (passive);
                         # 4: automatic scan of newly heard devices (tenant setting), dashboard inventory requests;
                         # 5: the administrator sets what is collected from the dashboard (agent settings);
                         # 6: the inventory always includes software users installed for themselves, and
-                        #    administrator account names are never sent
+                        #    administrator account names are never sent;
+                        # 7: threat sightings (DNS answers and connections checked on the computer)
 
 NOTICE_TITLE = "What this agent collects"
 
@@ -31,6 +32,16 @@ so administrators can see what it is.</p>
 <p>Reads only broadcast discovery messages (ARP, mDNS, NetBIOS, DHCP, SSDP/UPnP) to learn device
 names, addresses and what kind of device each one says it is. It never reads the contents of anyone's traffic.</p>
 
+<h3>Threat sightings (optional, off by default)</h3>
+<p>Your organisation keeps a list of domains and internet addresses known to be used by
+attackers. With threat sightings on, the agent keeps a copy of that list on this computer
+and checks two things against it, <b>on this computer</b>: the answers to the domain-name
+(DNS) lookups this computer makes, and the internet addresses it connects to. Only a
+match is sent: the listed domain or address, whether it was a lookup or a connection, how
+many times and when, and for a connection the program's name and port. Lookups and
+connections that match nothing are never stored or sent, so the agent keeps no record of
+the websites you visit.</p>
+
 <h3>This computer's inventory (on by default)</h3>
 <p>Hardware model and serial number, operating system and patches, security settings
 (firewall, antivirus, disk encryption, Secure Boot, TPM, UAC, remote desktop, SMBv1), the
@@ -49,8 +60,9 @@ licence and package identifier, and the vulnerabilities found. It reads package
 records, not your documents, and sends no file contents or file paths.</p>
 
 <h3>Never collected</h3>
-<p>Files or documents, browsing history, passwords or other credentials, keystrokes,
-screenshots, email or messages, location, or the contents of network traffic.</p>
+<p>Files or documents, browsing history (threat sightings sends only matches with the
+threat list, see above), passwords or other credentials, keystrokes, screenshots, email or
+messages, location, or the contents of network traffic.</p>
 
 <h3>Who decides</h3>
 <p>Your organisation's administrator sets what this agent collects from the EagleEye

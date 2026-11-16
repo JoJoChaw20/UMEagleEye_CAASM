@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import socket
 import threading
@@ -52,6 +53,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(200, b"x" * 300_000, "application/octet-stream")
         if self.path == "/text":
             return self._reply(200, b"not json", "text/plain")
+        if self.path == "/gzip":
+            body = json.dumps({"items": ["a"] * 1000}).encode()
+            if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+                return self._reply(200, gzip.compress(body), extra={"Content-Encoding": "gzip"})
+            return self._reply(200, body)
         return self._reply(404, b"{}")
 
     def do_POST(self):
@@ -106,6 +112,16 @@ def test_error_statuses_are_returned_not_raised(server):
         r.raise_for_status()
     assert err.value.response is r
     assert s.get(f"{server}/broken", timeout=5).status_code == 500
+
+
+def test_compressed_answers_only_when_asked_and_unpacked(server):
+    s = httpclient.Session()
+    packed = s.get(f"{server}/gzip", timeout=5, accept_gzip=True)
+    assert seen[0]["headers"]["accept-encoding"] == "gzip"
+    assert packed.json() == {"items": ["a"] * 1000}
+    plain = s.get(f"{server}/gzip", timeout=5)
+    assert "accept-encoding" not in seen[1]["headers"] or "gzip" not in seen[1]["headers"]["accept-encoding"]
+    assert plain.json() == {"items": ["a"] * 1000}
 
 
 def test_non_json_body_raises_value_error(server):

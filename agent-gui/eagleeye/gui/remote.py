@@ -127,6 +127,14 @@ class RemoteSuite:
         return self._problems
 
 
+class RemoteSightings:
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._status = data
+
+    def status(self) -> dict[str, Any]:
+        return {"listed": 0, "sent": 0, "dns_capture": False, "problems": [], **self._status}
+
+
 def _when(value: Any) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(value) if value else None
@@ -152,6 +160,8 @@ class RemoteService:
         self.applied_policy_version = status.get("applied_policy_version")
         passive = status.get("passive")
         self.suite = RemoteSuite(passive) if isinstance(passive, dict) else None
+        sightings = status.get("sightings")
+        self.sightings = RemoteSightings(sightings) if isinstance(sightings, dict) else None
         self.history = []
         for raw in status.get("history") or []:
             try:

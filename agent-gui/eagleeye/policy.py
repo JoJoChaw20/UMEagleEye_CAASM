@@ -36,6 +36,7 @@ FIELDS: dict[str, tuple[str, Any]] = {
     "inventory_interval": ("int", (300, 7 * 86400)),
     "sbom": ("bool", None),
     "sbom_interval": ("int", (3600, 30 * 86400)),
+    "sightings": ("bool", None),
     "scan_ports": ("enum", ("base", "consumer", "wide")),
 }
 
@@ -61,7 +62,7 @@ def fields_of(kind: str) -> dict[str, tuple[str, Any]]:
 LABELS = {
     "passive": "Passive listening", "passive_interval": "Passive upload interval",
     "passive_backend": "Packet capture", "inventory": "Inventory", "inventory_interval": "Inventory interval",
-    "sbom": "SBOM", "sbom_interval": "SBOM interval", "scan_engine": "Scan engine", "scan_ports": "Scan ports",
+    "sbom": "SBOM", "sbom_interval": "SBOM interval", "sightings": "Threat sightings", "scan_engine": "Scan engine", "scan_ports": "Scan ports",
     "network_poll": "Read the network", "network_seeds": "Seed devices", "network_ranges": "Allowed ranges",
     "network_depth": "Crawl depth", "network_interval": "Crawl interval",
 }
@@ -125,7 +126,9 @@ def local_report(settings: Settings, kind: str = "host") -> dict[str, Any]:
 
 def capabilities() -> dict[str, Any]:
     """What this agent can do, for the dashboard (all cheap checks)."""
-    out: dict[str, Any] = {"os": sys.platform}
+    # sightings: this agent can check its computer's traffic against the threat list (the
+    # dashboard warns when the setting is on for an agent that cannot).
+    out: dict[str, Any] = {"os": sys.platform, "sightings": True}
     try:
         from . import deps
         out["admin"] = bool(deps.is_admin())

@@ -19,6 +19,7 @@ Without truststore it falls back to Python's check against the system store.
 
 from __future__ import annotations
 
+import gzip
 import http.client
 import json as jsonlib
 import socket
@@ -59,6 +60,7 @@ class Response:
         self.headers = dict(headers)
         self._body = body
         self._stream = stream
+        self._unpacked = False
 
     @property
     def ok(self) -> bool:
@@ -69,6 +71,15 @@ class Response:
         if self._body is None:
             self._body = self._stream.read() if self._stream is not None else b""
             self.close()
+        if not self._unpacked:
+            self._unpacked = True
+            # Only asked for with accept_gzip (urllib does not decompress on its own).
+            encoding = next((v for k, v in self.headers.items() if k.lower() == "content-encoding"), "")
+            if encoding.strip().lower() == "gzip" and self._body:
+                try:
+                    self._body = gzip.decompress(self._body)
+                except (OSError, EOFError) as exc:
+                    raise ConnectionError(f"damaged compressed answer from {self.url}: {exc}") from None
         return self._body
 
     @property
@@ -207,13 +218,17 @@ class Session:
         json: Optional[Any] = None,
         params: Optional[Mapping[str, Any]] = None,
         stream: bool = False,
+        accept_gzip: bool = False,
     ) -> Response:
+        """`accept_gzip`: ask for a compressed answer (large JSON); Response.content unpacks it."""
         scheme = urllib.parse.urlparse(url).scheme
         if scheme not in ("http", "https"):
             raise RequestException(f"unsupported URL scheme in {url!r}")
         if params:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
         headers = dict(self.headers)
+        if accept_gzip and not stream:
+            headers["Accept-Encoding"] = "gzip"
         body: Optional[bytes] = None
         if json is not None:
             body = jsonlib.dumps(json).encode("utf-8")

@@ -41,6 +41,8 @@ from .api import TRY_AGAIN_LATER, AgentClient
 from .config import Settings
 from . import netinfo, policy
 from .passive import PassiveSuite
+from .sightings import SightingsMonitor
+from .sightings.monitor import make_dns_hub
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
 from .schedule import Schedule, ScheduleState
 from .stages.scan_nmap import validate_target
@@ -125,6 +127,7 @@ class AgentService:
         state_path: Optional[Path] = None,
         sbom_cache_path: Optional[Path] = None,
         policy_path: Optional[Path] = None,
+        sightings_path: Optional[Path] = None,
     ) -> None:
         # This computer's own settings (config file, GUI) and, in self.settings, the same
         # with the administrator's settings applied (policy.py). The last applied policy
@@ -141,6 +144,9 @@ class AgentService:
         self.client = client or AgentClient(settings.api_url, settings.api_key, settings.agent_id)
         self.on_event = on_event
         self.suite: Optional[PassiveSuite] = None
+        # Threat sightings (sightings/): its own capture and threads, on while the setting is.
+        self.sightings: Optional[SightingsMonitor] = None
+        self._sightings_path = sightings_path
         self.schedule_state = ScheduleState(state_path, settings.agent_id)
         self.schedules_enabled = SCHEDULES_ENABLED
         self.history: deque[RunRecord] = deque(maxlen=50)
@@ -710,6 +716,10 @@ class AgentService:
         self.policy_store.save(version, managed)
         if restart_passive and new.passive:
             self._start_passive()
+        if "sightings" in changed:
+            self._stop_sightings()
+            if new.sightings:
+                self._start_sightings()
         log.info("Applied the administrator's settings (managed: %s; changed: %s)",
                  policy.describe(managed), ", ".join(changed) or "nothing")
 
@@ -718,6 +728,24 @@ class AgentService:
                                   backend=self.settings.passive_backend)
         self.suite.start()
         self._last_flush = time.time()
+
+    def _start_sightings(self) -> None:
+        try:
+            self.sightings = SightingsMonitor(
+                self.client, self.settings.agent_id, self._sightings_path,
+                make_hub=make_dns_hub(self.settings.passive_interface or None, self.settings.passive_backend))
+            self.sightings.start()
+            log.info("Threat sightings on: this computer's DNS answers and connections are checked here "
+                     "against the threat list; only matches are sent")
+        except Exception as exc:  # noqa: BLE001 - the rest of the agent keeps working
+            log.error("Threat sightings could not start: %s", exc, exc_info=True)
+            self.sightings = None
+
+    def _stop_sightings(self, flush: bool = True) -> None:
+        if self.sightings is not None:
+            self.sightings.stop(flush)
+            self.sightings = None
+            log.info("Threat sightings off")
 
     # ── lifecycle ──
     def _heartbeat(self) -> None:
@@ -748,6 +776,8 @@ class AgentService:
         self._maybe_apply_policy()          # what the first heartbeat brought, before listening starts
         if self.settings.passive and self.suite is None:
             self._start_passive()
+        if self.settings.sightings and self.sightings is None:
+            self._start_sightings()
 
     def run_forever(self) -> None:
         self.start()
@@ -788,6 +818,10 @@ class AgentService:
             log.warning("Final passive flush not started: %s", exc)
         if self.suite:
             self.suite.stop()
+        try:
+            self._stop_sightings()
+        except Exception as exc:  # noqa: BLE001 - stopping must not fail
+            log.warning("Stopping threat sightings failed: %s", exc)
         self._passive_pool.shutdown(wait=False, cancel_futures=True)
         self._active_pool.shutdown(wait=False, cancel_futures=True)
         self._inventory_pool.shutdown(wait=False, cancel_futures=True)

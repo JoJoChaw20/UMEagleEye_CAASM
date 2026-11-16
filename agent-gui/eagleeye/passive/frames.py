@@ -110,6 +110,15 @@ def wanted(frame: bytes) -> bool:
     return arp_or_broadcast(frame) or _has_port(frame, UDP_PORTS)
 
 
+DNS_PORT = 53
+
+
+def dns_answer(frame: bytes) -> bool:
+    """BPF "udp src port 53": a DNS server's answer (threat sightings, eagleeye/sightings)."""
+    found = udp_ports(frame)
+    return found is not None and found[0] == DNS_PORT
+
+
 # ── Classic BPF for the Linux packet socket ──────────────────────────────────
 
 LD_H_ABS, LD_B_ABS, LD_H_IND, LDX_B_MSH = 0x28, 0x30, 0x48, 0xB1
@@ -169,6 +178,34 @@ def kernel_filter() -> list[tuple[int, int, int, int]]:
         (JEQ, UDP, None, "reject"),
         *_port_checks(LD_H_ABS, 56),
         *_port_checks(LD_H_ABS, 54),
+        "reject",
+        (RET, 0),
+        "accept",
+        (RET, ACCEPT_BYTES),
+    ])
+
+
+def dns_kernel_filter() -> list[tuple[int, int, int, int]]:
+    """dns_answer() as classic BPF on untagged Ethernet frames."""
+    return _assemble([
+        (LD_H_ABS, 12),
+        (JEQ, ETH_IPV4, "ipv4", None),
+        (JEQ, ETH_IPV6, "ipv6", "reject"),
+        "ipv4",
+        (LD_B_ABS, 23),
+        (JEQ, UDP, None, "reject"),
+        (LD_H_ABS, 20),
+        (JSET, 0x1FFF, "reject", None),           # not the first fragment
+        (LDX_B_MSH, 14),
+        (LD_H_IND, 16),                           # the destination port is read too, as dns_answer needs the whole header
+        (LD_H_IND, 14),
+        (JEQ, DNS_PORT, "accept", "reject"),
+        "ipv6",
+        (LD_B_ABS, 20),
+        (JEQ, UDP, None, "reject"),
+        (LD_H_ABS, 56),
+        (LD_H_ABS, 54),
+        (JEQ, DNS_PORT, "accept", "reject"),
         "reject",
         (RET, 0),
         "accept",

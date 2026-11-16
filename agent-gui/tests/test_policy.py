@@ -146,6 +146,34 @@ def test_passive_listening_follows_the_administrator(tmp_path, monkeypatch):
     assert stopped == ["auto"] and svc.suite is None
 
 
+def test_threat_sightings_follow_the_administrator(tmp_path, monkeypatch):
+    events = []
+
+    class Monitor:
+        def __init__(self, client, agent_id, path, make_hub=None):
+            events.append(("new", agent_id))
+
+        def start(self):
+            events.append(("start",))
+
+        def stop(self, flush=True):
+            events.append(("stop", flush))
+
+    monkeypatch.setattr("eagleeye.service.SightingsMonitor", Monitor)
+    monkeypatch.setattr("eagleeye.service.make_dns_hub", lambda interface, backend: None)
+    svc, c = make(tmp_path)
+    assert svc.settings.sightings is False and svc.sightings is None   # off unless the dashboard sets it
+    c.policy_managed, c.policy_version = {"sightings": True}, "0a1b2c3d"
+    svc._maybe_apply_policy()
+    assert events == [("new", "a"), ("start",)] and svc.sightings is not None
+    c.policy_managed, c.policy_version = {"sightings": True, "sbom": False}, "1a1b2c3d"
+    svc._maybe_apply_policy()
+    assert len(events) == 2                                             # another setting: no restart
+    c.policy_managed, c.policy_version = {"sightings": False}, "2a1b2c3d"
+    svc._maybe_apply_policy()
+    assert events[-1] == ("stop", True) and svc.sightings is None       # what waits is sent first
+
+
 def test_jobs_come_with_the_heartbeat_and_are_handed_out_once(monkeypatch):
     monkeypatch.setattr("eagleeye.api.lan_ip", lambda: "192.168.0.139")
     monkeypatch.setattr("eagleeye.api.default_gateway", lambda: None)

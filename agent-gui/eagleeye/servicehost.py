@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, Callable, Optional
 
 from . import VERSION, ipc
-from .config import ConfigError, Settings, load_settings, sbom_cache_path, state_path
+from .config import ConfigError, Settings, load_settings, sbom_cache_path, sightings_list_path, state_path
 from .machine import MachineSecrets, machine_config_path, machine_log_dir
 from .policy import policy_path
 
@@ -57,7 +57,7 @@ class ServiceHost:
             return NetworkAgentService(settings, state_path=state_path(), policy_path=policy_path(), vendor=mac_vendor)
         from .service import AgentService
         return AgentService(settings, state_path=state_path(), sbom_cache_path=sbom_cache_path(),
-                            policy_path=policy_path())
+                            policy_path=policy_path(), sightings_path=sightings_list_path())
 
     # ── lifecycle ──
     def run(self) -> None:
@@ -158,6 +158,7 @@ class ServiceHost:
         if svc is None:
             return out
         suite = getattr(svc, "suite", None)
+        sightings = getattr(svc, "sightings", None)
         out.update({
             "last_heartbeat_at": _iso(getattr(svc, "last_heartbeat_at", None)),
             "last_heartbeat_ok": getattr(svc, "last_heartbeat_ok", None),
@@ -173,6 +174,7 @@ class ServiceHost:
                 "listening_on": suite.listening_on, "capture": getattr(suite, "capture", ""),
                 "running": suite.arp is not None, "problems": suite.problems(),
             },
+            "sightings": None if sightings is None else sightings.status(),
             "history": [{**asdict(r), "finished_at": _iso(r.finished_at)} for r in list(getattr(svc, "history", []))[-30:]],
         })
         return out

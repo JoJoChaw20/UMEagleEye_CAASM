@@ -34,6 +34,11 @@ log = logging.getLogger("eagleeye.passive")
 
 _REFRESH_SECONDS = 5          # how often the hub asks the chooser which adapter to use
 BACKENDS = ("auto", "npcap", "native")
+# The adapter name for "every adapter" (threat sightings: DNS answers arrive on whichever adapter
+# reaches the DNS server, often not the one passive listening uses). Linux: an unbound packet
+# socket; Windows: every NDIS interface. macOS's BPF needs one adapter, so it is never asked for.
+ANY = "*"
+ANY_INDEX = -1
 
 
 def npcap_installed() -> bool:
@@ -191,9 +196,9 @@ if sys.platform == "win32":  # pragma: no cover - the ctypes layer runs on Windo
     _advapi.CloseTrace.restype = wt.ULONG
     _NDISCAP_BYTES = NDISCAP.bytes_le
 
-    def _properties() -> Any:
+    def _properties(session: str = SESSION) -> Any:
         # 64 KB buffers, 4 to 32 of them: at most 2 MB of kernel memory, flushed every second.
-        size = ctypes.sizeof(EVENT_TRACE_PROPERTIES) + 2 * (len(SESSION) + 1) + 64
+        size = ctypes.sizeof(EVENT_TRACE_PROPERTIES) + 2 * (len(session) + 1) + 64
         buf = ctypes.create_string_buffer(size)
         p = EVENT_TRACE_PROPERTIES.from_buffer(buf)
         p.Wnode.BufferSize = size
@@ -206,17 +211,20 @@ if sys.platform == "win32":  # pragma: no cover - the ctypes layer runs on Windo
         p.LoggerNameOffset = ctypes.sizeof(EVENT_TRACE_PROPERTIES)
         return buf
 
-    def _stop_session() -> int:
-        return _advapi.ControlTraceW(0, SESSION, _properties(), EVENT_TRACE_CONTROL_STOP)
+    def _stop_session(session: str = SESSION) -> int:
+        return _advapi.ControlTraceW(0, session, _properties(session), EVENT_TRACE_CONTROL_STOP)
 
 
 class NdisSource:  # pragma: no cover - needs Windows and Administrator; checked by packaging/check_capture.py
     """Our real-time ETW session on the NDIS-PacketCapture provider. The driver reports
-    every adapter's packets; only the selected adapter's are delivered."""
+    every adapter's packets; only the selected adapter's are delivered. Threat sightings
+    runs its own session (another name) next to passive listening's: a provider can feed
+    several sessions, so either one starts and stops on its own."""
 
     name = "Microsoft NDIS capture (built in)"
 
-    def __init__(self) -> None:
+    def __init__(self, session: str = SESSION) -> None:
+        self.session = session
         self.error: Optional[str] = None
         self.index: Optional[int] = None
         self.seen: Counter[tuple[int, int]] = Counter()     # packets per (miniport, lower) index, for diagnosis
@@ -236,7 +244,7 @@ class NdisSource:  # pragma: no cover - needs Windows and Administrator; checked
             index = self.index
             miniport, lower = struct.unpack_from("<II", ctypes.string_at(rec.UserData, 8))
             self.seen[(miniport, lower)] += 1
-            if index is None or index not in (miniport, lower):
+            if index is None or (index != ANY_INDEX and index not in (miniport, lower)):
                 return
             found = parse_fragment(ctypes.string_at(rec.UserData, rec.UserDataLength))
             if found is not None and self._deliver is not None:
@@ -247,13 +255,13 @@ class NdisSource:  # pragma: no cover - needs Windows and Administrator; checked
     def open(self, deliver: Callable[[bytes], None]) -> bool:
         self._deliver = deliver
         handle = ctypes.c_uint64(0)
-        rc = _advapi.StartTraceW(ctypes.byref(handle), SESSION, _properties())
+        rc = _advapi.StartTraceW(ctypes.byref(handle), self.session, _properties(self.session))
         if rc == ERROR_ALREADY_EXISTS:
             # Left behind by an agent that did not stop cleanly (a real-time session
             # outlives its process). Only one agent runs per computer: replace it.
-            log.info("Replacing a leftover %s capture session", SESSION)
-            _stop_session()
-            rc = _advapi.StartTraceW(ctypes.byref(handle), SESSION, _properties())
+            log.info("Replacing a leftover %s capture session", self.session)
+            _stop_session(self.session)
+            rc = _advapi.StartTraceW(ctypes.byref(handle), self.session, _properties(self.session))
         if rc != 0:
             self.error = "requires Administrator" if rc == ERROR_ACCESS_DENIED else f"could not start capture ({rc})"
             return False
@@ -262,25 +270,28 @@ class NdisSource:  # pragma: no cover - needs Windows and Administrator; checked
                                     TRACE_LEVEL_INFORMATION, 0xFFFFFFFFFFFFFFFF, 0, 0, None)
         if rc != 0:
             self.error = f"could not switch on the NDIS capture driver ({rc})"
-            _stop_session()
+            _stop_session(self.session)
             return False
         logfile = EVENT_TRACE_LOGFILEW()
-        logfile.LoggerName = SESSION
+        logfile.LoggerName = self.session
         logfile.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD
         logfile.EventRecordCallback = self._cb
         self._trace = _advapi.OpenTraceW(ctypes.byref(logfile))
         if self._trace == INVALID_TRACE:
             self.error = f"could not read the capture session ({ctypes.get_last_error()})"
-            _stop_session()
+            _stop_session(self.session)
             return False
         handles = (ctypes.c_uint64 * 1)(self._trace)
         self._thread = threading.Thread(target=lambda: _advapi.ProcessTrace(handles, 1, None, None),
-                                        daemon=True, name="ndis-capture")
+                                        daemon=True, name="ndis-capture" if self.session == SESSION else "ndis-sightings")
         self._thread.start()
         self.error = None
         return True
 
     def select(self, adapter: Optional[dict[str, Any]]) -> None:
+        if (adapter or {}).get("name") == ANY:
+            self.index = ANY_INDEX
+            return
         index = (adapter or {}).get("index")
         self.index = int(index) if isinstance(index, int) and index > 0 else None
 
@@ -291,7 +302,7 @@ class NdisSource:  # pragma: no cover - needs Windows and Administrator; checked
         return self._thread is not None and self._thread.is_alive()
 
     def close(self) -> None:
-        _stop_session()                       # ends ProcessTrace
+        _stop_session(self.session)           # ends ProcessTrace
         if self._thread is not None:
             self._thread.join(timeout=5)
         if self._trace != INVALID_TRACE:
@@ -305,6 +316,9 @@ class NdisSource:  # pragma: no cover - needs Windows and Administrator; checked
 ETH_P_ALL = 0x0003
 SO_ATTACH_FILTER = 26
 PACKET_OUTGOING = 4
+# Link types whose frames start with an Ethernet header (ARPHRD_ETHER, ARPHRD_LOOPBACK): on
+# every adapter at once (ANY), a VPN tunnel's raw IP packets are skipped.
+ETHERNET_LINKS = (1, 772)
 
 
 def attach_filter(sock: Any, program: list[tuple[int, int, int, int]]) -> None:
@@ -320,17 +334,18 @@ class PacketSocketSource:
 
     name = "Linux packet socket (built in)"
 
-    def __init__(self, make_socket: Optional[Callable[[], Any]] = None) -> None:
+    def __init__(self, make_socket: Optional[Callable[[], Any]] = None,
+                 program: Optional[list[tuple[int, int, int, int]]] = None) -> None:
         self.error: Optional[str] = None
+        self._program = program if program is not None else frames.kernel_filter()
         self._make = make_socket or self._socket
         self._deliver: Optional[Callable[[bytes], None]] = None
         self._sock: Any = None
         self._bound: Optional[str] = None
 
-    @staticmethod
-    def _socket() -> Any:  # pragma: no cover - needs Linux and root
+    def _socket(self) -> Any:  # pragma: no cover - needs Linux and root
         sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))  # type: ignore[attr-defined]
-        attach_filter(sock, frames.kernel_filter())
+        attach_filter(sock, self._program)
         sock.settimeout(1.0)
         return sock
 
@@ -356,7 +371,8 @@ class PacketSocketSource:
             return
         try:
             sock = self._make()
-            sock.bind((name, 0))
+            if name != ANY:                 # unbound: every adapter
+                sock.bind((name, 0))
         except OSError as exc:
             log.warning("Cannot listen on %s (%s); trying again", name, exc)
             return
@@ -378,6 +394,8 @@ class PacketSocketSource:
                 return True
             if len(addr) > 2 and addr[2] == PACKET_OUTGOING:
                 continue                        # sent by this computer
+            if self._bound == ANY and len(addr) > 3 and addr[3] not in ETHERNET_LINKS:
+                continue                        # not an Ethernet frame (a tunnel)
             if self._deliver is not None:
                 self._deliver(data)
         return True
@@ -430,8 +448,10 @@ class BpfSource:
     name = "macOS BPF device (built in)"
 
     def __init__(self, open_device: Optional[Callable[[], int]] = None,
-                 ioctl: Optional[Callable[..., Any]] = None) -> None:
+                 ioctl: Optional[Callable[..., Any]] = None,
+                 program: Optional[list[tuple[int, int, int, int]]] = None) -> None:
         self.error: Optional[str] = None
+        self._program = program if program is not None else frames.kernel_filter()
         self._open_device = open_device or self._first_free_device
         self._ioctl = ioctl
         self._deliver: Optional[Callable[[bytes], None]] = None
@@ -463,7 +483,7 @@ class BpfSource:
         self._call(fd, BIOCSETIF, struct.pack("16s16x", adapter.encode()[:15]))
         self._call(fd, BIOCIMMEDIATE, struct.pack("I", 1))
         self._call(fd, BIOCSSEESENT, struct.pack("I", 0))
-        code = b"".join(struct.pack("HBBI", *ins) for ins in frames.kernel_filter())
+        code = b"".join(struct.pack("HBBI", *ins) for ins in self._program)
         insns = ctypes.create_string_buffer(code, len(code))
         self._call(fd, BIOCSETF, struct.pack("@IP", len(code) // 8, ctypes.addressof(insns)))
         got = self._call(fd, BIOCGBLEN, struct.pack("I", 0))
@@ -539,13 +559,19 @@ class BpfSource:
 
 # ── One capture for every sniffer ────────────────────────────────────────────
 
-def make_source(backend: str) -> Any:
+SIGHTINGS_SESSION = "EagleEye-Sightings"
+
+
+def make_source(backend: str, dns_only: bool = False) -> Any:
+    """The built-in capture for `backend`; `dns_only`: threat sightings' own capture, which
+    takes only DNS answers (its own ETW session on Windows, its own kernel filter elsewhere)."""
+    program = frames.dns_kernel_filter() if dns_only else None
     if backend == "ndis":
-        return NdisSource()
+        return NdisSource(SIGHTINGS_SESSION) if dns_only else NdisSource()
     if backend == "packet":
-        return PacketSocketSource()
+        return PacketSocketSource(program=program)
     if backend == "bpf":
-        return BpfSource()
+        return BpfSource(program=program)
     raise ValueError(f"no built-in capture called {backend!r}")
 
 

@@ -83,6 +83,7 @@ def summary(settings: Settings) -> list[str]:
         f"{mark(settings.inventory)}  This computer's inventory, with the software each user installed",
         f"{mark(settings.sbom)}  Software packages and their known vulnerabilities (SBOM)",
         f"{mark(settings.passive)}  Passive listening for device announcements",
+        f"{mark(settings.sightings)}  Threat sightings: lookups and connections checked here, only matches sent",
     ]
 
 

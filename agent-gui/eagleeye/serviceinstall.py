@@ -31,6 +31,7 @@ SAVED_SECRET = "•saved in the service•"
 
 # Files beside a config that belong to the same agent (config.py, policy.py, sbom.py).
 COMPANIONS = ("state", "policy", "sbom-cache")
+# (The threat list, sightings-list.json.gz, is not one: it is fetched again when missing.)
 
 
 def _command(instance: str) -> list[str]:

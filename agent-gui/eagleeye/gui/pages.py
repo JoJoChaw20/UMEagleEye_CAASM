@@ -235,10 +235,12 @@ class StatusPage(QWidget):
         self.agent = label("", "mono", wrap=True, selectable=True)
         self.heartbeat = label("", "value", wrap=True)
         self.passive_on = label("", "value", wrap=True)
+        self.sightings_on = label("", "value", wrap=True)
         grid.add("Server", self.server, 0)
         grid.add("Agent ID", self.agent, 0)
         grid.add("Last heartbeat", self.heartbeat, 1)
         grid.add("Passive listening", self.passive_on, 1)
+        grid.add("Threat sightings", self.sightings_on, 1)
         conn.add_layout(grid)
 
         recent = Panel("Recent activity", flush=True)
@@ -305,6 +307,20 @@ class StatusPage(QWidget):
             capture = getattr(suite, "capture", "")
             self.passive_on.setText(f"{suite.listening_on}, {capture}" if capture else suite.listening_on)
             set_tone(self.passive_on, None)
+        monitor = getattr(svc, "sightings", None) if svc is not None else None
+        if not effective_settings(self.win).get("sightings", s.sightings):
+            self.sightings_on.setText("off (set on the dashboard)")
+            set_tone(self.sightings_on, "muted")
+        elif monitor is None:
+            self.sightings_on.setText("-" if svc is None else "not running (see Log)")
+            set_tone(self.sightings_on, None if svc is None else "warn")
+        else:
+            st = monitor.status()
+            text = f"{st['listed']:,} listed domains and IPs; {st['sent']} contact(s) sent"
+            if not st["dns_capture"]:
+                text += "; connections only (no DNS capture)"
+            self.sightings_on.setText(text)
+            set_tone(self.sightings_on, "warn" if st["problems"] else None)
 
         busy_bits = []
         if svc is not None:
@@ -758,7 +774,7 @@ def effective_settings(win: "MainWindow") -> dict[str, Any]:
     computer's settings until the dashboard has answered."""
     s = win.store.settings
     managed = managed_now(win)
-    keys = ("inventory", "inventory_interval", "sbom", "passive")
+    keys = ("inventory", "inventory_interval", "sbom", "passive", "sightings")
     return {k: managed.get(k, getattr(s, k)) for k in keys}
 
 
@@ -775,7 +791,8 @@ class PrivacyPage(QWidget):
         self.values: dict[str, QLabel] = {}
         for key, title in (("inventory", "Collects this computer's inventory"),
                            ("sbom", "Lists its software packages and checks them for vulnerabilities (SBOM)"),
-                           ("passive", "Listens for the devices on its network")):
+                           ("passive", "Listens for the devices on its network"),
+                           ("sightings", "Checks its lookups and connections against the threat list (only matches sent)")):
             value = label("", "value", wrap=True)
             grid.add(title, value)
             self.values[key] = value
@@ -815,7 +832,7 @@ class PrivacyPage(QWidget):
         yes_no = lambda on: "Yes" if on else "No"          # noqa: E731
         hours = max(1, round(int(e["inventory_interval"]) / 3600))
         self.values["inventory"].setText(f"Yes, every {hours} hour{'s' if hours != 1 else ''}" if e["inventory"] else "No")
-        for key in ("sbom", "passive"):
+        for key in ("sbom", "passive", "sightings"):
             self.values[key].setText(yes_no(e[key]))
         s = self.win.store.settings
         try:

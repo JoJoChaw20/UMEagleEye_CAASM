@@ -350,6 +350,38 @@ class AgentClient:
                       + f"{data.get('kev_matches', 0)} on CISA KEV"
                       + (f"; {dropped} lower-priority finding(s) not raised as alerts" if dropped else ""))
 
+    def sightings_indicators(self, part: str, after: Optional[str] = None) -> dict[str, Any]:
+        """GET /sightings/indicators - one page of the organisation's bad domains and IPs
+        (part "feeds", from cursor `after`) or its threat-intel events' (part "events").
+        Raises on failure (sightings/indicators.py keeps the list and tries later)."""
+        params: dict[str, Any] = {"part": part}
+        if after:
+            params["after"] = after
+        resp = self._request("GET", "/sightings/indicators", 60, params=params, accept_gzip=True)
+        if not resp.ok:
+            raise httpclient.HTTPError(f"the server refused the threat list ({self._detail(resp)})", response=resp)
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("the threat list answer is not an object")
+        return data
+
+    def send_sightings(self, hits: list[dict[str, Any]]) -> tuple[bool, str]:
+        """POST /sightings - what this computer looked up or connected to that is on the list
+        (nothing else is ever sent). The server re-checks each and raises the alerts."""
+        sent, created, updated = 0, 0, 0
+        for i in range(0, len(hits), 200):
+            try:
+                resp = self._request("POST", "/sightings", 30, data=json.dumps({"hits": hits[i:i + 200]}))
+            except httpclient.RequestException as exc:
+                return False, failure(exc)
+            if not resp.ok:
+                return False, f"server rejected the sightings ({self._detail(resp)})"
+            data = resp.json()
+            sent += int(data.get("accepted") or 0)
+            created += int(data.get("created") or 0)
+            updated += int(data.get("updated") or 0)
+        return True, f"{sent} contact(s) accepted; alerts: {created} new, {updated} updated"
+
     def send_inventory(self, inventory: dict[str, Any]) -> InventoryResult:
         """POST /agents/:id/inventory - the endpoint inventory of the agent's own machine.
         The server binds it to the matching asset (or creates one in Discovered)."""
