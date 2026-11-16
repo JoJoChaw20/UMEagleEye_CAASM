@@ -38,6 +38,17 @@ const EVENT_TYPE_VALUES = [
   'cve_detected', 'new_device', 'config_change', 'new_package',
   'removed_package', 'cti_match', 'os_patch_missing', 'exposure', 'vulnerable_service',
 ] as const
+// Filter-only types: a kind of alert inside an event type. cti_sighting = the cti_match alerts an
+// agent saw its own computer make (rule R7, routes/sightings.ts).
+const FILTER_TYPE_VALUES = [...EVENT_TYPE_VALUES, 'cti_sighting'] as const
+const isSighting = sql`(${events.eventType} = 'cti_match' AND ${events.details}->>'match_kind' = 'sighting')`
+
+function typeCondition(raw: string | undefined) {
+  const list = csv(raw, FILTER_TYPE_VALUES)
+  if (list.length === 0) return undefined
+  const real = list.filter((t): t is typeof EVENT_TYPE_VALUES[number] => t !== 'cti_sighting')
+  return or(real.length ? inArray(events.eventType, real) : undefined, list.includes('cti_sighting') ? isSighting : undefined)
+}
 const DRIFT_TYPES = new Set([
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'config_change', 'new_package', 'removed_package',
@@ -106,7 +117,6 @@ function statusCondition(raw: string | undefined) {
 export function listConditions(user: User, q: (k: string) => string | undefined) {
     const tenantId   = scopeTenant(user, q('tenant_id'))
     const severities = csv(q('severity'), SEVERITY_VALUES)
-    const eventType  = csv(q('event_type') ?? q('type'), EVENT_TYPE_VALUES)
     const assignedTo = q('assigned_to')
     const search     = q('q')?.trim()
     const since      = q('since') ? new Date(q('since')!) : null
@@ -117,7 +127,7 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
       tenantId ? eq(assets.tenantId, tenantId) : undefined,
       statusCondition(q('status')),
       severities.length ? inArray(events.severity, severities) : undefined,
-      eventType.length ? inArray(events.eventType, eventType) : undefined,
+      typeCondition(q('event_type') ?? q('type')),
       q('asset_id') && z.string().uuid().safeParse(q('asset_id')).success ? eq(events.assetId, q('asset_id')!) : undefined,
       q('internet_facing') === 'true' ? eq(assets.isInternetFacing, true) : undefined,
       q('device_type') ? eq(assets.deviceType, q('device_type') as typeof assets.$inferSelect['deviceType']) : undefined,
@@ -292,9 +302,10 @@ app.get('/stats/summary', authMiddleware, async (c) => {
       db.select({ severity: events.severity, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, isOpenEvent())).groupBy(events.severity),
-      db.select({ event_type: events.eventType, count: sql<number>`count(*)::int` })
+      // cti_sighting (a filter-only type) is counted inside cti_match too
+      db.select({ event_type: sql<string>`CASE WHEN ${isSighting} THEN 'cti_sighting' ELSE ${events.eventType}::text END`, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
-        .where(and(tenantCond, isOpenEvent())).groupBy(events.eventType),
+        .where(and(tenantCond, isOpenEvent())).groupBy(sql`1`),
       db.select({ avg: sql<number>`round(avg(${events.compositeRiskScore})::numeric, 1)::float` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, isOpenEvent(), sql`${events.compositeRiskScore} IS NOT NULL`)),
@@ -333,6 +344,7 @@ app.get('/stats/summary', authMiddleware, async (c) => {
     for (const r of bySeverity) by_severity[r.severity] = r.count
     const by_type: Record<string, number> = {}
     for (const r of byType) by_type[r.event_type] = r.count
+    if (by_type['cti_sighting']) by_type['cti_match'] = (by_type['cti_match'] ?? 0) + by_type['cti_sighting']
 
     const newMap: Record<string, number> = {}
     for (const r of dailyNew) newMap[r.day] = r.count

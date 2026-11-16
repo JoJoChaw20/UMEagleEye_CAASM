@@ -23,6 +23,7 @@ import chatbotRoutes from './routes/chatbot'
 import mcpRoutes from './routes/mcp'
 import dashboardRoutes from './routes/dashboard'
 import sbomRoutes from './routes/sbom'
+import sightingRoutes from './routes/sightings'
 
 import { handleQueue } from './queues/consumer'
 import { shouldSignalKg, signalKgSyncSafe } from './kg/sync'
@@ -93,6 +94,7 @@ api.route('/notifications', notificationRoutes)
 api.route('/chatbot', chatbotRoutes)
 api.route('/mcp', mcpRoutes)
 api.route('/sboms', sbomRoutes)
+api.route('/sightings', sightingRoutes)
 api.route('/dashboard', dashboardRoutes)
 
 app.route('/api/v1', api)

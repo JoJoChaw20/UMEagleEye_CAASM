@@ -314,6 +314,8 @@ export const ctiIndicators = pgTable('cti_indicators', {
   // Feed upserts conflict on value; the same value may also appear in any number of events.
   uniqueIndex('idx_cti_feed_value').on(t.value).where(sql`${t.tiEventId} IS NULL`),
   uniqueIndex('idx_cti_event_value').on(t.tiEventId, t.value).where(sql`${t.tiEventId} IS NOT NULL`),
+  // The agents' sightings list pages through feed entries by (last_seen, indicator_id) (routes/sightings.ts).
+  index('idx_cti_feed_seen').on(t.lastSeen, t.indicatorId).where(sql`${t.tiEventId} IS NULL`),
 ])
 
 // ─── Threat-intel events (MISP-style) ───────────────────────────

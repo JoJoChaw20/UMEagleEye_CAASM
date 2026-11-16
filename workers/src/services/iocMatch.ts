@@ -136,6 +136,8 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       SELECT e.event_id, e.asset_id, a.tenant_id, e.status, e.details->>'indicator_type' AS itype, e.details->>'indicator_value' AS ivalue
       FROM events e JOIN assets a ON a.asset_id = e.asset_id
       WHERE e.event_type = 'cti_match' AND ${inScope}
+        -- Sightings (R7, routes/sightings.ts) come from the agent and are closed by people.
+        AND COALESCE(e.details->>'match_kind', '') <> 'sighting'
     ),
     ins AS (
       INSERT INTO events (asset_id, event_type, severity, details)

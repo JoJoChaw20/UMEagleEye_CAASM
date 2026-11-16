@@ -239,6 +239,13 @@
       "when": 1794837674066,
       "tag": "0033_cve_findings",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794845727575,
+      "tag": "0034_sightings_list_index",
+      "breakpoints": true
     }
   ]
 }

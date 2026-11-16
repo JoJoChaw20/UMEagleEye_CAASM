@@ -162,6 +162,8 @@ app.get('/stats', authMiddleware, async (c) => {
           open:   sql<number>`count(*)::int`,
           high:   sql<number>`count(*) FILTER (WHERE ${events.severity} IN ('critical', 'high'))::int`,
           assets: sql<number>`count(DISTINCT ${events.assetId})::int`,
+          // R7: an agent saw its computer contact a listed domain or IP (routes/sightings.ts)
+          sightings: sql<number>`count(*) FILTER (WHERE ${events.details}->>'match_kind' = 'sighting')::int`,
         })
         .from(events)
         .innerJoin(assets, eq(assets.assetId, events.assetId))
@@ -199,6 +201,7 @@ app.get('/stats', authMiddleware, async (c) => {
         open:   matchRows[0]?.open ?? 0,
         high:   matchRows[0]?.high ?? 0,
         assets: matchRows[0]?.assets ?? 0,
+        sightings: matchRows[0]?.sightings ?? 0,
       },
       ti_events: { total: eventRows[0]?.total ?? 0, published: eventRows[0]?.published ?? 0 },
       // Feed health: each feed's count, and when it last loaded (null before the first

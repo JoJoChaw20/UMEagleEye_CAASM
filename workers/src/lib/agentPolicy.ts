@@ -33,6 +33,10 @@ export const POLICY_SPECS = {
   inventory_user_software: { type: 'bool' },
   sbom: { type: 'bool' },
   sbom_interval: { type: 'int', min: 3600, max: 30 * 86400 },
+  // Threat sightings (rule R7, lib/sightings.ts): the agent checks its own computer's DNS answers
+  // and outbound connections against the tenant's bad domains and IPs on the computer and reports
+  // only matches. Off unless set (it reads this computer's traffic; privacy notice v7).
+  sightings: { type: 'bool' },
   // The network agent (agent-gui/eagleeye/netagent): it reads the seed routers and switches,
   // then their CDP/LLDP neighbours inside the allowed ranges, up to network_depth hops away,
   // every network_interval seconds. Its SNMP credentials stay on the agent.
@@ -81,7 +85,7 @@ export type Role = keyof typeof ROLE_KEYS
 export const DEFAULTS: Record<PolicyKey, PolicyValue> = {
   scanner: true, scan_ports: 'base', passive: false, passive_interval: 300,
   inventory: true, inventory_interval: 21600, inventory_user_software: false,
-  sbom: true, sbom_interval: 86400,
+  sbom: true, sbom_interval: 86400, sightings: false,
   network_poll: true, network_seeds: [], network_ranges: [], network_depth: 3, network_interval: 900,
 }
 

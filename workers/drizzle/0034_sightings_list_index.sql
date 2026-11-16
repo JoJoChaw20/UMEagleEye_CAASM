@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "idx_cti_feed_seen" ON "cti_indicators" USING btree ("last_seen","indicator_id") WHERE "cti_indicators"."ti_event_id" IS NULL;
