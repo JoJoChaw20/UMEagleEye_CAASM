@@ -13,12 +13,21 @@ import {
   generateTotpSecret,
   verifyTotp,
   generateTotpQR,
+  NO_PASSWORD_HASH,
 } from '../lib/auth'
 import { authenticator } from 'otplib'
 import { TOO_MANY, clearFailures, overLimit, recordFailure } from '../lib/loginLimit'
 import { audit, callerIp } from '../services/audit'
 
 const app = new Hono<{ Bindings: Env }>()
+
+const passwordSchema = z.string()
+  .min(12, 'Password must be at least 12 characters')
+  .regex(/[a-z]/, 'Password must contain a lowercase letter')
+  .regex(/[A-Z]/, 'Password must contain an uppercase letter')
+  .regex(/[0-9]/, 'Password must contain a number')
+  .regex(/[^A-Za-z0-9\s]/, 'Password must contain a special character')
+  .refine((password) => !/\s/.test(password), 'Password must not contain spaces')
 
 // A password hash to check against when the username does not exist, so a wrong username takes
 // as long as a wrong password and cannot be told apart by timing.
@@ -29,7 +38,7 @@ const decoy = () => (decoyHash ??= hashPassword('decoy-password-never-matches'))
 const registerSchema = z.object({
   username: z.string().min(3).max(100),
   email: z.string().email(),
-  password: z.string().min(8),
+  password: passwordSchema,
   role: z.enum(['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']).optional(),
 })
 
@@ -327,7 +336,7 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
 // ── POST /change-password ────────────────────────────────────────
 const changePasswordSchema = z.object({
   current_password: z.string(),
-  new_password: z.string().min(8),
+  new_password: passwordSchema,
 })
 
 app.post('/change-password', authMiddleware, zValidator('json', changePasswordSchema), async (c) => {
@@ -353,6 +362,37 @@ app.post('/change-password', authMiddleware, zValidator('json', changePasswordSc
   }
 })
 
+// ── POST /set-password ──────────────────────────────────────────
+// Google-only accounts have already authenticated with Google, so they can establish a
+// password from an authenticated session without supplying a password that does not exist.
+const setPasswordSchema = z.object({
+  new_password: passwordSchema,
+})
+
+app.post('/set-password', authMiddleware, zValidator('json', setPasswordSchema), async (c) => {
+  try {
+    const { new_password } = c.req.valid('json')
+    const authUser = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+
+    const [user] = await db.select({ passwordHash: users.passwordHash }).from(users)
+      .where(eq(users.userId, authUser.userId)).limit(1)
+    if (!user) return c.json({ detail: 'User not found' }, 404)
+    if (user.passwordHash !== NO_PASSWORD_HASH) {
+      return c.json({ detail: 'A password is already set. Use change password instead.' }, 409)
+    }
+
+    const newHash = await hashPassword(new_password)
+    await db.update(users).set({ passwordHash: newHash }).where(eq(users.userId, authUser.userId))
+    await audit(db, c, { userId: authUser.userId, tenantId: authUser.tenantId ?? null, actionType: 'auth.password_set', targetEntity: authUser.userId })
+
+    return c.json({ detail: 'Password set successfully' })
+  } catch (err) {
+    console.error('set-password error:', err)
+    return c.json({ detail: 'Failed to set password' }, 500)
+  }
+})
+
 // ── GET /me ──────────────────────────────────────────────────────
 app.get('/me', authMiddleware, async (c) => {
   try {
@@ -372,6 +412,7 @@ app.get('/me', authMiddleware, async (c) => {
         createdAt:      users.createdAt,
         lastLogin:      users.lastLogin,
         telegramChatId: users.telegramChatId,
+        passwordHash:   users.passwordHash,
       })
       .from(users)
       .leftJoin(tenants, eq(users.tenantId, tenants.tenantId))
@@ -382,7 +423,8 @@ app.get('/me', authMiddleware, async (c) => {
       return c.json({ detail: 'User not found' }, 404)
     }
 
-    return c.json(row)
+    const { passwordHash, ...profile } = row
+    return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH })
   } catch (err) {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)

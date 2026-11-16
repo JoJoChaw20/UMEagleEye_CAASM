@@ -3,6 +3,24 @@ import { Users, Shield, Clock, Eye, EyeOff, Lock, Copy, Check } from 'lucide-rea
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 
+const passwordRequirements = [
+  ['length', 'At least 12 characters'],
+  ['lowercase', 'A lowercase letter'],
+  ['uppercase', 'An uppercase letter'],
+  ['number', 'A number'],
+  ['special', 'A special character'],
+  ['space', 'No spaces'],
+]
+
+const passwordChecks = (password) => ({
+  length: password.length >= 12,
+  lowercase: /[a-z]/.test(password),
+  uppercase: /[A-Z]/.test(password),
+  number: /[0-9]/.test(password),
+  special: /[^A-Za-z0-9\s]/.test(password),
+  space: !/\s/.test(password),
+})
+
 export default function SettingsPage() {
   const { user } = useAuth()
 
@@ -22,6 +40,10 @@ export default function SettingsPage() {
   const [pwMessage, setPwMessage] = useState('')
   const [pwError, setPwError] = useState('')
   const [pwLoading, setPwLoading] = useState(false)
+  const [passwordSet, setPasswordSet] = useState(false)
+  const hasPassword = passwordSet || user?.hasPassword !== false
+  const newPasswordChecks = passwordChecks(newPassword)
+  const newPasswordIsStrong = Object.values(newPasswordChecks).every(Boolean)
 
   const setupMFA = async () => {
     try {
@@ -63,8 +85,8 @@ export default function SettingsPage() {
       setPwError('New passwords do not match')
       return
     }
-    if (newPassword.length < 8) {
-      setPwError('New password must be at least 8 characters')
+    if (!newPasswordIsStrong) {
+      setPwError('Choose a stronger password that meets all the requirements below')
       return
     }
     setPwLoading(true)
@@ -79,6 +101,32 @@ export default function SettingsPage() {
       setConfirmPassword('')
     } catch (err) {
       setPwError(err.response?.data?.detail || 'Failed to change password')
+    } finally {
+      setPwLoading(false)
+    }
+  }
+
+  const handleSetPassword = async (e) => {
+    e.preventDefault()
+    setPwError('')
+    setPwMessage('')
+    if (newPassword !== confirmPassword) {
+      setPwError('New passwords do not match')
+      return
+    }
+    if (!newPasswordIsStrong) {
+      setPwError('Choose a stronger password that meets all the requirements below')
+      return
+    }
+    setPwLoading(true)
+    try {
+      await client.post('/auth/set-password', { new_password: newPassword })
+      setPasswordSet(true)
+      setPwMessage('Password set successfully! You can now also sign in with your username and password.')
+      setNewPassword('')
+      setConfirmPassword('')
+    } catch (err) {
+      setPwError(err.response?.data?.detail || 'Failed to set password')
     } finally {
       setPwLoading(false)
     }
@@ -116,13 +164,18 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Change Password */}
+      {/* Password */}
       <div className="glass-card p-6">
         <div className="flex items-center gap-3 mb-4">
           <Lock className="w-5 h-5 text-accent-cyan" />
-          <h2 className="text-lg font-semibold text-dark-50">Change Password</h2>
+          <h2 className="text-lg font-semibold text-dark-50">{hasPassword ? 'Change Password' : 'Set Password'}</h2>
         </div>
 
+        {!hasPassword && (
+          <p className="mb-4 text-sm text-dark-400">
+            Your account uses Google sign-in and does not have a password yet. Set one here if you also want username and password sign-in.
+          </p>
+        )}
         {pwMessage && (
           <div className="mb-4 p-3 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm">
             {pwMessage}
@@ -134,24 +187,26 @@ export default function SettingsPage() {
           </div>
         )}
 
-        <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">Current Password</label>
-            <div className="relative">
-              <input
-                type={showCurrent ? 'text' : 'password'}
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                className="input-field w-full pr-10"
-                placeholder="Enter current password"
-                required
-              />
-              <button type="button" onClick={() => setShowCurrent(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200">
-                {showCurrent ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
+        <form onSubmit={hasPassword ? handleChangePassword : handleSetPassword} className="space-y-4 max-w-sm">
+          {hasPassword && (
+            <div>
+              <label className="block text-xs text-dark-400 mb-1">Current Password</label>
+              <div className="relative">
+                <input
+                  type={showCurrent ? 'text' : 'password'}
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="input-field w-full pr-10"
+                  placeholder="Enter current password"
+                  required
+                />
+                <button type="button" onClick={() => setShowCurrent(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200">
+                  {showCurrent ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
           <div>
             <label className="block text-xs text-dark-400 mb-1">New Password</label>
             <div className="relative">
@@ -160,13 +215,20 @@ export default function SettingsPage() {
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="input-field w-full pr-10"
-                placeholder="Minimum 8 characters"
+                placeholder="Create a strong password"
                 required
               />
               <button type="button" onClick={() => setShowNew(v => !v)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200">
                 {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+              {passwordRequirements.map(([key, label]) => (
+                <span key={key} className={`text-[11px] ${newPasswordChecks[key] ? 'text-green-400' : 'text-dark-500'}`}>
+                  {newPasswordChecks[key] ? '✓' : '○'} {label}
+                </span>
+              ))}
             </div>
           </div>
           <div>
@@ -184,7 +246,7 @@ export default function SettingsPage() {
             {pwLoading
               ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               : <Lock className="w-4 h-4" />}
-            {pwLoading ? 'Changing...' : 'Change Password'}
+            {pwLoading ? (hasPassword ? 'Changing...' : 'Setting...') : (hasPassword ? 'Change Password' : 'Set Password')}
           </button>
         </form>
       </div>

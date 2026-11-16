@@ -9,6 +9,7 @@ import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { addRefusal, mayGrantRole, type Refusal } from '../lib/userAdmin'
 import { audit } from '../services/audit'
+import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
 
 const router = new Hono<{ Bindings: Env }>()
@@ -380,7 +381,7 @@ router.post(
     const inserted = await db.insert(users).values({
       username: uname,
       email,
-      passwordHash: 'google_oauth_no_password',
+      passwordHash: NO_PASSWORD_HASH,
       role: role ?? 'business_owner',
       tenantId,
     }).returning()

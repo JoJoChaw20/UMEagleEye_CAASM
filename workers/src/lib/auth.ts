@@ -1,6 +1,8 @@
 import { SignJWT, jwtVerify } from 'jose'
 import type { JWTPayload } from '../types'
 
+export const NO_PASSWORD_HASH = 'google_oauth_no_password'
+
 // ── Password hashing (PBKDF2 via Web Crypto) ─────────────────────
 export async function hashPassword(password: string): Promise<string> {
   const enc = new TextEncoder()
