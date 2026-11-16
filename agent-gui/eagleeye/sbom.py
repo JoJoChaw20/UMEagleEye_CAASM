@@ -65,6 +65,20 @@ CREATE_NO_WINDOW = 0x08000000
 # Syft faster: the time goes on walking the folders.
 COMPILED_PROGRAM_CATALOGERS = ("go-module-binary-cataloger", "linux-kernel-cataloger", "pe-binary-package-cataloger")
 
+# Syft readers added to its folder defaults. Syft reads installed node_modules only in
+# container images; in a folder it reads lock files alone, so globally installed npm
+# packages (no lock file, e.g. %APPDATA%\npm\node_modules) were never listed. Found by the
+# SBOM accuracy test (workers/scripts/sbom-accuracy): 0 of 7 npm packages before, 7 after.
+INSTALLED_PACKAGE_CATALOGERS = ("javascript-package-cataloger",)
+
+
+def select_catalogers(include_binaries: bool) -> str:
+    """Syft's --select-catalogers value: the installed-package readers on, and the
+    compiled-program readers off unless they are switched back on."""
+    on = [f"+{name}" for name in INSTALLED_PACKAGE_CATALOGERS]
+    off = [] if include_binaries else [f"-{name}" for name in COMPILED_PROGRAM_CATALOGERS]
+    return ",".join(on + off)
+
 # Windows' own folders, the same on every Windows 10/11 PC: Windows components and caches
 # (Defender, the Store's app packages, the search index, installer caches), not third-party
 # packages Syft could match to a CVE, and partly unreadable even for administrators.
@@ -587,8 +601,7 @@ def build_sbom(syft: str, roots: list[str], runner: Runner = _run,
                 cmd = [syft, "scan", f"dir:{unit.path}", "-o", f"cyclonedx-json={out}", "-q"]
                 for pattern in excludes_for(unit.path):
                     cmd += ["--exclude", pattern]
-                if not include_binaries:
-                    cmd += ["--select-catalogers", ",".join(f"-{name}" for name in COMPILED_PROGRAM_CATALOGERS)]
+                cmd += ["--select-catalogers", select_catalogers(include_binaries)]
                 started = awake()
                 try:
                     runner(cmd, limit)

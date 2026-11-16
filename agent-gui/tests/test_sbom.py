@@ -128,13 +128,14 @@ def test_build_merges_folders_and_reports_ones_that_failed():
     first = next(c for c in calls if c[2] == "dir:/one")
     assert first[:3] == ["syft", "scan", "dir:/one"] and "--exclude" in first
     assert first[first.index("--select-catalogers") + 1] == (
-        "-go-module-binary-cataloger,-linux-kernel-cataloger,-pe-binary-package-cataloger")
+        "+javascript-package-cataloger,-go-module-binary-cataloger,-linux-kernel-cataloger,-pe-binary-package-cataloger")
 
 
 def test_compiled_program_readers_can_be_switched_back_on():
     run, calls = fake_syft([doc(pkg("a", "1", "pkg:npm/a@1"))])
     sbom.build_sbom("syft", ["/one"], run, include_binaries=True, containers=set())
-    assert "--select-catalogers" not in calls[0]
+    # installed npm packages are always read; nothing is switched off
+    assert calls[0][calls[0].index("--select-catalogers") + 1] == "+javascript-package-cataloger"
 
 
 def test_build_fails_when_no_folder_could_be_scanned():

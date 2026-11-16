@@ -38,8 +38,11 @@ class SbomBuildStage(Stage):
         runner = self.runner or (lambda cmd, timeout: sbom._run(cmd, timeout, ctx.cancelled))
         full = self.full
         if self.cache is not None:
+            # the readers are part of the setup: a change lists every folder again, so a
+            # reader added in an update reaches folders that have not changed since
             setup = {"syft": self.tool_version(tools["syft"]),  # type: ignore[arg-type]
-                     "include_binaries": self.include_binaries, "excludes": list(sbom.COMMON_EXCLUDES)}
+                     "include_binaries": self.include_binaries, "excludes": list(sbom.COMMON_EXCLUDES),
+                     "catalogers": sbom.select_catalogers(self.include_binaries)}
             if self.cache.use_setup(setup):
                 ctx.progress("Syft or the SBOM settings changed since the last run: listing every folder again")
             if not self.cache.folders:

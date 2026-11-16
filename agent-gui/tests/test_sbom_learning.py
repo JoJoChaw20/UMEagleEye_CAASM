@@ -236,6 +236,22 @@ def test_the_build_stage_lists_everything_when_nothing_is_learned_or_syft_change
     assert any("listing every folder again" in m for m in messages)
 
 
+def test_an_update_that_changes_the_syft_readers_lists_every_folder_again(tmp_path, monkeypatch):
+    # A cache learned before the npm reader was added has no "catalogers" in its setup: the
+    # first run after the update lists every folder, so unchanged folders get npm packages too.
+    monkeypatch.setattr(sbom, "scan_roots", lambda extra="": [str(tmp_path / "apps")])
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "apps" / "x").write_text("x")
+    cache = sbom.FolderCache(tmp_path / "c.json")
+    cache.use_setup({"syft": "1.44.0", "include_binaries": False, "excludes": list(sbom.COMMON_EXCLUDES)})
+    cache.folders[str(tmp_path / "apps")] = {"fingerprint": "old", "components": []}
+    run, calls = fake_syft([doc(pkg("lodash", "4.17.15", "pkg:npm/lodash@4.17.15"))])
+    ctx = PipelineContext("sbom")
+    SbomBuildStage(find_tool=lambda n: n, runner=run, cache=cache, full=False, tool_version=lambda p: "1.44.0").run(ctx)
+    assert ctx.summary["sbom_full"] is True and len(calls) == 1
+    assert cache.setup["catalogers"].startswith("+javascript-package-cataloger")
+
+
 # ── upload ──
 class UploadClient:
     def __init__(self, answers):
