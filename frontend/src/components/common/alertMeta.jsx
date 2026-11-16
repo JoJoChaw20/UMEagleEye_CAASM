@@ -22,6 +22,8 @@ export const EVENT_TYPE_LABELS = {
   // one alert per vulnerable package, its CVEs inside (workers/src/lib/packageAlerts.ts)
   cve_detected:      'Vulnerable Package',
   cti_match:         'Threat Intel Match',
+  // a filter only (workers/src/routes/events.ts): the cti_match alerts an agent saw its computer make (R7)
+  cti_sighting:      'Threat Contacted',
   port_opened:       'Port Opened',
   port_closed:       'Port Closed',
   version_downgrade: 'Version Downgrade',
@@ -44,7 +46,8 @@ export const TYPE_GROUPS = [
     os_patch_missing:   'A Windows machine behind on the fixes Microsoft released',
   } },
   { label: 'Threats', types: {
-    cti_match:          'A threat feed lists this device\'s address or name, or software on a watchlist',
+    cti_match:          'Every threat-intel match: the device\'s address or name is listed, it contacted a listed domain or IP, or watched software is installed',
+    cti_sighting:       'The device\'s agent saw it look up or connect to a domain or IP threat intel lists',
   } },
   { label: 'Exposure', types: {
     exposure:           'A risky setup a scan saw now: Telnet, a database without a password, RDP from the internet…',
@@ -82,6 +85,7 @@ export const RISKY_PORTS = {
 
 export function alertLabel(e) {
   if (e.event_type === 'cti_match' && e.details?.match_kind === 'watchlist') return 'Watched Software Found'
+  if (isSighting(e)) return 'Threat Contacted'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
   if (e.event_type === 'os_patch_missing' && e.details?.patch_status === 'unsupported') return 'Windows Out of Support'
   if (e.event_type === 'exposure') return e.details?.title ?? 'Exposure'
@@ -92,6 +96,7 @@ export function alertLabel(e) {
 export function renderDetail(e) {
   const d = e.details ?? {}
   if (isPackageAlert(d)) return vulnerablePackageSummary(d)
+  if (isSighting(e)) return sightingSummary(d)
   if (d.cve_id) return d.cve_id
   if (d.indicator_value) return d.indicator_value
   if (e.event_type === 'config_change') {
@@ -119,6 +124,26 @@ export function renderDetail(e) {
 
 /** An SBOM alert for one vulnerable package with its CVEs inside (details.shape 'package'). */
 export const isPackageAlert = (d) => d?.shape === 'package'
+
+/** The computer itself looked up or connected to a listed domain or IP (rule R7,
+ *  workers/src/lib/sightings.ts), as its agent saw it. */
+export const isSighting = (e) => e?.event_type === 'cti_match' && e.details?.match_kind === 'sighting'
+
+const shortTime = (iso) => {
+  if (!iso) return null
+  const t = new Date(iso)
+  return Date.now() - t.getTime() < 86400000 ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : t.toLocaleDateString()
+}
+
+// "Looked up c2.evil.com (DNS) 14×, last 10:32" / "Connected to 198.51.100.7:443 (msedge.exe) 3×, last 10:32"
+export function sightingSummary(d) {
+  const n = d.count ?? 1
+  const what = d.matched_on === 'connection'
+    ? `Connected to ${d.observed ?? d.indicator_value}${d.port ? `:${d.port}` : ''}${d.process ? ` (${d.process})` : ''}`
+    : `Looked up ${d.observed ?? d.indicator_value} (DNS)`
+  const last = shortTime(d.last_seen_at)
+  return `${what}${n > 1 ? ` ${n.toLocaleString()}×` : ''}${last ? `, last ${last}` : ''}`
+}
 
 // "lodash 4.17.15 · 5 CVEs (1 exploited) · upgrade to 4.17.21" (workers/src/lib/packageAlerts.ts)
 export function vulnerablePackageSummary(d) {
@@ -210,6 +235,7 @@ export function riskReasons(e) {
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
   const crit = e.asset_criticality ?? e.asset?.criticality
   const out = []
+  if (isSighting(e)) out.push({ label: 'Contacted by this computer', tone: 'critical' })
   if (isCtiHit(e)) out.push({ label: e.event_type === 'cti_match' ? `On threat intel: ${(d.sources ?? []).join(', ') || 'feed'}` : 'Threat intel hit', tone: 'critical' })
   if (e.event_type === 'cti_match' && d.match_kind === 'watchlist') {
     out.push({ label: `Watched by: ${(d.sources ?? []).join(', ') || 'threat intel'}`, tone: 'serious' })
@@ -282,6 +308,10 @@ function basePlaybook(e) {
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
   if (e.event_type === 'cti_match' && d.match_kind === 'watchlist') {
     return { urgency: '≤72h', text: `Your threat intel watches ${d.indicator_value} and ${d.observed} is on this asset. Read the event's description, then update or remove the software, or mark it accepted risk if this version is not affected.` }
+  }
+  if (isSighting(e)) {
+    const who = d.process ? ` Find ${d.process} on the computer: where it was installed from, and whether anyone expects it to run.` : ' Find which program made it (the agent names the program only for connections).'
+    return { urgency: 'Now', text: `This computer ${d.matched_on === 'connection' ? 'connected to' : 'looked up'} ${d.observed ?? d.indicator_value}, which ${(d.sources ?? []).join(', ') || 'threat intel'} lists as malicious. Isolate it from the network and escalate to a senior analyst.${who} If the contact is legitimate (a security tool, a sinkholed domain), mark the alert a false positive.` }
   }
   if (isCtiHit(e)) {
     const what = e.event_type === 'cti_match' && d.observed ? ` (${d.observed} is listed by ${(d.sources ?? []).join(', ') || 'threat intel'})` : ''

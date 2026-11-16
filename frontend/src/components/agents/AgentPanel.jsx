@@ -183,6 +183,20 @@ function AgentSettings({ agent, onSaved }) {
             Install them where the agent service can see them (its window's Setup page says where), or turn SBOM off here.</span>
         </div>
       )}
+      {/* Agents that report capabilities but not `sightings` are older than threat sightings */}
+      {byKey.sightings?.value === true && policy.capabilities && policy.capabilities.sightings !== true && (
+        <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>Threat sightings is on, but this agent is older than the feature and does not check its computer's traffic.
+            Update the agent from the Agents page installer.</span>
+        </div>
+      )}
+      {byKey.sightings?.value === true && policy.capabilities?.sightings === true && policy.capabilities?.admin === false && (
+        <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>The agent does not run as Administrator/root, so it cannot read DNS answers; it still checks the computer's connections.</span>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {roles.map((r) => {

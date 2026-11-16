@@ -21,7 +21,7 @@ export function TypeLabel({ type }) {
   return <span className="inline-flex items-center gap-1.5 text-xs text-dark-300"><Icon className="w-3.5 h-3.5 text-dark-400" />{m.label}</span>
 }
 
-const MATCH_KIND = { ioc: 'Listed IOC', watchlist: 'Watched software', address: 'Uses this IP (no alert)' }
+const MATCH_KIND = { ioc: 'Listed IOC', watchlist: 'Watched software', sighting: 'Seen in traffic', address: 'Uses this IP (no alert)' }
 
 // What threat intel knows about one value, and which of our assets it touches.
 export default function IndicatorPanel({ value, onClose }) {

@@ -10,6 +10,7 @@ const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 }
 const RULE = {
   ioc:      { label: 'Listed IOC',       hint: 'A public IP or hostname of the asset is listed by a feed or event (possible compromise)' },
   watchlist:{ label: 'Watched software', hint: 'Software an event watches is installed on the asset' },
+  sighting: { label: 'Seen in traffic',  hint: "The asset's agent saw it look up or connect to a listed domain or IP (possible compromise)" },
 }
 
 // Open threat-intel matches, one group per asset (actions are asset-based).

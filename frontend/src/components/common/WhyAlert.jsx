@@ -55,6 +55,19 @@ function chain(e) {
           rule: 'R6 · Software a threat-intel event watches is present: exposure to what the event warns about, not a compromise',
         }
       }
+      if (d.match_kind === 'sighting') {
+        const did = d.matched_on === 'connection'
+          ? `${where} connected to ${d.observed}${d.port ? ` on port ${d.port}` : ''}${d.process ? ` (program ${d.process})` : ''}`
+          : `${where} looked up ${d.observed} (a DNS answer it received)`
+        const listed = d.indicator_type === 'url'
+          ? `${d.indicator_value} hosts a URL listed by ${sources}${d.listed_urls?.length ? ` (${d.listed_urls[0]})` : ''}`
+          : `${d.indicator_type === 'ip' ? 'The IP' : 'The domain'} ${d.indicator_value} is listed by ${sources}${d.observed !== d.indicator_value ? ` (${d.observed} is under it)` : ''}`
+        return {
+          evidence: `${did}, ${(d.count ?? 1).toLocaleString()} time${d.count === 1 ? '' : 's'} (EagleEye agent; checked on the computer, only matches are sent)`,
+          knowledge: [listed],
+          rule: 'R7 · A computer contacted a domain or IP in threat intel: treat as a possible compromise',
+        }
+      }
       const what = d.matched_on === 'ip' ? `public IP ${d.observed}` : `hostname ${d.observed}`
       const how = d.indicator_type === 'domain' && d.observed !== d.indicator_value
         ? ` (a subdomain of ${d.indicator_value})`

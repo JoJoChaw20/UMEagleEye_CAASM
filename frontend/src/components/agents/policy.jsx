@@ -55,6 +55,15 @@ export const GROUPS = [
     ],
   },
   {
+    title: 'Threat sightings',
+    settings: [
+      {
+        key: 'sightings', label: "Check this computer's lookups and connections against the threat list",
+        help: "The agent keeps a copy of the tenant's bad domains and IPs (feeds and published events) and checks the computer's DNS answers and outbound connections against it on the computer. Only matches are sent; nothing else leaves the computer. Off unless set.",
+      },
+    ],
+  },
+  {
     title: 'Routers and switches',
     settings: [
       { key: 'network_poll', label: 'Read the routers and switches' },

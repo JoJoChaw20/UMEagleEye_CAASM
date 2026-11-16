@@ -833,7 +833,13 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 d.kev && ['Exploited in the wild', <a href={`https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=${d.cve_id}`} target="_blank" rel="noreferrer" className="text-red-300 hover:underline">Yes, on CISA's Known Exploited Vulnerabilities list</a>],
                 d.advisory_id && d.advisory_id !== d.cve_id && ['Advisory', d.advisory_id],
                 Array.isArray(d.ti_event_titles) && d.ti_event_titles.length > 0 && ['Threat-intel events', d.ti_event_titles.join(' · ')],
-                e.event_type === 'cti_match' && d.observed && ['Matched', `${d.matched_on === 'ip' ? 'Public IP' : d.matched_on === 'hostname' ? 'Hostname' : d.matched_on === 'package' ? 'SBOM package' : 'Installed software'}: ${d.observed}`],
+                e.event_type === 'cti_match' && d.observed && ['Matched', d.match_kind === 'sighting'
+                  ? `${d.matched_on === 'connection' ? 'Connection' : 'DNS lookup'}: ${d.observed}${d.port ? `:${d.port}` : ''}`
+                  : `${d.matched_on === 'ip' ? 'Public IP' : d.matched_on === 'hostname' ? 'Hostname' : d.matched_on === 'package' ? 'SBOM package' : 'Installed software'}: ${d.observed}`],
+                d.match_kind === 'sighting' && d.process && ['Program', d.process],
+                d.match_kind === 'sighting' && ['Contacts', `${(d.count ?? 1).toLocaleString()} (seen by ${(d.seen_via ?? [d.matched_on]).map(v => (v === 'dns' ? 'DNS answers' : 'the connection table')).join(' and ')})`],
+                d.match_kind === 'sighting' && d.first_seen_at && ['First contact', new Date(d.first_seen_at).toLocaleString()],
+                d.match_kind === 'sighting' && d.last_seen_at && ['Last contact', new Date(d.last_seen_at).toLocaleString()],
                 e.event_type === 'cti_match' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
                 e.event_type === 'cti_match' && Array.isArray(d.sources) && d.sources.length > 0 && ['Listed by', d.sources.join(', ')],
                 e.event_type === 'os_patch_missing' && ['Windows', `${d.product ?? '—'}`],

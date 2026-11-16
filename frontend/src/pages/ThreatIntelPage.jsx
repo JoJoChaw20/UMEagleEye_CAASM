@@ -182,7 +182,7 @@ export default function ThreatIntelPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatTile label="Matches on our assets" icon={Crosshair}
           value={m ? m.open : '—'} tone={m?.open > 0 ? 'danger' : 'good'}
-          sub={m ? (m.open > 0 ? `${m.high} critical or high` : 'nothing matched') : ' '}
+          sub={m ? (m.open > 0 ? `${m.high} critical or high${m.sightings ? ` · ${m.sightings} seen in traffic` : ''}` : 'nothing matched') : ' '}
           onClick={() => setTab('matches')} />
         <StatTile label="Assets affected" icon={Server}
           value={m ? m.assets : '—'} tone={m?.assets > 0 ? 'warning' : 'muted'}
