@@ -10,14 +10,15 @@ import { eq, and, desc, ilike, isNull, sql, count, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { sboms, dependencies, assets, scanResults, agents, events, ctiIndicators, advisories } from '../db/schema'
+import { sboms, dependencies, assets, scanResults, agents } from '../db/schema'
 import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } from '../services/drift'
 import { cveIntelFor, linkCveIndicators, type CveIntel } from '../services/threatIntel'
 import { matchIocs } from '../services/iocMatch'
 import { isStoredInR2, licenseNames, sbomObjectKey, sbomSummary } from '../lib/sbomStore'
 import { computerState, SBOM_STALE_HOURS } from '../lib/sbomCoverage'
-import { collectAffectedVersions } from '../lib/affectedVersions'
-import { computeRiskScore, mapSeverity } from '../lib/riskScore'
+import { mapSeverity } from '../lib/riskScore'
+import { findingKey, planPackageAlerts, type Finding } from '../lib/packageAlerts'
+import { loadAlerts, loadPresentFindings, planStatements, runBatches } from '../services/packageAlerts'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -268,6 +269,7 @@ app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => 
                       CASE WHEN jsonb_typeof(s.raw_data->'components') = 'array'
                            THEN jsonb_array_length(s.raw_data->'components') END) AS component_count,
              cve.open AS cve_open, cve.critical AS cve_critical, cve.high AS cve_high, cve.kev AS cve_kev,
+             pkg.open AS pkg_open, pkg.critical AS pkg_critical, pkg.high AS pkg_high,
              job.scan_id AS job_id, job.status AS job_status, job.failure_reason AS job_failure,
              job.started_at AS job_started_at, job.completed_at AS job_completed_at, job.mode AS job_mode
       FROM comp JOIN assets a ON a.asset_id = comp.asset_id
@@ -279,14 +281,22 @@ app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => 
       LEFT JOIN LATERAL (
         SELECT * FROM sboms s WHERE s.asset_id = a.asset_id ORDER BY s.generated_at DESC LIMIT 1
       ) s ON true
+      -- CVEs: the present findings of open package alerts; packages: those alerts
+      LEFT JOIN LATERAL (
+        SELECT count(DISTINCT f.cve_id)::int AS open,
+               count(DISTINCT f.cve_id) FILTER (WHERE f.severity = 'critical')::int AS critical,
+               count(DISTINCT f.cve_id) FILTER (WHERE f.severity = 'high')::int AS high,
+               count(DISTINCT f.cve_id) FILTER (WHERE f.kev)::int AS kev
+        FROM cve_findings f JOIN events e ON e.event_id = f.event_id
+        WHERE f.asset_id = a.asset_id AND f.fixed_at IS NULL AND NOT f.dismissed AND e.status IN ('open', 'in_progress')
+      ) cve ON true
       LEFT JOIN LATERAL (
         SELECT count(*)::int AS open,
                count(*) FILTER (WHERE e.severity = 'critical')::int AS critical,
-               count(*) FILTER (WHERE e.severity = 'high')::int AS high,
-               count(*) FILTER (WHERE (e.details->>'has_cti_match')::boolean IS TRUE)::int AS kev
+               count(*) FILTER (WHERE e.severity = 'high')::int AS high
         FROM events e
         WHERE e.asset_id = a.asset_id AND e.event_type = 'cve_detected' AND e.status IN ('open', 'in_progress')
-      ) cve ON true
+      ) pkg ON true
       LEFT JOIN LATERAL (
         SELECT r.scan_id, r.status, r.failure_reason, r.started_at, r.completed_at, r.network_info->>'sbom_mode' AS mode
         FROM scan_results r
@@ -320,6 +330,8 @@ app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => 
             }
           : null,
         cves: { open: r.cve_open ?? 0, critical: r.cve_critical ?? 0, high: r.cve_high ?? 0, kev: r.cve_kev ?? 0 },
+        // open SBOM alerts: one per vulnerable package
+        packages: { open: r.pkg_open ?? 0, critical: r.pkg_critical ?? 0, high: r.pkg_high ?? 0 },
         job,
         state: computerState({
           generatedAt: (r.generated_at as string | null) ?? null,
@@ -754,9 +766,14 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
 })
 
 // ── POST /ingest-cve ── agent submits Grype findings after SBOM scan ──────────
-// One finding per (CVE, package). cve_id is the CVE when Grype knows one (the agent
-// takes it from Grype's related vulnerabilities when the match is a GHSA advisory),
+// One finding per (CVE, package version). cve_id is the CVE when Grype knows one (the
+// agent takes it from Grype's related vulnerabilities when the match is a GHSA advisory),
 // so EPSS and CISA KEV can match it. epss is Grype's own EPSS value when it has one.
+// Every finding is stored (cve_findings, no cap); the alerts are one per vulnerable
+// package (lib/packageAlerts.ts).
+
+/** The most findings one upload may carry (Ubuntu with its kernels: about 5,100). */
+export const MAX_FINDINGS = 10000
 
 const cveIngestSchema = z.object({
   agent_id: z.string().uuid(),
@@ -773,18 +790,13 @@ const cveIngestSchema = z.object({
     package_type:    z.string().max(40).nullish(),
     fix_versions:    z.array(z.string()).default([]),
     cwe_ids:         z.array(z.string()).default([]),
-  })).max(5000),
-  // Every "cve_id::package_name" Grype reported, when the agent sent only the top findings:
-  // a CVE left out of `findings` is still present, so its alert must not be auto-resolved.
+  })).max(MAX_FINDINGS),
+  // Every "cve_id::package_name" Grype reported, when an older agent sent only its top
+  // findings: a finding left out of `findings` is still present, so it must not be marked fixed.
   present_keys:   z.array(z.string().max(400)).max(100000).optional(),
   total_findings: z.number().int().nonnegative().optional(),
 })
 
-// At most this many findings become alerts per scan (KEV first, then EPSS, then CVSS).
-// Keeps one PC from flooding the queue, and keeps the ingest within the Workers free
-// plan's 50 subrequests (the writes go in db.batch chunks of WRITE_BATCH statements).
-export const MAX_CVE_ALERTS = 1500
-const WRITE_BATCH = 300
 const MAX_EPSS_LOOKUPS = 300      // FIRST.org calls are 30 CVEs each: at most 10 subrequests
 
 async function fetchEpssScores(cveIds: string[]): Promise<Map<string, number>> {
@@ -838,153 +850,51 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
     } catch (e) {
       console.error('cve ingest: threat-intel lookup failed (alerts stored without it):', e)
     }
-    const ctiMatches = new Set(intel.keys())
     const kevMatches = new Set([...intel].filter(([, v]) => v.kev).map(([id]) => id))
 
-    // Keep the findings that matter most: on KEV, named by any feed, likely exploited, severe.
-    const rank = (f: typeof allFindings[number]): number[] =>
-      [kevMatches.has(f.cve_id) ? 1 : 0, ctiMatches.has(f.cve_id) ? 1 : 0, f.epss ?? 0, f.cvss_base_score]
-    const findings = [...allFindings].sort((x, y) => {
-      const a = rank(x), b = rank(y)
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return b[i]! - a[i]!
-      return 0
-    }).slice(0, MAX_CVE_ALERTS)
-    const totalFindings = Math.max(total_findings ?? 0, allFindings.length)
-
-    // EPSS: Grype's own value when it sent one, otherwise FIRST's API (CVE IDs only).
-    const missingEpss = [...new Set(findings.filter(f => f.epss == null).map(f => f.cve_id))].slice(0, MAX_EPSS_LOOKUPS)
+    // EPSS: Grype's own value when it sent one, otherwise FIRST's API (CVE IDs only), the
+    // most severe first when there are more than the lookups allow.
+    const missingEpss = [...new Set([...allFindings].filter(f => f.epss == null)
+      .sort((a, b) => b.cvss_base_score - a.cvss_base_score).map(f => f.cve_id))].slice(0, MAX_EPSS_LOOKUPS)
     const epssMap = await fetchEpssScores(missingEpss)
-    for (const f of findings) if (f.epss != null) epssMap.set(f.cve_id, f.epss)
+    for (const f of allFindings) if (f.epss != null) epssMap.set(f.cve_id, f.epss)
 
-    // Fetch all existing cve_detected events for this asset in ONE query for dedup
-    const existingRows = await db
-      .select({ eventId: events.eventId, details: events.details, status: events.status })
-      .from(events)
-      .where(and(
-        eq(events.assetId, assetId),
-        eq(events.eventType, 'cve_detected'),
-      ))
-
-    // Build dedup map: "cve_id::package_name" → { eventId, details, status }
-    type ExistingEvent = { eventId: string; details: Record<string, unknown>; status: string }
-    const existingMap = new Map<string, ExistingEvent>()
-    for (const row of existingRows) {
-      const d = (row.details ?? {}) as Record<string, unknown>
-      const key = `${d.cve_id}::${d.package_name}`
-      existingMap.set(key, { eventId: row.eventId, details: d, status: row.status })
+    // What the asset has now (2 queries), then this upload as findings: one per CVE and
+    // installed version; a dismissal made earlier stays.
+    const [existing, stored] = await Promise.all([loadAlerts(db, assetId), loadPresentFindings(db, assetId)])
+    const storedByKey = new Map(stored.map(f => [findingKey(f), f]))
+    const uploaded = new Map<string, Finding>()
+    for (const r of allFindings) {
+      if (!r.cve_id || !r.package_name) continue
+      const f: Finding = {
+        cveId: r.cve_id, advisoryId: r.advisory_id ?? null, packageType: r.package_type ?? null,
+        packageName: r.package_name, packageVersion: r.package_version, severity: mapSeverity(r.cvss_base_score, r.severity),
+        cvss: r.cvss_base_score, epss: epssMap.get(r.cve_id) ?? 0, fixVersions: r.fix_versions, cweIds: r.cwe_ids,
+        description: r.description.slice(0, 500), kev: kevMatches.has(r.cve_id), hasCtiMatch: intel.has(r.cve_id),
+        tiEventTitles: intel.get(r.cve_id)?.titles ?? [], dismissed: false,
+      }
+      f.dismissed = storedByKey.get(findingKey(f))?.dismissed ?? false
+      if (!uploaded.has(findingKey(f))) uploaded.set(findingKey(f), f)
     }
-    const seenKeys = new Set<string>()
-    // Every installed version each CVE affects (lib/affectedVersions.ts), from all findings.
-    const affectedByKey = collectAffectedVersions(allFindings)
-    // Everything still present on the machine, including findings past the cap.
-    const presentKeys = new Set<string>([...(present_keys ?? []), ...allFindings.map(f => `${f.cve_id}::${f.package_name}`)])
+    // An older agent that cut its upload names the rest in present_keys ("cve::package"):
+    // those stay present as stored.
+    const named = new Set(present_keys ?? [])
+    const kept = stored.filter(f => !uploaded.has(findingKey(f)) && named.has(`${f.cveId}::${f.packageName}`))
+    const findings = [...uploaded.values(), ...kept]
+
+    const plan = planPackageAlerts({ findings, existing, criticality, newId: () => crypto.randomUUID() })
     const now = new Date()
+    await runBatches(db, planStatements(db, assetId, plan, findings, now))
 
-    const toInsert: (typeof events.$inferInsert)[] = []
-    const stmts: unknown[] = []   // every write, run in db.batch chunks (one subrequest each)
-    let eventsUpdated = 0
-
-    for (const finding of findings) {
-      const { cve_id, cvss_base_score, severity: grypeSev, package_name,
-              package_version, fix_versions, description, cwe_ids } = finding
-      if (!cve_id || !package_name) continue
-      const dedupKey  = `${cve_id}::${package_name}`
-      if (seenKeys.has(dedupKey)) continue    // same CVE on another copy or version: one alert
-      seenKeys.add(dedupKey)
-      // The alert names the oldest affected version (stable between SBOMs) and lists them all.
-      const affected  = affectedByKey.get(dedupKey) ?? []
-      const shown     = affected[0] ?? { version: package_version, fix_versions }
-
-      const epss      = epssMap.get(cve_id) ?? 0
-      const ctiMatch  = ctiMatches.has(cve_id)
-      const severity  = mapSeverity(cvss_base_score, grypeSev)
-      const riskScore = computeRiskScore(cvss_base_score, epss, criticality, ctiMatch)
-      const existing  = existingMap.get(dedupKey)
-      const fresh = {
-        cvss_base_score,
-        epss_score:      epss,
-        has_cti_match:   ctiMatch,
-        kev:             kevMatches.has(cve_id),
-        ti_event_titles: intel.get(cve_id)?.titles ?? [],
-        advisory_id:     finding.advisory_id ?? null,
-        package_type:    finding.package_type ?? null,
-        fix_versions:    shown.fix_versions,
-        affected_versions: affected,
-        description:     description.slice(0, 500),
-        cwe_ids,
-      }
-
-      if (existing) {
-        // Refresh all scored fields plus the freshest data from this scan
-        const mergedDetails = { ...existing.details, ...fresh, package_version: shown.version }
-        // Still vulnerable after being marked resolved: the fix did not take, so
-        // reopen. False positives and accepted risks stay closed.
-        const reopen = existing.status === 'resolved'
-        eventsUpdated++
-        stmts.push(
-          db.update(events)
-            .set({
-              lastSeen:           now,
-              occurrences:        sql`${events.occurrences} + 1`,
-              severity,
-              compositeRiskScore: String(riskScore),
-              details:            mergedDetails,
-              updatedAt:          now,
-              ...(reopen ? { status: 'open' as const, resolvedAt: null, resolvedBy: null,
-                             resolutionNote: 'Reopened: CVE still present in latest SBOM scan' } : {}),
-            })
-            .where(eq(events.eventId, existing.eventId))
-        )
-      } else {
-        toInsert.push({
-          assetId,
-          eventType:          'cve_detected',
-          severity,
-          compositeRiskScore: String(riskScore),
-          details: { cve_id, package_name, package_version: shown.version, ...fresh },
-        })
-      }
-    }
-
-    // New events, 50 rows per INSERT statement
-    for (let i = 0; i < toInsert.length; i += 50) {
-      stmts.push(db.insert(events).values(toInsert.slice(i, i + 50)))
-    }
-
-    // CVEs the latest scan no longer reports were patched or the package was
-    // removed — close their open alerts so the queue reflects reality. A scan with
-    // no findings at all closes every open one.
-    const fixedIds = [...existingMap.entries()]
-      .filter(([key, e]) => !presentKeys.has(key) && (e.status === 'open' || e.status === 'in_progress'))
-      .map(([, e]) => e.eventId)
-    if (fixedIds.length > 0) {
-      stmts.push(db.update(events)
-        .set({ status: 'resolved', resolvedAt: now, updatedAt: now,
-               resolutionNote: 'Auto-resolved: CVE no longer present in latest SBOM scan' })
-        .where(inArray(events.eventId, fixedIds)))
-    }
-    // Verified fix: an advisory whose alert the rescan just closed is resolved too, so
-    // "Resolved" on the Advisories page means the scanner confirmed it.
-    if (fixedIds.length > 0) {
-      stmts.push(db.update(advisories)
-        .set({ status: 'resolved', resolvedAt: now })
-        .where(and(inArray(advisories.eventId, fixedIds), inArray(advisories.status, ['open', 'acknowledged', 'in_progress']))))
-    }
-
-    for (let i = 0; i < stmts.length; i += WRITE_BATCH) {
-      await db.batch(stmts.slice(i, i + WRITE_BATCH) as [unknown, ...unknown[]] as Parameters<typeof db.batch>[0])
-    }
-    const eventsCreated = toInsert.length
-
-    // Link each matched alert to the feed entry naming its CVE (shown on the alert).
+    // Link each alert to the feed entries naming its CVEs (shown on the alert).
     await linkCveIndicators(db, { assetId })
 
+    const created = plan.alerts.filter(a => a.isNew).length
     return c.json({
-      events_created: eventsCreated, events_updated: eventsUpdated, events_resolved: fixedIds.length,
-      // One alert per (CVE, package): copies and versions of a package share it. Only
-      // distinct ones past MAX_CVE_ALERTS count as dropped.
-      kev_matches: kevMatches.size, findings_total: totalFindings, findings_stored: seenKeys.size,
-      findings_dropped: Math.max(0, presentKeys.size - seenKeys.size),
+      events_created: created, events_updated: plan.alerts.length - created, events_resolved: plan.resolve.length,
+      events_merged: plan.merge.length, kev_matches: kevMatches.size,
+      findings_total: Math.max(total_findings ?? 0, allFindings.length), findings_stored: uploaded.size,
+      findings_dropped: 0,
     }, 201)
   } catch (err) {
     console.error('cve ingest error:', err)

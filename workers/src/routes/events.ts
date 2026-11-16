@@ -10,21 +10,19 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, desc, sql, gte, inArray, isNull, ilike, type SQL } from 'drizzle-orm'
+import { eq, and, or, desc, sql, gte, inArray, isNull, ilike } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireRoles } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
 import {
   events, assets, advisories, users, auditLogs,
-  assetRelationships, eventCtiIndicators, ctiIndicators, tiEvents,
+  assetRelationships, eventCtiIndicators, ctiIndicators, tiEvents, cveFindings,
 } from '../db/schema'
 import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
 import { softwareName, techniquesFor } from '../lib/attack'
 import { cweList } from '../lib/cwe'
-import { fixTarget } from '../lib/fixTarget'
-import { alsoAffected } from '../lib/affectedVersions'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 import { loadMsrcMonth } from '../services/windowsPatch'
 import { UNSEEN_NOTE } from '../services/alertHygiene'
@@ -137,6 +135,8 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
         ilike(assets.hostname, `%${search}%`),
         ilike(assets.ipAddress, `%${search}%`),
         sql`${events.details}->>'cve_id' ILIKE ${'%' + search + '%'}`,
+        // a package alert holds its CVEs as findings
+        sql`EXISTS (SELECT 1 FROM cve_findings f WHERE f.event_id = ${events.eventId} AND f.fixed_at IS NULL AND f.cve_id ILIKE ${'%' + search + '%'})`,
         sql`${events.details}->>'package_name' ILIKE ${'%' + search + '%'}`,
         sql`${events.details}->>'package' ILIKE ${'%' + search + '%'}`,
       ) : undefined,
@@ -375,116 +375,6 @@ app.get('/stats/summary', authMiddleware, async (c) => {
   } catch (err) {
     console.error('events GET stats/summary error:', err)
     return c.json({ detail: 'Failed to fetch event stats' }, 500)
-  }
-})
-
-/** Open-CVE fix groups for GET /cve-groups (exported for tests). `where` must come from listConditions. */
-export function queryCveGroups(db: DB, where: SQL | undefined, limit: number, offset: number) {
-  const pkg = sql<string>`${events.details}->>'package_name'`
-  const ver = sql<string>`COALESCE(${events.details}->>'package_version', '')`
-  return db
-    .select({
-      assetId:          events.assetId,
-      packageName:      pkg,
-      packageVersion:   ver,
-      packageType:      sql<string | null>`max(${events.details}->>'package_type')`,
-      cves:             sql<number>`count(*)::int`,
-      critical:         sql<number>`count(*) filter (where ${events.severity} = 'critical')::int`,
-      high:             sql<number>`count(*) filter (where ${events.severity} = 'high')::int`,
-      medium:           sql<number>`count(*) filter (where ${events.severity} = 'medium')::int`,
-      low:              sql<number>`count(*) filter (where ${events.severity} = 'low')::int`,
-      kev:              sql<number>`count(*) filter (where ${events.details}->'kev' = 'true'::jsonb)::int`,
-      threatIntel:      sql<number>`count(*) filter (where ${events.details}->'has_cti_match' = 'true'::jsonb)::int`,
-      inProgress:       sql<number>`count(*) filter (where ${events.status} = 'in_progress')::int`,
-      maxCvss:          sql<number | null>`max((${events.details}->>'cvss_base_score')::float)`,
-      maxEpss:          sql<number | null>`max(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number' THEN (${events.details}->>'epss_score')::float END)`,
-      priority:         sql<number>`max(${priorityExpr})`,
-      firstSeen:        sql<string>`min(${events.firstSeen})`,
-      lastSeen:         sql<string>`max(${events.lastSeen})`,
-      fixVersions:      sql<unknown[]>`array_agg(${events.details}->'fix_versions')`,
-      affectedVersions: sql<unknown[]>`array_agg(${events.details}->'affected_versions')`,
-      // KEV first, then priority, then CVSS: what to read first in the group
-      topCves:          sql<string[]>`(array_agg(${events.details}->>'cve_id' ORDER BY COALESCE(${events.details}->'kev' = 'true'::jsonb, false) DESC,
-                          ${priorityExpr} DESC, (${events.details}->>'cvss_base_score')::float DESC NULLS LAST))[1:5]`,
-      assignees:        sql<string[]>`array_remove(array_agg(DISTINCT ${users.username}), NULL)`,
-      unassigned:       sql<number>`count(*) filter (where ${events.assignedTo} IS NULL)::int`,
-      assetOwner:       sql<string | null>`max(${assets.owner})`,
-      assetHostname:    sql<string | null>`max(${assets.hostname})`,
-      assetIp:          sql<string | null>`max(${assets.ipAddress})`,
-      assetDeviceType:  sql<string | null>`max(${assets.deviceType}::text)`,
-      assetCriticality: sql<number | null>`max(${assets.criticalityScore})`,
-      assetInternetFacing: sql<boolean>`bool_or(${assets.isInternetFacing})`,
-      totalGroups:      sql<number>`(count(*) OVER ())::int`,
-      totalAlerts:      sql<number>`(sum(count(*)) OVER ())::int`,
-    })
-    .from(events)
-    .innerJoin(assets, eq(events.assetId, assets.assetId))
-    .leftJoin(users, eq(events.assignedTo, users.userId))
-    .where(where)
-    .groupBy(events.assetId, pkg, ver)
-    .orderBy(desc(sql`max(${priorityExpr})`), desc(sql`count(*)`))
-    .limit(limit)
-    .offset(offset)
-}
-
-// ── GET /cve-groups ─── open CVE alerts grouped by fix ───────────
-// One row per vulnerable package on an asset ("upgrade aiohttp 3.10.5 → 3.13.4 fixes
-// 138 CVEs"), with the same filters as GET /. The individual CVEs stay one alert each;
-// GET /?package=&asset_id= lists them.
-app.get('/cve-groups', authMiddleware, async (c) => {
-  try {
-    const user = c.get('user') as User
-    const db   = getDb(c.env.DATABASE_URL)
-    const q    = (k: string) => c.req.query(k)
-    const page     = Math.max(1, parseInt(q('page') ?? '1'))
-    const pageSize = Math.min(100, Math.max(1, parseInt(q('page_size') ?? '20')))
-    const where = and(...listConditions(user, (k) => k === 'event_type' || k === 'type' ? 'cve_detected' : q(k)))
-
-    const rows = await queryCveGroups(db, where, pageSize, (page - 1) * pageSize)
-
-    return c.json({
-      total:        rows[0]?.totalGroups ?? 0,
-      total_alerts: rows[0]?.totalAlerts ?? 0,
-      page,
-      page_size:    pageSize,
-      items: rows.map(r => {
-        const fix = fixTarget(r.packageVersion, r.fixVersions)
-        return {
-          asset_id: r.assetId,
-          asset_hostname: r.assetHostname,
-          asset_ip: r.assetIp,
-          asset_owner: r.assetOwner,
-          asset_device_type: r.assetDeviceType,
-          asset_criticality: r.assetCriticality,
-          asset_internet_facing: r.assetInternetFacing,
-          package_name: r.packageName,
-          package_version: r.packageVersion || null,
-          // Other installed versions these CVEs also affect, each with its own upgrade.
-          also_affected: alsoAffected(r.packageVersion, r.affectedVersions),
-          package_type: r.packageType,
-          cves: r.cves,
-          by_severity: { critical: r.critical, high: r.high, medium: r.medium, low: r.low },
-          severity: r.critical ? 'critical' : r.high ? 'high' : r.medium ? 'medium' : 'low',
-          kev: r.kev,
-          threat_intel: r.threatIntel,
-          in_progress: r.inProgress,
-          max_cvss: r.maxCvss,
-          max_epss: r.maxEpss,
-          priority_score: r.priority != null ? Number(r.priority) : null,
-          first_seen: r.firstSeen,
-          last_seen: r.lastSeen,
-          fix_to: fix.to,
-          fixed_by_target: fix.fixed,
-          no_fix: fix.noFix,
-          top_cves: r.topCves ?? [],
-          assignees: r.assignees ?? [],
-          unassigned: r.unassigned,
-        }
-      }),
-    })
-  } catch (err) {
-    console.error('events GET /cve-groups error:', err)
-    return c.json({ detail: 'Failed to fetch CVE groups' }, 500)
   }
 })
 
@@ -860,6 +750,49 @@ app.get('/:eventId/windows-cves', authMiddleware, async (c) => {
   }
 })
 
+// ── GET /:eventId/cves ─── the CVEs of an SBOM package alert ──────
+// Its present findings (cve_findings), KEV first, then the most likely to be exploited
+// and the most severe; ?q= filters by CVE id, ?fixed=true lists the ones fixed since.
+// Paged like the other long lists (page_size ≤ 100).
+app.get('/:eventId/cves', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user') as User
+    const db   = getDb(c.env.DATABASE_URL)
+    const row  = await loadScopedEvent(db, user, c.req.param('eventId'))
+    if (!row) return c.json({ detail: 'Event not found' }, 404)
+    if (row.event.eventType !== 'cve_detected') return c.json({ detail: 'Not an SBOM vulnerability alert' }, 400)
+    const page     = Math.max(1, parseInt(c.req.query('page') ?? '1') || 1)
+    const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('page_size') ?? '50') || 50))
+    const search   = (c.req.query('q') ?? '').trim()
+    const fixed    = c.req.query('fixed') === 'true'
+    const where = and(
+      eq(cveFindings.eventId, row.event.eventId),
+      fixed ? sql`${cveFindings.fixedAt} IS NOT NULL` : sql`${cveFindings.fixedAt} IS NULL`,
+      search ? ilike(cveFindings.cveId, `%${search}%`) : undefined,
+    )
+    const [items, [total]] = await Promise.all([
+      db.select({
+          cve_id: cveFindings.cveId, advisory_id: cveFindings.advisoryId, package_version: cveFindings.packageVersion,
+          severity: cveFindings.severity, cvss: cveFindings.cvss, epss: cveFindings.epss, kev: cveFindings.kev,
+          threat_intel: cveFindings.hasCtiMatch, ti_event_titles: cveFindings.tiEventTitles, fix_versions: cveFindings.fixVersions,
+          cwe_ids: cveFindings.cweIds, description: cveFindings.description, dismissed: cveFindings.dismissed,
+          first_seen: cveFindings.firstSeen, fixed_at: cveFindings.fixedAt,
+        })
+        .from(cveFindings).where(where)
+        .orderBy(desc(cveFindings.kev), desc(cveFindings.epss), desc(cveFindings.cvss), cveFindings.cveId, cveFindings.packageVersion)
+        .limit(pageSize).offset((page - 1) * pageSize),
+      db.select({ n: sql<number>`count(*)::int` }).from(cveFindings).where(where),
+    ])
+    return c.json({
+      total: total?.n ?? 0, page, page_size: pageSize,
+      items: items.map((f) => ({ ...f, cvss: Number(f.cvss), epss: Number(f.epss), cwes: cweList(f.cwe_ids) })),
+    })
+  } catch (err) {
+    console.error('events GET /:eventId/cves error:', err)
+    return c.json({ detail: 'Failed to load the CVE list' }, 500)
+  }
+})
+
 app.patch('/:eventId', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', updateSchema), async (c) => {
   try {
     const user = c.get('user') as User
@@ -906,49 +839,6 @@ app.post('/bulk', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('jso
     return c.json({ updated: result.updated, skipped: event_ids.length - result.updated })
   } catch (err) {
     console.error('events POST bulk error:', err)
-    return c.json({ detail: 'Failed to update alerts' }, 500)
-  }
-})
-
-// ── POST /group-update — one update for every open CVE alert of some fix groups ──
-const groupSchema = z.object({
-  groups: z.array(z.object({
-    asset_id:        z.string().uuid(),
-    package_name:    z.string().min(1).max(300),
-    package_version: z.string().max(200).nullable(),
-  })).min(1).max(50),
-  status:      z.enum(STATUS_VALUES).optional(),
-  assigned_to: z.string().uuid().nullable().optional(),
-  note:        z.string().trim().max(1000).optional(),
-})
-
-app.post('/group-update', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', groupSchema), async (c) => {
-  try {
-    const user = c.get('user') as User
-    const db   = getDb(c.env.DATABASE_URL)
-    const { groups, ...rest } = c.req.valid('json')
-    const body = updateSchema.safeParse(rest)
-    if (!body.success) return c.json({ detail: 'Provide status, assigned_to or note' }, 400)
-
-    const rows = await db
-      .select({ event: events, asset: assets })
-      .from(events)
-      .innerJoin(assets, eq(events.assetId, assets.assetId))
-      .where(and(
-        eq(events.eventType, 'cve_detected'),
-        inArray(events.status, OPEN_STATUSES),
-        user.role !== 'superadmin' && user.tenantId ? eq(assets.tenantId, user.tenantId) : undefined,
-        or(...groups.map(g => and(
-          eq(events.assetId, g.asset_id),
-          sql`${events.details}->>'package_name' = ${g.package_name}`,
-          sql`COALESCE(${events.details}->>'package_version', '') = ${g.package_version ?? ''}`,
-        ))),
-      ))
-    const result = await applyUpdateMany(db, user, rows, body.data)
-    if (result.error) return c.json({ detail: result.error }, 400)
-    return c.json({ updated: result.updated })
-  } catch (err) {
-    console.error('events POST group-update error:', err)
     return c.json({ detail: 'Failed to update alerts' }, 500)
   }
 })

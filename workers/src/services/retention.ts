@@ -47,6 +47,21 @@ async function purgeClosedEvents(db: DB): Promise<number> {
   return res.rows.length
 }
 
+/** Delete CVE findings fixed more than EVENT_MAX_AGE_DAYS ago (an open package alert keeps its
+ *  present ones; a deleted alert takes its findings with it). */
+async function purgeFixedFindings(db: DB): Promise<number> {
+  const res = await db.execute(sql`
+    DELETE FROM cve_findings
+    WHERE finding_id IN (
+      SELECT finding_id FROM cve_findings
+      WHERE fixed_at < now() - make_interval(days => ${EVENT_MAX_AGE_DAYS})
+      LIMIT ${BATCH_SIZE}
+    )
+    RETURNING 1
+  `)
+  return res.rows.length
+}
+
 /** Delete finished scan records (Discovery log, SBOM and inventory jobs) older than
  *  SCAN_MAX_AGE_DAYS. They were kept forever: each passive upload rewrites its hour's record, so
  *  the table grew without bound. Waiting and running jobs are never touched. */
@@ -75,9 +90,10 @@ async function drain(purge: (db: DB) => Promise<number>, db: DB): Promise<number
   return total
 }
 
-export async function purgeOldData(db: DB): Promise<{ cti: number; events: number; scans: number }> {
+export async function purgeOldData(db: DB): Promise<{ cti: number; events: number; scans: number; findings: number }> {
   const cti = await drain(purgeStaleCti, db)
   const events = await drain(purgeClosedEvents, db)
   const scans = await drain(purgeOldScans, db)
-  return { cti, events, scans }
+  const findings = await drain(purgeFixedFindings, db)
+  return { cti, events, scans, findings }
 }

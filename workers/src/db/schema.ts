@@ -250,6 +250,41 @@ export const events = pgTable('events', {
   index('idx_events_asset_status').on(t.assetId, t.status),
 ])
 
+// ─── Table 6b: CVE findings ─────────────────────────────────────
+// Every CVE Grype reports for a package version on an asset, with no cap: the data behind
+// the SBOM's alerts. The alert (events, type cve_detected) is one per asset and package
+// (lib/packageAlerts.ts) and lists these; CVE search, KEV counts and threat-intel links
+// read them. fixed_at is set when a later SBOM no longer reports the CVE; dismissed marks a
+// CVE an analyst found not applicable inside an otherwise open alert.
+export const cveFindings = pgTable('cve_findings', {
+  findingId: uuid('finding_id').primaryKey().default(newUuid()),
+  eventId: uuid('event_id').notNull().references(() => events.eventId, { onDelete: 'cascade' }),
+  assetId: uuid('asset_id').notNull().references(() => assets.assetId, { onDelete: 'cascade' }),
+  cveId: varchar('cve_id', { length: 40 }).notNull(),
+  advisoryId: varchar('advisory_id', { length: 64 }),
+  packageType: varchar('package_type', { length: 40 }),
+  packageName: varchar('package_name', { length: 255 }).notNull(),
+  packageVersion: varchar('package_version', { length: 100 }).notNull().default(''),
+  severity: severityEnum('severity').notNull(),
+  cvss: numeric('cvss', { precision: 3, scale: 1 }).notNull().default('0'),
+  epss: numeric('epss', { precision: 6, scale: 5 }).notNull().default('0'),
+  fixVersions: text('fix_versions').array().notNull().default(sql`'{}'::text[]`),
+  cweIds: text('cwe_ids').array().notNull().default(sql`'{}'::text[]`),
+  description: varchar('description', { length: 500 }).notNull().default(''),
+  kev: boolean('kev').notNull().default(false),
+  hasCtiMatch: boolean('has_cti_match').notNull().default(false),
+  tiEventTitles: jsonb('ti_event_titles').notNull().default([]),
+  // No stored risk score: it depends on the asset's criticality, which changes on its own.
+  dismissed: boolean('dismissed').notNull().default(false),
+  firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().default(now()),
+  lastSeen: timestamp('last_seen', { withTimezone: true }).notNull().default(now()),
+  fixedAt: timestamp('fixed_at', { withTimezone: true }),
+}, (t) => [
+  uniqueIndex('uq_cve_findings_key').on(t.assetId, t.cveId, t.packageName, t.packageVersion),
+  index('idx_cve_findings_event').on(t.eventId),
+  index('idx_cve_findings_cve').on(t.cveId),
+])
+
 // ─── Table 7: CTI Indicators ────────────────────────────────────
 // Two kinds of row: global feed entries (OTX, ThreatFox, CISA KEV; ti_event_id NULL,
 // one row per value) and the attributes of a threat-intel event (ti_event_id set; one

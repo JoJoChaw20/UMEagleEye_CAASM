@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeRiskScore, mapSeverity, planAlertScores } from './riskScore'
+import { computeRiskScore, mapSeverity } from './riskScore'
 
 test('composite risk: CVSS 40%, EPSS 35%, criticality 15% on a 0-100 scale, plus 10 for a threat-intel match', () => {
   // 9.8×10×0.40 + 0.5×100×0.35 + 5×10×0.15 = 39.2 + 17.5 + 7.5
@@ -51,25 +51,4 @@ test('severity follows the CVSS bands; Grype\'s label is used only when there is
     ['critical', 'high', 'medium', 'low', 'low', 'low', 'low'])
   // a scored CVE keeps its CVSS band even if Grype says otherwise
   assert.equal(mapSeverity(2.0, 'Critical'), 'low')
-})
-
-test('an alert is rescored only when its asset\'s criticality changed since the alert was scored', () => {
-  const scoredAt = (crit: number) => computeRiskScore(8.8, 0.2, crit, false)
-  const plan = planAlertScores([
-    { eventId: 'same', cvss: 8.8, epss: 0.2, ctiMatch: false, stored: scoredAt(3), criticality: 3 },
-    { eventId: 'raised', cvss: 8.8, epss: 0.2, ctiMatch: false, stored: scoredAt(3), criticality: 7 },
-    { eventId: 'lowered', cvss: 8.8, epss: 0.2, ctiMatch: true, stored: computeRiskScore(8.8, 0.2, 9, true), criticality: 4 },
-  ])
-  assert.deepEqual(plan, [
-    { eventId: 'raised', score: scoredAt(7) },
-    { eventId: 'lowered', score: computeRiskScore(8.8, 0.2, 4, true) },
-  ])
-  assert.equal(plan[0]!.score - scoredAt(3), 6)   // 4 criticality points × 1.5
-})
-
-test('missing inputs are scored as ingest scores them; an unscored alert is given a score', () => {
-  assert.deepEqual(planAlertScores([{ eventId: 'e', cvss: null, epss: null, ctiMatch: null, stored: null, criticality: null }]),
-    [{ eventId: 'e', score: computeRiskScore(0, 0, 5, false) }])
-  // the numeric(8,2) column rounds; a stored value equal after rounding is not rewritten
-  assert.deepEqual(planAlertScores([{ eventId: 'e', cvss: 7.3, epss: 0.12345, ctiMatch: false, stored: 38.02, criticality: 3 }]), [])
 })

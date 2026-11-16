@@ -1,7 +1,8 @@
 import type { KVNamespace } from '@cloudflare/workers-types'
 import type { DB } from '../db/client'
-import { advisories, events, assets, assetRelationships } from '../db/schema'
-import { and, desc, eq, inArray, or } from 'drizzle-orm'
+import { advisories, events, assets, assetRelationships, cveFindings } from '../db/schema'
+import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm'
+import { isPackageAlert } from '../lib/packageAlerts'
 
 import { CLOSED_STATUSES, OPEN_STATUSES } from '../lib/eventStatus'
 import { insertAdvisoryIfNoneSql, liveAdvisoryOf } from '../lib/advisoryScope'
@@ -110,7 +111,54 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
     neighbours,
   }
 
-  // CVE alerts: the whole fix group for this package on this asset, plus NVD/OSV
+  // SBOM package alert: its present CVEs are the group; the lead one (KEV first, then the
+  // most likely to be exploited, then the most severe) is looked up in NVD/OSV.
+  if (event.eventType === 'cve_detected' && isPackageAlert(d)) {
+    const rows = await db.select({
+        cveId: cveFindings.cveId, kev: cveFindings.kev, epss: cveFindings.epss, cvss: cveFindings.cvss,
+        fixVersions: cveFindings.fixVersions, description: cveFindings.description,
+      })
+      .from(cveFindings)
+      .where(and(eq(cveFindings.eventId, event.eventId), isNull(cveFindings.fixedAt), eq(cveFindings.dismissed, false)))
+      .orderBy(desc(cveFindings.kev), desc(cveFindings.epss), desc(cveFindings.cvss))
+      .limit(500)
+    const lead = rows[0]
+    if (lead) {
+      const pkg = typeof d.package_name === 'string' ? d.package_name : null
+      const installed = typeof d.package_version === 'string' ? d.package_version : null
+      const byCve = new Map<string, { kev: boolean; fixVersions: unknown }>()
+      for (const r of rows) {
+        const cur = byCve.get(r.cveId)
+        byCve.set(r.cveId, { kev: (cur?.kev ?? false) || r.kev, fixVersions: cur?.fixVersions ?? r.fixVersions })
+      }
+      const group = groupSummary(installed, [...byCve.values()])
+      if (typeof d.fix_to === 'string' && d.fix_to) group.fixTo = d.fix_to      // covers every installed copy
+      const enrich = await enrichCve(opts.kv, lead.cveId, opts.nvdKey)
+      const cve: NonNullable<AdvisoryFacts['cve']> = {
+        id: lead.cveId,
+        pkg: pkg ? sanitizeText(pkg, 80) : null,
+        packageType: typeof d.package_type === 'string' ? d.package_type : null,
+        installed: installed ? sanitizeText(installed, 40) : null,
+        cvss: Number(lead.cvss), epss: Number(lead.epss),
+        kev: lead.kev, threatIntel: d.has_cti_match === true,
+        tiTitles: strArr(d.ti_event_titles).slice(0, 3),
+        cwe: cweList(d.cwe_ids).map(c => `${c.id}${c.name ? ` ${c.name}` : ''}`).slice(0, 3),
+        description: lead.description ? sanitizeText(lead.description, 300) : null,
+        group, nvd: enrich.nvd, osv: enrich.osv, all: [...byCve.keys()].slice(0, 200),
+      }
+      const urgency = urgencyFor({
+        kev: d.kev === true, threatIntel: cve.threatIntel, epss: num(d.max_epss), cvss: num(d.max_cvss),
+        internetFacing: base.asset.internetFacing, criticality: base.asset.criticality, severity: event.severity,
+      })
+      return {
+        ...base, cve, other: {}, urgency,
+        commands: commandsFor({ packageType: cve.packageType, pkg: cve.pkg, installed: cve.installed, to: group.fixTo, windows }),
+        sources: buildSources(cve, enrich.refs),
+      }
+    }
+  }
+
+  // CVE alerts from before package alerts: the whole fix group for this package on this asset, plus NVD/OSV
   if (event.eventType === 'cve_detected' && typeof d.cve_id === 'string') {
     const pkg = typeof d.package_name === 'string' ? d.package_name : null
     const siblings = asset && pkg
@@ -170,7 +218,7 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
  *  fields are not trusted to ground an id. */
 function groundedCves(f: AdvisoryFacts): string[] {
   if (!f.cve) return []
-  return [f.cve.id, ...cveIdsIn(`${f.cve.description ?? ''} ${f.cve.osv?.summary ?? ''} ${(f.cve.osv?.aliases ?? []).join(' ')}`)]
+  return [f.cve.id, ...(f.cve.all ?? []), ...cveIdsIn(`${f.cve.description ?? ''} ${f.cve.osv?.summary ?? ''} ${(f.cve.osv?.aliases ?? []).join(' ')}`)]
 }
 
 const SYSTEM_PROMPT = `You are a senior IT security administrator writing a remediation advisory for a small organisation.

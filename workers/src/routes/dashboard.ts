@@ -11,7 +11,7 @@ import { eq, and, desc, sql, inArray, isNull } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { assets, agents, scanResults, sboms, events, advisories, users } from '../db/schema'
+import { assets, agents, scanResults, sboms, events, advisories, users, cveFindings } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
 import { RISKY_PORTS, compareVersions } from '../lib/exposure'
@@ -42,8 +42,16 @@ app.get('/summary', authMiddleware, async (c) => {
     const isCve = eq(events.eventType, 'cve_detected')
     const pkgName = sql<string>`${events.details}->>'package_name'`
 
+    // SBOM alerts are one per vulnerable package (lib/packageAlerts.ts); older ones one per CVE
+    const cveCount = sql<number>`COALESCE((${events.details}->>'cve_count')::int, 1)`
+    const isFixable = sql`(CASE WHEN ${events.details}->>'shape' = 'package'
+      THEN COALESCE((${events.details}->>'fixable_count')::int, 0) > 0
+      ELSE jsonb_typeof(${events.details}->'fix_versions') = 'array' AND jsonb_array_length(${events.details}->'fix_versions') > 0 END)`
+    const alertEpss = sql`CASE WHEN jsonb_typeof(${events.details}->'max_epss') = 'number' THEN (${events.details}->>'max_epss')::float
+      WHEN jsonb_typeof(${events.details}->'epss_score') = 'number' THEN (${events.details}->>'epss_score')::float ELSE 0 END`
+
     const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows,
-           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows, priorityMetrics, advisoryMetrics] = await Promise.all([
+           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows, priorityMetrics, advisoryMetrics, kevRows] = await Promise.all([
       db.select({ agentId: agents.agentId, name: agents.name, kind: agents.kind, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
         .from(agents).where(tenantId ? and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt)) : isNull(agents.retiredAt)),
       db.select({
@@ -95,11 +103,13 @@ app.get('/summary', authMiddleware, async (c) => {
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(openScope, concernCondition(id)))
         .orderBy(desc(priorityExpr), desc(events.lastSeen)).limit(3))),
-      // CVE backlog shape
+      // CVE backlog shape: vulnerable packages to fix, and the distinct CVEs on each device
+      // (summed over devices: one CVE on two computers is two things to fix)
       db.select({
           total: sql<number>`count(*)::int`,
-          fixable: sql<number>`count(*) filter (where jsonb_typeof(${events.details}->'fix_versions') = 'array'
-            and jsonb_array_length(${events.details}->'fix_versions') > 0)::int`,
+          cves: sql<number>`(SELECT count(DISTINCT (f.asset_id, f.cve_id)) FROM cve_findings f
+            WHERE f.event_id = ANY(array_agg(${events.eventId})) AND f.fixed_at IS NULL AND NOT f.dismissed)::int`,
+          fixable: sql<number>`count(*) filter (where ${isFixable})::int`,
           critical: sevCount('critical'), high: sevCount('high'), medium: sevCount('medium'), low: sevCount('low'),
           hosts: sql<number>`count(distinct ${events.assetId})::int`,
         })
@@ -108,18 +118,20 @@ app.get('/summary', authMiddleware, async (c) => {
       db.select({
           pkg: pkgName,
           alerts: sql<number>`count(*)::int`,
+          cves: sql<number>`COALESCE(sum(${cveCount}), 0)::int`,
           hosts: sql<number>`count(distinct ${events.assetId})::int`,
           critical: sevCount('critical'), high: sevCount('high'),
-          maxEpss: sql<number>`max(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number'
-            THEN (${events.details}->>'epss_score')::float ELSE 0 END)`,
+          maxEpss: sql<number>`max(${alertEpss})`,
           installed: sql<string[]>`(array_agg(distinct ${events.details}->>'package_version'))[1:4]`,
-          fixes: sql<string[]>`array_remove(array_agg(distinct CASE WHEN jsonb_typeof(${events.details}->'fix_versions') = 'array'
+          fixes: sql<string[]>`array_remove(array_agg(distinct CASE
+            WHEN ${events.details}->>'shape' = 'package' THEN ${events.details}->>'fix_to'
+            WHEN jsonb_typeof(${events.details}->'fix_versions') = 'array'
             THEN ${events.details}->'fix_versions'->>(jsonb_array_length(${events.details}->'fix_versions') - 1) END), NULL)`,
         })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(openScope, isCve, sql`${pkgName} IS NOT NULL`))
         .groupBy(pkgName)
-        .orderBy(desc(sql`count(*)`)).limit(PATCH_TOP),
+        .orderBy(desc(sql`sum(${cveCount})`)).limit(PATCH_TOP),
       // Assets carrying the most risk: worst single alert, plus a dampened
       // bonus for volume so a host with dozens of criticals still ranks
       db.select({
@@ -141,8 +153,6 @@ app.get('/summary', authMiddleware, async (c) => {
           urgentNew7d: sql<number>`count(*) filter (where ${priorityExpr} >= 100 and ${events.firstSeen} >= ${sevenDaysAgo})::int`,
           highRiskExposureAssets: sql<number>`count(distinct ${assets.assetId}) filter (
             where ${assets.isInternetFacing} = true and ${events.severity} in ('critical','high'))::int`,
-          kevCves: sql<number>`count(distinct ${events.details}->>'cve_id') filter (
-            where ${events.eventType} = 'cve_detected' and ${events.details}->'kev' = 'true'::jsonb)::int`,
           kevAssets: sql<number>`count(distinct ${assets.assetId}) filter (
             where ${events.eventType} = 'cve_detected' and ${events.details}->'kev' = 'true'::jsonb)::int`,
           threatIntelMatches: sql<number>`count(*) filter (where
@@ -151,6 +161,7 @@ app.get('/summary', authMiddleware, async (c) => {
           threatIntelAssets: sql<number>`count(distinct ${assets.assetId}) filter (where
             (${events.eventType} = 'cti_match' and COALESCE(${events.details}->>'match_kind', '') <> 'watchlist') or
             (${events.eventType} <> 'cve_detected' and ${events.eventType} <> 'cti_match' and ${events.details}->'has_cti_match' = 'true'::jsonb))::int`,
+          // vulnerable packages (one SBOM alert each) that rank high
           highPriorityFixGroups: sql<number>`count(distinct (${events.assetId},
             COALESCE(${events.details}->>'package_name', ''), COALESCE(${events.details}->>'package_version', '')))
             filter (where ${events.eventType} = 'cve_detected' and ${priorityExpr} >= 75)::int`,
@@ -165,6 +176,11 @@ app.get('/summary', authMiddleware, async (c) => {
         })
         .from(advisories).innerJoin(events, eq(advisories.eventId, events.eventId))
         .innerJoin(assets, eq(events.assetId, assets.assetId)).where(assetScope).groupBy(advisories.status),
+      // Distinct CVEs on CISA KEV among the open SBOM alerts' present findings
+      db.select({ n: sql<number>`count(distinct ${cveFindings.cveId})::int` })
+        .from(cveFindings).innerJoin(events, eq(cveFindings.eventId, events.eventId))
+        .innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(openScope, eq(cveFindings.kev, true), isNull(cveFindings.fixedAt), eq(cveFindings.dismissed, false))),
     ])
 
     // ── Collection health ──────────────────────────────────────────
@@ -291,12 +307,13 @@ app.get('/summary', authMiddleware, async (c) => {
       return (stable.length ? stable : all).sort(compareVersions).at(-1) ?? null
     }
     const patch_backlog = {
-      total: cve?.total ?? 0,
+      total: cve?.total ?? 0,                 // vulnerable packages (open SBOM alerts)
+      cves: cve?.cves ?? 0,                   // the CVEs they hold
       fixable: cve?.fixable ?? 0,
       hosts: cve?.hosts ?? 0,
       by_severity: { critical: cve?.critical ?? 0, high: cve?.high ?? 0, medium: cve?.medium ?? 0, low: cve?.low ?? 0 },
       packages: pkgRows.map(p => ({
-        package: p.pkg, alerts: p.alerts, hosts: p.hosts, critical: p.critical, high: p.high,
+        package: p.pkg, alerts: p.alerts, cves: p.cves, hosts: p.hosts, critical: p.critical, high: p.high,
         max_epss: p.maxEpss, installed: (p.installed ?? []).filter(Boolean), upgrade_to: highest(p.fixes ?? []),
       })),
     }
@@ -361,7 +378,7 @@ app.get('/summary', authMiddleware, async (c) => {
         urgent_issues: priorityMetrics[0]?.urgent ?? 0,
         urgent_issues_new_7d: priorityMetrics[0]?.urgentNew7d ?? 0,
         high_risk_exposure_assets: priorityMetrics[0]?.highRiskExposureAssets ?? 0,
-        kev_cves: priorityMetrics[0]?.kevCves ?? 0,
+        kev_cves: kevRows[0]?.n ?? 0,
         kev_assets: priorityMetrics[0]?.kevAssets ?? 0,
         threat_intel_matches: priorityMetrics[0]?.threatIntelMatches ?? 0,
         threat_intel_assets: priorityMetrics[0]?.threatIntelAssets ?? 0,

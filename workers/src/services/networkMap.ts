@@ -68,11 +68,16 @@ export async function loadMapNetworks(db: Db, tenantId: string, measured: MapNod
       GROUP BY 1, 2, 3
       LIMIT 2000`),
     db.execute(sql`
+      -- SBOM alerts are one per vulnerable package. cve_open / kev: distinct CVEs on the device
+      -- (a CVE several packages share, e.g. Ubuntu's util-linux binaries, counts once);
+      -- cve_critical / cve_high: vulnerable packages at that severity.
       SELECT e.asset_id,
-             count(*) FILTER (WHERE e.event_type = 'cve_detected')::int AS cve_open,
+             (SELECT count(DISTINCT f.cve_id) FROM cve_findings f JOIN events fe ON fe.event_id = f.event_id
+               WHERE f.asset_id = e.asset_id AND f.fixed_at IS NULL AND NOT f.dismissed AND fe.status IN ('open', 'in_progress'))::int AS cve_open,
              count(*) FILTER (WHERE e.event_type = 'cve_detected' AND e.severity = 'critical')::int AS cve_critical,
              count(*) FILTER (WHERE e.event_type = 'cve_detected' AND e.severity = 'high')::int AS cve_high,
-             count(*) FILTER (WHERE e.event_type = 'cve_detected' AND (e.details ->> 'has_cti_match')::boolean IS TRUE)::int AS kev,
+             (SELECT count(DISTINCT f.cve_id) FROM cve_findings f JOIN events fe ON fe.event_id = f.event_id
+               WHERE f.asset_id = e.asset_id AND f.kev AND f.fixed_at IS NULL AND NOT f.dismissed AND fe.status IN ('open', 'in_progress'))::int AS kev,
              count(*) FILTER (WHERE e.event_type IN ('exposure', 'vulnerable_service'))::int AS exposure_open,
              max(CASE e.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 END)
                FILTER (WHERE e.event_type IN ('exposure', 'vulnerable_service')) AS exposure_rank

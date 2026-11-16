@@ -8,7 +8,7 @@ import { getDb } from '../db/client'
 import { agentLiveness } from '../lib/agentLiveness'
 import { audit } from '../services/audit'
 import { refreshRelationshipsLater } from '../services/relationshipRefresh'
-import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users } from '../db/schema'
+import { assets, assetAddresses, assetIdentifiers, assetSoftware, scanResults, agents, events, sboms, dependencies, assetRelationships, topologyNodes, auditLogs, duplicateDismissals, users, cveFindings } from '../db/schema'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { refreshCveAlertScores } from '../services/alertScores'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
@@ -87,6 +87,11 @@ function mergeOpToStmt(db: ReturnType<typeof getDb>, op: Exclude<MergeOp, { k: '
     ))
     case 'moveSboms':         return db.update(sboms).set({ assetId: op.survivorId }).where(inArray(sboms.assetId, op.loserIds))
     case 'moveDependencies':  return db.update(dependencies).set({ assetId: op.survivorId }).where(inArray(dependencies.assetId, op.loserIds))
+    case 'moveFindings':      return db.update(cveFindings).set({ assetId: op.survivorId }).where(and(
+      inArray(cveFindings.assetId, op.loserIds),
+      sql`NOT EXISTS (SELECT 1 FROM cve_findings s WHERE s.asset_id = ${op.survivorId} AND s.cve_id = ${cveFindings.cveId}
+        AND s.package_name = ${cveFindings.packageName} AND s.package_version = ${cveFindings.packageVersion})`,
+    ))
     case 'deleteRelationships': return db.delete(assetRelationships).where(inArray(assetRelationships.relationshipId, op.ids))
     case 'updateRelationship': return db.update(assetRelationships).set({ sourceAssetId: op.sourceAssetId, targetAssetId: op.targetAssetId }).where(eq(assetRelationships.relationshipId, op.id))
     case 'deleteTopologyNodes': return db.delete(topologyNodes).where(inArray(topologyNodes.nodeId, op.ids))

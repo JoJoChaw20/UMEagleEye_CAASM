@@ -260,7 +260,10 @@ app.get('/:id', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
         .limit(MAX_ATTRIBUTES_PER_EVENT),
       db.execute(sql`
         SELECT DISTINCT e.event_id, e.event_type, e.severity, e.details->>'indicator_value' AS indicator_value,
-               e.details->>'cve_id' AS cve_id, e.details->>'observed' AS observed, e.details->>'match_kind' AS match_kind,
+               -- an SBOM package alert: the CVE of this event it holds, and the package
+               CASE WHEN c.indicator_type = 'cve' THEN c.value ELSE e.details->>'cve_id' END AS cve_id,
+               e.details->>'package_name' AS package_name,
+               e.details->>'observed' AS observed, e.details->>'match_kind' AS match_kind,
                a.asset_id, COALESCE(a.hostname, a.ip_address) AS asset_name
         FROM event_cti_indicators l
         JOIN cti_indicators c ON c.indicator_id = l.indicator_id AND c.ti_event_id = ${ev.tiEventId}

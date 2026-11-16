@@ -6,6 +6,9 @@ import { events, assets } from '../db/schema'
 //
 //   base      composite risk score (0-100) when scored (CVEs), otherwise a
 //             severity floor so drift/device alerts rank sensibly beside CVEs
+//   ×0.5      an SBOM package alert none of whose CVEs has a fix yet, unless one is on
+//             CISA KEV: nothing to install today, so it waits behind fixable work (shown
+//             with "No fix available yet", never hidden)
 //   ×1.5      asset is internet-facing
 //   +2×crit   asset criticality (1-10)
 //   +200      threat-intel match on the asset — possible active compromise, always first
@@ -18,6 +21,9 @@ export const priorityExpr = sql<number>`round((
   COALESCE(${events.compositeRiskScore}::numeric,
     CASE ${events.severity}
       WHEN 'critical' THEN 70 WHEN 'high' THEN 50 WHEN 'medium' THEN 30 ELSE 10 END)
+  * CASE WHEN ${events.eventType} = 'cve_detected' AND ${events.details}->>'shape' = 'package'
+              AND COALESCE((${events.details}->>'fixable_count')::int, 1) = 0
+              AND (${events.details}->>'kev')::boolean IS NOT TRUE THEN 0.5 ELSE 1 END
   * CASE WHEN ${assets.isInternetFacing} THEN 1.5 ELSE 1 END
   + COALESCE(${assets.criticalityScore}, 5) * 2
   + CASE WHEN ${events.eventType} = 'os_patch_missing'

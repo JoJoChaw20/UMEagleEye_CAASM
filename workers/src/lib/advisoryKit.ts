@@ -128,6 +128,8 @@ export interface AdvisoryFacts {
     cvss: number | null; epss: number | null; kev: boolean; threatIntel: boolean; tiTitles: string[]
     cwe: string[]; description: string | null
     group: { openCves: number; kevCves: number; fixTo: string | null; fixedCount: number; noFixCount: number }
+    /** every CVE of the package alert (the advisory may name any of them) */
+    all?: string[]
     nvd?: { vector: string | null; attackVector: string | null; complexity: string | null
             privileges: string | null; userInteraction: string | null; published: string | null }
     osv?: { summary: string | null; aliases: string[] }

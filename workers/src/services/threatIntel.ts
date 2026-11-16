@@ -7,14 +7,16 @@
  * shared with all tenants, or a platform event; and it is marked to_ids and not on a
  * warninglist. Drafts and other tenants' private events never touch T's alerts.
  *
- * CVE alerts carry the result in their details: has_cti_match (any matchable 'cve'
- * indicator), kev (one of them is CISA KEV) and ti_event_titles (the events naming it).
- * refreshCveIntel() recomputes those after anything changes (nightly feeds, an event
- * published, unpublished, edited or deleted), both ways: a flag can also be cleared.
+ * CVE findings (cve_findings) carry the result: has_cti_match (any matchable 'cve'
+ * indicator), kev (one of them is CISA KEV) and ti_event_titles (the events naming it); the
+ * package alert sums them up (kev_count, has_cti_match...). refreshCveIntel() recomputes
+ * those after anything changes (nightly feeds, an event published, unpublished, edited or
+ * deleted), both ways: a flag can also be cleared.
  */
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { ctiIndicators, tiEvents } from '../db/schema'
+import { recomputePackageAlerts } from './packageAlerts'
 
 type DB = ReturnType<typeof getDb>
 
@@ -66,17 +68,18 @@ function scopeSql(scope: IntelScope): SQL {
 }
 
 /**
- * Recompute has_cti_match / kev / ti_event_titles on open CVE alerts in `scope`, adjust
- * their risk score by the +/-10 threat-intel bonus (routes/sbom.ts computeRiskScore),
- * and bring the alert↔indicator links (shown on the alert) in line. Returns how many
- * alerts changed.
+ * Recompute has_cti_match / kev / ti_event_titles on the present CVE findings of open
+ * package alerts in `scope` (cve_findings), then the alerts those changed (their counts,
+ * severity and score: services/packageAlerts.ts), and bring the alert↔indicator links
+ * (shown on the alert) in line. Returns how many alerts changed.
  */
 export async function refreshCveIntel(db: DB, scope: IntelScope): Promise<number> {
   const where = scopeSql(scope)
   const res = await db.execute(sql`
     WITH m AS (
-      SELECT e.event_id, v.hit, v.kev, v.titles
-      FROM events e
+      SELECT f.finding_id, v.hit, v.kev, v.titles
+      FROM cve_findings f
+      JOIN events e ON e.event_id = f.event_id
       JOIN assets a ON a.asset_id = e.asset_id
       CROSS JOIN LATERAL (
         SELECT count(c.indicator_id) > 0 AS hit,
@@ -84,31 +87,26 @@ export async function refreshCveIntel(db: DB, scope: IntelScope): Promise<number
                COALESCE(to_jsonb((array_agg(DISTINCT te.title) FILTER (WHERE te.title IS NOT NULL))[1:3]), '[]'::jsonb) AS titles
         FROM cti_indicators c
         LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
-        WHERE c.indicator_type = 'cve' AND c.value = e.details->>'cve_id'
+        WHERE c.indicator_type = 'cve' AND c.value = f.cve_id
           AND ${matchableSql(sql`a.tenant_id`)}
       ) v
-      WHERE e.event_type = 'cve_detected' AND e.status IN ('open', 'in_progress') ${where}
+      WHERE f.fixed_at IS NULL AND e.event_type = 'cve_detected' AND e.status IN ('open', 'in_progress') ${where}
     )
-    UPDATE events e SET
-      details = e.details || jsonb_build_object('has_cti_match', m.hit, 'kev', m.kev, 'ti_event_titles', m.titles),
-      composite_risk_score = LEAST(GREATEST(COALESCE(e.composite_risk_score, 0)
-        + CASE WHEN m.hit AND NOT COALESCE((e.details->>'has_cti_match')::boolean, false) THEN 10
-               WHEN NOT m.hit AND COALESCE((e.details->>'has_cti_match')::boolean, false) THEN -10
-               ELSE 0 END, 0), 100),
-      updated_at = now()
+    UPDATE cve_findings f SET has_cti_match = m.hit, kev = m.kev, ti_event_titles = m.titles
     FROM m
-    WHERE e.event_id = m.event_id
-      AND (COALESCE((e.details->>'has_cti_match')::boolean, false) IS DISTINCT FROM m.hit
-        OR COALESCE((e.details->>'kev')::boolean, false) IS DISTINCT FROM m.kev
-        OR COALESCE(e.details->'ti_event_titles', '[]'::jsonb) IS DISTINCT FROM m.titles)
-    RETURNING 1
+    WHERE f.finding_id = m.finding_id
+      AND (f.has_cti_match IS DISTINCT FROM m.hit OR f.kev IS DISTINCT FROM m.kev OR f.ti_event_titles IS DISTINCT FROM m.titles)
+    RETURNING f.event_id
   `)
+  const changed = [...new Set((res.rows as { event_id: string }[]).map((r) => r.event_id))]
+  const alerts = await recomputePackageAlerts(db, { eventIds: changed })
   await linkCveIndicators(db, scope)
-  return res.rows.length
+  return alerts
 }
 
-/** Link CVE alerts to the matchable 'cve' indicators naming their CVE, and drop links to
- *  ones that are no longer matchable (event unpublished, made private, to_ids off). */
+/** Link package alerts to the matchable 'cve' indicators naming one of their present CVEs, and
+ *  drop links to ones no longer matchable (event unpublished, made private, to_ids off) or to
+ *  CVEs the package no longer has. */
 export async function linkCveIndicators(db: DB, scope: IntelScope): Promise<void> {
   const where = scopeSql(scope)
   await db.execute(sql`
@@ -117,16 +115,18 @@ export async function linkCveIndicators(db: DB, scope: IntelScope): Promise<void
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE l.event_id = e.event_id AND a.asset_id = e.asset_id AND c.indicator_id = l.indicator_id
         AND e.event_type = 'cve_detected' AND c.indicator_type = 'cve' ${where}
-        AND NOT ${matchableSql(sql`a.tenant_id`)}
+        AND (NOT ${matchableSql(sql`a.tenant_id`)}
+          OR NOT EXISTS (SELECT 1 FROM cve_findings f WHERE f.event_id = e.event_id AND f.cve_id = c.value AND f.fixed_at IS NULL))
   `)
   await db.execute(sql`
       INSERT INTO event_cti_indicators (event_id, indicator_id)
-      SELECT e.event_id, c.indicator_id
-      FROM events e
+      SELECT DISTINCT e.event_id, c.indicator_id
+      FROM cve_findings f
+      JOIN events e ON e.event_id = f.event_id
       JOIN assets a ON a.asset_id = e.asset_id
-      JOIN cti_indicators c ON c.indicator_type = 'cve' AND c.value = e.details->>'cve_id'
+      JOIN cti_indicators c ON c.indicator_type = 'cve' AND c.value = f.cve_id
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
-      WHERE e.event_type = 'cve_detected' ${where} AND ${matchableSql(sql`a.tenant_id`)}
+      WHERE f.fixed_at IS NULL AND e.event_type = 'cve_detected' ${where} AND ${matchableSql(sql`a.tenant_id`)}
       ON CONFLICT DO NOTHING
   `)
 }

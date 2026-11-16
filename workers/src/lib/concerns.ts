@@ -22,8 +22,11 @@ const isCve = eq(events.eventType, 'cve_detected')
 const isWatchlist = and(eq(events.eventType, 'cti_match'), sql`${events.details}->>'match_kind' = 'watchlist'`)!
 const isExploitedPatch = and(eq(events.eventType, 'os_patch_missing'),
   sql`COALESCE((${events.details}->>'exploited')::int, 0) > 0`)!
-const epssAtLeast = (v: number) => sql`(CASE WHEN jsonb_typeof(${events.details}->'epss_score') = 'number'
-  THEN (${events.details}->>'epss_score')::float ELSE 0 END) >= ${v}`
+// SBOM package alerts keep their worst CVE's EPSS as max_epss; other alerts as epss_score
+const epssAtLeast = (v: number) => sql`(CASE
+  WHEN jsonb_typeof(${events.details}->'max_epss') = 'number' THEN (${events.details}->>'max_epss')::float
+  WHEN jsonb_typeof(${events.details}->'epss_score') = 'number' THEN (${events.details}->>'epss_score')::float
+  ELSE 0 END) >= ${v}`
 
 export function concernCondition(id: ConcernId): SQL {
   switch (id) {

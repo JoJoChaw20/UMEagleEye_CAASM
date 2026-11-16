@@ -71,6 +71,9 @@ export type MergeOp =
   | { k: 'closeDuplicateNewDevice'; survivorId: string }
   | { k: 'moveSboms'; loserIds: string[]; survivorId: string }
   | { k: 'moveDependencies'; loserIds: string[]; survivorId: string }
+  // CVE findings move with their alerts; one the survivor already has (same CVE, package and
+  // version) stays behind and goes with the loser. The next SBOM folds two alerts of a package.
+  | { k: 'moveFindings'; loserIds: string[]; survivorId: string }
   // Installed software describes one machine's current state, so the list of the asset
   // with the newest inventory is kept (moved to the survivor) and the others dropped.
   | { k: 'keepSoftware'; keepAssetId: string; dropAssetIds: string[]; survivorId: string }
@@ -233,6 +236,7 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     ops.push({ k: 'closeDuplicateNewDevice', survivorId })
     ops.push({ k: 'moveSboms', loserIds, survivorId })
     ops.push({ k: 'moveDependencies', loserIds, survivorId })
+    ops.push({ k: 'moveFindings', loserIds, survivorId })
     // Software: keep the list of the asset whose inventory is newest (else the survivor's).
     const keepAssetId = newestInventory?.assetId ?? survivorId
     ops.push({ k: 'keepSoftware', keepAssetId, dropAssetIds: all.map(a => a.assetId).filter(id => id !== keepAssetId), survivorId })

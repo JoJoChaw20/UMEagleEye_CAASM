@@ -18,6 +18,7 @@ import { advisories, assets, events } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
 import { fixTarget } from '../lib/fixTarget'
+import { isPackageAlert } from '../lib/packageAlerts'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
 
 const SLA_HOURS = 72
@@ -65,8 +66,9 @@ function whyAndDue(type: string, severity: string, d: Record<string, unknown>, a
   const why: string[] = []
   const kev = d.kev === true
   const ti = type === 'cti_match' || d.has_cti_match === true
-  const epss = num(d.epss_score) ?? 0
-  const cvss = num(d.cvss_base_score)
+  // an SBOM package alert keeps its worst CVE's values as max_epss / max_cvss
+  const epss = num(d.max_epss) ?? num(d.epss_score) ?? 0
+  const cvss = num(d.max_cvss) ?? num(d.cvss_base_score)
   if (kev) why.push('exploited in the wild (CISA KEV)')
   if (ti) why.push('named by threat intelligence')
   if (type === 'os_patch_missing' && (num(d.exploited) ?? 0) > 0) why.push('missing fixes include exploited CVEs')
@@ -163,6 +165,21 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
   const grouped = new Map<string, { idx: number; installed: string | null; fixes: unknown[]; count: number }>()
   for (const r of prio) {
     const d = (r.details ?? {}) as Record<string, unknown>
+    // an SBOM package alert is already one package with its CVEs and fix target
+    if (r.type === 'cve_detected' && isPackageAlert(d)) {
+      if (actions.length >= 8) continue
+      const { why, due } = whyAndDue(r.type, r.severity, d, r)
+      const ver = typeof d.package_version === 'string' ? ` ${d.package_version}` : ''
+      actions.push({
+        rank: actions.length + 1, asset: label(r), ip: r.hostname ? r.ipAddress : null,
+        // "fixes N": the CVEs the target fixes; with no target, how many are waiting for one
+        action: actionText('cve_detected', {}, typeof d.fix_to === 'string' && d.fix_to
+          ? { pkg: `${String(d.package_name ?? '')}${ver}`, to: d.fix_to, count: num(d.fixable_count) ?? 1 }
+          : { pkg: `${String(d.package_name ?? '')}${ver}`, to: null, count: num(d.cve_count) ?? 1 }),
+        why, severity: r.severity, due, owner: r.owner?.trim() || null, assigned: !!r.assignedTo,
+      })
+      continue
+    }
     const pkg = r.type === 'cve_detected' && typeof d.package_name === 'string' ? d.package_name : null
     const key = pkg ? `${r.assetId}|${pkg}` : null
     if (key && grouped.has(key)) {

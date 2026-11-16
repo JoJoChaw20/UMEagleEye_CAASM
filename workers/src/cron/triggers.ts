@@ -88,7 +88,7 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
         })
         await step(env, 'retention', async () => {
           const purged = await purgeOldData(db)
-          return `Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events, ${purged.scans} old scan records`
+          return `Purged ${purged.cti} stale CTI indicators, ${purged.events} closed events, ${purged.scans} old scan records, ${purged.findings} long-fixed CVE findings`
         })
         await step(env, 'alert-hygiene', async () => {
           const closed = await runAlertHygiene(db)

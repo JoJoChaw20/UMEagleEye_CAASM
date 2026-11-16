@@ -232,6 +232,13 @@
       "when": 1794394607530,
       "tag": "0032_ports_seen_at",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794837674066,
+      "tag": "0033_cve_findings",
+      "breakpoints": true
     }
   ]
 }
