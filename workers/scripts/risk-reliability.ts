@@ -172,12 +172,19 @@ async function main() {
     if (!t) die(`tenant "${slug}" not found`)
     tenantId = t['tenant_id'] as string
   }
+  // One row per CVE finding: the findings of SBOM package alerts (lib/packageAlerts.ts; their
+  // stored score is the alert's, so it is not compared per CVE), plus any old per-CVE alerts.
   const rows = await sql`
-    SELECT e.details->>'cve_id' AS cve, (e.details->>'cvss_base_score')::float AS cvss,
-           (e.details->>'epss_score')::float AS epss, COALESCE((e.details->>'has_cti_match')::boolean, false) AS cti,
-           e.composite_risk_score::float AS stored, e.first_seen, a.criticality_score AS crit, e.status
+    SELECT f.cve_id AS cve, f.cvss::float AS cvss, f.epss::float AS epss, f.has_cti_match AS cti,
+           NULL::float AS stored, f.first_seen, a.criticality_score AS crit, e.status
+    FROM cve_findings f JOIN events e ON e.event_id = f.event_id JOIN assets a ON a.asset_id = f.asset_id
+    WHERE f.cve_id LIKE 'CVE-%' AND NOT f.dismissed AND (${tenantId}::uuid IS NULL OR a.tenant_id = ${tenantId}::uuid)
+    UNION ALL
+    SELECT e.details->>'cve_id', (e.details->>'cvss_base_score')::float,
+           (e.details->>'epss_score')::float, COALESCE((e.details->>'has_cti_match')::boolean, false),
+           e.composite_risk_score::float, e.first_seen, a.criticality_score, e.status
     FROM events e JOIN assets a ON a.asset_id = e.asset_id
-    WHERE e.event_type = 'cve_detected' AND e.details->>'cve_id' LIKE 'CVE-%'
+    WHERE e.event_type = 'cve_detected' AND e.details->>'cve_id' LIKE 'CVE-%' AND e.details->>'shape' IS DISTINCT FROM 'package'
       AND (${tenantId}::uuid IS NULL OR a.tenant_id = ${tenantId}::uuid)` as Record<string, unknown>[]
   if (!rows.length) die('no CVE alerts found')
 

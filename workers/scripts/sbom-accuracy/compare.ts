@@ -110,10 +110,18 @@ async function main() {
   const [sbom] = await sql`SELECT sbom_id, generated_at FROM sboms WHERE asset_id = ${assetId} ORDER BY generated_at DESC LIMIT 1` as Array<{ sbom_id: string; generated_at: string }>
   if (!sbom) die('no SBOM uploaded for this asset yet')
   const deps = await sql`SELECT name, version, package_manager FROM dependencies WHERE sbom_id = ${sbom.sbom_id}` as Array<{ name: string; version: string; package_manager: string | null }>
+  // What the pipeline reports per CVE: the present findings of open SBOM package alerts
+  // (lib/packageAlerts.ts), plus any old per-CVE alerts not converted yet.
   const alerts = await sql`
-    SELECT details->>'cve_id' AS id, details->>'package_name' AS pkg, details->>'package_version' AS ver,
-           details->'affected_versions' AS affected, status::text AS status
-    FROM events WHERE asset_id = ${assetId} AND event_type = 'cve_detected' AND status IN ('open', 'in_progress')` as Array<{ id: string; pkg: string; ver: string; affected: unknown; status: string }>
+    SELECT f.cve_id AS id, f.package_name AS pkg, f.package_version AS ver, NULL::jsonb AS affected, e.status::text AS status
+    FROM cve_findings f JOIN events e ON e.event_id = f.event_id
+    WHERE f.asset_id = ${assetId} AND f.fixed_at IS NULL AND NOT f.dismissed AND e.status IN ('open', 'in_progress')
+    UNION ALL
+    SELECT details->>'cve_id', details->>'package_name', details->>'package_version', details->'affected_versions', status::text
+    FROM events WHERE asset_id = ${assetId} AND event_type = 'cve_detected' AND status IN ('open', 'in_progress')
+      AND details->>'shape' IS DISTINCT FROM 'package'` as Array<{ id: string; pkg: string; ver: string; affected: unknown; status: string }>
+  const [{ n: packageAlerts }] = await sql`SELECT count(*)::int AS n FROM events WHERE asset_id = ${assetId}
+    AND event_type = 'cve_detected' AND status IN ('open', 'in_progress')` as Array<{ n: number }>
 
   type Eco = { planted: number; detected: number; vulns: number; found: number; alerts: number; correct: number; clean_alerts: number }
   const eco: Record<string, Eco> = {}
@@ -138,7 +146,7 @@ async function main() {
       osv_vulns: vulns.length, alerts: mine.length, found: found.length, wrong: mine.length - correct.length })
   }
 
-  console.log(`\nAsset ${assets[0]!.hostname}: SBOM ${sbom.generated_at}, ${deps.length} packages, ${alerts.length} open CVE alerts; OSV truth fetched ${truth.fetched}`)
+  console.log(`\nAsset ${assets[0]!.hostname}: SBOM ${sbom.generated_at}, ${deps.length} packages, ${alerts.length} open CVE findings in ${packageAlerts} open SBOM alert(s); OSV truth fetched ${truth.fetched}`)
   console.table(rows)
   const sum = (k: keyof Eco) => Object.values(eco).reduce((a, e) => a + e[k], 0)
   const summary = Object.fromEntries([...Object.entries(eco), ['ALL', {
@@ -158,7 +166,7 @@ async function main() {
     mkdirSync(outDir, { recursive: true })
     const tag = assets[0]!.hostname.toLowerCase().replace(/[^a-z0-9]+/g, '-')
     writeFileSync(path.join(outDir, `sbom-accuracy-truth-${truth.fetched.slice(0, 10)}.json`), JSON.stringify(truth, null, 2))
-    writeFileSync(path.join(outDir, `sbom-accuracy-${tag}.json`), JSON.stringify({ host: assets[0]!.hostname, sbom: sbom.generated_at, truth_fetched: truth.fetched, summary, rows, misses, wrong }, null, 2))
+    writeFileSync(path.join(outDir, `sbom-accuracy-${tag}.json`), JSON.stringify({ host: assets[0]!.hostname, sbom: sbom.generated_at, truth_fetched: truth.fetched, open_sbom_alerts: packageAlerts, open_cve_findings: alerts.length, summary, rows, misses, wrong }, null, 2))
     console.log(`\nWrote results to ${outDir}`)
   }
 }

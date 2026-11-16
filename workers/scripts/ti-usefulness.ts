@@ -92,12 +92,18 @@ async function main() {
            e.status::text AS status, (e.resolved_by IS NOT NULL) AS by_person,
            jsonb_array_length(COALESCE(e.details->'ti_event_ids', '[]'::jsonb)) > 0 AS from_event, e.asset_id
     FROM events e JOIN assets a ON a.asset_id = e.asset_id WHERE e.event_type = 'cti_match'` as Row[]
+  // One row per CVE: present findings of SBOM package alerts, plus any old per-CVE alerts
   const cveIntel = await sql`
-    SELECT a.tenant_id, e.status::text AS status, e.details->>'cve_id' AS cve,
-           COALESCE((e.details->>'kev')::boolean, false) AS kev,
-           COALESCE((e.details->>'has_cti_match')::boolean, false) AS cti,
-           jsonb_array_length(COALESCE(e.details->'ti_event_titles', '[]'::jsonb)) > 0 AS from_event
-    FROM events e JOIN assets a ON a.asset_id = e.asset_id WHERE e.event_type = 'cve_detected'` as Row[]
+    SELECT a.tenant_id, e.status::text AS status, f.cve_id AS cve, f.kev, f.has_cti_match AS cti,
+           jsonb_array_length(f.ti_event_titles) > 0 AS from_event
+    FROM cve_findings f JOIN events e ON e.event_id = f.event_id JOIN assets a ON a.asset_id = f.asset_id
+    WHERE f.fixed_at IS NULL AND NOT f.dismissed
+    UNION ALL
+    SELECT a.tenant_id, e.status::text, e.details->>'cve_id',
+           COALESCE((e.details->>'kev')::boolean, false), COALESCE((e.details->>'has_cti_match')::boolean, false),
+           jsonb_array_length(COALESCE(e.details->'ti_event_titles', '[]'::jsonb)) > 0
+    FROM events e JOIN assets a ON a.asset_id = e.asset_id
+    WHERE e.event_type = 'cve_detected' AND e.details->>'shape' IS DISTINCT FROM 'package'` as Row[]
   const patches = await sql`
     SELECT count(*)::int AS n, count(*) FILTER (WHERE COALESCE((details->>'exploited')::int, 0) > 0)::int AS exploited
     FROM events WHERE event_type = 'os_patch_missing'` as Row[]
