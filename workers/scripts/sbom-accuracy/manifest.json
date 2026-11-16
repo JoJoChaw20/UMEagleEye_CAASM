@@ -1,0 +1,37 @@
+{
+  "description": "Labelled test set for the SBOM to CVE accuracy evaluation (scripts/sbom-accuracy/README.md). Versions are pinned; which CVEs each has comes from OSV.dev at evaluation time, not from this file. 'expect' is only the intent: vulnerable packages, and clean controls that should raise no alert.",
+  "packages": [
+    { "ecosystem": "PyPI", "name": "requests", "version": "2.25.0", "expect": "vulnerable" },
+    { "ecosystem": "PyPI", "name": "urllib3", "version": "1.26.4", "expect": "vulnerable" },
+    { "ecosystem": "PyPI", "name": "Jinja2", "version": "2.11.2", "expect": "vulnerable" },
+    { "ecosystem": "PyPI", "name": "Django", "version": "3.2", "expect": "vulnerable" },
+    { "ecosystem": "PyPI", "name": "Werkzeug", "version": "2.0.0", "expect": "vulnerable" },
+    { "ecosystem": "PyPI", "name": "certifi", "version": "2022.9.24", "expect": "vulnerable" },
+    { "ecosystem": "PyPI", "name": "idna", "version": "3.20", "expect": "clean" },
+    { "ecosystem": "PyPI", "name": "six", "version": "1.17.0", "expect": "clean" },
+
+    { "ecosystem": "npm", "name": "lodash", "version": "4.17.15", "expect": "vulnerable" },
+    { "ecosystem": "npm", "name": "minimist", "version": "1.2.0", "expect": "vulnerable" },
+    { "ecosystem": "npm", "name": "axios", "version": "0.21.0", "expect": "vulnerable" },
+    { "ecosystem": "npm", "name": "node-fetch", "version": "2.6.0", "expect": "vulnerable" },
+    { "ecosystem": "npm", "name": "jsonwebtoken", "version": "8.5.1", "expect": "vulnerable" },
+    { "ecosystem": "npm", "name": "ms", "version": "2.1.3", "expect": "clean" },
+    { "ecosystem": "npm", "name": "is-number", "version": "7.0.0", "expect": "clean" },
+
+    { "ecosystem": "Maven", "name": "org.apache.logging.log4j:log4j-core", "version": "2.14.1", "expect": "vulnerable" },
+    { "ecosystem": "Maven", "name": "com.fasterxml.jackson.core:jackson-databind", "version": "2.9.10", "expect": "vulnerable" },
+    { "ecosystem": "Maven", "name": "org.apache.commons:commons-text", "version": "1.9", "expect": "vulnerable" },
+    { "ecosystem": "Maven", "name": "org.yaml:snakeyaml", "version": "1.30", "expect": "vulnerable" },
+    { "ecosystem": "Maven", "name": "org.apache.commons:commons-lang3", "version": "3.18.0", "expect": "clean" },
+    { "ecosystem": "Maven", "name": "org.slf4j:slf4j-api", "version": "2.0.16", "expect": "clean" },
+
+    { "ecosystem": "NuGet", "name": "Newtonsoft.Json", "version": "12.0.1", "expect": "vulnerable" },
+    { "ecosystem": "NuGet", "name": "System.Text.Encodings.Web", "version": "4.5.0", "expect": "vulnerable" },
+    { "ecosystem": "NuGet", "name": "Humanizer.Core", "version": "2.14.1", "expect": "clean" }
+  ],
+  "manual": [
+    { "os": "windows", "name": "7-Zip", "version": "19.00", "how": "install 7z1900-x64.msi from https://www.7-zip.org/a/7z1900-x64.msi",
+      "why": "known gap: CVEs of installed Windows programs are not checked yet (parked), so this should NOT be found",
+      "cves_from_nvd": ["CVE-2023-31102", "CVE-2023-40481", "CVE-2024-11477", "CVE-2025-0411"] }
+  ]
+}
