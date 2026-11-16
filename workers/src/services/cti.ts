@@ -45,6 +45,32 @@ const familyName = (n: string | null | undefined) => {
   return v && !/^unknown/i.test(v) ? v.slice(0, FAMILY_MAX) : null
 }
 
+/** An OTX pulse's ATT&CK: techniques its author tagged, and its malware family, preferring one ATT&CK documents. */
+export function otxPulseAttack(pulse: Pick<OtxPulse, 'attack_ids' | 'malware_families'>) {
+  // attack_ids and malware_families come as strings or objects
+  const named = techniqueIds((pulse.attack_ids ?? []).flatMap((x) =>
+    typeof x === 'string' ? [x] : [x.id, x.name, x.display_name]))
+  const families = (pulse.malware_families ?? [])
+    .map((f) => familyName(typeof f === 'string' ? f : f.display_name ?? f.id))
+    .filter((f): f is string => !!f)
+  const software = resolveSoftware(families)
+  const family = (software && families.find((f) => resolveSoftware([f]) === software)) ?? families[0] ?? null
+  return { named, software, family }
+}
+
+/** A ThreatFox IOC's family, and its ATT&CK software from the printable name, aliases or Malpedia key. */
+export function threatFoxAttack(ioc: Pick<ThreatFoxIoc, 'malware' | 'malware_printable' | 'malware_alias'>) {
+  const family = familyName(ioc.malware_printable)
+  return {
+    malwareFamily:  family,
+    attackSoftware: family ? resolveSoftware([
+      ioc.malware_printable,
+      ...(ioc.malware_alias ?? '').split(','),
+      ioc.malware?.split('.').slice(1).join('.'),    // Malpedia key without the platform
+    ]) : null,
+  }
+}
+
 function mapOtxType(t: string): 'ip' | 'domain' | 'hash' | 'url' | 'email' | null {
   const m: Record<string, 'ip' | 'domain' | 'hash' | 'url' | 'email'> = {
     'IPv4': 'ip', 'IPv6': 'ip', 'domain': 'domain', 'hostname': 'domain',
@@ -146,15 +172,7 @@ export async function ingestOtx(db: DB, apiKey: string): Promise<number> {
   const now = new Date()
 
   for (const pulse of data.results ?? []) {
-    // Techniques the pulse's author tagged, and its malware families (strings or objects)
-    const named = techniqueIds((pulse.attack_ids ?? []).flatMap((x) =>
-      typeof x === 'string' ? [x] : [x.id, x.name, x.display_name]))
-    const families = (pulse.malware_families ?? [])
-      .map((f) => familyName(typeof f === 'string' ? f : f.display_name ?? f.id))
-      .filter((f): f is string => !!f)
-    // prefer a family ATT&CK documents
-    const software = resolveSoftware(families)
-    const family = (software && families.find((f) => resolveSoftware([f]) === software)) ?? families[0] ?? null
+    const { named, software, family } = otxPulseAttack(pulse)
 
     for (const ind of pulse.indicators ?? []) {
       const itype = mapOtxType(ind.type)
@@ -227,12 +245,7 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
       value,
       warning:         warninglistOf(itype, value),
       confidenceScore: ((ioc.confidence_level ?? 50) / 100).toFixed(2),
-      malwareFamily:   familyName(ioc.malware_printable),
-      attackSoftware:  familyName(ioc.malware_printable) ? resolveSoftware([
-        ioc.malware_printable,
-        ...(ioc.malware_alias ?? '').split(','),
-        ioc.malware?.split('.').slice(1).join('.'),    // Malpedia key without the platform
-      ]) : null,
+      ...threatFoxAttack(ioc),
       lastSeen:        now,
     })
   }
