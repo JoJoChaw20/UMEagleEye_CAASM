@@ -18,7 +18,6 @@ export default function DashboardPage() {
   const [posture, setPosture] = useState(null)
   const [history, setHistory] = useState([])
   const [recentChanges, setRecentChanges] = useState([])
-  const [cveGroups, setCveGroups] = useState([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [errors, setErrors] = useState({})
@@ -27,7 +26,7 @@ export default function DashboardPage() {
     if (background) setRefreshing(true)
     else {
       setLoading(true)
-      setSummary(null); setPosture(null); setHistory([]); setRecentChanges([]); setCveGroups([])
+      setSummary(null); setPosture(null); setHistory([]); setRecentChanges([])
     }
     const tenant = tenantFilter ? { tenant_id: tenantFilter } : {}
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
@@ -36,7 +35,6 @@ export default function DashboardPage() {
       client.get('/posture/current', { params: tenant }),
       client.get('/posture/history', { params: { limit: 30, ...tenant } }),
       client.get('/events', { params: { page: 1, page_size: 30, since, sort: 'time', ...tenant } }),
-      client.get('/events/cve-groups', { params: { page: 1, page_size: 30, status: 'open', ...tenant } }),
     ])
     const values = results.map(result => result.status === 'fulfilled' ? result.value.data : null)
     const nextErrors = {
@@ -44,13 +42,11 @@ export default function DashboardPage() {
       posture: results[1].status === 'rejected',
       history: results[2].status === 'rejected',
       changes: results[3].status === 'rejected',
-      groups: results[4].status === 'rejected',
     }
     setSummary(values[0])
     setPosture(values[1])
     setHistory(values[2]?.items ?? [])
     setRecentChanges(values[3]?.items ?? [])
-    setCveGroups(values[4]?.items ?? [])
     setErrors(nextErrors)
     setLoading(false)
     setRefreshing(false)
@@ -59,8 +55,8 @@ export default function DashboardPage() {
   useEffect(() => { loadDashboard() }, [loadDashboard])
 
   const priorityActions = useMemo(
-    () => buildPriorityActions(summary?.priority_actions ?? [], cveGroups, 5),
-    [summary?.priority_actions, cveGroups],
+    () => buildPriorityActions(summary?.priority_actions ?? [], 5),
+    [summary?.priority_actions],
   )
 
   const openInventory = (filters = {}) => navigate(dashboardHref('/inventory', filters, tenantFilter))

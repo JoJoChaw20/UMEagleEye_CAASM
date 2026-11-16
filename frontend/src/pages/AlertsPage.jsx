@@ -9,11 +9,11 @@ import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import WhyAlert from '../components/common/WhyAlert'
 import WindowsCveList from '../components/common/WindowsCveList'
-import CveGroupTable, { groupKey } from '../components/common/CveGroupTable'
+import PackageCveList from '../components/common/PackageCveList'
 import {
   SEVERITY_COLORS, cvssColor, EVENT_TYPE_LABELS, TYPE_GROUPS, RETIRED_TYPES, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
-  affectedVersions, versionList, fixFor,
+  affectedVersions, versionList, fixFor, isPackageAlert,
 } from '../components/common/alertMeta'
 import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
@@ -22,7 +22,6 @@ import AdvisoryBody from '../components/common/AdvisoryBody'
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
-const GROUPED_KEY = 'alerts_cve_grouped'
 const DRIFT_CSV = [...DRIFT_TYPES].join(',')
 
 // Saved views — each is a work queue with its own filter + sort. Concern views
@@ -33,7 +32,8 @@ const VIEWS = [
   { id: 'overdue',   label: 'Past SLA',                   params: { status: 'open', overdue: 'true' } },
   { id: 'exposed',   label: 'Critical on internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
   { id: 'drift',     label: 'Drift to review',            params: { status: 'open', event_type: DRIFT_CSV } },
-  { id: 'cve',       label: 'All CVEs',                   params: { status: 'open', event_type: 'cve_detected' } },
+  // one alert per vulnerable package (its CVEs inside): each row is one upgrade
+  { id: 'cve',       label: 'Vulnerable packages',        params: { status: 'open', event_type: 'cve_detected' } },
   { id: 'closed',    label: 'Closed (audit)',             params: { status: 'closed' }, sort: 'time' },
   { id: 'unreviewed', label: 'Closed – not reviewed',     params: { status: 'closed', closed: 'unreviewed' }, sort: 'time' },
   ...CONCERNS.map(c => ({ id: c.id, label: c.title, params: { status: 'open', concern: c.id }, concern: true })),
@@ -59,10 +59,6 @@ function useToast() {
     setTimeout(() => setToast(null), ms)
   }
   return { toast, show }
-}
-
-function readGrouped() {
-  try { return localStorage.getItem(GROUPED_KEY) !== 'false' } catch { return true }
 }
 
 function readLastVisit() {
@@ -98,11 +94,6 @@ export default function AlertsPage() {
 
   const [events,    setEvents]    = useState([])
   const [total,     setTotal]     = useState(0)
-  // All CVEs tab: one row per vulnerable package on an asset ("upgrade X to Y fixes N CVEs")
-  const [grouped,   setGroupedState] = useState(readGrouped)
-  const [groups,    setGroups]    = useState([])
-  const [groupAlerts, setGroupAlerts] = useState(0)
-  const [selectedGroups, setSelectedGroups] = useState(new Set())
   const [stats,     setStats]     = useState(null)
   const [loading,   setLoading]   = useState(true)
   const [selected,  setSelected]  = useState(new Set())
@@ -121,12 +112,6 @@ export default function AlertsPage() {
   }, [search])
 
   const activeView = VIEWS.find(v => v.id === view) ?? VIEWS[0]
-  // Grouped while on All CVEs and not drilled into one package
-  const groupMode = view === 'cve' && grouped && !pkgFilter
-  const setGrouped = (v) => {
-    setGroupedState(v); setPage(1)
-    try { localStorage.setItem(GROUPED_KEY, String(v)) } catch { /* private mode */ }
-  }
 
   const queryParams = useMemo(() => {
     const p = { page, page_size: PAGE_SIZE, sort: activeView.sort ?? sort, ...activeView.params }
@@ -148,27 +133,19 @@ export default function AlertsPage() {
     try {
       const tParam = tenantFilter ? { tenant_id: tenantFilter } : {}
       const [eventsRes, statsRes] = await Promise.all([
-        client.get(groupMode ? '/events/cve-groups' : '/events', { params: queryParams }),
+        client.get('/events', { params: queryParams }),
         client.get('/events/stats/summary', { params: tParam }),
       ])
-      if (groupMode) {
-        setGroups(eventsRes.data.items || [])
-        setGroupAlerts(eventsRes.data.total_alerts || 0)
-        setEvents([])
-      } else {
-        setEvents(eventsRes.data.items || [])
-        setGroups([])
-      }
+      setEvents(eventsRes.data.items || [])
       setTotal(eventsRes.data.total || 0)
       setStats(statsRes.data)
       setSelected(new Set())
-      setSelectedGroups(new Set())
     } catch (err) {
       console.error('Alerts load error:', err)
     } finally {
       setLoading(false)
     }
-  }, [queryParams, tenantFilter, groupMode])
+  }, [queryParams, tenantFilter])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -194,14 +171,10 @@ export default function AlertsPage() {
   const resetPage = (fn) => (v) => { fn(v); setPage(1) }
 
   // ── Actions ──────────────────────────────────────────────────
-  // `ids` is a list of alert ids, or { groups } for whole fix groups (All CVEs, grouped)
   const runUpdate = async (ids, body) => {
     try {
-      let n = Array.isArray(ids) ? ids.length : 0
-      if (!Array.isArray(ids)) {
-        const res = await client.post('/events/group-update', { groups: ids.groups, ...body })
-        n = res.data.updated
-      } else if (ids.length === 1) await client.patch(`/events/${ids[0]}`, body)
+      const n = ids.length
+      if (ids.length === 1) await client.patch(`/events/${ids[0]}`, body)
       else await client.post('/events/bulk', { event_ids: ids, ...body })
       showToast(n === 1 ? 'Alert updated.' : `${n} alerts updated.`)
       await loadData()
@@ -236,7 +209,7 @@ export default function AlertsPage() {
       const { data } = await client.post('/scans/drift-audit')
       const cves = data?.cve_alerts_closed ?? 0
       const devices = data?.new_device_alerts_closed ?? 0
-      const closed = [cves && `${cves} CVE alert(s) without an SBOM`, devices && `${devices} reviewed or stale new-device alert(s)`].filter(Boolean)
+      const closed = [cves && `${cves} vulnerable-package alert(s) without an SBOM`, devices && `${devices} reviewed or stale new-device alert(s)`].filter(Boolean)
       showToast(`Drift audit done: ${data?.drift_events_generated ?? 0} new alert(s)${closed.length ? `; closed ${closed.join(' and ')}` : ''}.`, 'success', 8000)
       loadData()
     } catch (err) {
@@ -251,21 +224,6 @@ export default function AlertsPage() {
   const pickCell = (sev, bucket) => { setView('open'); setSeverity(sev); setAge(bucket); setPage(1) }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-  const toggleGroup = (key) => setSelectedGroups(s => {
-    const n = new Set(s)
-    n.has(key) ? n.delete(key) : n.add(key)
-    return n
-  })
-  const toggleAllGroups = () => setSelectedGroups(s => groups.every(g => s.has(groupKey(g))) ? new Set() : new Set(groups.map(groupKey)))
-  const chosenGroups = groups.filter(g => selectedGroups.has(groupKey(g)))
-  const groupTarget = { groups: chosenGroups.map(g => ({ asset_id: g.asset_id, package_name: g.package_name, package_version: g.package_version })) }
-  const groupAlertCount = chosenGroups.reduce((n, g) => n + g.cves, 0)
-  const openGroup = (g) => {
-    setPkgFilter(g.package_name)
-    setAssetFilter({ id: g.asset_id, label: g.asset_hostname || g.asset_ip })
-    setPage(1)
-  }
-  const backToFixes = () => { setPkgFilter(''); setAssetFilter(null); setPage(1) }
   const allOnPageSelected = events.length > 0 && events.every(e => selected.has(e.event_id))
   const toggleAll = () => setSelected(allOnPageSelected ? new Set() : new Set(events.map(e => e.event_id)))
   const toggleOne = (id) => setSelected(s => {
@@ -486,36 +444,11 @@ export default function AlertsPage() {
               <option value="time">Sort: last seen</option>
             </select>
           )}
-          {view === 'cve' && (
-            pkgFilter && grouped
-              ? <button onClick={backToFixes} className="text-xs text-eagle-400 hover:underline"><ArrowLeft aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-3px]" />Back to fixes</button>
-              : (
-                <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer" title="One row per vulnerable package: upgrade it to fix its CVEs">
-                  <input type="checkbox" checked={grouped} onChange={e => setGrouped(e.target.checked)} /> Group by fix
-                </label>
-              )
-          )}
           <span className="text-dark-400 text-sm">
-            {groupMode
-              ? `${total} fix${total === 1 ? '' : 'es'} · ${groupAlerts} alert${groupAlerts === 1 ? '' : 's'}`
-              : `${total} alert${total === 1 ? '' : 's'}`}
+            {`${total} ${view === 'cve' ? `vulnerable package${total === 1 ? '' : 's'}` : `alert${total === 1 ? '' : 's'}`}`}
           </span>
         </div>
       </div>
-
-      {/* ── Bulk action bar: whole fix groups ── */}
-      {canManage && groupMode && chosenGroups.length > 0 && (
-        <div className="glass-card px-4 py-2.5 flex items-center gap-2 flex-wrap border-eagle-500/40">
-          <span className="text-sm text-dark-200 font-medium mr-2">{chosenGroups.length} fix{chosenGroups.length === 1 ? '' : 'es'} · {groupAlertCount} alert{groupAlertCount === 1 ? '' : 's'}</span>
-          <AssignSelect assignees={assignees} value="" onChange={(v) => assign(groupTarget, v)} placeholder="Assign to…" />
-          {['in_progress', 'resolved', 'accepted_risk'].map(st => (
-            <button key={st} onClick={() => requestStatus(groupTarget, st, groupAlertCount)} className="btn-secondary text-xs py-1.5 px-3">
-              {ACTION_LABELS[st]}
-            </button>
-          ))}
-          <button onClick={() => setSelectedGroups(new Set())} className="ml-auto text-xs text-dark-400 hover:text-dark-200">Clear selection</button>
-        </div>
-      )}
 
       {/* ── Bulk action bar ── */}
       {canManage && selected.size > 0 && (
@@ -540,9 +473,6 @@ export default function AlertsPage() {
           <div className="flex justify-center py-20">
             <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
           </div>
-        ) : groupMode && groups.length > 0 ? (
-          <CveGroupTable groups={groups} canManage={canManage} selected={selectedGroups}
-            onToggle={toggleGroup} onToggleAll={toggleAllGroups} onOpen={openGroup} />
         ) : events.length > 0 ? (
           <table className="data-table">
             <thead>
@@ -583,13 +513,27 @@ export default function AlertsPage() {
                     {e.has_advisory && <span className="inline-flex items-center gap-1.5 text-[11px] text-accent-green"><span className="h-1.5 w-1.5 rounded-full bg-accent-green" />advisory ready</span>}
                   </td>
                   <td className="font-mono text-xs text-accent-cyan max-w-[220px] truncate">
-                    {e.details?.cve_id ? (
+                    {isPackageAlert(e.details) ? (
+                      <>
+                        <span className="font-sans text-dark-200" title={renderDetail(e)}>
+                          {e.details.package_name}{e.details.package_version ? ` ${e.details.package_version}` : ''}
+                        </span>
+                        <p className="text-dark-400 font-sans">
+                          {e.details.cve_count} CVE{e.details.cve_count === 1 ? '' : 's'}
+                          {e.details.top_cves?.[0] && <span className="font-mono"> · {e.details.top_cves[0].id}</span>}
+                          {e.details.cve_count > 1 && <span className="text-dark-500">{` +${e.details.cve_count - 1}`}</span>}
+                        </p>
+                        <p className={`font-sans ${e.details.fix_to ? 'text-accent-green' : 'text-dark-500'}`}>
+                          {e.details.fix_to ? `→ ${e.details.fix_to}` : 'no fix yet'}
+                        </p>
+                      </>
+                    ) : e.details?.cve_id ? (
                       <a href={`https://nvd.nist.gov/vuln/detail/${e.details.cve_id}`} target="_blank" rel="noreferrer"
                         onClick={ev => ev.stopPropagation()} className="hover:text-eagle-300 inline-flex items-center gap-1" title="View on NVD">
                         {e.details.cve_id}<ExternalLink className="w-3 h-3 opacity-60" />
                       </a>
                     ) : renderDetail(e)}
-                    {e.details?.package_name && (
+                    {e.details?.package_name && !isPackageAlert(e.details) && (
                       <p className="text-dark-400 font-sans">
                         {e.details.package_name}{e.details.package_version ? ` ${e.details.package_version}` : ''}
                         {affectedVersions(e.details).length > 1 && (
@@ -615,12 +559,17 @@ export default function AlertsPage() {
                       </div>
                     </div>
                   </td>
-                  <td className="font-mono text-xs whitespace-nowrap">
-                    {e.details?.cvss_base_score != null
-                      ? <span style={{ color: cvssColor(e.details.cvss_base_score) }}>{e.details.cvss_base_score}</span>
-                      : '—'}
-                    <span className="text-dark-500"> / </span>
-                    {e.details?.epss_score != null ? `${(e.details.epss_score * 100).toFixed(1)}%` : '—'}
+                  <td className="font-mono text-xs whitespace-nowrap" title={isPackageAlert(e.details) ? 'Worst CVSS and highest EPSS among its CVEs' : undefined}>
+                    {(() => {
+                      // a package alert: its worst CVE's values; others carry max_cvss (vulnerable_service) or their own
+                      const cvss = e.details?.max_cvss ?? e.details?.cvss_base_score
+                      const epss = e.details?.max_epss ?? e.details?.epss_score
+                      return (<>
+                        {cvss != null ? <span style={{ color: cvssColor(cvss) }}>{cvss}</span> : '—'}
+                        <span className="text-dark-500"> / </span>
+                        {epss != null ? `${(epss * 100).toFixed(1)}%` : '—'}
+                      </>)
+                    })()}
                   </td>
                   <td className="text-xs text-dark-400 whitespace-nowrap">
                     <div title={`First seen ${new Date(e.first_seen).toLocaleString()}`}>{timeAgo(e.last_seen)}</div>
@@ -839,6 +788,25 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
 
             {/* Evidence */}
             <Section icon={Shield} title="Evidence">
+              {isPackageAlert(d) ? (
+                <KV rows={[
+                  ['Package', `${d.package_name}${d.package_type ? ` (${d.package_type})` : ''}`],
+                  ['Installed', (d.installed_versions ?? []).length > 1
+                    ? <span className="block space-y-0.5">{d.installed_versions.map(v => (
+                        <span key={v.version} className="block">{v.version}<span className="text-dark-400"> · {v.cves} CVE{v.cves === 1 ? '' : 's'}</span></span>
+                      ))}</span>
+                    : d.package_version],
+                  ['CVEs', `${d.cve_count} known${d.kev_count ? ` · ${d.kev_count} exploited in the wild (CISA KEV)` : ''}${d.cti_count && d.cti_count !== d.kev_count ? ` · ${d.cti_count} named by threat intel` : ''}`],
+                  ['Fix', d.fix_to
+                    ? <span className="text-accent-green">Upgrade to {d.fix_to}<span className="text-dark-400"> · fixes {d.fixable_count} of {d.cve_count}{d.no_fix_count ? `; ${d.no_fix_count} have no fix yet` : ''}</span></span>
+                    : <span className="text-dark-300">No fixed version published yet</span>],
+                  d.max_cvss != null && ['Worst CVSS', <span style={{ color: cvssColor(d.max_cvss) }}>{d.max_cvss}</span>],
+                  d.max_epss != null && ['Highest EPSS', `${(d.max_epss * 100).toFixed(1)}% chance of exploitation in 30 days`],
+                  e.cwes?.length > 0 && ['Weaknesses', e.cwes.map(w => w.id).join(', ')],
+                  Array.isArray(d.ti_event_titles) && d.ti_event_titles.length > 0 && ['Threat-intel events', d.ti_event_titles.join(' · ')],
+                  e.composite_risk_score != null && ['Risk score', `${e.composite_risk_score} (its riskiest CVE)`],
+                ]} />
+              ) : (
               <KV rows={[
                 d.cve_id && ['CVE', <a href={`https://nvd.nist.gov/vuln/detail/${d.cve_id}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">{d.cve_id}</a>],
                 d.package_name && ['Package', `${d.package_name} ${d.package_version ?? ''}`],
@@ -904,8 +872,10 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                 d.mac && ['MAC', d.mac],
                 d.source && ['Detected by', d.source.replace('_', ' ')],
               ]} />
+              )}
               {d.description && <p className="text-xs text-dark-400 mt-2 leading-relaxed">{d.description}</p>}
               {e.event_type === 'os_patch_missing' && d.cves > 0 && <WindowsCveList eventId={e.event_id} />}
+              {e.event_type === 'cve_detected' && isPackageAlert(d) && <PackageCveList eventId={e.event_id} copies={(d.installed_versions ?? []).length} />}
               {d.package_name && (
                 <button onClick={() => onPackageAlerts(d.package_name)} className="text-xs text-eagle-400 hover:underline mt-2">
                   All open alerts for {d.package_name}<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" />

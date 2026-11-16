@@ -156,7 +156,10 @@ export default function SBOMPage() {
       covered: withAgent.filter((c) => c.sbom).length,
       packages: list.reduce((n, c) => n + (c.sbom?.component_count ?? 0), 0),
       cves: list.reduce((n, c) => n + c.cves.open, 0),
-      critical: list.reduce((n, c) => n + c.cves.critical, 0),
+      // open SBOM alerts: one per vulnerable package
+      vulnerablePackages: list.reduce((n, c) => n + (c.packages?.open ?? 0), 0),
+      // severity describes packages (an alert is as severe as its worst CVE)
+      critical: list.reduce((n, c) => n + (c.packages?.critical ?? 0), 0),
       kev: list.reduce((n, c) => n + c.cves.kev, 0),
       stale: list.filter((c) => c.state === 'stale').length,
       missing: withAgent.filter((c) => !c.sbom).length,
@@ -190,9 +193,9 @@ export default function SBOMPage() {
         <StatTile label="Packages" icon={Package}
           value={computers ? summary.packages.toLocaleString() : '—'} sub="across all computers" />
         <Link to="/alerts?view=cve" className="block">
-          <StatTile label="Open CVE alerts" icon={Bug}
+          <StatTile label="Open CVEs" icon={Bug}
             value={computers ? summary.cves.toLocaleString() : '—'} tone={summary.critical > 0 ? 'danger' : summary.cves > 0 ? 'warning' : 'good'}
-            sub={computers ? `${summary.critical} critical${summary.kev ? ` · ${summary.kev} known exploited` : ''}` : ' '} />
+            sub={computers ? `in ${summary.vulnerablePackages} vulnerable package${summary.vulnerablePackages === 1 ? '' : 's'} (${summary.critical} critical)${summary.kev ? ` · ${summary.kev} known exploited CVE${summary.kev === 1 ? '' : 's'}` : ''}` : ' '} />
         </Link>
         <StatTile label="Out of date" icon={Clock3}
           value={computers ? summary.stale : '—'} tone={summary.stale > 0 ? 'warning' : 'good'}
@@ -245,7 +248,8 @@ export default function SBOMPage() {
                           {c.cves.open > 0 ? (
                             <Link to={`/alerts?view=cve&asset_id=${c.asset_id}&label=${encodeURIComponent(c.hostname || c.ip_address)}`} className="text-sm hover:underline">
                               <span className="text-dark-100">{c.cves.open}</span>
-                              {c.cves.critical > 0 && <span className="text-red-400 text-xs ml-1.5">{c.cves.critical} critical</span>}
+                              {c.packages?.open > 0 && <span className="text-dark-400 text-xs ml-1.5">in {c.packages.open} package{c.packages.open === 1 ? '' : 's'}</span>}
+                              {c.packages?.critical > 0 && <span className="text-red-400 text-xs ml-1.5">{c.packages.critical} critical</span>}
                               {c.cves.kev > 0 && <span className="text-red-400 text-xs ml-1.5">{c.cves.kev} exploited</span>}
                             </Link>
                           ) : <span className="text-dark-500 text-sm">{c.sbom ? '0' : '—'}</span>}

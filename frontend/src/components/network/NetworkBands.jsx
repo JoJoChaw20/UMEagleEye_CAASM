@@ -41,9 +41,10 @@ export const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one :
 export function deviceLook(d, mode) {
   const a = d.alerts
   if (mode === 'cves') {
-    if (a.cve_critical > 0) return { tone: TONE.critical, line: `${fmt(a.cve_open)} open · ${fmt(a.cve_critical)} critical` }
-    if (a.cve_high > 0) return { tone: TONE.serious, line: `${fmt(a.cve_open)} open · ${fmt(a.cve_high)} high` }
-    if (a.cve_open > 0) return { tone: TONE.warning, line: `${fmt(a.cve_open)} open` }
+    // cve_open: CVEs; cve_critical / cve_high: vulnerable packages at that severity
+    if (a.cve_critical > 0) return { tone: TONE.critical, line: `${fmt(a.cve_open)} CVEs · ${fmt(a.cve_critical)} critical pkg` }
+    if (a.cve_high > 0) return { tone: TONE.serious, line: `${fmt(a.cve_open)} CVEs · ${fmt(a.cve_high)} high pkg` }
+    if (a.cve_open > 0) return { tone: TONE.warning, line: `${fmt(a.cve_open)} CVEs` }
     // CVEs come from the SBOM a computer's agent builds: without one, nothing was checked
     return d.agent === 'host' ? { tone: null, line: 'No open CVEs' } : { tone: null, line: 'Not checked: no SBOM', dashed: true }
   }
@@ -323,7 +324,7 @@ export function NetworkPanel({ net, onClose }) {
             ))}
         </Row>
         {net.phones.length > 0 && <Row k="Phone apps">{net.phones.map((p) => p.name).join(', ')}</Row>}
-        <Row k="Open CVEs">{cves > 0 ? <><b className="text-red-400">{fmt(cves)}</b>{critical > 0 && <span className="text-dark-400">, {fmt(critical)} critical</span>}</> : 'None'}</Row>
+        <Row k="Open CVEs">{cves > 0 ? <><b className="text-red-400">{fmt(cves)}</b>{critical > 0 && <span className="text-dark-400">, {fmt(critical)} critical package{critical === 1 ? '' : 's'}</span>}</> : 'None'}</Row>
         <Row k="Exposure">{exposures > 0 ? plural(exposures, 'open alert') : 'None'}</Row>
         {net.last_seen && <Row k="Last seen">{formatSeen(net.last_seen).text}</Row>}
       </dl>
@@ -350,7 +351,7 @@ export function DevicePanel({ net, device: d, onClose, onBlast }) {
         <Row k="Agent">{d.agent === 'host' ? 'Its own agent (inventory and SBOM)' : d.agent === 'mobile' ? 'The EagleEye phone app'
           : d.agent === 'network' ? 'Runs the network agent (reads the routers and switches)' : 'None: seen on the network'}</Row>
         <Row k="Open CVEs">{a.cve_open > 0
-          ? <><b className="text-red-400">{fmt(a.cve_open)}</b><span className="text-dark-400">{a.cve_critical > 0 && `, ${fmt(a.cve_critical)} critical`}{a.kev > 0 && `, ${fmt(a.kev)} known exploited`}</span></>
+          ? <><b className="text-red-400">{fmt(a.cve_open)}</b><span className="text-dark-400">{a.cve_critical > 0 && `, ${fmt(a.cve_critical)} critical package${a.cve_critical === 1 ? '' : 's'}`}{a.kev > 0 && `, ${fmt(a.kev)} known exploited`}</span></>
           : d.agent === 'host' ? 'None' : 'Not checked (no SBOM)'}</Row>
         <Row k="Exposure">{a.exposure_open > 0 ? `${plural(a.exposure_open, 'open alert')}${a.exposure_severity ? ` (${a.exposure_severity})` : ''}` : 'None'}</Row>
         {d.criticality != null && <Row k="Criticality">{d.criticality}/10</Row>}

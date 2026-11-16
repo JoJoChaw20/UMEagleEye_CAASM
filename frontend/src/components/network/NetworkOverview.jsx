@@ -126,7 +126,7 @@ export function OverviewPanel({ networks, map, canInfer }) {
         <Row k="Not watched"><span className={unwatched ? 'text-yellow-400' : ''}>{unwatched === 0 ? 'Every network has an agent' : plural(unwatched, 'network')}</span></Row>
         <Row k="Computer agents">{computerAgents.length ? computerAgents.join(', ') : 'None'}</Row>
         <Row k="Network agents">{map.agents.length ? map.agents.map((a) => a.name).join(', ') : 'None'}{infra > 0 && <span className="text-dark-400"> ({plural(infra, 'router or switch', 'routers and switches')})</span>}</Row>
-        <Row k="Open CVEs">{cves > 0 ? <><b className="text-red-400">{fmt(cves)}</b>{critical > 0 && <span className="text-dark-400">, {fmt(critical)} critical</span>}</> : 'None'}</Row>
+        <Row k="Open CVEs">{cves > 0 ? <><b className="text-red-400">{fmt(cves)}</b>{critical > 0 && <span className="text-dark-400">, {fmt(critical)} critical package{critical === 1 ? '' : 's'}</span>}</> : 'None'}</Row>
         <Row k="Exposure">{exposures > 0 ? plural(exposures, 'open alert') : 'None'}</Row>
       </dl>
       <p className="text-xs text-dark-400">Pick a network to see its map: its gateway, the routers and switches a network agent read, and every device on it.</p>

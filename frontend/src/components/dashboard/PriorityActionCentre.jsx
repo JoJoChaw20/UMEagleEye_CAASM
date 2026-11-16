@@ -12,11 +12,6 @@ const tierStyle = {
 }
 
 function itemHref(item, tenantId) {
-  if (item.kind === 'cve_group') {
-    const params = { view: 'cve', asset_id: item.asset.asset_id, label: item.asset.hostname || item.asset.ip }
-    if (item.details?.package_name) params.package = item.details.package_name
-    return dashboardHref('/alerts', params, tenantId)
-  }
   if (item.event_type === 'new_device' && item.asset?.asset_id) return dashboardHref(`/inventory/${encodeURIComponent(item.asset.asset_id)}`, {}, tenantId)
   return dashboardHref('/alerts', { event: item.event_id }, tenantId)
 }
@@ -59,9 +54,7 @@ export default function PriorityActionCentre({ actions, loading, available, tena
               {actions.map(item => {
                 const tier = operationalTier(item)
                 const action = item.recommended_action || playbook(item).text.split('\n')[0]
-                const issue = item.kind === 'cve_group'
-                  ? `${item.details.package_name || 'CVE remediation'} · ${item.cve_count} CVE${item.cve_count === 1 ? '' : 's'}`
-                  : `${alertLabel(item)} · ${renderDetail(item)}`
+                const issue = `${alertLabel(item)} · ${renderDetail(item)}`
                 const assignee = item.assignee || item.assignees?.[0] || null
                 return (
                   <tr key={item.key} className="align-top transition-colors hover:bg-eagle-500/[0.04]">
@@ -89,7 +82,7 @@ export default function PriorityActionCentre({ actions, loading, available, tena
                     <td className="px-5 py-4">
                       <p className="max-w-[260px] text-xs leading-relaxed text-dark-300">{action}</p>
                       <Link to={item.advisory_id ? dashboardHref('/advisories', {}, tenantId) : itemHref(item, tenantId)} state={item.advisory_id ? { openAdvisoryId: item.advisory_id } : undefined} className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-eagle-400 hover:underline">
-                        {item.advisory_id ? 'Open advisory' : item.kind === 'cve_group' ? 'Review fix group' : item.event_type === 'new_device' ? 'Open asset' : 'Open finding'} <ArrowUpRight className="h-3.5 w-3.5" />
+                        {item.advisory_id ? 'Open advisory' : item.event_type === 'new_device' ? 'Open asset' : 'Open finding'} <ArrowUpRight className="h-3.5 w-3.5" />
                       </Link>
                     </td>
                   </tr>

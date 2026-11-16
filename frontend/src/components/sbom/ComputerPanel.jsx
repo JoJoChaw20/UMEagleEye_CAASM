@@ -58,7 +58,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
         </Link>
         {computer.cves.open > 0 && (
           <Link to={`/alerts?view=cve&asset_id=${computer.asset_id}&label=${encodeURIComponent(name)}`} className="btn-secondary py-1 px-2.5 inline-flex items-center gap-1.5">
-            {computer.cves.open} open CVE alerts <ExternalLink className="w-3 h-3" />
+            {computer.packages?.open ?? 0} vulnerable package{computer.packages?.open === 1 ? '' : 's'} ({computer.cves.open} CVEs) <ExternalLink className="w-3 h-3" />
           </Link>
         )}
         {sbom && (

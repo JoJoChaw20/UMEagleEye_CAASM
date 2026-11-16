@@ -19,7 +19,8 @@ export const sevColor = (sev, alpha) => {
 export const cvssColor = (score) => sevColor(score >= 9 ? 'critical' : score >= 7 ? 'high' : score >= 4 ? 'medium' : 'low')
 
 export const EVENT_TYPE_LABELS = {
-  cve_detected:      'CVE Detected',
+  // one alert per vulnerable package, its CVEs inside (workers/src/lib/packageAlerts.ts)
+  cve_detected:      'Vulnerable Package',
   cti_match:         'Threat Intel Match',
   port_opened:       'Port Opened',
   port_closed:       'Port Closed',
@@ -38,7 +39,7 @@ export const EVENT_TYPE_LABELS = {
 // What each one is (title of its option): workers/src/services and lib/exposureRules.ts.
 export const TYPE_GROUPS = [
   { label: 'Vulnerabilities', types: {
-    cve_detected:       'A known flaw in a package from the device\'s SBOM',
+    cve_detected:       'A package from the device\'s SBOM with known CVEs (one alert per package, its CVEs inside)',
     vulnerable_service: 'A service version with known CVEs, from its network banner (devices without an SBOM)',
     os_patch_missing:   'A Windows machine behind on the fixes Microsoft released',
   } },
@@ -90,6 +91,7 @@ export function alertLabel(e) {
 // One-line evidence for the table
 export function renderDetail(e) {
   const d = e.details ?? {}
+  if (isPackageAlert(d)) return vulnerablePackageSummary(d)
   if (d.cve_id) return d.cve_id
   if (d.indicator_value) return d.indicator_value
   if (e.event_type === 'config_change') {
@@ -113,6 +115,18 @@ export function renderDetail(e) {
   if (e.event_type === 'exposure') return exposureSummary(d)
   if (e.event_type === 'vulnerable_service') return vulnerableServiceSummary(d)
   return d.changed_attribute ?? '—'
+}
+
+/** An SBOM alert for one vulnerable package with its CVEs inside (details.shape 'package'). */
+export const isPackageAlert = (d) => d?.shape === 'package'
+
+// "lodash 4.17.15 · 5 CVEs (1 exploited) · upgrade to 4.17.21" (workers/src/lib/packageAlerts.ts)
+export function vulnerablePackageSummary(d) {
+  const n = d.cve_count ?? 0
+  const cves = `${n} CVE${n === 1 ? '' : 's'}${d.kev_count ? ` (${d.kev_count} exploited)` : ''}`
+  const fix = d.fix_to ? `upgrade to ${d.fix_to}` : 'no fix available yet'
+  const copies = (d.installed_versions?.length ?? 0) > 1 ? ` (+${d.installed_versions.length - 1} more installed)` : ''
+  return [`${d.package_name ?? 'Package'}${d.package_version ? ` ${d.package_version}` : ''}${copies}`, cves, fix].join(' · ')
 }
 
 // "OpenSSH 8.9p1 · port 22 · 32 CVEs (1 exploited)" (workers/src/lib/serviceIdentity.ts)
@@ -202,7 +216,7 @@ export function riskReasons(e) {
   }
   if (e.event_type === 'cve_detected' && d.has_cti_match) {
     const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
-    if (d.kev) out.push({ label: 'Actively exploited (CISA KEV)', tone: 'critical' })
+    if (d.kev) out.push({ label: d.kev_count > 1 ? `${d.kev_count} actively exploited (CISA KEV)` : 'Actively exploited (CISA KEV)', tone: 'critical' })
     if (titles.length) out.push({ label: `In threat intel: ${titles[0]}${titles.length > 1 ? ` +${titles.length - 1}` : ''}`, tone: 'critical' })
     if (!d.kev && !titles.length) out.push({ label: 'Named in threat intel', tone: 'critical' })
   }
@@ -214,10 +228,15 @@ export function riskReasons(e) {
   }
   if (exposed) out.push({ label: 'Internet-facing', tone: 'critical' })
   if (d.port != null && RISKY_PORTS[d.port]) out.push({ label: `${RISKY_PORTS[d.port]} is a common attack target`, tone: 'serious' })
-  if (d.epss_score >= 0.1) out.push({ label: `${Math.round(d.epss_score * 100)}% exploit chance`, tone: 'serious' })
-  if (d.cvss_base_score >= 9) out.push({ label: `CVSS ${d.cvss_base_score}`, tone: 'serious' })
+  // a package alert keeps its worst CVE's values as max_epss / max_cvss
+  const epss = d.max_epss ?? d.epss_score
+  const cvss = d.max_cvss ?? d.cvss_base_score
+  if (epss >= 0.1) out.push({ label: `${Math.round(epss * 100)}% exploit chance`, tone: 'serious' })
+  if (cvss >= 9) out.push({ label: `CVSS ${cvss}`, tone: 'serious' })
   if (crit >= 8) out.push({ label: `Critical asset ${crit}/10`, tone: 'serious' })
-  if (Array.isArray(d.fix_versions) && d.fix_versions.length) out.push({ label: 'Fix available', tone: 'good' })
+  if (isPackageAlert(d)) {
+    out.push(d.fix_to ? { label: `Fix: upgrade to ${d.fix_to}`, tone: 'good' } : { label: 'No fix available yet', tone: 'serious' })
+  } else if (Array.isArray(d.fix_versions) && d.fix_versions.length) out.push({ label: 'Fix available', tone: 'good' })
   return out
 }
 
@@ -270,6 +289,7 @@ function basePlaybook(e) {
   }
   switch (e.event_type) {
     case 'cve_detected': {
+      if (isPackageAlert(d)) return packagePlaybook(d, e.severity, exposed)
       const epss = d.epss_score ?? 0
       const fix = upgradePlan(d)
       if (d.has_cti_match) {
@@ -336,6 +356,28 @@ function basePlaybook(e) {
     default:
       return { urgency: 'Review', text: 'Review the evidence and decide: resolve, accept the risk, or mark as false positive.' }
   }
+}
+
+// An SBOM alert for one vulnerable package (its CVEs inside): what to do and by when.
+function packagePlaybook(d, severity, exposed) {
+  const n = d.cve_count ?? 0
+  const pkg = `${d.package_name ?? 'the package'}${d.package_version ? ` ${d.package_version}` : ''}`
+  const fix = d.fix_to ? ` to ${d.fix_to}` : ''
+  const rest = d.fix_to && d.no_fix_count ? ` ${d.no_fix_count} of its CVEs have no fix yet; they stay listed on this alert.` : ''
+  const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
+  if (d.kev) {
+    return { urgency: '≤72h', text: `${d.kev_count > 1 ? `${d.kev_count} of its CVEs are` : 'One of its CVEs is'} on CISA's Known Exploited Vulnerabilities list: attackers are using ${d.kev_count > 1 ? 'them' : 'it'} now. Upgrade ${pkg}${fix} first; if you cannot yet, restrict access to the host or remove the software.${rest}` }
+  }
+  if (!d.fix_to) {
+    return { urgency: 'Patch cycle', text: `No fixed version of ${pkg} is published yet for its ${n} CVE${n === 1 ? '' : 's'}. Check the vendor's advisory for a workaround, limit who can reach the software, and watch for an update: the alert shows the fix as soon as one appears.` }
+  }
+  if (d.has_cti_match && titles.length) {
+    return { urgency: '≤72h', text: `Your threat intel names a CVE of this package ("${titles[0]}"). Upgrade ${pkg}${fix} first.${rest}` }
+  }
+  if (exposed || (d.max_epss ?? 0) >= 0.1 || severity === 'critical') {
+    return { urgency: '≤72h', text: `Upgrade ${pkg}${fix}: it fixes ${d.fixable_count ?? n} of its ${n} CVE${n === 1 ? '' : 's'}. Internet exposure or high exploit likelihood — do not wait for the patch cycle.${rest}` }
+  }
+  return { urgency: 'Patch cycle', text: `Schedule the upgrade of ${pkg}${fix} in the next patch window: it fixes ${d.fixable_count ?? n} of its ${n} CVE${n === 1 ? '' : 's'}.${rest} The alert closes itself when the next SBOM no longer finds them.` }
 }
 
 // A CVE alert covers every installed version of its package the CVE affects

@@ -2,7 +2,7 @@
 // with (knowledge) and the rule that turned the two into an alert. Built from the alert's
 // details only, so it works for every alert the server stores.
 import { Eye, BookOpen, Scale, Radar } from 'lucide-react'
-import { RISKY_PORTS, riskReasons, affectedVersions, versionList } from './alertMeta'
+import { RISKY_PORTS, riskReasons, affectedVersions, versionList, isPackageAlert } from './alertMeta'
 
 const host = (e) => e.asset?.hostname || e.asset?.ip_address || 'this asset'
 
@@ -11,6 +11,19 @@ function chain(e) {
   const where = host(e)
   switch (e.event_type) {
     case 'cve_detected': {
+      if (isPackageAlert(d)) {
+        const n = d.cve_count ?? 0
+        const copies = (d.installed_versions ?? []).map(v => v.version)
+        const known = [`Grype lists ${n} CVE${n === 1 ? '' : 's'} for ${d.package_name} ${versionList(copies.length ? copies : [d.package_version])}${d.max_cvss ? ` (worst CVSS ${d.max_cvss}` : ''}${d.max_cvss && d.max_epss ? `, highest ${(d.max_epss * 100).toFixed(1)}% chance of exploitation in 30 days (EPSS))` : d.max_cvss ? ')' : ''}`]
+        if (d.kev_count) known.push(`${d.kev_count} of them ${d.kev_count === 1 ? 'is' : 'are'} on CISA's Known Exploited Vulnerabilities list: attackers are using ${d.kev_count === 1 ? 'it' : 'them'} now`)
+        for (const t of d.ti_event_titles ?? []) known.push(`Named in threat-intel event "${t}"`)
+        known.push(d.fix_to ? `Upgrading to ${d.fix_to} fixes ${d.fixable_count ?? n} of them${d.no_fix_count ? `; ${d.no_fix_count} have no fix yet` : ''}` : 'No fixed version is published yet')
+        return {
+          evidence: `${d.package_name} ${versionList(copies.length ? copies : [d.package_version])} ${copies.length > 1 ? 'are' : 'is'} in ${where}'s SBOM (packages listed by the EagleEye agent on that computer)`,
+          knowledge: known,
+          rule: 'R1 · A package with known vulnerabilities (Grype matched it against its vulnerability database); one alert per package, its CVEs inside',
+        }
+      }
       const known = [`${d.cve_id}${d.cvss_base_score ? `: CVSS ${d.cvss_base_score}` : ''}${d.epss_score != null ? `, ${(d.epss_score * 100).toFixed(1)}% chance of exploitation in 30 days (EPSS)` : ''}`]
       if (d.kev) known.push("On CISA's Known Exploited Vulnerabilities list: attackers are using it now")
       for (const t of d.ti_event_titles ?? []) known.push(`Named in threat-intel event "${t}"`)

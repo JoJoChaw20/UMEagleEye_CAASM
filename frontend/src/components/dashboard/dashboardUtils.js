@@ -12,54 +12,10 @@ export function operationalTier(item) {
   return { id: 'P3', label: 'Routine', tone: 'routine' }
 }
 
-function cveGroupAction(group) {
-  const cves = Number(group.cves ?? 0)
-  const asset = {
-    asset_id: group.asset_id,
-    hostname: group.asset_hostname,
-    ip: group.asset_ip,
-    owner: group.asset_owner,
-    device_type: group.asset_device_type,
-    criticality: group.asset_criticality,
-    internet_facing: group.asset_internet_facing,
-  }
-  const topCve = group.top_cves?.[0]
-  const severity = group.severity ?? (group.by_severity?.critical ? 'critical' : group.by_severity?.high ? 'high' : 'medium')
-  const details = {
-    cve_id: topCve,
-    kev: Number(group.kev ?? 0) > 0,
-    has_cti_match: Number(group.threat_intel ?? 0) > 0,
-    epss_score: group.max_epss,
-    cvss_base_score: group.max_cvss,
-    package_name: group.package_name,
-    fix_versions: group.fix_to ? [group.fix_to] : [],
-  }
-  return {
-    key: `cve:${group.asset_id}:${group.package_name}:${group.package_version ?? ''}`,
-    kind: 'cve_group',
-    event_type: 'cve_detected',
-    severity,
-    details,
-    priority_score: Number(group.priority_score ?? 0),
-    first_seen: group.first_seen,
-    asset,
-    assignee: group.assignees?.[0] ?? null,
-    assignees: group.assignees ?? [],
-    cve_count: cves,
-    fix_to: group.fix_to,
-    no_fix: group.no_fix,
-    top_cves: group.top_cves ?? [],
-    recommended_action: group.fix_to
-      ? `Upgrade ${group.package_name} to ${group.fix_to}; this fix group covers ${cves} CVE${cves === 1 ? '' : 's'}.`
-      : `Review ${cves} CVE${cves === 1 ? '' : 's'} affecting ${group.package_name}; no fix target is available yet.`,
-  }
-}
-
-export function buildPriorityActions(alerts = [], groups = [], limit = 5) {
-  const actions = alerts
-    .filter(item => groups.length === 0 || item.event_type !== 'cve_detected')
-    .map(item => ({ ...item, key: `event:${item.event_id}`, kind: 'event' }))
-  actions.push(...groups.map(cveGroupAction))
+// SBOM alerts are one per vulnerable package (its CVEs inside), so they arrive with the
+// other alerts and need no grouping here.
+export function buildPriorityActions(alerts = [], limit = 5) {
+  const actions = alerts.map(item => ({ ...item, key: `event:${item.event_id}`, kind: 'event' }))
 
   return actions
     .sort((a, b) => {
@@ -77,13 +33,16 @@ export function priorityContext(item) {
   const context = []
   if (isDirectThreatIntel(item)) context.push('Threat-intel match · possible compromise')
   else if (item.event_type === 'cve_detected' && d.has_cti_match) context.push('CVE named by threat intelligence')
-  if (d.kev) context.push('CISA KEV')
+  if (d.kev) context.push(d.kev_count > 1 ? `${d.kev_count} on CISA KEV` : 'CISA KEV')
   if (d.exploited) context.push('Known exploited')
-  if (d.epss_score >= 0.1) context.push(`EPSS ${Math.round(d.epss_score * 100)}%`)
-  if (d.cvss_base_score != null) context.push(`CVSS ${d.cvss_base_score}`)
+  // a package alert keeps its worst CVE's values as max_epss / max_cvss
+  const epss = d.max_epss ?? d.epss_score
+  const cvss = d.max_cvss ?? d.cvss_base_score
+  if (epss >= 0.1) context.push(`EPSS ${Math.round(epss * 100)}%`)
+  if (cvss != null) context.push(`CVSS ${cvss}`)
   if (item.asset?.internet_facing) context.push('Internet-facing')
   if ((item.asset?.criticality ?? 0) >= 8) context.push(`Criticality ${item.asset.criticality}/10`)
-  if (item.kind === 'cve_group') context.push(`${item.cve_count} CVE${item.cve_count === 1 ? '' : 's'} in one fix group`)
+  if (d.cve_count > 1) context.push(`${d.cve_count} CVEs in this package`)
   return context.slice(0, 4)
 }
 

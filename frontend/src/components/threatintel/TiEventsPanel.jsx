@@ -441,7 +441,7 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
               {ev.matching_alerts.map(m => (
                 <li key={m.event_id} className="text-xs text-dark-300 flex items-center gap-2">
                   <SevBadge sev={m.severity} />
-                  <span className="text-dark-200">{m.event_type === 'cve_detected' ? m.cve_id : alertLabel({ event_type: m.event_type, details: { match_kind: m.match_kind } })}</span>
+                  <span className="text-dark-200">{m.event_type === 'cve_detected' ? `${m.package_name ? `${m.package_name}: ` : ''}${m.cve_id}` : alertLabel({ event_type: m.event_type, details: { match_kind: m.match_kind } })}</span>
                   <span className="font-mono text-dark-400 truncate">{m.event_type === 'cti_match' ? `${m.observed} ↔ ${m.indicator_value}` : ''}</span>
                   <Link to={`/inventory/${m.asset_id}`} className="ml-auto text-eagle-400 hover:underline">{m.asset_name}</Link>
                 </li>

@@ -258,16 +258,21 @@ export function buildPdf(data, reportType) {
   // ════ Appendix (weekly / monthly) ════
   if (reportType !== 'executive') {
     newPage()
-    sectionTitle('A', 'Highest-risk CVE alerts', 'By composite risk score')
+    // One SBOM alert per vulnerable package (details.shape 'package'); older alerts one per CVE
+    const pkgAlert = r => r.details?.shape === 'package'
+    sectionTitle('A', 'Highest-risk vulnerable packages', 'By composite risk score (the riskiest CVE in each)')
     table([
-      { label: 'CVE', w: 34, get: r => r.details?.cve_id ?? 'unknown', bold: true, color: () => C.ink },
-      { label: 'Package', w: 52, get: r => `${r.details?.package_name ?? ''} ${r.details?.package_version ?? ''}` },
-      { label: 'CVSS', w: 16, align: 'right', get: r => r.details?.cvss_base_score ?? '-' },
-      { label: 'KEV', w: 12, get: r => (r.details?.kev ? 'Yes' : 'No'), color: r => (r.details?.kev ? C.red : C.muted) },
-      { label: 'Risk', w: 16, align: 'right', get: r => (r.compositeRiskScore == null ? '-' : Number(r.compositeRiskScore).toFixed(1)) },
-      { label: 'Fixed in', w: 30, get: r => (Array.isArray(r.details?.fix_versions) ? r.details.fix_versions.slice(0, 2).join(', ') : '-') },
-      { label: 'Since', w: 22, get: r => fmtDate(r.timestamp) },
-    ], data.top_cves ?? [], { empty: 'No open CVE alerts.' })
+      { label: 'Package', w: 50, get: r => `${r.details?.package_name ?? ''} ${r.details?.package_version ?? ''}`, bold: true, color: () => C.ink },
+      { label: 'CVEs', w: 36, get: r => (pkgAlert(r)
+        ? `${r.details.cve_count}${r.details.top_cves?.[0] ? ` (${r.details.top_cves[0].id})` : ''}`
+        : r.details?.cve_id ?? 'unknown') },
+      { label: 'CVSS', w: 14, align: 'right', get: r => r.details?.max_cvss ?? r.details?.cvss_base_score ?? '-' },
+      { label: 'KEV', w: 12, get: r => (pkgAlert(r) ? String(r.details.kev_count ?? 0) : r.details?.kev ? 'Yes' : 'No'), color: r => (r.details?.kev ? C.red : C.muted) },
+      { label: 'Risk', w: 14, align: 'right', get: r => (r.compositeRiskScore == null ? '-' : Number(r.compositeRiskScore).toFixed(1)) },
+      { label: 'Fix', w: 30, get: r => (pkgAlert(r) ? (r.details.fix_to ?? 'none yet')
+        : Array.isArray(r.details?.fix_versions) ? r.details.fix_versions.slice(0, 2).join(', ') : '-') },
+      { label: 'Since', w: 20, get: r => fmtDate(r.timestamp) },
+    ], data.top_cves ?? [], { empty: 'No open vulnerable packages.' })
 
     sectionTitle('B', 'Open advisories', 'Newest first')
     table([

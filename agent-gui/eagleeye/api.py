@@ -323,11 +323,13 @@ class AgentClient:
             return False, f"server rejected the SBOM ({self._detail(resp)})"
         return True, f"{resp.json().get('dependencies_inserted', 0)} package(s) stored"
 
-    def send_cve_findings(self, scan_id: str, findings: list[dict[str, Any]], max_upload: int = 3000) -> tuple[bool, str]:
-        """POST /sboms/ingest-cve - Grype's findings. Sent even when empty, so alerts for
-        CVEs that are gone (patched, uninstalled) are resolved. A large report is cut to the
-        `max_upload` most likely exploited (EPSS, then CVSS); the keys of all findings go
-        along, so the server does not mistake one that was left out for one that was fixed."""
+    def send_cve_findings(self, scan_id: str, findings: list[dict[str, Any]], max_upload: int = 10000) -> tuple[bool, str]:
+        """POST /sboms/ingest-cve - Grype's findings, all of them (the server stores every one
+        and raises one alert per vulnerable package; an Ubuntu machine with its kernels has
+        about 5,100). Sent even when empty, so alerts for CVEs that are gone (patched,
+        uninstalled) are resolved. Only a report over `max_upload` is cut, to the most likely
+        exploited (EPSS, then CVSS); the keys of all findings go along, so the server does not
+        mistake one that was left out for one that was fixed."""
         ranked = sorted(findings, key=lambda f: (f.get("epss") or 0, f.get("cvss_base_score") or 0), reverse=True)
         body: dict[str, Any] = {"agent_id": self.agent_id, "scan_id": scan_id, "findings": ranked[:max_upload],
                                 "total_findings": len(findings)}
@@ -341,8 +343,11 @@ class AgentClient:
             return False, f"server rejected the vulnerabilities ({self._detail(resp)})"
         data = resp.json()
         dropped = data.get("findings_dropped") or 0
-        return True, (f"alerts: {data.get('events_created', 0)} new, {data.get('events_updated', 0)} updated, "
-                      f"{data.get('events_resolved', 0)} resolved; {data.get('kev_matches', 0)} on CISA KEV"
+        stored = data.get("findings_stored")
+        return True, (f"alerts (one per vulnerable package): {data.get('events_created', 0)} new, "
+                      f"{data.get('events_updated', 0)} updated, {data.get('events_resolved', 0)} resolved; "
+                      + (f"{stored} CVE finding(s) stored; " if stored is not None else "")
+                      + f"{data.get('kev_matches', 0)} on CISA KEV"
                       + (f"; {dropped} lower-priority finding(s) not raised as alerts" if dropped else ""))
 
     def send_inventory(self, inventory: dict[str, Any]) -> InventoryResult:

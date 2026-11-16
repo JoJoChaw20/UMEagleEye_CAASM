@@ -58,7 +58,7 @@ export default function ExposureAndChanges({ overview, surface, recentChanges, c
             <ExposureMetric label="Known exploited CVEs" value={overview?.kev_cves} detail={`${fmt(overview?.kev_assets)} affected assets`} to="/alerts?view=exploitable" tone="critical" tenantId={tenantId} />
             <ExposureMetric label="Threat-intel matches" value={overview?.threat_intel_matches} detail={`${fmt(overview?.threat_intel_assets)} affected assets · possible indicators`} to="/alerts?view=threat_intel" tone="critical" tenantId={tenantId} />
             <ExposureMetric label="Internet-facing with high-risk findings" value={overview?.high_risk_exposure_assets} detail="Unique assets with open critical/high findings" to="/alerts?severity=critical%2Chigh&internet_facing=true" tone="warning" tenantId={tenantId} />
-            <ExposureMetric label="High-priority CVE fix groups" value={overview?.high_priority_fix_groups} detail="Asset + package + version groups, priority score ≥75" to="/alerts?view=cve" tenantId={tenantId} />
+            <ExposureMetric label="High-priority vulnerable packages" value={overview?.high_priority_fix_groups} detail="One alert per package on a device (its CVEs inside), priority score ≥75" to="/alerts?view=cve" tenantId={tenantId} />
           </div>
           <div className="px-5 pb-5 lg:px-6 lg:pb-6">
             <div className="flex flex-wrap items-center justify-between gap-2 pt-4">
