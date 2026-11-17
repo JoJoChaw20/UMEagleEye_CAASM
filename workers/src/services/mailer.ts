@@ -4,14 +4,19 @@ import type { Env } from '../types'
 
 export interface MailMessage { to: string; subject: string; text: string }
 
+/** Whether sendMail would really send (the EMAIL binding and MAIL_FROM are both set). */
+export function mailConfigured(env: Env): boolean {
+  return !!env.EMAIL && !!env.MAIL_FROM
+}
+
 export async function sendMail(env: Env, msg: MailMessage): Promise<{ sent: boolean }> {
-  if (!env.EMAIL || !env.MAIL_FROM) {
+  if (!mailConfigured(env)) {
     console.log(`mail not sent (email is not configured): "${msg.subject}"`)
     return { sent: false }
   }
   try {
-    await env.EMAIL.send({
-      to: msg.to, from: { email: env.MAIL_FROM, name: 'UMEagleEye' }, subject: msg.subject, text: msg.text,
+    await env.EMAIL!.send({
+      to: msg.to, from: { email: env.MAIL_FROM!, name: 'UMEagleEye' }, subject: msg.subject, text: msg.text,
     })
     return { sent: true }
   } catch (err) {

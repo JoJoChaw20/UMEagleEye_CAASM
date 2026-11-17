@@ -71,7 +71,8 @@ test('no route still uses role lists', () => {
 // the mfa_token in the body. authMiddleware would refuse them (an mfa_token is not an access token).
 test('the MFA sign-in steps do not use authMiddleware', () => {
   const src = readFileSync(join(routesDir, 'auth.ts'), 'utf8')
-  const publicPaths = ['/login', '/google', '/mfa/verify', '/mfa/enrol/start', '/mfa/enrol/finish']
+  const publicPaths = ['/login', '/google', '/mfa/verify', '/mfa/enrol/start', '/mfa/enrol/finish',
+    '/mfa/break-glass/request', '/mfa/break-glass/confirm', '/mfa/break-glass/cancel']
   const seen = new Map([...src.matchAll(ROUTE_RE)].map((m) => [m[2]!, m[3]!.includes('authMiddleware')]))
   for (const path of publicPaths) assert.equal(seen.get(path), false, path)
   for (const gone of ['/mfa/setup', '/mfa/enable', '/mfa/reset']) assert.equal(seen.has(gone), false, gone)

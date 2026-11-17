@@ -1,10 +1,10 @@
 // MFA failure counting and step-up confirmation, shared by the routes that need them
 // (routes/auth.ts: sign-in, recovery codes; routes/tenants.ts: MFA reset).
 import type { Context } from 'hono'
-import { and, eq, isNull, lt, or } from 'drizzle-orm'
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import type { DB } from '../db/client'
-import { users } from '../db/schema'
+import { mfaRecoveryCodes, users } from '../db/schema'
 import { NO_PASSWORD_HASH, verifyPassword } from '../lib/auth'
 import { clearFailures, minutesLeftInWindow, overLimit, recordFailure } from '../lib/loginLimit'
 import { matchTotpStep } from '../lib/mfa'
@@ -75,4 +75,19 @@ export async function stepUp(
   }
   await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
   return null
+}
+
+/**
+ * The statements that reset an account's MFA, for db.batch (one transaction): MFA off, the secret
+ * and any pending one gone, recovery codes deleted, open sessions ended. Used by the Tenant
+ * Superadmin's reset and the break-glass reset.
+ */
+export function mfaClearStatements(db: DB, userId: string) {
+  return [
+    db.update(users).set({
+      mfaEnabled: false, totpSecret: null, mfaPendingSecret: null, totpLastStep: null,
+      sessionsValidAfter: sql`now()`,
+    }).where(eq(users.userId, userId)),
+    db.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, userId)),
+  ] as const
 }

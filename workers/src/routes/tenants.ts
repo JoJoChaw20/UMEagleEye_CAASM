@@ -1,20 +1,20 @@
 import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, count, and, sql } from 'drizzle-orm'
+import { eq, count, and } from 'drizzle-orm'
 import type { Env } from '../types'
 import {
   authMiddleware, hasAction, requireAction, requireOwnTenant, requirePlatformSuperadmin, requireTenantSuperadmin,
 } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { tenants, users, assets, auditLogs, mfaRecoveryCodes } from '../db/schema'
+import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
 import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
-import { stepUp } from '../services/mfaStepUp'
+import { mfaClearStatements, stepUp } from '../services/mfaStepUp'
 import { sendMail } from '../services/mailer'
 import { resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH } from '../lib/auth'
@@ -572,13 +572,7 @@ router.post(
       if (refused) return refused
 
       // One Neon HTTP transaction (db.batch): MFA off and the secret gone together.
-      await db.batch([
-        db.update(users).set({
-          mfaEnabled: false, totpSecret: null, mfaPendingSecret: null, totpLastStep: null,
-          sessionsValidAfter: sql`now()`,
-        }).where(eq(users.userId, userId)),
-        db.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, userId)),
-      ])
+      await db.batch([...mfaClearStatements(db, userId)])
       await audit(db, c, {
         userId: caller.userId, tenantId, actionType: 'user.mfa_reset', targetEntity: userId,
         previousState: { mfa_enabled: target.mfaEnabled },

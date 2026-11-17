@@ -1,11 +1,11 @@
 import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { users, tenants, mfaRecoveryCodes } from '../db/schema'
+import { users, tenants, mfaRecoveryCodes, platformMfaResets } from '../db/schema'
 import {
   hashPassword,
   verifyPassword,
@@ -15,18 +15,20 @@ import {
   NO_PASSWORD_HASH,
 } from '../lib/auth'
 import { authenticator } from 'otplib'
-import { TOO_MANY, clearFailures, minutesLeftInWindow, overLimit, recordFailure } from '../lib/loginLimit'
+import { TOO_MANY, clearFailures, overLimit, recordFailure } from '../lib/loginLimit'
 import { audit, callerIp } from '../services/audit'
 import { claimStep, codeFailed, codeLimited, stepUp } from '../services/mfaStepUp'
-import { sendMail } from '../services/mailer'
+import { mailConfigured, sendMail } from '../services/mailer'
+import { applyDueBreakGlass } from '../services/breakGlass'
+import { HOLD_HOURS, breakGlassEligible, nextState } from '../lib/breakGlass'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 import { enrolsTwoDevices, signIn, withAccount } from '../lib/accountRows'
 import {
-  acceptStep, createMfaToken, generateRecoveryCodes, hashRecoveryCode, matchTotpStep, verifyMfaToken, type MfaStage,
+  acceptStep, createMfaToken, generateRecoveryCodes, hashRecoveryCode, matchTotpStep, sha256Hex, timingSafeEqualStr, verifyMfaToken, type MfaStage,
 } from '../lib/mfa'
 import {
-  CODE_REPLAYED, RECOVERY_CODE_INVALID, parseVerifyBody, pendingSecretPlan, signInOutcome, stepUpOk,
-  tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
+  CODE_REPLAYED, RECOVERY_CODE_INVALID, parseVerifyBody, pendingSecretPlan, signInOutcome,
+  useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
 } from '../lib/mfaFlow'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -57,8 +59,9 @@ const ENTER_SIX_DIGITS = 'Enter the 6-digit code from your authenticator app.'
 
 /** The answer to a correct password or Google sign-in: the MFA step, no access token. */
 async function mfaStep(c: Ctx, row: UserRow) {
-  // Task 6: apply a completed break-glass reset of this account here, before the stage is decided.
-  const stage = signInOutcome(row.mfaEnabled)
+  // A break-glass reset whose hold is over is applied first: the account then sets MFA up again.
+  const reset = await applyDueBreakGlass(getDb(c.env.DATABASE_URL), row.userId)
+  const stage = signInOutcome(reset ? false : row.mfaEnabled)
   return c.json({ mfa_token: await createMfaToken(row.userId, stage, c.env.JWT_SECRET_KEY), stage })
 }
 
@@ -171,6 +174,121 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
   } catch (err) {
     console.error('login error:', err)
     return c.json({ detail: 'Login failed' }, 500)
+  }
+})
+
+// ── Platform break-glass MFA reset ───────────────────────────────
+// For a Platform Superadmin who lost the authenticator and the recovery codes. Needs the password
+// and the one-time secret PLATFORM_MFA_RESET (a value used once is refused afterwards), and email.
+// The request emails a confirm link and a cancel link. Confirming starts a 24-hour hold; if nobody
+// cancels, the next sign-in clears MFA (services/breakGlass.ts). All steps are audited, tenantId null.
+const BREAK_GLASS_ACCEPTED = 'If the details are right, a confirmation email is on its way.'
+const BREAK_GLASS_NO_EMAIL = 'Email is not set up, so this reset cannot run.'
+const LINK_NOT_VALID = 'This link is not valid, or it was already used.'
+const newLinkToken = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+app.post(
+  '/mfa/break-glass/request',
+  zValidator('json', z.object({ email: z.string(), password: z.string(), reset_secret: z.string() })),
+  async (c) => {
+    try {
+      if (!mailConfigured(c.env)) return c.json({ detail: BREAK_GLASS_NO_EMAIL }, 503)
+      const { email, password, reset_secret } = c.req.valid('json')
+      const db = getDb(c.env.DATABASE_URL)
+      const kv = c.env.KV_CACHE
+      const ip = callerIp(c) ?? 'unknown'
+      if (await overLimit(kv, 'password_account', email) || await overLimit(kv, 'password_address', ip)) {
+        return c.json({ detail: TOO_MANY }, 429)
+      }
+
+      const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1)
+      const passwordOk = await verifyPassword(password, user?.passwordHash ?? await decoy())
+      const secretHash = await sha256Hex(reset_secret)
+      const [earlier] = await db.select({ resetId: platformMfaResets.resetId }).from(platformMfaResets)
+        .where(eq(platformMfaResets.secretHash, secretHash)).limit(1)
+      const expected = c.env.PLATFORM_MFA_RESET
+      const eligible = !!user && breakGlassEligible({
+        role: user.role, active: user.isActive, passwordOk, secretSet: !!expected,
+        secretMatches: !!expected && timingSafeEqualStr(reset_secret, expected),
+        secretUsedBefore: !!earlier,
+      })
+      if (!user || !eligible) {
+        await Promise.all([recordFailure(kv, 'password_account', email), recordFailure(kv, 'password_address', ip)])
+        if (user) {
+          await audit(db, c, {
+            userId: user.userId, tenantId: null, actionType: 'auth.break_glass_refused', targetEntity: user.userId,
+          })
+        }
+        return c.json({ detail: BREAK_GLASS_ACCEPTED }, 202)
+      }
+
+      const confirm = newLinkToken()
+      const cancel = newLinkToken()
+      await db.insert(platformMfaResets).values({
+        userId: user.userId, secretHash, confirmHash: await sha256Hex(confirm), cancelHash: await sha256Hex(cancel),
+      })
+      await audit(db, c, { userId: user.userId, tenantId: null, actionType: 'auth.break_glass_requested', targetEntity: user.userId })
+      const base = `${c.env.FRONTEND_URL}/mfa-recovery`
+      await sendMail(c.env, {
+        to: user.email, subject: 'Confirm your MFA reset',
+        text: `Someone asked to reset the MFA of your platform account.\n\n`
+          + `To go ahead, open: ${base}?confirm=${confirm}\n`
+          + `MFA is then cleared ${HOLD_HOURS} hours later, at your next sign-in.\n\n`
+          + `If this was not you, or you changed your mind, cancel with: ${base}?cancel=${cancel}`,
+      })
+      return c.json({ detail: BREAK_GLASS_ACCEPTED }, 202)
+    } catch (err) {
+      console.error('break-glass request error:', err)
+      return c.json({ detail: 'Failed to process the request' }, 500)
+    }
+  }
+)
+
+/** Moves the reset row that a link token names (its hash must match the confirm or cancel column). */
+async function moveBreakGlass(c: Ctx, token: string, action: 'confirm' | 'cancel') {
+  const db = getDb(c.env.DATABASE_URL)
+  const hash = await sha256Hex(token)
+  const [row] = await db.select().from(platformMfaResets)
+    .where(eq(action === 'confirm' ? platformMfaResets.confirmHash : platformMfaResets.cancelHash, hash)).limit(1)
+  const now = new Date()
+  const to = row ? nextState(row.status, action, now, row.effectiveAt) : null
+  if (!row || !to) return c.json({ detail: LINK_NOT_VALID }, 400)
+  const effectiveAt = to === 'confirmed' ? new Date(now.getTime() + HOLD_HOURS * 3_600_000) : null
+  // Only from the status just read, so two clicks cannot both move it.
+  const moved = await db.update(platformMfaResets)
+    .set(effectiveAt ? { status: to, confirmedAt: now, effectiveAt } : { status: to })
+    .where(and(eq(platformMfaResets.resetId, row.resetId), eq(platformMfaResets.status, row.status)))
+    .returning({ resetId: platformMfaResets.resetId })
+  if (moved.length === 0) return c.json({ detail: LINK_NOT_VALID }, 400)
+  await audit(db, c, {
+    userId: row.userId, tenantId: null, actionType: `auth.break_glass_${to}`, targetEntity: row.userId,
+    previousState: { status: row.status }, newState: { status: to, effective_at: effectiveAt },
+  })
+  return c.json(effectiveAt
+    ? { detail: `Confirmed. MFA will be cleared in ${HOLD_HOURS} hours. Use the cancel link in the email to stop it.`, effective_at: effectiveAt }
+    : { detail: 'Cancelled. Nothing was changed.' })
+}
+
+const linkTokenSchema = z.object({ token: z.string().min(1) })
+
+app.post('/mfa/break-glass/confirm', zValidator('json', linkTokenSchema), async (c) => {
+  try {
+    return await moveBreakGlass(c, c.req.valid('json').token, 'confirm')
+  } catch (err) {
+    console.error('break-glass confirm error:', err)
+    return c.json({ detail: 'Failed to confirm' }, 500)
+  }
+})
+
+app.post('/mfa/break-glass/cancel', zValidator('json', linkTokenSchema), async (c) => {
+  try {
+    return await moveBreakGlass(c, c.req.valid('json').token, 'cancel')
+  } catch (err) {
+    console.error('break-glass cancel error:', err)
+    return c.json({ detail: 'Failed to cancel' }, 500)
   }
 })
 
