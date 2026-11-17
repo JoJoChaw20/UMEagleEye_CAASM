@@ -98,7 +98,7 @@ export function ConfirmDialog({ title, children, confirmLabel, cancelLabel = 'Ca
           <button type="button" onClick={onConfirm} disabled={confirmDisabled}
             className={danger
               ? 'rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25 disabled:opacity-50'
-              : 'btn-primary text-sm py-1.5'}>
+              : 'btn-primary text-sm py-1.5 disabled:opacity-50'}>
             {confirmLabel}
           </button>
         </div>

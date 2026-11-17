@@ -8,16 +8,17 @@ import StepUpFields from './StepUpFields'
 /**
  * A ConfirmDialog that asks for password + code. onSubmit(body) gets { password?, code } and
  * returns a promise; a thrown request error is shown inside the dialog (the server's text, e.g. a
- * wrong password or code) and the dialog stays open. children sit above the fields.
+ * wrong password or code) and the dialog stays open. children sit above the fields. isReady
+ * (optional) replaces the default stepUpReady check, for a dialog with an extra field (delete user).
  */
-export default function StepUpDialog({ title, children, confirmLabel, danger, idPrefix, onSubmit, onCancel }) {
+export default function StepUpDialog({ title, children, confirmLabel, danger, idPrefix, onSubmit, onCancel, isReady }) {
   const { user } = useAuth()
   const hasPassword = needsPasswordForStepUp(user)
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [busy, run] = useSingleFlight()
-  const ready = stepUpReady({ hasPassword, password, code })
+  const ready = (isReady || stepUpReady)({ hasPassword, password, code })
 
   const submit = () => run(async () => {
     if (!ready) return false

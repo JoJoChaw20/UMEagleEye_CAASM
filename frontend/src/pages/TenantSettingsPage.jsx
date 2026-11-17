@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Building2, Users, Plus, Check, RefreshCw, AlertTriangle, SlidersHorizontal, UserX, UserCheck, KeyRound,
+  Building2, Users, Plus, Check, RefreshCw, AlertTriangle, SlidersHorizontal, UserX, UserCheck, KeyRound, Trash2,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -8,6 +8,7 @@ import ActionPicker from '../components/users/ActionPicker'
 import { SidePanel, RowMenu, Toast, useToast, Spinner } from '../components/common/PageParts'
 import StepUpDialog from '../components/auth/StepUpDialog'
 import { MFA_RESET_GUIDANCE, mfaResetToast } from '../utils/mfa'
+import { canConfirmDelete } from '../utils/users'
 import { accessSummary, actionLabels } from '../utils/actions'
 
 // Users page for the Tenant Superadmin: the tenant's name, and who may do what. Each tenant user
@@ -213,6 +214,23 @@ function StatusBadge({ active }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────
+function DeleteUserDialog({ target, onSubmit, onCancel }) {
+  const [typed, setTyped] = useState('')
+  const isReady = ({ hasPassword, password, code }) =>
+    canConfirmDelete({ typed, username: target.username, code, needsPassword: hasPassword, password })
+  return (
+    <StepUpDialog title="Delete user" idPrefix="delete" confirmLabel="Delete user" danger
+      isReady={isReady} onSubmit={(body) => onSubmit(body, typed)} onCancel={onCancel}>
+      <p>Delete {target.username}? This removes the account permanently and cannot be undone. Their past actions stay in the audit log. To keep the account, deactivate it instead.</p>
+      <div className="mt-4">
+        <label htmlFor="delete-username" className="mb-1.5 block text-sm font-medium text-dark-200">Type the username to confirm</label>
+        <input id="delete-username" type="text" autoComplete="off" autoCapitalize="off" spellCheck={false}
+          value={typed} onChange={(e) => setTyped(e.target.value)} className="input-field w-full" />
+      </div>
+    </StepUpDialog>
+  )
+}
+
 export default function TenantSettingsPage() {
   const { user, catalog, catalogError, retryCatalog } = useAuth()
   const isTenantSuperadmin = user?.role === 'tenant_superadmin'
@@ -233,6 +251,7 @@ export default function TenantSettingsPage() {
   const [editing, setEditing] = useState(null)   // user row whose access is open
   const [showInvite, setShowInvite] = useState(false)
   const [resetting, setResetting] = useState(null)  // user row whose MFA reset is being confirmed
+  const [deleting, setDeleting] = useState(null)    // user row whose deletion is being confirmed
 
   const loadUsers = useCallback(async () => {
     if (!tenantId) return
@@ -293,6 +312,14 @@ export default function TenantSettingsPage() {
     await client.post(`/tenants/${tenantId}/users/${target.user_id}/mfa-reset`, body)
     setResetting(null)
     showToast(mfaResetToast(target.username))
+  }
+
+  const deleteUser = async (body, typed) => {
+    const target = deleting
+    await client.delete(`/tenants/${tenantId}/users/${target.user_id}`, { data: { ...body, confirm_username: typed } })
+    setUsers((rows) => rows.filter((r) => r.user_id !== target.user_id))
+    setDeleting(null)
+    showToast(`${target.username} was deleted.`)
   }
 
   const onAccessSaved = (target, data) => {
@@ -453,6 +480,7 @@ export default function TenantSettingsPage() {
                                 ? { label: 'Deactivate', icon: UserX, danger: true, onClick: () => toggleUserActive(u) }
                                 : { label: 'Activate', icon: UserCheck, onClick: () => toggleUserActive(u) }),
                               canResetMfa && { label: 'Reset MFA', icon: KeyRound, danger: true, onClick: () => setResetting(u) },
+                              canResetMfa && { label: 'Delete user', icon: Trash2, danger: true, onClick: () => setDeleting(u) },
                             ]} />
                           )}
                       </td>
@@ -471,6 +499,10 @@ export default function TenantSettingsPage() {
           <p>{MFA_RESET_GUIDANCE}</p>
           <p className="mt-2">Reset MFA for <span className="font-medium text-dark-50">{resetting.username}</span>.</p>
         </StepUpDialog>
+      )}
+
+      {deleting && (
+        <DeleteUserDialog target={deleting} onSubmit={deleteUser} onCancel={() => setDeleting(null)} />
       )}
 
       {editing && (
