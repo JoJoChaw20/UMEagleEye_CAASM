@@ -3347,14 +3347,13 @@
           "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
-          "default": "'tenant_user'"
+          "default": "'business_owner'"
         },
         "actions": {
           "name": "actions",
           "type": "text[]",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
+          "notNull": false
         },
         "tenant_id": {
           "name": "tenant_id",
@@ -3435,22 +3434,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_users_one_tenant_superadmin": {
-          "name": "uq_users_one_tenant_superadmin",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"users\".\"role\" = 'tenant_superadmin'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3658,6 +3641,8 @@
       "values": [
         "superadmin",
         "tenant_superadmin",
+        "tenant_admin",
+        "business_owner",
         "tenant_user"
       ]
     }

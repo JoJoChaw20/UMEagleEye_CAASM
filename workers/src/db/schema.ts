@@ -50,7 +50,7 @@ export const advisoryStatusEnum = pgEnum('advisory_status', [
   'open', 'acknowledged', 'in_progress', 'resolved'
 ])
 export const userRoleEnum = pgEnum('user_role', [
-  'superadmin', 'tenant_superadmin', 'tenant_user'
+  'superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner', 'tenant_user'
 ])
 export const relationshipTypeEnum = pgEnum('relationship_type', [
   'connects_to', 'depends_on', 'same_subnet', 'authenticates_to', 'exposes_service'
@@ -92,9 +92,10 @@ export const users = pgTable('users', {
   username: varchar('username', { length: 100 }).notNull().unique(),
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: varchar('password_hash', { length: 512 }).notNull(),
-  role: userRoleEnum('role').notNull().default('tenant_user'),
-  // Actions granted to a tenant_user (lib/actions.ts). Superadmin and tenant_superadmin ignore it.
-  actions: text('actions').array().notNull().default(sql`'{}'::text[]`),
+  role: userRoleEnum('role').notNull().default('business_owner'),
+  // Actions granted to a tenant_user (lib/actions.ts). NULL until a user is converted to tenant_user
+  // (migration 0036); superadmin and tenant_superadmin ignore it.
+  actions: text('actions').array(),
   tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'set null' }),
   googleId: varchar('google_id', { length: 255 }).unique(),
   totpSecret: varchar('totp_secret', { length: 64 }),
@@ -106,8 +107,7 @@ export const users = pgTable('users', {
 }, (t) => [
   index('idx_users_username').on(t.username),
   index('idx_users_tenant').on(t.tenantId),
-  // At most one Tenant Superadmin per tenant
-  uniqueIndex('uq_users_one_tenant_superadmin').on(t.tenantId).where(sql`${t.role} = 'tenant_superadmin'`),
+  // uq_users_one_tenant_superadmin (one Tenant Superadmin per tenant) returns in 0036.
 ])
 
 // ─── Table 3: Assets ────────────────────────────────────────────
