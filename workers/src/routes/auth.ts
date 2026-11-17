@@ -97,11 +97,18 @@ async function codeFailed(c: Ctx, db: DB, row: UserRow, detail: string, method: 
 
 /**
  * Replay guard: records the step only if it is later than the last one used, in one statement, so
- * two requests with the same code cannot both pass. `extra` columns are written with it.
+ * two requests with the same code cannot both pass. `extra` columns are written with it. The
+ * account must still have MFA on with the secret the code was checked against, so an MFA reset
+ * landing between the read and this write cannot let a code of the old secret through.
  */
-async function claimStep(db: DB, userId: string, step: number, extra: Partial<typeof users.$inferInsert> = {}) {
+async function claimStep(
+  db: DB, userId: string, secret: string, step: number, extra: Partial<typeof users.$inferInsert> = {},
+) {
   const rows = await db.update(users).set({ ...extra, totpLastStep: step })
-    .where(and(eq(users.userId, userId), or(isNull(users.totpLastStep), lt(users.totpLastStep, step))))
+    .where(and(
+      eq(users.userId, userId), eq(users.mfaEnabled, true), eq(users.totpSecret, secret),
+      or(isNull(users.totpLastStep), lt(users.totpLastStep, step)),
+    ))
     .returning({ userId: users.userId })
   return rows.length > 0
 }
@@ -229,7 +236,7 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
       if (step === null) {
         return await codeFailed(c, db, user, wrongCodeDetail(user.totpSecret, parsed.input.code), 'totp', 'wrong_code')
       }
-      if (!await claimStep(db, user.userId, step, { lastLogin: new Date() })) {
+      if (!await claimStep(db, user.userId, user.totpSecret, step, { lastLogin: new Date() })) {
         return await codeFailed(c, db, user, CODE_REPLAYED, 'totp', 'replayed')
       }
     } else {
@@ -274,6 +281,7 @@ app.post('/mfa/enrol/start', zValidator('json', enrolStartSchema), async (c) => 
     if (user.mfaEnabled) return c.json({ detail: ALREADY_SET_UP }, 409)
 
     let secret = user.mfaPendingSecret
+    let created = false
     if (pendingSecretPlan(secret, new_secret) === 'create') {
       const fresh = generateTotpSecret()
       // Only on an account still without MFA; without new_secret, only where no pending secret was
@@ -286,10 +294,7 @@ app.post('/mfa/enrol/start', zValidator('json', enrolStartSchema), async (c) => 
         .returning({ userId: users.userId })
       if (written) {
         secret = fresh
-        await audit(db, c, {
-          userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_enrol_started', targetEntity: user.userId,
-          newState: { new_secret: new_secret === true },
-        })
+        created = true
       } else {
         const [now] = await db.select({ mfaEnabled: users.mfaEnabled, mfaPendingSecret: users.mfaPendingSecret })
           .from(users).where(eq(users.userId, user.userId)).limit(1)
@@ -298,6 +303,12 @@ app.post('/mfa/enrol/start', zValidator('json', enrolStartSchema), async (c) => 
       }
     }
     if (!secret) return c.json({ detail: 'MFA set-up failed' }, 500)
+    // Started with a new secret, or resumed with the pending one the phone may already have scanned.
+    await audit(db, c, {
+      userId: user.userId, tenantId: user.tenantId, targetEntity: user.userId,
+      actionType: created ? 'auth.mfa_enrol_started' : 'auth.mfa_enrol_resumed',
+      newState: created ? { new_secret: new_secret === true } : undefined,
+    })
 
     const qr_code_base64 = await generateTotpQR(secret, user.username)
     const otpauth_url = authenticator.keyuri(user.username, 'UMEagleEye', secret)
@@ -586,7 +597,7 @@ app.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recoveryCodes
       }
       return await codeFailed(c, db, user, wrongCodeDetail(user.totpSecret, digits), 'step_up', 'wrong_code')
     }
-    if (!await claimStep(db, user.userId, step!)) return await codeFailed(c, db, user, CODE_REPLAYED, 'step_up', 'replayed')
+    if (!await claimStep(db, user.userId, user.totpSecret, step!)) return await codeFailed(c, db, user, CODE_REPLAYED, 'step_up', 'replayed')
 
     // Old codes out, new ones in, in one Neon HTTP transaction (db.batch).
     const { codes, hashes } = await newRecoveryCodes()

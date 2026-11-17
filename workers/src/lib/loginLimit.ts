@@ -47,4 +47,4 @@ export function minutesLeftInWindow(now = Date.now()): number {
   return Math.max(1, Math.ceil((end - now) / 60_000))
 }
 
-export const TOO_MANY ='Too many failed attempts. Try again in 15 minutes.'
+export const TOO_MANY = 'Too many failed attempts. Try again in 15 minutes.'

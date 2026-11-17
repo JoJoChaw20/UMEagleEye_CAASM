@@ -88,6 +88,9 @@ test('enrol/start reuses the pending secret unless a new one is asked for', () =
 
 test('wrong code: the clock message when the phone clock is off, else the plain one', () => {
   assert.equal(wrongCodeDetail(SECRET, codeAt(T0 - 3 * STEP - 1_000_000), T0), WRONG_CODE)
+  // Past the ±10-step clock window: the plain message, not a clock hint.
+  assert.equal(wrongCodeDetail(SECRET, codeAt(T0 + 11 * STEP), T0), WRONG_CODE)
+  assert.equal(wrongCodeDetail(SECRET, codeAt(T0 - 11 * STEP), T0), WRONG_CODE)
   assert.equal(wrongCodeDetail(SECRET, codeAt(T0 + 4 * STEP), T0),
     "Your phone's clock is about 2 minutes off. Turn on automatic date and time on your phone, then try again.")
   assert.equal(wrongCodeDetail(SECRET, codeAt(T0 - 10 * STEP), T0),

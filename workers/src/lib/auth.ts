@@ -93,10 +93,6 @@ export function generateTotpSecret(): string {
   return authenticator.generateSecret()
 }
 
-export function verifyTotp(secret: string, token: string): boolean {
-  return authenticator.verify({ token, secret })
-}
-
 export async function generateTotpQR(secret: string, username: string): Promise<string> {
   const otpauthUrl = authenticator.keyuri(username, 'UMEagleEye', secret)
   const QRCode = await import('qrcode')
