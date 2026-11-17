@@ -22,6 +22,7 @@ import { mailConfigured, sendMail } from '../services/mailer'
 import { applyDueBreakGlass } from '../services/breakGlass'
 import { settleOwnership } from '../services/ownership'
 import { isDeactivated } from '../lib/sessionGate'
+import { flipIfDue } from '../services/deactivation'
 import { HOLD_HOURS, breakGlassEligible, nextState } from '../lib/breakGlass'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 import { enrolsTwoDevices, signIn, withAccount } from '../lib/accountRows'
@@ -85,7 +86,10 @@ async function mfaAccount(
   if (!claims || claims.stage !== stage) return { refused: c.json({ detail: SIGN_IN_AGAIN }, 401) }
   const [row] = await db.select().from(users).where(eq(users.userId, claims.sub)).limit(1)
   if (!row) return { refused: c.json({ detail: SIGN_IN_AGAIN }, 401) }
-  if (isDeactivated(row)) return { refused: c.json({ detail: DEACTIVATED }, 401) }
+  if (isDeactivated(row)) {
+    await flipIfDue(db, row.userId)
+    return { refused: c.json({ detail: DEACTIVATED }, 401) }
+  }
   return { row }
 }
 
@@ -164,6 +168,7 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
       .limit(1)
 
     const valid = await verifyPassword(password, user?.passwordHash ?? await decoy())
+    if (user && isDeactivated(user)) await flipIfDue(db, user.userId)
     if (!user || isDeactivated(user) || !valid) {
       await Promise.all([recordFailure(kv, 'password_account', username), recordFailure(kv, 'password_address', ip)])
       if (user) {
@@ -541,6 +546,7 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
     }
 
     if (isDeactivated(resolvedUser)) {
+      await flipIfDue(db, resolvedUser.userId)
       return c.json({ detail: 'Account is disabled' }, 403)
     }
 

@@ -61,21 +61,29 @@ export function candidateEligible(userId: string, tenantId: string): SQL {
 
 /**
  * The owner write as one builder (for db.batch, or awaited alone): promotes the existing account, or inserts a new one.
- * The promote runs only where the tenant has no Tenant Superadmin (and `guard` holds); the insert is backed by the unique
- * index uq_users_one_tenant_superadmin, so with an owner present it raises and a surrounding batch rolls back.
+ * Both run only where the tenant has no Tenant Superadmin and `guard` holds. A failed promote returns 0 rows; a failed
+ * insert raises NOT NULL (see below), so a surrounding batch rolls back and writes nothing. The unique index
+ * uq_users_one_tenant_superadmin stays the final backstop.
  */
 export function ownerInviteStatement(db: any, plan: Extract<OwnerInvitePlan, { ok: true }>, tenantId: string, email: string, guard?: SQL) {
   if (plan.existing) {
     const o = alias(users, 'o')
-    return db.update(users).set({ tenantId, role: 'tenant_superadmin', actions: [] as string[] }).where(and(
+    return db.update(users).set({ tenantId, role: 'tenant_superadmin', actions: [] as string[], scheduledDeactivationAt: null }).where(and(
       eq(users.userId, plan.existing.userId), notInArray(users.role, ['superadmin', 'tenant_superadmin']),
       or(isNull(users.tenantId), eq(users.tenantId, tenantId)),
       notExists(db.select({ one: sql`1` }).from(o).where(and(eq(o.tenantId, tenantId), eq(o.role, 'tenant_superadmin')))),
       guard,
     )).returning({ userId: users.userId, username: users.username, email: users.email })
   }
+  // Guarded insert: a column's value is a subquery that is NULL unless the guard holds (no Tenant Superadmin left
+  // in the tenant, and `guard`). username is NOT NULL, so a failed guard raises (23502) and rolls the batch back:
+  // nothing is written. (drizzle 0.36 insert().select() needs every table column, so the guard rides on a value.)
+  const holds = and(
+    sql`not exists (select 1 from users where tenant_id = ${tenantId}::uuid and role = 'tenant_superadmin')`, guard,
+  )
   return db.insert(users).values({
-    username: plan.username, email, passwordHash: NO_PASSWORD_HASH, role: 'tenant_superadmin', actions: [] as string[], tenantId,
+    username: sql`(select ${plan.username}::varchar where ${holds})`,
+    email, passwordHash: NO_PASSWORD_HASH, role: 'tenant_superadmin', actions: [] as string[], tenantId,
   }).returning({ userId: users.userId, username: users.username, email: users.email })
 }
 

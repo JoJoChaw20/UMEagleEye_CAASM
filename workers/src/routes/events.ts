@@ -405,6 +405,7 @@ app.get('/assignees', authMiddleware, requireAction('alert.manage', 'advisory.up
       .where(and(
         eq(users.tenantId, tenantId),
         eq(users.isActive, true),
+        sql`(${users.scheduledDeactivationAt} is null or ${users.scheduledDeactivationAt} > now())`,
         // Any tenant member.
         ne(users.role, 'superadmin'),
       ))

@@ -7,7 +7,7 @@ import {
   enrolmentTokens, ownershipRecoveries, ownershipTransfers, tenantNotices, tenantRecoveryPlans, users,
 } from '../db/schema'
 import {
-  completionEffects, ownerChecklist, ownershipChangedNotice, recoveryNext, restoredNotice, swapStatements, type AfterChoice,
+  completionEffects, ownerChecklist, ownershipChangedNotice, ownershipNoticeExpiry, recoveryNext, restoredNotice, swapStatements, type AfterChoice,
 } from '../lib/ownership'
 import { auditOwnerInvite, candidateEligible, ownerInviteStatement, type OwnerInvitePlan } from './ownerInvite'
 import { audit } from './audit'
@@ -179,7 +179,7 @@ async function afterRecovery(db: DB, r: OpenRecovery, env: Env | undefined, c: C
   const former = names.find((n) => n.userId === r.formerOwnerId)
   const successor = names.find((n) => n.userId === r.successorId)
   const note = ownershipChangedNotice(former?.username ?? '', successor?.username ?? '', today())
-  await postNotice(db, r.tenantId, null, 'ownership_changed', note)
+  await postNotice(db, r.tenantId, null, 'ownership_changed', note, ownershipNoticeExpiry())
   await postNotice(db, r.tenantId, r.successorId, 'owner_checklist', ownerChecklist(completionEffects(r.reason).checklistHasAgentKeys))
   await audit(db, c, {
     userId: r.successorId, tenantId: r.tenantId, actionType: 'ownership.recovered', targetEntity: r.formerOwnerId,
@@ -221,7 +221,7 @@ async function settleRecovery(db: DB, tenantId: string, env?: Env) {
   }
 }
 
-const DAYS_30 = 30 * 24 * 60 * 60 * 1000
+
 type Person = { userId: string; username: string; email: string | null }
 
 /**
@@ -299,8 +299,8 @@ async function afterRestore(
   plan: Extract<OwnerInvitePlan, { ok: true }>, email: string, env: Env | undefined,
 ) {
   const date = today()
-  await postNotice(db, tenantId, null, 'ownership_restored', restoredNotice(date), new Date(Date.now() + DAYS_30))
-  if (former) await postNotice(db, tenantId, null, 'ownership_changed', ownershipChangedNotice(former.username, added.username, date))
+  await postNotice(db, tenantId, null, 'ownership_restored', restoredNotice(date), ownershipNoticeExpiry())
+  if (former) await postNotice(db, tenantId, null, 'ownership_changed', ownershipChangedNotice(former.username, added.username, date), ownershipNoticeExpiry())
   await postNotice(db, tenantId, added.userId, 'owner_checklist', ownerChecklist(true))
   await auditOwnerInvite(db, c, { userId: platformUserId, role: 'superadmin' }, tenantId, plan, added, email)
   await audit(db, c, {

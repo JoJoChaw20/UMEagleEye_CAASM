@@ -9,10 +9,11 @@ import { getDb } from '../db/client'
 import { ownershipRecoveries, ownershipTransfers, tenantRecoveryPlans, tenants, users } from '../db/schema'
 import {
   HOURS_72, RECOVERY_DISPUTED_NOTICE, RECOVERY_REASONS, RECOVERY_REASON_LABELS,
-  approverSlot, ownerChecklist, ownershipChangedNotice, recoveryNext, validateRecoveryPlan, validateTransfer,
+  approverSlot, ownerChecklist, ownershipChangedNotice, ownershipNoticeExpiry, recoveryNext, validateRecoveryPlan, validateTransfer,
 } from '../lib/ownership'
 import { ownershipView, transferMessage } from '../lib/ownershipView'
-import { isUniqueViolation } from '../lib/fkViolation'
+import { isNotNullViolation, isOwnerIndexViolation, isUniqueViolation } from '../lib/fkViolation'
+import { isDeactivated } from '../lib/sessionGate'
 import { audit } from '../services/audit'
 import { stepUp } from '../services/mfaStepUp'
 import { sendMail } from '../services/mailer'
@@ -186,7 +187,7 @@ router.post(
       }
       const [former] = await db.select().from(users).where(eq(users.userId, t.fromUserId)).limit(1)
       const note = ownershipChangedNotice(former?.username ?? '', me.username, today())
-      await postNotice(db, tenantId, null, 'ownership_changed', note)
+      await postNotice(db, tenantId, null, 'ownership_changed', note, ownershipNoticeExpiry())
       await postNotice(db, tenantId, me.userId, 'owner_checklist', CHECKLIST)
       await audit(db, c, {
         userId: caller.userId, tenantId, actionType: 'ownership.transferred', targetEntity: t.fromUserId,
@@ -499,7 +500,7 @@ router.post(
 
       const plan = await planOwnerInvite(db, caller, tenantId, body.email, body.username, true)
       if (!plan.ok) return c.json({ detail: plan.error.detail }, plan.error.status)
-      if (plan.existing && plan.existing.isActive === false) {
+      if (plan.existing && isDeactivated(plan.existing)) {
         return c.json({ detail: 'That account is deactivated. Choose an active account or a new email.' }, 409)
       }
       const [former] = await db.select({ userId: users.userId, username: users.username, email: users.email }).from(users)
@@ -516,8 +517,12 @@ router.post(
           tenantId, platformUserId: caller.userId, email: body.email, plan, formerOwner: former ?? null,
         }, c.env)
       } catch (err) {
-        if (!isUniqueViolation(err)) throw err
-        return c.json({ detail: CHANGED }, 409)   // the batch rolled back: an owner appeared, or the username/email is taken
+        // The batch rolled back. An owner appeared / the demote no longer matched: reload. A username or email clash: say so.
+        if (isUniqueViolation(err) && !isOwnerIndexViolation(err)) {
+          return c.json({ detail: 'That username or email is already used by another account.' }, 409)
+        }
+        if (!isOwnerIndexViolation(err) && !isNotNullViolation(err)) throw err
+        return c.json({ detail: CHANGED }, 409)
       }
       if (!result.done || !result.newOwner) return c.json({ detail: CHANGED }, 409)
       return c.json({

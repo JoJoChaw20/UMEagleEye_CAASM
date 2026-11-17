@@ -1,6 +1,6 @@
 // In-app notices of the caller's tenant (ownership changes, transfer requests, checklists).
 import { Hono } from 'hono'
-import { and, desc, eq, isNull, or } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -20,6 +20,7 @@ router.get('/', authMiddleware, async (c) => {
     const rows = await db.select().from(tenantNotices)
       .where(and(
         eq(tenantNotices.tenantId, me.tenantId), isNull(tenantNotices.dismissedAt),
+        or(isNull(tenantNotices.expiresAt), gt(tenantNotices.expiresAt, sql`now()`)),
         or(isNull(tenantNotices.userId), eq(tenantNotices.userId, me.userId)),
       ))
       .orderBy(desc(tenantNotices.createdAt)).limit(100)

@@ -11,7 +11,7 @@ import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
-import { isFkViolation } from '../lib/fkViolation'
+import { isFkViolation, isNotNullViolation, isOwnerIndexViolation } from '../lib/fkViolation'
 import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
@@ -309,6 +309,7 @@ router.get(
       role: users.role,
       actions: users.actions,
       isActive: users.isActive,
+      scheduledDeactivationAt: users.scheduledDeactivationAt,
       createdAt: users.createdAt,
       lastLogin: users.lastLogin,
     }).from(users).where(eq(users.tenantId, tenantId))
@@ -414,7 +415,7 @@ router.post(
         }, plan.existing ? 200 : 201)
       } catch (err) {
         // Two invitations at once: the unique index (one tenant superadmin per tenant) refuses the second.
-        if (/uq_users_one_tenant_superadmin/.test(String((err as { message?: unknown })?.message ?? err))) {
+        if (isOwnerIndexViolation(err) || isNotNullViolation(err)) {
           return c.json(ALREADY_OWNED, 409)
         }
         throw err
@@ -546,7 +547,7 @@ router.patch(
     if (targetRole === 'superadmin') return c.json({ detail: 'The platform superadmin cannot be deactivated here' }, 403)
     if (target.userId === caller.userId || targetRole === 'tenant_superadmin') return c.json({ detail: OWNERSHIP_ONLY }, 403)
 
-    await db.update(users).set({ isActive: is_active }).where(eq(users.userId, userId))
+    await db.update(users).set({ isActive: is_active, scheduledDeactivationAt: null }).where(eq(users.userId, userId))
     await audit(db, c, {
       userId: caller.userId, tenantId, actionType: is_active ? 'user.activate' : 'user.deactivate', targetEntity: userId,
       previousState: { is_active: target.isActive },

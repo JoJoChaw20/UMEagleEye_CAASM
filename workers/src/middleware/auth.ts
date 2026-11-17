@@ -2,7 +2,8 @@ import { createMiddleware } from 'hono/factory'
 import type { Env, AuthUser } from '../types'
 import { verifyToken } from '../lib/auth'
 import { toAuthUser } from '../lib/accountRows'
-import { sessionGate } from '../lib/sessionGate'
+import { isDeactivated, sessionGate } from '../lib/sessionGate'
+import { flipIfDue } from '../services/deactivation'
 import { getDb } from '../db/client'
 import { users } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -39,7 +40,10 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
     return c.json({ detail: 'Your account is deactivated. Contact your Tenant Superadmin.' }, 401)
   }
   const refused = sessionGate(payload, row, c.req.path)
-  if (refused) return c.json(refused.body, refused.status)
+  if (refused) {
+    if (isDeactivated(row)) await flipIfDue(db, payload.sub)
+    return c.json(refused.body, refused.status)
+  }
 
   // The row's role and actions, normalized (lib/accountRows.ts).
   const user: AuthUser = toAuthUser(payload.sub, payload.username, row)

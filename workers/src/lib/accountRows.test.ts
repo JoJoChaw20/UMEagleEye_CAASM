@@ -98,3 +98,11 @@ test('MFA set-up asks for two devices for the Platform Superadmin only', () => {
   assert.equal(enrolsTwoDevices({ role: 'tenant_user' }), false)
   assert.equal(enrolsTwoDevices({ role: LEGACY_ADMIN }), false)
 })
+
+test('users list shows a due scheduled deactivation as inactive', () => {
+  const u = { userId: 'u1', username: 'a', email: 'a@x', role: 'tenant_user', actions: [] as string[], createdAt: null, lastLogin: null }
+  assert.equal(tenantUserItem({ ...u, isActive: true }).is_active, true)
+  assert.equal(tenantUserItem({ ...u, isActive: true, scheduledDeactivationAt: new Date(Date.now() + 86_400_000) }).is_active, true)
+  assert.equal(tenantUserItem({ ...u, isActive: true, scheduledDeactivationAt: new Date(Date.now() - 1000) }).is_active, false)
+  assert.equal(tenantUserItem({ ...u, isActive: false }).is_active, false)
+})

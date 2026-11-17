@@ -5,7 +5,7 @@ import { getDb } from '../db/client'
 import {
   validateTransfer, validateRecoveryPlan, transferNext, recoveryNext, approverSlot,
   swapStatements, ownershipChangedNotice, restoredNotice, HOURS_72,
-  completionEffects, ownerChecklist, RECOVERY_DISPUTED_NOTICE,
+  completionEffects, ownerChecklist, RECOVERY_DISPUTED_NOTICE, ownershipNoticeExpiry,
 } from './ownership'
 
 const db = getDb('postgres://u:p@localhost/none')   // builds queries only; nothing connects
@@ -185,4 +185,23 @@ test('owner checklist: agent keys only after an emergency; Path A text unchanged
 
 test('dispute notice is verbatim', () => {
   assert.equal(RECOVERY_DISPUTED_NOTICE, 'Recovery was disputed. Contact platform support for verification.')
+})
+
+test('a due scheduled deactivation makes a recipient or plan member ineligible', () => {
+  const due = { ...to, scheduledDeactivationAt: plus(-1000) }
+  const later = { ...to, scheduledDeactivationAt: plus(1000) }
+  assert.equal(validateTransfer({ ...base, toUser: due }), 'The recipient must be an active user')
+  assert.equal(validateTransfer({ ...base, toUser: later }), null)
+  const m = (id: string, x = {}) => ({ ...to, userId: id, ...x })
+  const plan = { ownerId: 'o', tenantId: T, now }
+  assert.equal(validateRecoveryPlan({ ...plan, successor: m('a'), approvers: [m('b'), m('c')] }), null)
+  for (const slot of [0, 1, 2]) {
+    const ms = [m('a'), m('b'), m('c')]
+    ms[slot] = m(['a', 'b', 'c'][slot]!, { scheduledDeactivationAt: plus(-1) })
+    assert.equal(validateRecoveryPlan({ ...plan, successor: ms[0]!, approvers: [ms[1]!, ms[2]!] }), 'Everyone in the plan must be an active user')
+  }
+})
+
+test('tenant-wide ownership notices expire after 30 days', () => {
+  assert.equal(ownershipNoticeExpiry(now).getTime(), now.getTime() + 30 * 24 * 60 * 60 * 1000)
 })

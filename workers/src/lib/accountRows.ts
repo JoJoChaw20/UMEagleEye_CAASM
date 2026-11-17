@@ -4,6 +4,7 @@
 // functions, so they are tested without a database (accountRows.test.ts).
 
 import type { AuthUser } from '../types'
+import { isDeactivated } from './sessionGate'
 import { decide, normalizeAccount, type ActionKey, type Role } from './actions'
 
 type StoredAccount = { role: string; actions: readonly string[] | null }
@@ -43,7 +44,7 @@ export function withAccount<T extends StoredAccount>(row: T): Omit<T, 'role' | '
 /** One row of GET /tenants/:tenantId/users. */
 export function tenantUserItem(u: StoredAccount & {
   userId: string; username: string; email: string | null; isActive: boolean | null
-  createdAt: Date | null; lastLogin: Date | null
+  scheduledDeactivationAt?: Date | null; createdAt: Date | null; lastLogin: Date | null
 }) {
   const { role, actions } = normalizeAccount(u.role, u.actions)
   return {
@@ -52,7 +53,7 @@ export function tenantUserItem(u: StoredAccount & {
     email: u.email,
     role,
     actions,
-    is_active: u.isActive,
+    is_active: !isDeactivated(u),
     created_at: u.createdAt,
     last_login: u.lastLogin,
   }

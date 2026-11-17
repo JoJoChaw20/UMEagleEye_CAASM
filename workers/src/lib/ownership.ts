@@ -2,6 +2,7 @@
 import { and, eq, exists, inArray, notExists, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { users } from '../db/schema'
+import { isDeactivated } from './sessionGate'
 import { parseActionList } from './userAdmin'
 
 export const HOURS_72 = 72 * 60 * 60 * 1000
@@ -20,7 +21,9 @@ export const NO_RECOVERY_PLAN_BANNER =
   'No recovery plan. If you lose access, your tenant cannot recover without platform verification.'
 
 export type AfterChoice = { mode: string; actions?: unknown; deactivateOn?: Date | null }
-export type TenantMember = { userId: string; tenantId: string | null; isActive: boolean; role: string }
+export type TenantMember = {
+  userId: string; tenantId: string | null; isActive: boolean; role: string; scheduledDeactivationAt?: Date | null
+}
 
 export function validateTransfer(i: {
   ownerId: string; toUser: TenantMember; tenantId: string; after: AfterChoice; now: Date
@@ -29,7 +32,7 @@ export function validateTransfer(i: {
   if (toUser.userId === i.ownerId) return 'The recipient cannot be the current owner'
   if (toUser.tenantId !== i.tenantId) return 'The recipient must belong to this tenant'
   if (toUser.role !== 'tenant_user') return 'The recipient must be a Tenant user'
-  if (!toUser.isActive) return 'The recipient must be an active user'
+  if (isDeactivated(toUser, i.now)) return 'The recipient must be an active user'
   if (!(AFTER_MODES as readonly string[]).includes(after.mode)) return 'Unknown choice for your own account'
   if (after.mode === 'deactivate_on') {
     if (!after.deactivateOn || after.deactivateOn.getTime() <= i.now.getTime()) return 'deactivate_on must be in the future'
@@ -42,14 +45,14 @@ export function validateTransfer(i: {
 }
 
 export function validateRecoveryPlan(i: {
-  ownerId: string; successor: TenantMember; approvers: [TenantMember, TenantMember]; tenantId: string
+  ownerId: string; successor: TenantMember; approvers: [TenantMember, TenantMember]; tenantId: string; now?: Date
 }): string | null {
   const three = [i.successor, i.approvers[0], i.approvers[1]]
   if (new Set(three.map((u) => u.userId)).size !== 3) return 'The successor and the two approvers must be three different users'
   for (const u of three) {
     if (u.userId === i.ownerId) return 'The owner cannot be the successor or an approver'
     if (u.tenantId !== i.tenantId) return 'Everyone in the plan must belong to this tenant'
-    if (!u.isActive) return 'Everyone in the plan must be an active user'
+    if (isDeactivated(u, i.now)) return 'Everyone in the plan must be an active user'
     if (u.role !== 'tenant_user') return 'Everyone in the plan must be a Tenant user'
   }
   return null
@@ -111,6 +114,9 @@ export function approverSlot(
   return null
 }
 
+/** SQL: no scheduled deactivation that has come due. */
+const notDue = (col: any): SQL => sql`(${col} is null or ${col} > now())`
+
 export type SwapUpdate = {
   label: 'lock' | 'demote' | 'promote'
   userId: string
@@ -155,7 +161,7 @@ export function swapStatements(
     build: (db) => db.update(users).set(demoteSet).where(and(
       eq(users.userId, fromId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'),
       exists(db.select({ one: sql`1` }).from(r).where(and(
-        eq(r.userId, toId), eq(r.tenantId, tenantId), eq(r.role, 'tenant_user'), eq(r.isActive, true),
+        eq(r.userId, toId), eq(r.tenantId, tenantId), eq(r.role, 'tenant_user'), eq(r.isActive, true), notDue(r.scheduledDeactivationAt),
       ))),
       guard,
     )).returning({ userId: users.userId }),
@@ -163,7 +169,7 @@ export function swapStatements(
   const promote: SwapUpdate = {
     label: 'promote', userId: toId, tenantId, set: promoteSet,
     build: (db) => db.update(users).set(promoteSet).where(and(
-      eq(users.userId, toId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_user'), eq(users.isActive, true),
+      eq(users.userId, toId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_user'), eq(users.isActive, true), notDue(users.scheduledDeactivationAt),
       notExists(db.select({ one: sql`1` }).from(o).where(and(
         eq(o.tenantId, tenantId), eq(o.role, 'tenant_superadmin'),
       ))),
@@ -180,6 +186,11 @@ export function swapStatements(
 
 export function ownershipChangedNotice(a: string, b: string, date: string): string {
   return `Tenant ownership changed from ${a} to ${b} on ${date}.`
+}
+/** Tenant-wide ownership notices stay for 30 days. */
+export const OWNERSHIP_NOTICE_DAYS = 30
+export function ownershipNoticeExpiry(now: Date = new Date()): Date {
+  return new Date(now.getTime() + OWNERSHIP_NOTICE_DAYS * 24 * 60 * 60 * 1000)
 }
 export function restoredNotice(date: string): string {
   return `Ownership of this tenant was restored by platform verification on ${date}.`

@@ -22,3 +22,12 @@ test('isUniqueViolation reads code, cause code and message; ignores other errors
   assert.equal(isUniqueViolation(new Error('connection reset')), false)
   assert.equal(isUniqueViolation(null), false)
 })
+
+test('isNotNullViolation and isOwnerIndexViolation', async () => {
+  const { isNotNullViolation, isOwnerIndexViolation } = await import('./fkViolation')
+  assert.equal(isNotNullViolation({ code: '23502' }), true)
+  assert.equal(isNotNullViolation({ message: 'null value in column "username" violates not-null constraint' }), true)
+  assert.equal(isNotNullViolation({ code: '23505' }), false)
+  assert.equal(isOwnerIndexViolation({ code: '23505', message: 'duplicate key value violates unique constraint "uq_users_one_tenant_superadmin"' }), true)
+  assert.equal(isOwnerIndexViolation({ code: '23505', message: 'duplicate key value violates unique constraint "users_email_key"' }), false)
+})
