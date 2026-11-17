@@ -40,7 +40,10 @@ export function roleLabel(role) {
 }
 
 /** Tooltip for a control the user may not use: names the missing action by its catalog label. */
+export function actionLabel(key, catalog) {
+  return (catalog?.actions || []).find((a) => a.key === key)?.label || key
+}
+
 export function requiresTitle(key, catalog) {
-  const label = (catalog?.actions || []).find((a) => a.key === key)?.label || key
-  return `Requires the "${label}" action.`
+  return `Requires the "${actionLabel(key, catalog)}" action.`
 }

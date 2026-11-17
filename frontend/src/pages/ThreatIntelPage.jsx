@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Globe, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle } from 'lucide-react'
 import client from '../api/client'
-import { useAuth } from '../context/AuthContext'
 import TiEventsPanel from '../components/threatintel/TiEventsPanel'
 import AttackMatrixPanel from '../components/threatintel/AttackMatrixPanel'
 import MatchesPanel from '../components/threatintel/MatchesPanel'
@@ -60,7 +59,6 @@ function FeedHealth({ stats }) {
 }
 
 export default function ThreatIntelPage() {
-  const { user } = useAuth()
   const { toast, show: showToast } = useToast()
   const [stats, setStats] = useState(null)
   const [tab, setTab] = useState(null)              // set once the stats say whether there are matches
@@ -185,7 +183,7 @@ export default function ThreatIntelPage() {
       {!tab ? <Spinner /> : tab === 'matches' ? (
         <MatchesPanel onLookup={setPanelValue} showToast={showToast} />
       ) : tab === 'events' ? (
-        <TiEventsPanel user={user} showToast={showToast} />
+        <TiEventsPanel showToast={showToast} />
       ) : tab === 'matrix' ? (
         <AttackMatrixPanel onShowIndicators={showAttackIndicators} />
       ) : (

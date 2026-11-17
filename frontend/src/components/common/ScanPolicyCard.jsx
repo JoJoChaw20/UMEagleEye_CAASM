@@ -2,6 +2,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Radar, RefreshCw, ToggleLeft, ToggleRight, AlertTriangle } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
+import { requiresTitle } from '../../utils/actions'
 
 // Saved at once; each change is written to the audit log.
 const SCAN_POLICY = [
@@ -19,6 +21,7 @@ const SCAN_POLICY = [
 // tenants.allow_local_scans is unused.
 
 export default function ScanPolicyCard({ tenantId, canEdit }) {
+  const { catalog } = useAuth()
   const [tenant, setTenant] = useState(null)
   const load = useCallback(async () => {
     if (!tenantId) { setTenant(null); return }
@@ -49,7 +52,7 @@ export default function ScanPolicyCard({ tenantId, canEdit }) {
           Scan Policy
         </h2>
         <p className="text-xs text-dark-400 mt-0.5">
-          {canEdit ? 'What the EagleEye agents of this tenant may do on their own.' : 'Requires the "Change scan policy" action.'}
+          {canEdit ? 'What the EagleEye agents of this tenant may do on their own.' : requiresTitle('settings.scan_policy.edit', catalog)}
         </p>
       </div>
       {error && (

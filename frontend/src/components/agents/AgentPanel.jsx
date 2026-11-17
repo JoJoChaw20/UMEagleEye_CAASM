@@ -175,7 +175,7 @@ function AgentSettings({ agent, onSaved }) {
       <div>
         <h3 className="text-sm font-semibold text-dark-50">Settings</h3>
         <p className="text-xs text-dark-400 mt-0.5">
-          {canEdit ? 'Leave a setting at its default to follow the tenant default (Defaults tab).' : 'Requires the "Change agent settings" action.'}
+          {canEdit ? 'Leave a setting at its default to follow the tenant default (Defaults tab).' : requiresTitle('agent.configure', catalog)}
           {inSync === false && ' The agent applies the latest change at its next heartbeat.'}
           {policy.applied_version === null && ' This agent is older than 2.4.0 and does not apply these; the server still refuses jobs they rule out.'}
         </p>

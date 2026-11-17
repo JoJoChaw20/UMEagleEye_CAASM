@@ -95,7 +95,7 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
         <p className="text-xs text-dark-400 mt-0.5 max-w-3xl">
           {canEdit
             ? 'For every agent of that kind in this tenant without a setting of its own (set in its panel on the Agents tab). Agents apply a change within a minute, between jobs.'
-            : 'Requires the "Change default agent settings" action.'}
+            : requiresTitle('settings.agent_defaults.edit', catalog)}
         </p>
       </div>
       {error && (

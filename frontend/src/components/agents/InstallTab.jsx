@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { Apple, Download, Monitor, Plus, Server, Smartphone, Terminal } from 'lucide-react'
 import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
+import { requiresTitle } from '../../utils/actions'
 import InstallCodesCard from './InstallCodesCard'
 import { CopyButton } from './parts'
 
@@ -305,7 +306,7 @@ export default function InstallTab({ downloads, isSuperadmin, onRegister }) {
         </p>
         {can('agent.enrol')
           ? <button onClick={onRegister} className="btn-primary flex items-center gap-2 text-sm"><Plus className="w-4 h-4" /> Register agent</button>
-          : <p className="text-xs text-dark-500">Requires the "{(catalog?.actions || []).find((a) => a.key === 'agent.enrol')?.label || 'Enrol agents'}" action.</p>}
+          : <p className="text-xs text-dark-500">{requiresTitle('agent.enrol', catalog)}</p>}
       </div>
 
       {/* Install codes are per tenant: for the tenant's own admins (the platform superadmin has none) */}

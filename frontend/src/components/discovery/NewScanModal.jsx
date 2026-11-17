@@ -39,7 +39,10 @@ function validateSubnet(value) {
 export default function NewScanModal({ agents: allAgents, networks, initial, onClose, onSubmit }) {
   const { can } = useAuth()
   const scanTypes = SCAN_TYPES.filter((t) => can(t.action))
-  const [scanType, setScanType] = useState(scanTypes[0]?.value ?? 'active')
+  const [pickedType, setScanType] = useState('active')
+  // The picked type if still allowed, else the first allowed one
+  const scanType = scanTypes.some((t) => t.value === pickedType) ? pickedType : (scanTypes[0]?.value ?? 'active')
+  const canRoute = can('scan.route.view')
   // A network agent reads routers and switches; it does not run scans (the server refuses it)
   const agents = useMemo(() => allAgents.filter((a) => a.kind !== 'network'), [allAgents])
   const online = agents.filter((a) => a.status === 'online')
@@ -64,7 +67,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
   useEffect(() => { if (!touched && agentId && agentId !== 'auto') setSubnet(lastNetwork[agentId] ?? '') }, [agentId, touched, lastNetwork])
   // Which agent "Automatic" would use for this range (asked a moment after typing stops)
   useEffect(() => {
-    if (agentId !== 'auto' || validateSubnet(subnet)) { setRoute(null); return undefined }
+    if (!canRoute || agentId !== 'auto' || validateSubnet(subnet)) { setRoute(null); return undefined }
     let live = true
     const t = setTimeout(() => {
       client.get('/scans/route', { params: { subnet: subnet.trim() } })
@@ -72,7 +75,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
         .catch(() => live && setRoute(null))
     }, 350)
     return () => { live = false; clearTimeout(t) }
-  }, [agentId, subnet])
+  }, [agentId, subnet, canRoute])
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -102,7 +105,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4" onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-labelledby="new-scan-title" className="glass-card w-full max-w-md p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h2 id="new-scan-title" className="text-lg font-semibold text-dark-50">New full scan</h2>
+          <h2 id="new-scan-title" className="text-lg font-semibold text-dark-50">{scanTypes.length === 1 && scanType === 'passive' ? 'New passive scan' : 'New full scan'}</h2>
           <button onClick={onClose} className="text-dark-400 hover:text-dark-50" title="Close"><X className="w-5 h-5" /></button>
         </div>
 

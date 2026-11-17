@@ -95,6 +95,8 @@ function TechniquePicker({ cat, value, onChange }) {
 
 // ── Create / edit dialog ──────────────────────────────────────
 function EventDialog({ initial, onClose, onSaved }) {
+  const { can } = useAuth()
+  const canIndicators = can('ti_event.edit')   // indicators are added through the attributes endpoint
   const [form, setForm] = useState({
     title: initial?.title ?? '',
     description: initial?.description ?? '',
@@ -142,7 +144,7 @@ function EventDialog({ initial, onClose, onSaved }) {
     }
     // Indicators typed here are added right after the event is saved.
     let added = null
-    if (indicators.trim()) {
+    if (canIndicators && indicators.trim()) {
       try {
         added = (await client.post(`/cti/events/${saved.event_id}/attributes`, { text: indicators })).data
       } catch (err) {
@@ -192,7 +194,7 @@ function EventDialog({ initial, onClose, onSaved }) {
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <div className="flex-1">
               <p>{iocTags.length === 1 ? 'This tag looks' : 'These tags look'} like {iocTags.length === 1 ? 'an indicator' : 'indicators'}: <span className="font-mono">{iocTags.join(', ')}</span>. Tags are only labels and never match anything.</p>
-              <button type="button" onClick={moveTagsToIndicators} className="mt-1 underline hover:text-amber-100">Move to indicators</button>
+              {canIndicators && <button type="button" onClick={moveTagsToIndicators} className="mt-1 underline hover:text-amber-100">Move to indicators</button>}
             </div>
           </div>
         )}
@@ -211,10 +213,10 @@ function EventDialog({ initial, onClose, onSaved }) {
             <div className="mt-1"><TechniquePicker cat={cat} value={techniques} onChange={setTechniques} /></div>
           </div>
         </div>
-        <label className="block text-sm text-dark-300">Indicators <span className="text-dark-500">(optional: one per line, added when you save)</span>
+        {canIndicators && <label className="block text-sm text-dark-300">Indicators <span className="text-dark-500">(optional: one per line, added when you save)</span>
           <textarea value={indicators} onChange={e => setIndicators(e.target.value)} rows={3} className="input-field w-full mt-1 font-mono text-xs"
             placeholder={'IPs, domains, URLs, hashes, emails or CVE IDs, e.g.\n203.0.113.5\nhxxp://evil[.]example[.]my'} />
-        </label>
+        </label>}
         <p className="text-xs text-dark-500">
           A new event is a draft. Its indicators count for alerts once you publish it
           {form.distribution === 'organisation' ? ', for your organisation only.' : ', for every tenant that can see it.'}
