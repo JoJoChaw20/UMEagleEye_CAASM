@@ -465,7 +465,7 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
         .innerJoin(ctiIndicators, eq(eventCtiIndicators.indicatorId, ctiIndicators.indicatorId))
         .leftJoin(tiEvents, eq(tiEvents.tiEventId, ctiIndicators.tiEventId))
         .where(eq(eventCtiIndicators.eventId, event.eventId)),
-      db.select({ action: auditLogs.actionType, prev: auditLogs.previousState, next: auditLogs.newState, at: auditLogs.timestamp, username: users.username })
+      db.select({ action: auditLogs.actionType, prev: auditLogs.previousState, next: auditLogs.newState, at: auditLogs.timestamp, username: users.username, actorUsername: auditLogs.actorUsername })
         .from(auditLogs)
         .leftJoin(users, eq(auditLogs.userId, users.userId))
         .where(eq(auditLogs.targetEntity, event.eventId))
@@ -534,7 +534,9 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
         attack_software_name: softwareName(i.attack_software),
         technique_count: techniquesFor(i.attack_software, named_techniques).length,
       })),
-      history: history.map(h => ({ action: h.action, previous: h.prev, next: h.next, at: h.at, by: h.username })),
+      // by: the user's current username; null when the system acted or the user was deleted.
+      // actor_username: kept from a deleted user (the page shows "<name> (deleted)").
+      history: history.map(h => ({ action: h.action, previous: h.prev, next: h.next, at: h.at, by: h.username, actor_username: h.actorUsername })),
     })
   } catch (err) {
     console.error('events GET /:eventId error:', err)

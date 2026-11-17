@@ -331,6 +331,7 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
       if (!await claimStep(db, user.userId, user.totpSecret, step, { lastLogin: new Date() })) {
         return await codeFailed(c, db, user, CODE_REPLAYED, 'totp', 'replayed')
       }
+      await audit(db, c, { userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_verified', targetEntity: user.userId })
     } else {
       if (!await useRecoveryCode(recoveryStore(db), user.userId, parsed.input.recoveryCode)) {
         return await codeFailed(c, db, user, RECOVERY_CODE_INVALID, 'recovery_code', 'invalid')

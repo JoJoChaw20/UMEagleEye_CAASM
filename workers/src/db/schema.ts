@@ -420,6 +420,9 @@ export const auditLogs = pgTable('audit_logs', {
   // NULL for what the system did on its own (e.g. threat-intel matching auto-resolving
   // or reopening an alert); the alert's activity shows those as "system".
   userId: uuid('user_id').references(() => users.userId, { onDelete: 'set null' }),
+  // Set only when the user is deleted (DELETE /tenants/:id/users/:id, same transaction): user_id
+  // becomes NULL, and this keeps the username so their past actions show as "<username> (deleted)".
+  actorUsername: varchar('actor_username', { length: 100 }),
   tenantId: uuid('tenant_id').references(() => tenants.tenantId),
   actionType: varchar('action_type', { length: 100 }).notNull(),
   targetEntity: varchar('target_entity', { length: 255 }),

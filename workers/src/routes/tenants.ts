@@ -15,6 +15,7 @@ import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
 import { mfaClearStatements, stepUp } from '../services/mfaStepUp'
+import { deleteUserStatements } from '../services/userDelete'
 import { sendMail } from '../services/mailer'
 import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH } from '../lib/auth'
@@ -592,7 +593,8 @@ router.post(
 // ── DELETE /:tenantId/users/:userId — Delete a user ────────────────
 // The Tenant Superadmin of this tenant, for tenant users. Step-up: their password and current MFA
 // code, plus the target's username typed exactly. The audit entry is written after the delete succeeds; audit rows of the
-// user stay (user_id becomes NULL). A foreign key that refuses the delete (ownership history) gives 409.
+// user stay (user_id becomes NULL, actor_username keeps the username). A foreign key that refuses the delete
+// (ownership history) gives 409.
 const OWNERSHIP_HISTORY = "This account is part of the tenant's ownership history and cannot be deleted. Deactivate it instead."
 router.delete(
   '/:tenantId/users/:userId',
@@ -623,7 +625,8 @@ router.delete(
 
       const previousState = { user_id: target.userId, username: target.username, email: target.email, actions: target.actions }
       try {
-        await db.delete(users).where(and(eq(users.userId, userId), eq(users.tenantId, tenantId)))
+        // One Neon HTTP transaction (db.batch): the audit rows keep the username, then the user goes.
+        await db.batch([...deleteUserStatements(db, tenantId, userId, target.username)])
       } catch (err) {
         const e = err as { code?: string; cause?: { code?: string } }
         if (e?.code === '23503' || e?.cause?.code === '23503') {

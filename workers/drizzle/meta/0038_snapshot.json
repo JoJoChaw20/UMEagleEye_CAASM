@@ -1154,6 +1154,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "actor_username": {
+          "name": "actor_username",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "tenant_id": {
           "name": "tenant_id",
           "type": "uuid",
