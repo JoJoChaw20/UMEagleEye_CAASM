@@ -486,6 +486,36 @@ A peer reset can then be added: one Platform Superadmin resets the other's MFA, 
 | **tenant_admin** | Tenant user with 53 actions: Operator plus Clear software inventory, Delete SBOMs, Delete threat events, Delete relationships, Delete reports, Enrol agents, Enable threat sightings on agents, Replace agent keys, Remove agents. Not granted, because they cannot do these today: Delete assets, Merge duplicate assets, Take posture snapshots, Change scan policy, Change default agent settings. |
 | **business_owner** | Tenant user with 13 actions: Viewer except View scans and View relationships. They cannot see the Discovery page or relationships today. |
 
+### 8.1 Rollout in two steps (shared database)
+
+The staging and production databases are shared with code that still uses the old roles. The
+conversion therefore happens in two steps, so that old and new code both work in between.
+
+**Step 1, expand (migration 0035).** Additive only:
+
+- Add the role value `tenant_user`.
+- Add a nullable `actions` column.
+
+Old roles stay in the database, and no row changes. New code reads a `tenant_admin` or
+`business_owner` row as a Tenant user. When `actions` is empty (NULL), that user gets the action
+set from the table above. When a Tenant Superadmin edits such a user's actions, new code writes
+`actions` and leaves the old role as it is, so old code still works for that user. Old code
+refuses (403) anyone with the role `tenant_user`. It does not fail.
+
+**Step 2, contract (migration 0036).** This runs only after every copy of the code that uses
+these databases is on the new code, so the project owner and teammate agree first. It:
+
+- converts the remaining old-role rows, keeping any actions already edited;
+- applies the one-Tenant-Superadmin rule;
+- removes the old role values;
+- adds the unique index.
+
+A restore point is taken first.
+
+**Rollback.**
+- After step 1: redeploy the previous worker and frontend. The database needs no change.
+- After step 2: restore from the restore point.
+
 ### What the Platform Superadmin loses
 
 Registering users, inviting and assigning users, changing roles, deactivating users, MFA reset,
