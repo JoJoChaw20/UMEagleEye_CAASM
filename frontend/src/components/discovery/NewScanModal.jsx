@@ -36,7 +36,9 @@ function validateSubnet(value) {
   return null
 }
 
-export default function NewScanModal({ agents: allAgents, networks, initial, onClose, onSubmit }) {
+// canSeeAgents is can('agent.view'). Without it the agent list is empty (GET /agents is not asked
+// for), so there is no picker: the scan is sent with agent_id 'auto' and the server picks the agent.
+export default function NewScanModal({ agents: allAgents, networks, initial, canSeeAgents = true, onClose, onSubmit }) {
   const { can } = useAuth()
   const scanTypes = SCAN_TYPES.filter((t) => can(t.action))
   const [pickedType, setScanType] = useState('active')
@@ -56,7 +58,8 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
     return out
   }, [agents, networks])
 
-  const [agentId, setAgentId] = useState(initial?.agentId ?? 'auto')
+  const [pickedAgent, setAgentId] = useState(initial?.agentId ?? 'auto')
+  const agentId = canSeeAgents ? pickedAgent : 'auto'
   const [subnet, setSubnet] = useState(initial?.subnet ?? (initial?.agentId ? lastNetwork[initial.agentId] ?? '' : networks[0]?.subnet ?? ''))
   const [route, setRoute] = useState(null)          // the server's pick for this range
   const [touched, setTouched] = useState(!!initial?.subnet)
@@ -111,7 +114,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
 
         {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
 
-        {online.length === 0 ? (
+        {canSeeAgents && online.length === 0 ? (
           <p className="text-sm text-dark-300">No agent is online. Start the EagleEye agent on a computer in the network you want to scan.</p>
         ) : (
           <form onSubmit={submit} className="space-y-4">
@@ -124,22 +127,28 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
               </div>
             )}
             <div>
-              <label htmlFor="scan-agent" className="block text-xs text-dark-400 mb-1">Agent that runs it</label>
-              <select id="scan-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
-                <option value="auto">Automatic: the agent on that network (recommended)</option>
-                {agents.map((a) => (
-                  <option key={a.agent_id} value={a.agent_id} disabled={a.status !== 'online'}>
-                    {a.name}{a.status !== 'online' ? ` (${a.status})` : lastNetwork[a.agent_id] ? ` · on ${lastNetwork[a.agent_id]}` : ''}
-                  </option>
-                ))}
-              </select>
+              {canSeeAgents ? (
+                <>
+                  <label htmlFor="scan-agent" className="block text-xs text-dark-400 mb-1">Agent that runs it</label>
+                  <select id="scan-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
+                    <option value="auto">Automatic: the agent on that network (recommended)</option>
+                    {agents.map((a) => (
+                      <option key={a.agent_id} value={a.agent_id} disabled={a.status !== 'online'}>
+                        {a.name}{a.status !== 'online' ? ` (${a.status})` : lastNetwork[a.agent_id] ? ` · on ${lastNetwork[a.agent_id]}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              ) : (
+                <p className="text-xs text-dark-400">The server picks an online agent on that network.</p>
+              )}
               {agentId === 'auto' ? (
                 route && (route.agent_id
                   ? <p className="text-[11px] text-green-400 mt-1">Runs on {route.name}: {route.reason.replace(`${route.name} `, '')}.</p>
                   : (
                     <div className="text-[11px] text-yellow-400 mt-1 space-y-1">
                       <p>{route.reason}</p>
-                      {route.routed?.length > 0 && (
+                      {canSeeAgents && route.routed?.length > 0 && (
                         <p className="flex flex-wrap gap-1">
                           {route.routed.map((r) => (
                             <button key={r.agent_id} type="button" onClick={() => { setAgentId(r.agent_id); setTouched(true) }}

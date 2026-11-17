@@ -475,7 +475,7 @@ export default function DiscoveryPage() {
           onClose={() => setHostsOf(null)} />
       )}
       {newScan && (
-        <NewScanModal agents={agents} networks={networks ?? []} initial={newScan}
+        <NewScanModal agents={agents} networks={networks ?? []} initial={newScan} canSeeAgents={canSeeAgents}
           onClose={() => { setNewScan(null); if (searchParams.has('scan')) setSearchParams({}, { replace: true }) }} onSubmit={startScan} />
       )}
     </div>
