@@ -16,7 +16,8 @@ try {
   const files = []
   for (const file of tests) {
     const target = join(out, relative(join(root, 'src'), file).replace(/[\/]/g, '_').replace(/\.ts$/, '.mjs'))
-    await build({ entryPoints: [file], bundle: true, platform: 'node', format: 'esm', outfile: target, logLevel: 'error' })
+    await build({ entryPoints: [file], bundle: true, platform: 'node', format: 'esm', outfile: target, logLevel: 'error',
+      banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } })
     files.push(target)
   }
   const result = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' })
