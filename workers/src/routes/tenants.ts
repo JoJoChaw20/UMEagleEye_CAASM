@@ -11,8 +11,8 @@ import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
-import { decide, refusalMessage } from '../lib/actions'
-import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
+import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
+import { planActionsUpdate, roleOf, storedActionsFor, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
@@ -404,6 +404,7 @@ router.post(
       if (owner) return c.json(ALREADY_OWNED, 409)
     }
 
+    const stored = storedActionsFor(role, actions)
     try {
       const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
       if (existing) {
@@ -415,13 +416,13 @@ router.post(
         }
         // Inviting again would wipe the actions already granted; those change through PUT .../actions.
         if (!byPlatform && existing.tenantId === tenantId) return c.json({ detail: 'This user is already in this tenant.' }, 409)
-        await db.update(users).set({ tenantId, role, actions }).where(eq(users.userId, existing.userId))
+        await db.update(users).set({ tenantId, role, actions: stored }).where(eq(users.userId, existing.userId))
         await audit(db, c, {
           userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: existing.userId,
           previousState: { tenant_id: existing.tenantId, role: existing.role, actions: existing.actions },
-          newState: { tenant_id: tenantId, by: 'email', role, actions },
+          newState: { tenant_id: tenantId, by: 'email', role, actions: stored },
         })
-        if (actions.length) await auditActions(db, c, caller.userId, tenantId, existing.userId, existing.actions ?? [], actions)
+        if (actions.length) await auditActions(db, c, caller.userId, tenantId, existing.userId, normalizeAccount(existing.role, existing.actions).actions, actions)
         return c.json({
           ok: true,
           user_id: existing.userId,
@@ -439,7 +440,7 @@ router.post(
         email,
         passwordHash: NO_PASSWORD_HASH,
         role,
-        actions,
+        actions: stored,
         tenantId,
       }).returning()
 

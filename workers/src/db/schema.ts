@@ -93,8 +93,9 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: varchar('password_hash', { length: 512 }).notNull(),
   role: userRoleEnum('role').notNull().default('business_owner'),
-  // Actions granted to a tenant_user (lib/actions.ts). NULL until a user is converted to tenant_user
-  // (migration 0036); superadmin and tenant_superadmin ignore it.
+  // Actions granted to a tenant_user (lib/actions.ts). NULL = never set; a legacy role then gets its
+  // converted set (lib/actions.ts normalizeAccount). New code always writes it for a tenant_user;
+  // superadmin and tenant_superadmin ignore it.
   actions: text('actions').array(),
   tenantId: uuid('tenant_id').references(() => tenants.tenantId, { onDelete: 'set null' }),
   googleId: varchar('google_id', { length: 255 }).unique(),

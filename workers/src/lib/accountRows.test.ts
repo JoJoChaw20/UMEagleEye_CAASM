@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { MIGRATION_ACTIONS } from './actions'
 import {
-  assignableUsers, canBeAssignedAlerts, planActionsUpdate, signIn, toAuthUser, withAccount, tenantUserItem,
+  assignableUsers, canBeAssignedAlerts, planActionsUpdate, storedActionsFor, signIn, toAuthUser, withAccount, tenantUserItem,
 } from './accountRows'
 
 const T = 'tenant-a'
@@ -83,4 +83,12 @@ test('sign-in: the token keeps the stored role, the response carries the normali
   const boss = signIn({ userId: 'u3', role: 'tenant_superadmin', username: 'carol', tenantId: T })
   assert.equal(boss.claims.role, 'tenant_superadmin')
   assert.equal(boss.role, 'tenant_superadmin')
+})
+
+test('a Tenant Superadmin is stored with NULL actions, so a demotion by old code reads as the converted set', () => {
+  assert.equal(storedActionsFor('tenant_superadmin', []), null)
+  assert.deepEqual(storedActionsFor('tenant_user', ['asset.view']), ['asset.view'])
+  assert.deepEqual(storedActionsFor('tenant_user', []), [])
+  // old code demotes the owner to the legacy admin role: NULL actions give the converted set, not zero
+  assert.equal(toAuthUser('u', 'o', { role: LEGACY_ADMIN, actions: storedActionsFor('tenant_superadmin', []), tenantId: T }).actions.length, 53)
 })

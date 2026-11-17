@@ -96,3 +96,12 @@ export function planActionsUpdate(
 export function roleOf(row: { role: string }): Role {
   return normalizeAccount(row.role, null).role
 }
+
+/**
+ * The actions list to store with a role. A Tenant Superadmin ignores actions, so it is stored NULL:
+ * if the previous worker demotes it to a legacy role, NULL reads as the converted set, not as zero
+ * actions. A tenant user keeps its explicit list.
+ */
+export function storedActionsFor(role: Role, actions: string[]): string[] | null {
+  return role === 'tenant_superadmin' ? null : actions
+}
