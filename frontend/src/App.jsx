@@ -19,6 +19,7 @@ import TenantSettingsPage from './pages/TenantSettingsPage'
 import { useEffect } from 'react'
 import { useChatbot } from './context/ChatbotContext'
 import { useAuth } from './context/AuthContext'
+import PermissionsError from './components/common/PermissionsError'
 
 // Route guards: pages need a view action; users and tenants are role-only
 const isTenantSuperadmin = (u) => u.role === 'tenant_superadmin'
@@ -26,7 +27,15 @@ const isPlatformSuperadmin = (u) => u.role === 'superadmin'
 
 // A tenant user with no actions yet gets this instead of an empty dashboard.
 function DashboardRoute() {
-  const { can } = useAuth()
+  const { can, ready, user, catalogError } = useAuth()
+  if (!ready) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="w-10 h-10 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
+      </div>
+    )
+  }
+  if (user?.role === 'superadmin' && catalogError) return <PermissionsError />
   if (!can('dashboard.view')) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">

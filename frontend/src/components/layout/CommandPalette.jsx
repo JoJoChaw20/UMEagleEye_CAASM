@@ -23,7 +23,7 @@ const matches = (q, ...fields) => {
 // action, all from the keyboard.
 export default function CommandPalette({ open, onClose }) {
   const navigate = useNavigate()
-  const { user, can } = useAuth()
+  const { user, can, ready } = useAuth()
   const { theme, setTheme } = useTheme()
   const { setWidgetOpen } = useChatbot()
   const [query, setQuery] = useState('')
@@ -63,7 +63,7 @@ export default function CommandPalette({ open, onClose }) {
 
   const groups = useMemo(() => {
     const go = (to, state) => () => navigate(to, state ? { state } : undefined)
-    const pages = buildNavSections(can, user?.role)
+    const pages = (ready ? buildNavSections(can, user?.role) : [])
       .flatMap((s) => s.items.map((item) => ({ ...item, section: s.label })))
       .filter((item) => matches(q, item.label, item.section, item.keywords))
       .map((item) => ({ id: `page:${item.to}`, icon: item.icon, label: item.label, hint: item.section, run: go(item.to) }))
@@ -98,7 +98,7 @@ export default function CommandPalette({ open, onClose }) {
       { title: 'Pages', items: pages },
       { title: 'Actions', items: actions },
     ].filter((g) => g.items.length || (g.title === 'Assets' && q.length >= 2))
-  }, [q, assets, assetState, user, can, theme, navigate, setTheme])
+  }, [q, assets, assetState, user, can, ready, theme, navigate, setTheme])
 
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups])
 

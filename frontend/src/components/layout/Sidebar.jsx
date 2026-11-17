@@ -63,8 +63,8 @@ function AgentPulse({ collapsed }) {
 }
 
 export default function Sidebar({ collapsed, onToggle, drawer = false, open = false }) {
-  const { logout, user, can } = useAuth()
-  const sections = buildNavSections(can, user?.role)
+  const { logout, user, can, ready } = useAuth()
+  const sections = ready ? buildNavSections(can, user?.role) : []
   const role = roleLabel(user?.role)
 
   return (
