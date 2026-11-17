@@ -25,7 +25,7 @@
   - Assigned alerts and advisories become unassigned through the existing `ON DELETE SET NULL`.
   - Recovery codes and break-glass rows go through the existing cascade.
   - Audit rows keep their content and get `user_id = NULL`. In the same `db.batch` (one transaction), before the delete, they get `actor_username` = the target's username (column added by 0038), so history shows "<username> (deleted)" (spec 4.1), not "system".
-- Audit entry `user.delete`, with `previousState: { user_id, username, email, actions }`, written **before** the delete, by the caller.
+- Audit entry `user.delete`, with `previousState: { user_id, username, email, actions }`, written **after** a successful delete, by the caller (a refused delete writes `user.delete_refused`; Ruling 1).
 - If a foreign key refuses the delete (Postgres 23503, for example the ownership-history tables added later with `restrict`), answer 409 `This account is part of the tenant's ownership history and cannot be deleted. Deactivate it instead.`
 - UI dialog text, verbatim: "Delete [username]? This removes the account permanently and cannot be undone. Their past actions stay in the audit log. To keep the account, deactivate it instead."
 - Staging only.
