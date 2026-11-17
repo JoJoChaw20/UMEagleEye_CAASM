@@ -305,11 +305,22 @@ Behaviour:
 
 ### Task 9: Staging rollout (controller; needs owner go-ahead)
 
+- [ ] **Step 0: Read-only pre-checks** on staging (no writes):
+  - `SELECT username, role, mfa_enabled, totp_secret IS NOT NULL FROM users WHERE is_active`. Today none has `mfa_enabled = true`, so every account enrols fresh and gets 10 recovery codes.
+  - `SELECT conname FROM pg_constraint WHERE conrelid = 'audit_logs'::regclass AND conname = 'audit_logs_user_id_users_user_id_fk'`. Expected: one row (0038 drops and recreates it by this name).
+  - Record the current worker version id (`npx wrangler deployments list -c wrangler.prod-noperf.toml --env staging`) and the current Pages staging deployment, for rollback.
 - [ ] **Step 1:** Tell the owner and the teammate:
   - after this deploy, every staging account without MFA must set it up at its next sign-in, and every open session without MFA is refused at once;
-  - agents are not affected, because they authenticate with agent keys.
+  - reload any open tab after the deploy (the old page cannot sign in against the new worker);
+  - agents are not affected, because they authenticate with agent keys;
+  - the Platform Superadmin and every Tenant Superadmin must save their 10 recovery codes at enrolment. The Platform Superadmin also scans the same QR on a backup device (spec section 7, Layer 1).
+  - Known temporary exception to spec section 7: until email (break-glass) and the handover plan's Path B exist, a Tenant Superadmin or the Platform Superadmin who loses the phone AND the recovery codes needs a manual database reset.
 - [ ] **Step 2:** `npm run db:status:staging`. Expected: pending exactly `0037_mfa` and `0038_audit_keeps_deleted_users` (delete-user plan). Then `npm run db:migrate:staging`.
-- [ ] **Step 3:** Deploy the worker, run `node scripts/kg/build-system-graph.mjs staging`, then deploy the frontend (VITE_* unset), and check the bundle.
+  - 0038 adds the FK `NOT VALID`, then validates it. drizzle-kit runs all pending migrations in one transaction, so `audit_logs` stays locked during the scan; the table is small.
+- [ ] **Step 3: Deploy, worker and frontend back to back.** The old frontend cannot sign in against the new worker (it stores an undefined access token), so the gap must be short.
+  - `npx wrangler deploy -c wrangler.prod-noperf.toml --env staging`;
+  - IMMEDIATELY deploy the frontend (`frontend/.env` present, shell `VITE_*` unset): `npm run deploy:staging` in `frontend/`, and check the bundle points at the staging API;
+  - then `node scripts/kg/build-system-graph.mjs staging`.
 - [ ] **Step 4:** API smoke test with a temporary test tenant (otplib generates the codes):
   - password sign-in returns stage `enrol`;
   - enrol finish returns 10 codes and a token;
@@ -319,9 +330,20 @@ Behaviour:
   - an `mfa_token` sent as a Bearer token gets 401;
   - after the owner's MFA reset, the target's old token gets 401;
   - break-glass request gets 503 when no email is configured.
-  - Remove the test data afterwards.
+  - Permanence: start enrolment, sign in again, and `enrol/start` returns the SAME secret. After enrolment, a fresh sign-in minutes later with a code from the same secret succeeds.
+  - Step-up: getting new recovery codes works; a wrong step-up password gets 401 and the session still works.
+  - Delete: a wrong-case username gets 400; the correct delete gets 200; the target's old token gets 401; the target's audit rows still exist with `user_id` NULL and `actor_username` set.
+  - Remove the test data afterwards. Delete the test tenant's audit rows first (`audit_logs.tenant_id` has no cascade).
 - [ ] **Step 5:** Check that agents are still online and that scan results keep arriving. Run the GET sweep: no 5xx.
-- [ ] **Step 6:** Record the results in the ledger. Stop.
+- [ ] **Step 6: kg QA prep.** Before running the kg QA or stress scripts, give the QA users MFA: `node scripts/kg/seed-test.mjs --add-mfa` for users seeded earlier, or re-seed (`--remove`, then seed). Their TOTP secrets stay in the OS-temp creds file.
+- [ ] **Step 7:** Record the results in the ledger. Stop.
+
+**Rollback** (if the rollout must be undone):
+- Roll back the worker AND the frontend together. The new and old frontends cannot read each other's sign-in answers.
+  - Worker: `npx wrangler rollback <id recorded in Step 0> -c wrangler.prod-noperf.toml --env staging`.
+  - Frontend: roll back to the Pages deployment recorded in Step 0 (Pages dashboard, Rollback), or rebuild the previous commit and `npm run deploy:staging`.
+- No database change is needed: 0037 and 0038 only add columns and tables and relax a foreign key, and the old worker ignores them.
+- Optional: rotate `JWT_SECRET_KEY` (`npx wrangler secret put JWT_SECRET_KEY -c wrangler.prod-noperf.toml --env staging`) to drop tokens issued during the rollout. The old worker's middleware would accept an `mfa_token` as an access token. Everyone then signs in again.
 
 ### Task 10: Email sending (gated: needs a domain on the Cloudflare account)
 
