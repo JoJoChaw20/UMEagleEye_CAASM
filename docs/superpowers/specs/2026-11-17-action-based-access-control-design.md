@@ -500,7 +500,7 @@ Old roles stay in the database, and no row changes. New code reads a `tenant_adm
 `business_owner` row as a Tenant user. When `actions` is empty (NULL), that user gets the action
 set from the table above. When a Tenant Superadmin edits such a user's actions, new code writes
 `actions` and leaves the old role as it is, so old code still works for that user. Old code
-refuses (403) anyone with the role `tenant_user`. It does not fail.
+never fails for `tenant_user`: role-gated routes return 403, open read routes return its own tenant's data.
 
 **Step 2, contract (migration 0036).** This runs only after every copy of the code that uses
 these databases is on the new code, so the project owner and teammate agree first. It:

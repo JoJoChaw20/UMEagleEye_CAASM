@@ -37,7 +37,7 @@ This plan replaces Task 11 of docs/superpowers/plans/2026-11-17-action-based-per
 1. **Legacy user opens the grant screen:** a Tenant Superadmin opens a `tenant_admin` user created before the migration. The screen shows the 53 actions, not zero. Pinned by the Task 3 test `tenant user list shows legacy users' converted actions`.
 2. **Legacy user in the assignee list:** a `tenant_admin` with no stored actions is assigned an alert. They appear in the assignee list, and the assignment is accepted. Pinned by the Task 3 test `assignable list includes legacy tenant_admin`.
 3. **Legacy role in SQL:** after migration 0036 removes the legacy enum values, a query with a legacy role literal fails with "invalid input value for enum". Pinned by the Task 3 test `no legacy role literal outside actions.ts and schema.ts`.
-4. **Old worker meets a new user:** an old worker reads a user with role `tenant_user`. The user gets a clean 403, not a 500. Checked in the Task 4 rollback rehearsal.
+4. **Old worker meets a new user:** an old worker reads a user with role `tenant_user`. Old code never fails for `tenant_user`: role-gated routes return 403, open read routes return its own tenant's data. Never a 500, never another tenant's data. Checked in the Task 4 rollback rehearsal.
 5. **Edited actions survive the contract step:** actions a Tenant Superadmin saved for a legacy user before the contract step are kept by it. Pinned by the Task 5 SQL test `0036 keeps edited actions (COALESCE)`.
 
 ---
@@ -158,26 +158,30 @@ Rule: wherever a `users` row's `role` or `actions` is compared, passed to `decid
 
 Run the steps in this order. Stop at the first failure and report it.
 
-- [ ] **Step 1:** Tell the teammate the deploy time, and pick a time when she is not mid-scan. Their local code keeps working on the staging DB. Tell her to scan from her Tenant Superadmin account: the Platform Superadmin (`admin`) becomes view-only and can no longer start scans.
-- [ ] **Step 2:** `cd workers && npm run db:status:staging`. Expected: pending is exactly `0035_action_based_access`. If it is not listed (a migration with a later `when` already ran), stop: the migrator would skip it.
+- [ ] **Step 1:** Tell the teammate the deploy time, and pick a time when she is not mid-scan. Their local code keeps working on the staging DB. Tell her to scan from her Tenant Superadmin account: the Platform Superadmin (`admin`) becomes view-only and can no longer start scans. Also agree these rules for the whole coexistence window (until Part B is done):
+  - (a) no worker or frontend deploy from `main`. A deploy from `main` silently replaces ours, and a worker-only deploy leaves the new frontend talking to an old worker without `/auth/actions` or actions in `/auth/me`;
+  - (b) no `drizzle-kit push` against the shared database. `main`'s schema lacks `users.actions`, so push would offer to drop it;
+  - (c) she tells us before she generates or applies any migration. Hers would also take index 0035 with a later `when` (ours is 1794912409156), and if hers is applied first the migrator silently skips ours;
+  - (d) user management (invites, role or action changes) only on the new worker.
+- [ ] **Step 2:** `cd workers && npm run db:status:staging`. Expected: pending is exactly `0035_action_based_access`. If it is not listed (a migration with a later `when` already ran), stop: the migrator would skip it. Regenerate our migration with the next index and a `when` later than the last applied `created_at`, then run the status check again before migrating.
 - [ ] **Step 3:** `npx wrangler deployments list -c wrangler.prod-noperf.toml --env staging`. Record the current version id as the rollback target. Record the current Pages `staging` deployment from the Cloudflare dashboard.
 - [ ] **Step 4:** On the old staging site, sign in as one `tenant_admin`, one `business_owner` and one `tenant_superadmin` account. Note what each can open. This is the baseline.
 - [ ] **Step 5:** `npm run db:migrate:staging`, then `npm run db:status:staging`. Expected: no pending migrations.
 - [ ] **Step 6:** Repeat Step 4 against the old worker, which is still live. Expected: identical. This shows old code survives the expand step.
-- [ ] **Step 7:** Deploy the worker (`npx wrangler deploy -c wrangler.prod-noperf.toml --env staging`), then the frontend (with VITE_* unset). Check the bundle.
+- [ ] **Step 7:** Deploy the worker (`npx wrangler deploy -c wrangler.prod-noperf.toml --env staging`), then run `node scripts/kg/build-system-graph.mjs staging` (staging only; `npm run deploy:staging` runs it after the deploy, raw wrangler does not). Deploy the frontend (with VITE_* unset) straight after the worker, and check the bundle. Between the two deploys the old frontend shows legacy users the role `tenant_user` with a reduced menu. The window is brief.
 - [ ] **Step 8:** Run the smoke tests from Plan 1 Task 11 (a-i), plus:
   - the `tenant_admin` account has 53 actions on the grant screen and can start a scan;
   - the `business_owner` account has 13 actions and no Discovery page;
   - the Tenant Superadmin removes one action from the legacy user. It takes effect on that user's next click. A read-only SELECT shows the stored role unchanged;
   - an alert can be assigned to the legacy `tenant_admin`;
   - a newly invited user is stored as `tenant_user`;
-  - **scanning continuity:** for the hour after the deploy, read-only queries show `scan_results` rows still arriving from the same agents. Compare passive, SBOM and SNMP counts per hour with the hour before. Agents keep reporting as online;
+  - **scanning continuity:** compare agents' online status and last-seen before and after Step 5 (migrate), not only after the deploy. For the hour after the deploy, read-only queries show `scan_results` rows still arriving from the same agents. Compare passive, SBOM and SNMP counts per hour with the hour before. Agents keep reporting as online;
   - **scanning by a Tenant Superadmin:** an active scan started from Discovery is picked up by an agent and completes. Its hosts show in the results, and an SBOM scan request completes too.
 - [ ] **Step 9:** Rollback rehearsal:
   - Run `npx wrangler rollback <version id from Step 3> -c wrangler.prod-noperf.toml --env staging`, and roll Pages `staging` back in the dashboard.
-  - Expected: the Step 4 accounts work as in the baseline. The `tenant_user` from Step 8 gets a 403 refusal, not a 500.
+  - Roll the frontend back straight after the worker; for a short while the old frontend shows legacy users a reduced menu. Expected: the Step 4 accounts work as in the baseline. Check the `tenant_user` from Step 8 on one role-gated route (expect 403) and one open read route (expect 200, its own tenant's data only, no 500).
   - Then redeploy the new worker and frontend as in Step 7, and re-check one smoke test.
-- [ ] **Step 10:** Record the results in the ledger. Stop. Production waits for the owner's go-ahead, and then runs Steps 1-9 with `prod` commands (`db:status:prod`, `db:migrate:prod`, no `--env`, `npm run deploy`). Skip the rollback rehearsal in production.
+- [ ] **Step 10:** Record the results in the ledger. Stop. Production waits for the owner's go-ahead, and then runs Steps 1-9 with `prod` commands (`db:status:prod`, `db:migrate:prod`, no `--env`). Worker: `npx wrangler deploy -c wrangler.prod-noperf.toml`. Frontend: `npm run deploy` in `frontend/` with VITE_* unset. Before the production run, merge Part A into `main`, so her next deploy carries it. Skip the rollback rehearsal in production.
 
 ---
 
