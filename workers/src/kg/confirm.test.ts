@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { confirmAdvisory, type ConfirmKv, type ConfirmUser } from './confirm'
 import { proposalKey } from './agent'
+import { analystAccess } from './access'
+import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import type { Q } from './store'
 
 const T = '11111111-1111-1111-1111-111111111111'
@@ -9,7 +11,7 @@ const OTHER_T = '99999999-9999-9999-9999-999999999999'
 const ADV = '44444444-4444-4444-4444-444444444444'
 const TOKEN = 'tok123'
 const record = JSON.stringify({ userId: 'u1', tenantId: T, advisoryId: ADV })
-const admin: ConfirmUser = { userId: 'u1', role: 'tenant_admin', tenantId: T }
+const admin: ConfirmUser = { userId: 'u1', role: 'tenant_user', tenantId: T, actions: ['advisory.view', 'advisory.update', 'chatbot.use', 'advisory.close_via_chat'] }
 
 function setup(opts: { raw?: string | null; rows?: Array<Record<string, unknown>> | 'once' } = {}) {
   const store = new Map<string, string>()
@@ -63,13 +65,19 @@ test('a user from another company is refused', async () => {
   assert.equal(s.calls.length, 0)
 })
 
-test('a role that may not change advisories is refused', async () => {
-  for (const role of ['business_owner', 'superadmin', 'analyst']) {
+test('a user without the close action is refused', async () => {
+  for (const who of [{ role: 'tenant_user', actions: ['advisory.view'] }, { role: 'superadmin', actions: [] as string[] }]) {
     const s = setup()
-    const r = await confirmAdvisory({ kv: s.kv, q: s.q, user: { ...admin, role }, token: TOKEN })
-    assert.equal(r.ok, false, role)
-    assert.equal(s.calls.length, 0, role)
+    const r = await confirmAdvisory({ kv: s.kv, q: s.q, user: { ...admin, ...who }, token: TOKEN })
+    assert.equal(r.ok, false, who.role)
+    assert.equal(s.calls.length, 0, who.role)
   }
+})
+
+test('analystAccess is true for the viewer preset and false for the migrated business owner', () => {
+  const viewer = PRESETS.find(p => p.key === 'viewer')!.actions
+  assert.equal(analystAccess({ role: 'tenant_user', tenantId: T, actions: viewer }), true)
+  assert.equal(analystAccess({ role: 'tenant_user', tenantId: T, actions: MIGRATION_ACTIONS.business_owner }), false)
 })
 
 test('success: one statement updates the advisory and writes the audit record', async () => {

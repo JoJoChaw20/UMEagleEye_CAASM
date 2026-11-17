@@ -3,15 +3,12 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, desc, sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { advisories, events, assets, auditLogs, users } from '../db/schema'
 import { advisoryScope } from '../lib/advisoryScope'
 
 const app = new Hono<{ Bindings: Env }>()
-
-const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
-const STATUS_ROLES = ['tenant_superadmin', 'tenant_admin']
 
 // Helper: resolve tenantId from advisory via event->asset chain
 async function getAdvisoryTenantId(
@@ -34,7 +31,7 @@ async function getAdvisoryTenantId(
 }
 
 // ── GET / ────────────────────────────────────────────────────────
-app.get('/', authMiddleware, async (c) => {
+app.get('/', authMiddleware, requireAction('advisory.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -94,7 +91,7 @@ app.get('/', authMiddleware, async (c) => {
 })
 
 // ── GET /:advisoryId ─────────────────────────────────────────────
-app.get('/:advisoryId', authMiddleware, async (c) => {
+app.get('/:advisoryId', authMiddleware, requireAction('advisory.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -144,7 +141,7 @@ const updateStatusSchema = z.object({
 app.patch(
   '/:advisoryId/status',
   authMiddleware,
-  requireRoles(...STATUS_ROLES),
+  requireAction('advisory.update'),
   zValidator('json', updateStatusSchema),
   async (c) => {
     try {

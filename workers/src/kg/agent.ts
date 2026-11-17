@@ -18,7 +18,8 @@
 import { z } from 'zod'
 import type { Env } from '../types'
 import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope'
-import { accessFor, accessSql, type Access } from './access'
+import { decide } from '../lib/actions'
+import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
 import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
 import { refreshIfStale, refreshPlatformProblems } from './problems'
@@ -58,8 +59,6 @@ const HISTORY_TURNS = 6
 const HISTORY_CHARS = 1000
 const PROBLEM_LIST_MAX = 20
 
-/** Who may change an advisory's status (routes/advisories.ts STATUS_ROLES). */
-export const ADVISORY_STATUS_ROLES = ['tenant_superadmin', 'tenant_admin'] as const
 export const PROPOSAL_TTL_SECONDS = 600
 
 /** What POST /chatbot/confirm finds in KV_CACHE under proposalKey(token). */
@@ -94,7 +93,7 @@ export interface GraphCtx {
   query: Q
   env: Env
   ai: ModelCall
-  user: { userId: string; role: string; tenantId?: string | null }
+  user: { userId: string; role: string; tenantId?: string | null; actions: readonly string[] }
   pickedTenant?: string | null
   perfDeadlineMs?: number // tests: the cut-off for the pre-answer performance refresh
 }
@@ -120,7 +119,7 @@ const GENERAL_LABEL = '**General security guidance, not specific to your environ
 const CATCHING_UP = 'Still catching up: some recent changes have not reached the chatbot yet, so this answer may be missing the newest data.'
 const SHARED_ONLY = 'No company is selected, so this answer uses shared knowledge only. Pick a company to ask about its data.'
 const CUT_OFF = 'This answer was cut off before it finished, so it may be incomplete.'
-const CANNOT_CLOSE = 'Your role cannot close advisories. Only an admin of the company (tenant admin or tenant superadmin) can close one from the chat.'
+const CANNOT_CLOSE = 'Your role cannot close advisories. Ask your Tenant Superadmin to grant you the "Close advisories from the assistant" action.'
 const TYPED_CONFIRM ='Typing does not close anything. To close an advisory, a tenant admin presses the Confirm button on its card. If the card is gone or has expired, ask to close the advisory again.'
 
 const SAFETY = [
@@ -155,12 +154,12 @@ const GENERAL_PROMPT = [
   'Answer this general security question from your own knowledge. You have no company data, so never state or imply anything about this company, its assets or its settings.',
 ].join('\n')
 
-function groundedPrompt(kind: Kind, access: Access, role: string, canPropose: boolean): string {
+function groundedPrompt(kind: Kind, access: Access, restricted: boolean, canPropose: boolean): string {
   const lines = [...SAFETY, ...GROUNDED]
   if (canPropose) lines.push(PROPOSE_RULE)
   if (kind === 'fix') lines.push(...FIX_FORMAT)
   if (!access.tenantId) lines.push('No company is selected, so only shared knowledge is visible. If the question needs company data, say a company must be picked.')
-  if (role === 'business_owner') lines.push('This user may only see overall status and security score. Decline anything else.')
+  if (restricted) lines.push('This user may only see overall status and security score. Decline anything else.')
   return lines.join('\n')
 }
 
@@ -287,7 +286,7 @@ async function proposeResolve(args: z.infer<typeof ProposeArgs>, s: RunState): P
   const { ctx, access } = s
   if (!s.canPropose) return { error: 'The user did not ask to close an advisory, so nothing can be proposed.' }
   if (s.proposal) return { error: 'Only one advisory can be proposed per question.' }
-  if (!(ADVISORY_STATUS_ROLES as readonly string[]).includes(ctx.user.role) || !access.tenantId) {
+  if (!decide(ctx.user, 'advisory.close_via_chat').ok || !access.tenantId) {
     return { error: 'This user\'s role may not change advisories, so nothing can be proposed.' }
   }
   const prefix = advisoryIdPrefix(args.advisory_id)
@@ -654,7 +653,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (isTypedConfirmation(question, lastAnswer)) return await release(TYPED_CONFIRM)
     // A role that may not close advisories is told so plainly. When that is all the message asks,
     // it is the whole answer, with no model call; otherwise it becomes a note on the answer.
-    const roleCanClose = (ADVISORY_STATUS_ROLES as readonly string[]).includes(ctx.user.role)
+    const roleCanClose = decide(ctx.user, 'advisory.close_via_chat').ok
     if (!roleCanClose && onlyAsksToClose(question)) return await release(CANNOT_CLOSE)
 
     let kind = await classify(ctx.ai, question)
@@ -663,7 +662,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (kind === 'general' && refersToOwnOrganisation(question)) kind = 'system'
     result.kind = kind
     if (kind === 'neither') return await release(NEITHER)
-    if (ctx.user.role === 'business_owner' && kind !== 'system') return await release(RESTRICTED)
+    if (!analystAccess(ctx.user) && kind !== 'system') return await release(RESTRICTED)
 
     if (kind === 'general') {
       // Not checked against the graph, but checked for anything about this company's own environment.
@@ -708,7 +707,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
     s.evidence.push(...perfFacts)
     const messages: ChatMessage[] = [
-      { role: 'system', content: groundedPrompt(kind, access, ctx.user.role, canPropose) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') },
+      { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') },
       ...historyMessages(history),
       { role: 'user', content: question },
     ]

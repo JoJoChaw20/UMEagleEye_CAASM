@@ -17,6 +17,8 @@ import { and, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import type { Env } from '../types'
 import { advisories, agents, assets, deviceTypeEnum, eventTypeEnum, events, sboms, severityEnum } from '../db/schema'
+import { decide } from '../lib/actions'
+import { analystAccess } from '../kg/access'
 import { computePosture } from '../services/posture'
 import { isOpenEvent, OPEN_STATUSES } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
@@ -26,7 +28,7 @@ import {
 import { INTEL_TOOLS } from './intel'
 import { advScope, assetScope } from './scope'
 
-export interface ToolUser { userId: string; role: string; tenantId?: string | null }
+export interface ToolUser { userId: string; role: string; tenantId?: string | null; actions: readonly string[] }
 
 export interface ToolContext {
   db: DB
@@ -36,7 +38,7 @@ export interface ToolContext {
   tenantId?: string
 }
 
-/** Who may call a tool: everyone, or the roles that triage (not business_owner). */
+/** Who may call a tool: everyone, or users who may view assets, alerts and advisories. */
 type Access = 'all' | 'analyst'
 
 export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
@@ -50,13 +52,10 @@ export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   run: (ctx: ToolContext, args: z.infer<z.ZodObject<S>>) => Promise<unknown>
 }
 
-const ANALYST_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin']
-const ADVISORY_STATUS_ROLES = ['tenant_superadmin', 'tenant_admin']
-
 export function canUse(tool: ToolDef, user: ToolUser): boolean {
   if (tool.access === 'all') return true
-  if (tool.proposesAction) return ADVISORY_STATUS_ROLES.includes(user.role)
-  return ANALYST_ROLES.includes(user.role)
+  if (tool.proposesAction) return decide(user, 'advisory.close_via_chat').ok
+  return analystAccess(user)
 }
 
 // ── Shared scoping helpers ────────────────────────────────────────

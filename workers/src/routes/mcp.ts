@@ -24,7 +24,7 @@ app.all('/', authMiddleware, async (c) => {
   const ctx = {
     db: getDb(c.env.DATABASE_URL),
     env: c.env,
-    user: { userId: user.userId, role: user.role, tenantId: user.tenantId },
+    user: { userId: user.userId, role: user.role, tenantId: user.tenantId, actions: user.actions },
     tenantId: user.role === 'superadmin' ? (picked || undefined) : (user.tenantId ?? undefined),
   }
   const server = buildMcpServer(ctx)

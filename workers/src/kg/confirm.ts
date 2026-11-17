@@ -13,7 +13,8 @@
  * (kg/detection.ts). The audit record keeps when the device was last scanned.
  */
 import { ACTIVE_ADVISORY_STATUSES } from '../lib/advisoryScope'
-import { ADVISORY_STATUS_ROLES, parseProposal, proposalKey } from './agent'
+import { decide } from '../lib/actions'
+import { parseProposal, proposalKey } from './agent'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import type { Q } from './store'
 
@@ -21,7 +22,7 @@ export interface ConfirmKv {
   get(key: string): Promise<string | null>
   delete(key: string): Promise<void>
 }
-export interface ConfirmUser { userId: string; role: string; tenantId?: string | null }
+export interface ConfirmUser { userId: string; role: string; tenantId?: string | null; actions: readonly string[] }
 
 export type ConfirmResult =
   | { ok: true; advisoryId: string; summary: string }
@@ -74,8 +75,8 @@ export async function confirmAdvisory(input: { kv: ConfirmKv; q: Q; user: Confir
   if (!record) return { ok: false, status: 404, error: GONE }
   // Another user's attempt must not burn the owner's token: refuse without deleting it.
   if (record.userId !== user.userId) return { ok: false, status: 403, error: 'This confirmation belongs to another user.' }
-  if (!(ADVISORY_STATUS_ROLES as readonly string[]).includes(user.role)) {
-    return { ok: false, status: 403, error: 'Only tenant admins can resolve advisories.' }
+  if (!decide(user, 'advisory.close_via_chat').ok) {
+    return { ok: false, status: 403, error: 'You do not have permission to resolve advisories from the chat.' }
   }
   if (!user.tenantId || user.tenantId !== record.tenantId) {
     return { ok: false, status: 403, error: 'This advisory is not in your company.' }

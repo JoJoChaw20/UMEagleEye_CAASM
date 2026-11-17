@@ -1,3 +1,4 @@
+import { MIGRATION_ACTIONS } from '../lib/actions'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { DRAIN_REQUESTS, drainOutbox } from './sync'
@@ -249,7 +250,7 @@ async function worstCase(role: 'superadmin' | 'tenant_admin') {
   try {
     const ctx: GraphCtx = {
       query: q, env: chatEnv, ai,
-      user: { userId: 'u1', role, tenantId: role === 'superadmin' ? null : A }, pickedTenant: role === 'superadmin' ? A : null,
+      user: { userId: 'u1', role: role === 'superadmin' ? 'superadmin' : 'tenant_user', actions: role === 'superadmin' ? [] : MIGRATION_ACTIONS.tenant_admin, tenantId: role === 'superadmin' ? null : A }, pickedTenant: role === 'superadmin' ? A : null,
     }
     const r = await runGraphAgent(ctx, 'Why was the site slow at 3pm on 2026-11-09? Also close advisory 7c9e6679.', [], async () => {})
     return { r, counts, total: ROUTE_REQUESTS + total(), corrected, proposalsLeft: [...kvStore.keys()].filter(k => k.startsWith('kg:proposal:')).length }

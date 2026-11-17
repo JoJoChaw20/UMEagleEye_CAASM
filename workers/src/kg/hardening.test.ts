@@ -4,6 +4,7 @@ import { clip, extractEvent, extractRelationship, extractScan, safeDelta } from 
 import { containsSecret } from './redact'
 import { countNodes } from './retrieve'
 import { accessFor } from './access'
+import { MIGRATION_ACTIONS } from '../lib/actions'
 import { refreshProblems } from './problems'
 import type { Q } from './store'
 import type { Env } from '../types'
@@ -60,7 +61,7 @@ test('normal text, references and SHA-256 indicators are not blocked', () => {
 test('more than six filters is an error, not a silently inflated count', async () => {
   let queried = false
   const q: Q = async () => { queried = true; return [{ total: 5 }] }
-  const a = accessFor({ role: 'tenant_admin', tenantId: T })
+  const a = accessFor({ role: 'tenant_user', actions: MIGRATION_ACTIONS.tenant_admin, tenantId: T })
   const where = Object.fromEntries(['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(k => [k, 1]))
   const r = await countNodes(q, a, { type: 'asset', where })
   assert.ok('error' in r)

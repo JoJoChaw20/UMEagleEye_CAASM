@@ -12,7 +12,8 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, or, desc, sql, gte, inArray, isNull, ilike } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
+import { decide } from '../lib/actions'
 import { getDb, type DB } from '../db/client'
 import {
   events, assets, advisories, users, auditLogs,
@@ -30,7 +31,6 @@ import { resolveAdvisoriesOfClosedEvents } from '../lib/advisoryScope'
 
 const app = new Hono<{ Bindings: Env }>()
 
-const ACTION_ROLES = ['tenant_superadmin', 'tenant_admin']
 const STATUS_VALUES = ['open', 'in_progress', 'resolved', 'false_positive', 'accepted_risk'] as const
 const SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 const EVENT_TYPE_VALUES = [
@@ -154,7 +154,7 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
     return conditions
 }
 
-app.get('/', authMiddleware, async (c) => {
+app.get('/', authMiddleware, requireAction('alert.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -272,7 +272,7 @@ function serializeEvent(
 
 // ── GET /stats/summary ───────────────────────────────────────────
 // Must be before /:eventId. All headline counts are OPEN alerts only.
-app.get('/stats/summary', authMiddleware, async (c) => {
+app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -392,7 +392,7 @@ app.get('/stats/summary', authMiddleware, async (c) => {
 
 // ── GET /assignees ───────────────────────────────────────────────
 // Analysts in scope who can be assigned alerts. Must be before /:eventId.
-app.get('/assignees', authMiddleware, async (c) => {
+app.get('/assignees', authMiddleware, requireAction('alert.manage', 'advisory.update'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -400,16 +400,16 @@ app.get('/assignees', authMiddleware, async (c) => {
     if (!tenantId) return c.json({ items: [] })
 
     const rows = await db
-      .select({ userId: users.userId, username: users.username, role: users.role })
+      .select({ userId: users.userId, username: users.username, role: users.role, actions: users.actions })
       .from(users)
       .where(and(
         eq(users.tenantId, tenantId),
         eq(users.isActive, true),
-        inArray(users.role, ['tenant_superadmin', 'tenant_admin']),
+        inArray(users.role, ['tenant_superadmin', 'tenant_user']),
       ))
       .orderBy(users.username)
 
-    return c.json({ items: rows.map(u => ({ user_id: u.userId, username: u.username, role: u.role })) })
+    return c.json({ items: rows.filter(u => decide({ role: u.role, tenantId, actions: u.actions }, 'alert.manage').ok).map(u => ({ user_id: u.userId, username: u.username, role: u.role })) })
   } catch (err) {
     console.error('events GET assignees error:', err)
     return c.json({ detail: 'Failed to fetch assignees' }, 500)
@@ -431,7 +431,7 @@ async function loadScopedEvent(db: DB, user: User, eventId: string) {
 }
 
 // ── GET /:eventId — full triage context for the detail panel ─────
-app.get('/:eventId', authMiddleware, async (c) => {
+app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -620,11 +620,11 @@ async function applyUpdate(
   let assignedTo = event.assignedTo
   if (body.assigned_to !== undefined) {
     if (body.assigned_to !== null) {
-      const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role })
+      const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role, actions: users.actions })
         .from(users).where(eq(users.userId, body.assigned_to)).limit(1)
-      if (!assignee || !ACTION_ROLES.includes(assignee.role)
+      if (!assignee || !decide(assignee, 'alert.manage').ok
           || (asset.tenantId && assignee.tenantId !== asset.tenantId)) {
-        return { error: 'Assignee must be an admin analyst in the asset\'s tenant' }
+        return { error: 'Assignee must be able to manage alerts in the asset\'s tenant' }
       }
     }
     assignedTo = body.assigned_to
@@ -679,11 +679,11 @@ export async function applyUpdateMany(
     return { updated: 0, error: 'A note (min 3 characters) is required to close an alert' }
   }
   if (body.assigned_to) {
-    const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role })
+    const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role, actions: users.actions })
       .from(users).where(eq(users.userId, body.assigned_to)).limit(1)
-    if (!assignee || !ACTION_ROLES.includes(assignee.role)
+    if (!assignee || !decide(assignee, 'alert.manage').ok
         || rows.some(r => r.asset.tenantId && assignee.tenantId !== r.asset.tenantId)) {
-      return { updated: 0, error: 'Assignee must be an admin analyst in the asset\'s tenant' }
+      return { updated: 0, error: 'Assignee must be able to manage alerts in the asset\'s tenant' }
     }
   }
   if (body.status === 'accepted_risk') {
@@ -731,7 +731,7 @@ export async function applyUpdateMany(
 // ── GET /:eventId/windows-cves — the CVEs behind a Windows patch alert ──
 // The alert stores counts only; the list comes from Microsoft's data in R2, per missing
 // fix (month + fixed build) of the alert's Windows version.
-app.get('/:eventId/windows-cves', authMiddleware, async (c) => {
+app.get('/:eventId/windows-cves', authMiddleware, requireAction('alert.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -766,7 +766,7 @@ app.get('/:eventId/windows-cves', authMiddleware, async (c) => {
 // Its present findings (cve_findings), KEV first, then the most likely to be exploited
 // and the most severe; ?q= filters by CVE id, ?fixed=true lists the ones fixed since.
 // Paged like the other long lists (page_size ≤ 100).
-app.get('/:eventId/cves', authMiddleware, async (c) => {
+app.get('/:eventId/cves', authMiddleware, requireAction('alert.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -805,7 +805,7 @@ app.get('/:eventId/cves', authMiddleware, async (c) => {
   }
 })
 
-app.patch('/:eventId', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', updateSchema), async (c) => {
+app.patch('/:eventId', authMiddleware, requireAction('alert.manage'), zValidator('json', updateSchema), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -829,7 +829,7 @@ const bulkSchema = z.object({
   note:        z.string().trim().max(1000).optional(),
 })
 
-app.post('/bulk', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('json', bulkSchema), async (c) => {
+app.post('/bulk', authMiddleware, requireAction('alert.bulk_update'), zValidator('json', bulkSchema), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -858,7 +858,7 @@ app.post('/bulk', authMiddleware, requireRoles(...ACTION_ROLES), zValidator('jso
 // ── POST /:eventId/acknowledge ───────────────────────────────────
 // Kept for older clients: accepts a drift change as intentional. The alert is
 // closed as accepted_risk (not deleted) and the decision is audit-logged.
-app.post('/:eventId/acknowledge', authMiddleware, requireRoles(...ACTION_ROLES), async (c) => {
+app.post('/:eventId/acknowledge', authMiddleware, requireAction('alert.manage'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)
@@ -875,7 +875,7 @@ app.post('/:eventId/acknowledge', authMiddleware, requireRoles(...ACTION_ROLES),
 })
 
 // ── POST /:eventId/advisory ──────────────────────────────────────
-app.post('/:eventId/advisory', authMiddleware, requireRoles(...ACTION_ROLES), async (c) => {
+app.post('/:eventId/advisory', authMiddleware, requireAction('advisory.generate'), async (c) => {
   try {
     const user = c.get('user') as User
     const db   = getDb(c.env.DATABASE_URL)

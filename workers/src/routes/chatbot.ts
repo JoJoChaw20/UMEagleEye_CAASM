@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { graphReply, graphStream, modelFor } from '../kg/agent'
 import { kgQuery } from '../kg/store'
 import { confirmAdvisory } from '../kg/confirm'
@@ -67,6 +67,7 @@ async function askAI(
 app.post(
   '/categorize',
   authMiddleware,
+  requireAction('chatbot.use'),
   zValidator('json', z.object({
     summary:           z.string().max(600),
     recommendedAction: z.string().max(1000),
@@ -111,6 +112,7 @@ function sseError(text: string): Response {
 app.post(
   '/',
   authMiddleware,
+  requireAction('chatbot.use'),
   zValidator('json', z.object({
     message: z.string().min(1).max(1000),
     history: z.array(z.object({
@@ -137,7 +139,7 @@ app.post(
 
     try {
       // The company comes from the signed-in user; accessFor honours tenant_id for a superadmin only.
-      const ctx = { query: kgQuery(c.env), env: c.env, ai, user: { userId: user.userId, role: user.role, tenantId: user.tenantId }, pickedTenant: tenant_id ?? null }
+      const ctx = { query: kgQuery(c.env), env: c.env, ai, user: { userId: user.userId, role: user.role, tenantId: user.tenantId, actions: user.actions }, pickedTenant: tenant_id ?? null }
       if (wantStream) return graphStream(ctx, message, history)
       const { body, status } = await graphReply(ctx, message, history)
       return c.json(body, status)
@@ -153,6 +155,7 @@ app.post(
 app.post(
   '/confirm',
   authMiddleware,
+  requireAction('advisory.close_via_chat'),
   zValidator('json', z.object({ token: z.string().min(1).max(128) })),
   async (c) => {
     const { token } = c.req.valid('json')
@@ -161,7 +164,7 @@ app.post(
     const result = await confirmAdvisory({
       kv: { get: (k) => kv.get(k), delete: (k) => kv.delete(k) },
       q: kgQuery(c.env),
-      user: { userId: user.userId, role: user.role, tenantId: user.tenantId },
+      user: { userId: user.userId, role: user.role, tenantId: user.tenantId, actions: user.actions },
       token,
     })
     if (!result.ok) return c.json({ error: result.error }, result.status)

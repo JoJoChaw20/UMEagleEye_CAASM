@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ADVISORY_STATUS_ROLES, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
 import type { Env } from '../types'
@@ -58,6 +59,14 @@ function kv() {
   }
 }
 
+// Old role names in these fixtures map to a real role plus the actions that role used to imply.
+function legacyUser(role: string): { role: string; actions: readonly string[] } {
+  if (role === 'superadmin') return { role, actions: [] }
+  if (role === 'business_owner') return { role: 'tenant_user', actions: MIGRATION_ACTIONS.business_owner }
+  if (role === 'tenant_viewer') return { role: 'tenant_user', actions: PRESETS.find(p => p.key === 'viewer')!.actions }
+  return { role: 'tenant_user', actions: MIGRATION_ACTIONS.tenant_admin }
+}
+
 function setup(opts: {
   kind?: string; replies?: Array<ModelReply | Error>; role?: string; tenantId?: string | null; picked?: string | null
   q?: Parameters<typeof fakeQ>[0]; kv?: ReturnType<typeof kv>; sends?: unknown[]
@@ -70,7 +79,7 @@ function setup(opts: {
   const events: Array<Record<string, unknown>> = []
   const ctx: GraphCtx = {
     query: q, env, ai: m.ai,
-    user: { userId: 'u1', role: opts.role ?? 'tenant_admin', tenantId: opts.tenantId === undefined ? A : opts.tenantId },
+    user: { userId: 'u1', ...legacyUser(opts.role ?? 'tenant_admin'), tenantId: opts.tenantId === undefined ? A : opts.tenantId },
     pickedTenant: opts.picked,
   }
   return { ctx, m, q, calls, k, sends, events, emit: async (e: Record<string, unknown>) => { events.push(e) } }
@@ -85,7 +94,6 @@ test('limits are the agreed values', () => {
   assert.equal(MAX_TOOL_CALLS, 6)
   assert.equal(RESULT_CHARS, 6000)
   assert.equal(PROPOSAL_TTL_SECONDS, 600)
-  assert.deepEqual([...ADVISORY_STATUS_ROLES], ['tenant_superadmin', 'tenant_admin'])
 })
 
 test('a grounded answer passes, cites its source, and is released after retrieval', async () => {
