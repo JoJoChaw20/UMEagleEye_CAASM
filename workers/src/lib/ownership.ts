@@ -1,5 +1,6 @@
 // Tenant ownership handover rules. Pure logic: no DB calls, no clock reads (callers pass `now`).
-import { and, eq } from 'drizzle-orm'
+import { and, eq, exists, notExists, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { users } from '../db/schema'
 import { parseActionList } from './userAdmin'
 
@@ -122,11 +123,13 @@ export type SwapUpdate = {
 
 /**
  * Ordered updates for one db.batch: demote the old owner first, then promote the new one.
- * Each update pins the row's current role and has `.returning({ userId })`. The caller MUST
- * check both results: a demote returning 0 rows means the sender is no longer the owner, a
- * promote returning 0 rows means the recipient is no longer a plain tenant_user; either way
- * treat the swap as failed. The unique index `uq_users_one_tenant_superadmin` is the backstop
- * against two owners.
+ * All-or-nothing at the SQL level (a 0-row statement does not abort a batch):
+ *  - demote runs only if the sender is still the owner AND the recipient is still an active tenant_user;
+ *  - promote runs only if the recipient is still an active tenant_user AND the tenant has no owner
+ *    (so it is a no-op when the demote was a no-op).
+ * Success = both statements returned 1 row. Otherwise nothing changed: the caller answers 409
+ * "Ownership changed. Reload and try again." The unique index `uq_users_one_tenant_superadmin`
+ * is the final backstop against two owners.
  */
 export function swapStatements(
   tenantId: string, fromId: string, toId: string, after: AfterChoice,
@@ -141,13 +144,27 @@ export function swapStatements(
     scheduledDeactivationAt: mode === 'deactivate_on' ? (after.deactivateOn ?? null) : null,
   }
   const promoteSet = { role: 'tenant_superadmin', actions: [] as string[] }
-  const mk = (label: 'demote' | 'promote', userId: string, currentRole: 'tenant_superadmin' | 'tenant_user', set: Record<string, unknown>): SwapUpdate => ({
-    label, userId, tenantId, set,
-    build: (db) => db.update(users).set(set)
-      .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId), eq(users.role, currentRole)))
-      .returning({ userId: users.userId }),
-  })
-  return [mk('demote', fromId, 'tenant_superadmin', demoteSet), mk('promote', toId, 'tenant_user', promoteSet)]
+  const r = alias(users, 'r')
+  const o = alias(users, 'o')
+  const demote: SwapUpdate = {
+    label: 'demote', userId: fromId, tenantId, set: demoteSet,
+    build: (db) => db.update(users).set(demoteSet).where(and(
+      eq(users.userId, fromId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'),
+      exists(db.select({ one: sql`1` }).from(r).where(and(
+        eq(r.userId, toId), eq(r.tenantId, tenantId), eq(r.role, 'tenant_user'), eq(r.isActive, true),
+      ))),
+    )).returning({ userId: users.userId }),
+  }
+  const promote: SwapUpdate = {
+    label: 'promote', userId: toId, tenantId, set: promoteSet,
+    build: (db) => db.update(users).set(promoteSet).where(and(
+      eq(users.userId, toId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_user'), eq(users.isActive, true),
+      notExists(db.select({ one: sql`1` }).from(o).where(and(
+        eq(o.tenantId, tenantId), eq(o.role, 'tenant_superadmin'),
+      ))),
+    )).returning({ userId: users.userId }),
+  }
+  return [demote, promote]
 }
 
 export function ownershipChangedNotice(a: string, b: string, date: string): string {

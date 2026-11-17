@@ -141,6 +141,12 @@ test('swap runs demote before promote in one transaction (statement order)', () 
   }
   assert.ok(q[0].params.includes('o') && q[0].params.includes('tenant_superadmin') && q[0].params.includes(T))
   assert.ok(q[1].params.includes('n') && q[1].params.includes('tenant_user') && q[1].params.includes(T))
+  assert.match(q[0].sql, /exists \(select 1 from "users" "r" where/)
+  assert.match(q[0].sql, /"r"\."is_active" = \$\d+/)
+  assert.ok(q[0].params.includes('n') && q[0].params.includes('tenant_user') && q[0].params.includes(true))
+  assert.match(q[1].sql, /"is_active" = \$\d+/)
+  assert.match(q[1].sql, /not exists \(select 1 from "users" "o" where/)
+  assert.ok(q[1].params.includes('tenant_superadmin'))
   assert.throws(() => swapStatements(T, 'o', 'n', { mode: 'bogus' }), /Unknown after mode/)
 })
 
