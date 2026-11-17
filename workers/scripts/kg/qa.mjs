@@ -243,10 +243,10 @@ async function regression() {
   const crossGet = await api(admin, 'GET', `/assets/${bravoAsset}`)
   noAi('regression:assets-cross-tenant', crossGet.status === 403 || crossGet.status === 404 ? 'PASS' : 'FAIL', 'alpha admin reads a Bravo asset', `status ${crossGet.status}`, crossGet.ms)
 
-  // Login: each role, wrong password refused.
+  // Login: each kind of user (the analyst and owner are both tenant_user now), wrong password refused.
   for (const who of ['alpha-analyst', 'alpha-owner', 'bravo-admin', 'superadmin']) {
     const r = await api(null, 'POST', '/auth/login', { username: U[who].username, password: U[who].password })
-    noAi(`regression:login:${U[who].role}`, r.status === 200 && r.json?.access_token ? 'PASS' : 'FAIL', `login ${U[who].username}`, `status ${r.status}, mfa_required=${r.json?.mfa_required}`, r.ms)
+    noAi(`regression:login:${who}`, r.status === 200 && r.json?.access_token ? 'PASS' : 'FAIL', `login ${U[who].username}`, `status ${r.status}, mfa_required=${r.json?.mfa_required}`, r.ms)
   }
   const bad = await api(null, 'POST', '/auth/login', { username: U['alpha-analyst'].username, password: 'wrong-password-kgtest' })
   noAi('regression:login:bad-password', bad.status === 401 ? 'PASS' : 'FAIL', 'wrong password', `status ${bad.status}`, bad.ms)
@@ -402,9 +402,9 @@ const CHAT = [
   }, { answerable: true })],
   ['owner-close-refused', async () => {
     const res = await ask('owner-close-refused', 'alpha-owner', `Please close advisory ${ids.alpha.fixTest}.`, async (c, r) => {
-      c.add(!r.proposal, 'no Confirm card for a business_owner'); c.leak()
+      c.add(!r.proposal, 'no Confirm card for a tenant user without advisory.close_via_chat'); c.leak()
     })
-    if (res) noAi('owner-close-db', (await facts.advisoryStatus(ids.alpha.fixTest)) === 'open' ? 'PASS' : 'FAIL', 'advisory after business_owner request', `status ${await facts.advisoryStatus(ids.alpha.fixTest)}`, 0)
+    if (res) noAi('owner-close-db', (await facts.advisoryStatus(ids.alpha.fixTest)) === 'open' ? 'PASS' : 'FAIL', 'advisory after the owner (viewer actions) asked', `status ${await facts.advisoryStatus(ids.alpha.fixTest)}`, 0)
   }],
   ['sa-no-company', () => ask('sa-no-company', 'superadmin', 'How many open critical alerts does KGTEST-Alpha have?', async (c, r) => {
     c.any(['no company', 'pick a company', 'select a company', 'shared knowledge']); c.not('critical alerts: 3'); c.re(/^(?!.*\b3\b.*critical).*$/s, 'does not state an Alpha count')

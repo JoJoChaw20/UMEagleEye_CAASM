@@ -1,7 +1,7 @@
 /**
  * mcp-tools-demo.ts — checks the MCP tools without a model and without touching data.
  *
- *  1. Every tool's access rules hold per role.
+ *  1. Every tool's access rules hold per role and actions (superadmin | tenant_superadmin | tenant_user).
  *  2. Every tool runs against a RECORDING database (returns no rows), and each SQL statement it
  *     built is then EXPLAINed (planned, never executed) on the real database, which catches
  *     type and enum errors. Skipped when DATABASE_URL is not set.
@@ -18,6 +18,7 @@ import type { DB } from '../src/db/client'
 import type { Env } from '../src/types'
 import { TOOLS, toolsFor, runTool, type ToolContext } from '../src/mcp/tools'
 import { externalTools, internalDataIn } from '../src/mcp/external'
+import { MIGRATION_ACTIONS } from '../src/lib/actions'
 import { buildMcpServer } from '../src/mcp/server'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 
@@ -45,17 +46,21 @@ const KV_CACHE = {
 const env = { DEEPSEEK_API_KEY: 'test-key', KV_CACHE } as unknown as Env
 const T = '00000000-0000-0000-0000-0000000000aa'
 const A = '00000000-0000-0000-0000-0000000000bb'
-const admin: ToolContext = { db, env, user: { userId: 'u1', role: 'tenant_admin', tenantId: T }, tenantId: T }
+// A tenant user with the actions migration 0035 gave the old tenant_admin role
+const admin: ToolContext = { db, env, user: { userId: 'u1', role: 'tenant_user', tenantId: T, actions: MIGRATION_ACTIONS.tenant_admin }, tenantId: T }
 
 async function main() {
   // 1. access
-  const names = (role: string, actions = true) => toolsFor({ userId: 'x', role, tenantId: T }, { actions }).map(t => t.name)
-  check('business_owner gets aggregate and public tools only',
-    JSON.stringify(names('business_owner')) === JSON.stringify(['get_security_overview', 'get_cve_coverage', 'lookup_attack_technique', 'lookup_cwe']),
-    JSON.stringify(names('business_owner')))
-  check('tenant_admin may propose resolving', names('tenant_admin').includes('resolve_advisory'))
-  check('superadmin may not propose resolving', !names('superadmin').includes('resolve_advisory'))
-  check('MCP clients get no action tools', !names('tenant_admin', false).includes('resolve_advisory'))
+  const names = (role: string, granted: readonly string[], actions = true) =>
+    toolsFor({ userId: 'x', role, tenantId: T, actions: granted }, { actions }).map(t => t.name)
+  const analyst = MIGRATION_ACTIONS.tenant_admin
+  check('a tenant user with only chatbot.use gets aggregate and public tools only',
+    JSON.stringify(names('tenant_user', ['chatbot.use'])) === JSON.stringify(['get_security_overview', 'get_cve_coverage', 'lookup_attack_technique', 'lookup_cwe']),
+    JSON.stringify(names('tenant_user', ['chatbot.use'])))
+  check('the old tenant_admin actions may propose resolving', names('tenant_user', analyst).includes('resolve_advisory'))
+  check('the old business_owner actions may not propose resolving', !names('tenant_user', MIGRATION_ACTIONS.business_owner).includes('resolve_advisory'))
+  check('superadmin may not propose resolving', !names('superadmin', analyst).includes('resolve_advisory'))
+  check('MCP clients get no action tools', !names('tenant_user', analyst, false).includes('resolve_advisory'))
 
   // 2. every tool's SQL
   const calls: Array<[string, unknown]> = [

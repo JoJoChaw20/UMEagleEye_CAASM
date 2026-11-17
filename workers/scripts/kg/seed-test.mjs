@@ -38,11 +38,12 @@ async function insert(table, rows) {
   }
 }
 
-async function evidenceLib() {
+/** Bundles one TypeScript module of the Worker (e.g. src/lib/hostEvidence.ts) and imports it. */
+async function workerLib(rel) {
   const dir = mkdtempSync(path.join(tmpdir(), 'kg-seed-'))
   try {
     const out = path.join(dir, 'lib.mjs')
-    const src = path.join(WORKERS, 'src/lib/hostEvidence.ts').replace(/\\/g, '/')
+    const src = path.join(WORKERS, rel).replace(/\\/g, '/')
     await build({ entryPoints: [src], bundle: true, platform: 'node', format: 'esm', outfile: out, logLevel: 'error' })
     return await import(pathToFileURL(out).href)
   } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -133,27 +134,30 @@ function asset(tenantId, name, ip, mac, type, extra = {}) {
 async function seed() {
   const already = (await query(`SELECT count(*)::int AS n FROM tenants WHERE slug LIKE 'kgtest-%'`))[0].n
   if (already > 0) { console.error('Test tenants already exist. Run --remove first.'); process.exit(1) }
-  const { aiEvidenceKey } = await evidenceLib()
+  const { aiEvidenceKey } = await workerLib('src/lib/hostEvidence.ts')
 
   const alpha = { tenant_id: uuid(), name: 'KGTEST-Alpha Sdn Bhd', slug: 'kgtest-alpha' }
   const bravo = { tenant_id: uuid(), name: 'KGTEST-Bravo Sdn Bhd', slug: 'kgtest-bravo' }
   await insert('tenants', [alpha, bravo])
 
-  // ── users: one of each role, plus enough for the 25-user stress step ──
+  // ── users: one of each kind, plus enough for the 25-user stress step ──
+  // Roles are superadmin | tenant_superadmin | tenant_user (migration 0035). The analyst and owner are
+  // tenant users with the actions migration 0035 gave the old tenant_admin and business_owner roles.
+  const { MIGRATION_ACTIONS } = await workerLib('src/lib/actions.ts')
   const users = {}
   const userRows = []
-  const addUser = (key, role, tenantId) => {
+  const addUser = (key, role, tenantId, actions = []) => {
     const password = randomPassword()
     const userId = uuid()
     const username = `KGTEST-${key}`
-    users[key] = { userId, username, password, role, tenantId: tenantId ?? null }
-    userRows.push({ user_id: userId, username, email: `${username.toLowerCase()}@kgtest.invalid`, password_hash: hashPassword(password), role, tenant_id: tenantId ?? null, is_active: true })
+    users[key] = { userId, username, password, role, tenantId: tenantId ?? null, actions: [...actions] }
+    userRows.push({ user_id: userId, username, email: `${username.toLowerCase()}@kgtest.invalid`, password_hash: hashPassword(password), role, tenant_id: tenantId ?? null, is_active: true, actions: [...actions] })
   }
   for (const [t, prefix] of [[alpha, 'alpha'], [bravo, 'bravo']]) {
     addUser(`${prefix}-admin`, 'tenant_superadmin', t.tenant_id)
-    addUser(`${prefix}-analyst`, 'tenant_admin', t.tenant_id)
-    addUser(`${prefix}-owner`, 'business_owner', t.tenant_id)
-    for (let i = 1; i <= 13; i++) addUser(`${prefix}-stress-${String(i).padStart(2, '0')}`, 'tenant_admin', t.tenant_id)
+    addUser(`${prefix}-analyst`, 'tenant_user', t.tenant_id, MIGRATION_ACTIONS.tenant_admin)
+    addUser(`${prefix}-owner`, 'tenant_user', t.tenant_id, MIGRATION_ACTIONS.business_owner)
+    for (let i = 1; i <= 13; i++) addUser(`${prefix}-stress-${String(i).padStart(2, '0')}`, 'tenant_user', t.tenant_id, MIGRATION_ACTIONS.tenant_admin)
   }
   addUser('superadmin', 'superadmin', null)
   await insert('users', userRows)

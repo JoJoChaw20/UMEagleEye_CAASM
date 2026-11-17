@@ -33,7 +33,7 @@ const cases: Array<[string, { sql: string; params: unknown[] }]> = [
   ['tenant list', db.select({ id: advisories.advisoryId }).from(advisories)
     .where(and(inArray(advisories.status, [...ACTIVE_ADVISORY_STATUSES]), advisoryInTenant(db, T))).toSQL()],
   ['sla breach count', db.select({ id: advisories.advisoryId }).from(advisories)
-    .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, new Date()), advisoryScope(db, { role: 'tenant_admin', tenantId: T }))).toSQL()],
+    .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, new Date()), advisoryScope(db, { role: 'tenant_user', tenantId: T }))).toSQL()],
 ]
 
 async function main() {

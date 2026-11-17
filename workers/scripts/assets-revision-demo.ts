@@ -5,7 +5,7 @@
  *
  * Covers: shared per-asset scorer == bulk (incl. topology), scope=my_assets,
  * PATCH update_baseline merge, ingest baseline fill, and the First/Last seen
- * formatter. Route-level guards (tenant, role) are mirrored by small pure checks
+ * formatter. Route-level guards (tenant, action) are mirrored by small pure checks
  * that document the authoritative logic in routes/assets.ts.
  */
 import { scoreAsset, planRescore } from '../src/lib/rescore'
@@ -38,16 +38,17 @@ console.log('=== (a)(b) per-asset scorer == bulk ===')
 }
 
 // ── (c)(d) route guards (mirrors assets.ts) ──────────────────────────────────
-console.log('\n=== (c)(d) tenant + role guards ===')
+console.log('\n=== (c)(d) tenant + action guards ===')
 {
   // Mirrors the 404 guard in POST /:id/rescore and PATCH.
   const accessible = (assetTenant: string, user: { role: string; tenantId: string | null }) =>
     user.role === 'superadmin' || !user.tenantId || assetTenant === user.tenantId
-  check('(c) cross-tenant id rejected', accessible('t2', { role: 'tenant_admin', tenantId: 't1' }), false)
-  check('(c) same-tenant allowed', accessible('t1', { role: 'tenant_admin', tenantId: 't1' }), true)
-  // Both PATCH and POST /:id/rescore use requireRoles(...WRITE_ROLES).
-  const WRITE_ROLES = ['tenant_superadmin', 'tenant_admin']
-  check('(d) per-asset rescore role rule == PATCH (WRITE_ROLES)', WRITE_ROLES, ['tenant_superadmin', 'tenant_admin'])
+  check('(c) cross-tenant id rejected', accessible('t2', { role: 'tenant_user', tenantId: 't1' }), false)
+  check('(c) same-tenant allowed', accessible('t1', { role: 'tenant_user', tenantId: 't1' }), true)
+  // Roles are superadmin | tenant_superadmin | tenant_user; writes need an action (lib/actions.ts
+  // decide()): PATCH needs asset.edit and POST /:id/rescore asset.rescore.
+  const WRITE_ACTIONS = { patch: 'asset.edit', rescore: 'asset.rescore' }
+  check('(d) per-asset rescore and PATCH each need their own action', WRITE_ACTIONS, { patch: 'asset.edit', rescore: 'asset.rescore' })
 }
 
 // ── (e) scope=my_assets scores only members; chunk formula unchanged ─────────

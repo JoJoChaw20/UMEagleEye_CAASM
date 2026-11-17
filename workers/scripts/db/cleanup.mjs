@@ -4,7 +4,7 @@
 //   3. discovered assets not seen by a scan for over 90 days -> deleted
 //      (never: My Assets, manual/agent assets, assets with an SBOM, CVE alerts, an
 //       endpoint inventory or a bound agent; SBOM/CVE data waits for the D1 decision)
-//   5. business-owner accounts without a tenant              -> deleted, except KEEP_USER_ID
+//   5. business-owner (now tenant_user) accounts without a tenant -> deleted, except KEEP_USER_ID
 // Tenants are kept (item 4); the two empty legacy tables are dropped by a migration (item 6).
 //
 //   node scripts/db/cleanup.mjs <staging|production>           dry run: counts and the accounts
@@ -44,8 +44,10 @@ const ORPHAN_SBOM_SCANS_AFTER = `select s.scan_id from scan_results s
     not exists (select 1 from assets a where a.asset_id::text = s.subnet)
     or s.subnet in (select asset_id::text from (${STALE_ASSETS}) x))`
 
+// Since migration 0035 the old business_owner role is tenant_user (roles: superadmin |
+// tenant_superadmin | tenant_user), so a tenantless account of that kind is a tenantless tenant_user.
 const TENANTLESS_USERS = `select user_id from users
-  where tenant_id is null and role = 'business_owner' and user_id <> '${KEEP_USER_ID}'`
+  where tenant_id is null and role = 'tenant_user' and user_id <> '${KEEP_USER_ID}'`
 
 const vars = loadEnvFile(target)
 const host = describe(vars.DATABASE_URL)

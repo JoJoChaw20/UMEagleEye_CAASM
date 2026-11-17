@@ -34,8 +34,8 @@ check('tenant scope is a subquery through events and assets',
   /"advisories"\."event_id" in \(select "events"\."event_id" from "events" inner join "assets" on "events"\."asset_id" = "assets"\."asset_id" where "assets"\."tenant_id" = \$1\)/.test(q.sql), true)
 check('tenant id is a parameter', q.params, ['00000000-0000-0000-0000-0000000000aa'])
 check('superadmin, no tenant picked: no filter', advisoryScope(db, { role: 'superadmin' }), undefined)
-check('tenant admin without tenant: sees nothing',
-  dialect.sqlToQuery(advisoryScope(db, { role: 'tenant_admin', tenantId: null })!).sql, 'false')
+check('tenant user without tenant: sees nothing',
+  dialect.sqlToQuery(advisoryScope(db, { role: 'tenant_user', tenantId: null })!).sql, 'false')
 const like = dialect.sqlToQuery(advisoryIdStartsWith('3f2a91c0'))
 check('prefix match is parameterised', [like.sql.includes('LIKE $1'), like.params], [true, ['3f2a91c0%']])
 

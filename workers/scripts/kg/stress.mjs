@@ -113,7 +113,8 @@ async function chatOnce(user, s) {
 
 async function retrievalLoop(user, s, deadline) {
   const tenantId = seed.tenants[user.tenant]
-  const access = R.accessFor({ role: 'tenant_admin', tenantId })
+  // Analyst-level access to one tenant: the Tenant Superadmin has every action (lib/actions.ts decide())
+  const access = R.accessFor({ role: 'tenant_superadmin', tenantId, actions: [] })
   const q = (t, p) => query(t, p)
   const other = user.tenant === 'alpha' ? tenantKeys.bravo : tenantKeys.alpha
   const texts = ['critical alerts web server', 'kgtest db apache port', 'advisory patch', 'open critical cve', 'what should I fix first']

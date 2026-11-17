@@ -3,7 +3,8 @@
 //   node scripts/db/check-0035.mjs <staging|production>
 //
 // Prints users per role, and every tenant with more than one Tenant Superadmin, showing which
-// account the migration keeps (active first, then oldest, then lowest user_id) and which become full-access users.
+// account the migration keeps (active first, then oldest, then lowest user_id) and which become full-access users,
+// and flags every tenant whose kept Tenant Superadmin is inactive.
 import { neon } from '@neondatabase/serverless'
 import { die, loadEnvFile, describe } from './lib.mjs'
 
@@ -38,4 +39,14 @@ if (!multi.length) {
     const fate = Number(r.rn) === 1 ? 'KEPT as Tenant Superadmin' : 'becomes tenant_user with all actions'
     console.log(`    ${r.username}  active=${r.is_active}  created=${new Date(r.created_at).toISOString()}  -> ${fate}`)
   }
+}
+
+// The kept Tenant Superadmin is the active one when there is one; a tenant whose kept owner is
+// still inactive has none of its Tenant Superadmins active, so nobody can run it after the migration.
+const inactiveKept = rows.filter((r) => Number(r.rn) === 1 && !r.is_active)
+if (!inactiveKept.length) {
+  console.log('\nEvery kept Tenant Superadmin is active.')
+} else {
+  console.log('\nTenants whose kept Tenant Superadmin is inactive:')
+  for (const r of inactiveKept) console.log(`  ${r.tenant}: ${r.username}  -> kept owner inactive — fix by hand`)
 }
