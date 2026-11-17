@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   formatRecoveryCodes, isMfaSetupRequired, isMfaTokenExpired, cleanTotpInput,
   normalizeRecoveryCode, isRecoveryCodeComplete, readRecoveryLink, loginReasonMessage,
-  SIGN_IN_TOOK_TOO_LONG, SET_UP_MFA_TO_CONTINUE, isSessionEnded, recoveryCodesLeftText,
+  SIGN_IN_TOOK_TOO_LONG, SET_UP_MFA_TO_CONTINUE, isSessionEnded, recoveryCodesLeftText, lostMfaAdvice,
 } from './mfa.js'
 
 const CODES = ['ABCDE-23456', 'FGHJK-78923', 'LMNPQ-RSTUV']
@@ -102,19 +102,39 @@ test('isSessionEnded is true only for the session-level 401 texts', () => {
 
 test('recoveryCodesLeftText counts the codes left and warns at 2 or fewer', () => {
   const warn = 'You are running out of recovery codes. Ask your Tenant Superadmin to reset your MFA so you can set up your authenticator again.'
-  assert.deepEqual(recoveryCodesLeftText(5), {
+  assert.deepEqual(recoveryCodesLeftText(5, 'tenant_user'), {
     message: 'Signed in with a recovery code. You have 5 recovery codes left.', warning: '',
   })
-  assert.deepEqual(recoveryCodesLeftText(3).warning, '')
-  assert.deepEqual(recoveryCodesLeftText(2), {
+  assert.deepEqual(recoveryCodesLeftText(3, 'tenant_user').warning, '')
+  assert.deepEqual(recoveryCodesLeftText(2, 'tenant_user'), {
     message: 'Signed in with a recovery code. You have 2 recovery codes left.', warning: warn,
   })
-  assert.deepEqual(recoveryCodesLeftText(1), {
+  assert.deepEqual(recoveryCodesLeftText(1, 'tenant_user'), {
     message: 'Signed in with a recovery code. You have 1 recovery code left.', warning: warn,
   })
-  assert.deepEqual(recoveryCodesLeftText(0), {
+  assert.deepEqual(recoveryCodesLeftText(0, 'tenant_user'), {
     message: 'Signed in with a recovery code. You have 0 recovery codes left.', warning: warn,
   })
+})
+
+test('recoveryCodesLeftText warns by role: only a tenant user is sent to the Tenant Superadmin', () => {
+  assert.equal(recoveryCodesLeftText(1, 'tenant_superadmin').warning,
+    'You are running out of recovery codes. If you have none left and cannot use your authenticator, contact platform support.')
+  assert.equal(recoveryCodesLeftText(1, 'superadmin').warning,
+    'You are running out of recovery codes. Use your backup device, then get new recovery codes in Settings.')
+  assert.equal(recoveryCodesLeftText(5, 'superadmin').warning, '')
+  // Unknown role: the tenant-user text.
+  assert.match(recoveryCodesLeftText(1).warning, /Ask your Tenant Superadmin/)
+})
+
+test('lostMfaAdvice names who can help, by role', () => {
+  assert.equal(lostMfaAdvice('tenant_user'), 'Ask your Tenant Superadmin to reset your MFA.')
+  assert.equal(lostMfaAdvice('tenant_superadmin'), 'Use a recovery code. If you have none, contact platform support.')
+  assert.equal(lostMfaAdvice('superadmin'), 'Use your backup device or a recovery code.')
+  assert.equal(lostMfaAdvice(undefined), 'Ask your Tenant Superadmin to reset your MFA.')
+  for (const role of ['tenant_user', 'tenant_superadmin', 'superadmin']) {
+    assert.doesNotMatch(lostMfaAdvice(role), /emergency recovery/i)
+  }
 })
 
 import {

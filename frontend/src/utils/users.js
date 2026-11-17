@@ -6,3 +6,9 @@ export function canConfirmDelete({ typed, username, code, needsPassword, passwor
   if (!username || typed !== username) return false
   return stepUpReady({ hasPassword: needsPassword, password, code })
 }
+
+/** Who made an alert-history change: the current username, a deleted user's kept name, or the system. */
+export function historyActor(h) {
+  if (h?.by) return h.by
+  return h?.actor_username ? `${h.actor_username} (deleted)` : 'system'
+}

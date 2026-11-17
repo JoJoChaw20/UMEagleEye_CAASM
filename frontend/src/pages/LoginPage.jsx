@@ -165,7 +165,7 @@ export default function LoginPage() {
     navigate('/')
   }
 
-  const recoveredText = recovered ? recoveryCodesLeftText(recovered.recovery_codes_left) : null
+  const recoveredText = recovered ? recoveryCodesLeftText(recovered.recovery_codes_left, recovered.role) : null
 
   return (
     <div className="flex min-h-screen bg-dark-950 text-dark-100">

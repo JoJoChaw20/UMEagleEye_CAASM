@@ -19,6 +19,7 @@ import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
 } from '../components/common/triageViz'
 import AdvisoryBody from '../components/common/AdvisoryBody'
+import { historyActor } from '../utils/users'
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
@@ -964,7 +965,7 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
               <Section icon={History} title="Activity">
                 <ul className="space-y-1.5">{e.history.map((h, i) => (
                   <li key={i} className="text-xs text-dark-400">
-                    <span className="text-dark-200">{h.by ?? 'system'}</span> changed {h.previous?.status} → <span className="text-dark-200">{h.next?.status}</span>
+                    <span className="text-dark-200">{historyActor(h)}</span> changed {h.previous?.status} → <span className="text-dark-200">{h.next?.status}</span>
                     {h.next?.note && <span className="text-dark-300"> — “{h.next.note}”</span>}
                     <span className="text-dark-500"> · {timeAgo(h.at)}</span>
                   </li>

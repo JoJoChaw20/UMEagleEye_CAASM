@@ -77,14 +77,31 @@ export function isSessionEnded(status, detail) {
   return status === 401 && SESSION_ENDED.has(detail)
 }
 
-const RUNNING_OUT = 'You are running out of recovery codes. Ask your Tenant Superadmin to reset your MFA so you can set up your authenticator again.'
+// Who can help an account that cannot use its authenticator (spec section 7). Only a Tenant user
+// has someone in the tenant who can reset their MFA. Until the ownership handover (Path B) ships,
+// a Tenant Superadmin with no recovery codes left goes to platform support.
+const RUNNING_OUT = {
+  tenant_user: 'You are running out of recovery codes. Ask your Tenant Superadmin to reset your MFA so you can set up your authenticator again.',
+  tenant_superadmin: 'You are running out of recovery codes. If you have none left and cannot use your authenticator, contact platform support.',
+  superadmin: 'You are running out of recovery codes. Use your backup device, then get new recovery codes in Settings.',
+}
+const LOST_MFA = {
+  tenant_user: 'Ask your Tenant Superadmin to reset your MFA.',
+  tenant_superadmin: 'Use a recovery code. If you have none, contact platform support.',
+  superadmin: 'Use your backup device or a recovery code.',
+}
+
+/** What to do without the authenticator, by role; an unknown role gets the Tenant user text. */
+export function lostMfaAdvice(role) {
+  return LOST_MFA[role] ?? LOST_MFA.tenant_user
+}
 
 /** The note after a recovery-code sign-in; warning is '' unless 2 or fewer codes are left. */
-export function recoveryCodesLeftText(left) {
+export function recoveryCodesLeftText(left, role) {
   const n = Number(left)
   return {
     message: `Signed in with a recovery code. You have ${n} recovery ${n === 1 ? 'code' : 'codes'} left.`,
-    warning: n <= 2 ? RUNNING_OUT : '',
+    warning: n <= 2 ? (RUNNING_OUT[role] ?? RUNNING_OUT.tenant_user) : '',
   }
 }
 

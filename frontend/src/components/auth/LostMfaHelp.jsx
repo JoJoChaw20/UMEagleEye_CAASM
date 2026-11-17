@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { LifeBuoy, Send } from 'lucide-react'
 import client from '../../api/client'
 import { FormAlert, Spin, errorText, useSingleFlight } from './AuthParts'
+import { lostMfaAdvice } from '../../utils/mfa'
 
 /**
  * "Lost your authenticator?" help on the code screen. The role is not known before the code
@@ -38,13 +39,13 @@ export default function LostMfaHelp({ onUseRecoveryCode }) {
       <h2 id="lost-mfa-title" className="flex items-center gap-2 font-medium text-dark-100">
         <LifeBuoy className="h-4 w-4 text-eagle-400" />Lost your authenticator?
       </h2>
-      <p className="mt-2">Use a recovery code. If you have none, ask your Tenant Superadmin to reset your MFA.</p>
+      <p className="mt-2"><span className="font-medium text-dark-200">Tenant user:</span> use a recovery code. If you have none, ask your Tenant Superadmin to reset your MFA.</p>
       <button type="button" onClick={onUseRecoveryCode} className="mt-1 text-eagle-400 hover:text-eagle-300 hover:underline">
         Use a recovery code
       </button>
-      <p className="mt-3"><span className="font-medium text-dark-200">Tenant Superadmin:</span> use a recovery code or emergency recovery.</p>
+      <p className="mt-3"><span className="font-medium text-dark-200">Tenant Superadmin:</span> {lostMfaAdvice('tenant_superadmin')}</p>
       <p className="mt-3">
-        <span className="font-medium text-dark-200">Platform Superadmin:</span>{' '}
+        <span className="font-medium text-dark-200">Platform Superadmin:</span> {lostMfaAdvice('superadmin')}{' '}
         {!formOpen && (
           <button type="button" onClick={() => setFormOpen(true)} className="text-eagle-400 hover:text-eagle-300 hover:underline">
             Lost all MFA methods

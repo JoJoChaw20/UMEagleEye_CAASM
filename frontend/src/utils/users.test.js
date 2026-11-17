@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canConfirmDelete } from './users.js'
+import { canConfirmDelete, historyActor } from './users.js'
 
 const base = { typed: 'alice', username: 'alice', code: '123456', needsPassword: true, password: 'pw' }
 
@@ -22,4 +22,11 @@ test('canConfirmDelete needs a password only when the account has one', () => {
 })
 test('canConfirmDelete refuses an empty username', () => {
   assert.equal(canConfirmDelete({ ...base, typed: '', username: '' }), false)
+})
+
+test('historyActor: current username, else the kept name of a deleted user, else system', () => {
+  assert.equal(historyActor({ by: 'alice', actor_username: null }), 'alice')
+  assert.equal(historyActor({ by: null, actor_username: 'bob' }), 'bob (deleted)')
+  assert.equal(historyActor({ by: null, actor_username: null }), 'system')
+  assert.equal(historyActor({ by: null }), 'system')   // older worker: no actor_username
 })

@@ -3,7 +3,7 @@ import { Users, Shield, Clock, Eye, EyeOff, Lock, Check, LifeBuoy } from 'lucide
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 import { roleLabel } from '../utils/actions'
-import { recoveryCodesLeftLabel } from '../utils/mfa'
+import { lostMfaAdvice, recoveryCodesLeftLabel } from '../utils/mfa'
 import { FormAlert, errorText } from '../components/auth/AuthParts'
 import StepUpDialog from '../components/auth/StepUpDialog'
 import RecoveryCodes from '../components/auth/RecoveryCodes'
@@ -255,8 +255,8 @@ export default function SettingsPage() {
               {mfaStatus.mfa_enabled && <span className="text-dark-400"> · {recoveryCodesLeftLabel(mfaStatus.recovery_codes_left)}</span>}
             </p>
             <p className="text-sm text-dark-400">
-              Your authenticator app keeps working with no expiry. To use a different authenticator or phone,
-              ask your Tenant Superadmin to reset your MFA.
+              Your authenticator app keeps working with no expiry. If you lose it or change phones:{' '}
+              {lostMfaAdvice(user?.role)}
             </p>
             {mfaStatus.mfa_enabled && (
               <button type="button" onClick={() => setAskCodes(true)} className="btn-primary flex items-center gap-2">
