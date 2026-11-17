@@ -18,7 +18,7 @@
 import { z } from 'zod'
 import type { Env } from '../types'
 import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope'
-import { decide } from '../lib/actions'
+import { decide, refusalMessage } from '../lib/actions'
 import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
 import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
@@ -119,8 +119,12 @@ const GENERAL_LABEL = '**General security guidance, not specific to your environ
 const CATCHING_UP = 'Still catching up: some recent changes have not reached the chatbot yet, so this answer may be missing the newest data.'
 const SHARED_ONLY = 'No company is selected, so this answer uses shared knowledge only. Pick a company to ask about its data.'
 const CUT_OFF = 'This answer was cut off before it finished, so it may be incomplete.'
-const CANNOT_CLOSE = 'Your role cannot close advisories. Ask your Tenant Superadmin to grant you the "Close advisories from the assistant" action.'
-const TYPED_CONFIRM ='Typing does not close anything. To close an advisory, a tenant admin presses the Confirm button on its card. If the card is gone or has expired, ask to close the advisory again.'
+/** The refusal for a user who may not close advisories; the reason decides the wording. */
+function cannotClose(user: GraphCtx['user']): string {
+  const d = decide(user, 'advisory.close_via_chat')
+  return d.ok ? '' : refusalMessage(d.reason, 'advisory.close_via_chat')
+}
+const TYPED_CONFIRM ='Typing does not close anything. To close an advisory, someone with the "Close advisories from the assistant" action presses the Confirm button on its card. If the card is gone or has expired, ask to close the advisory again.'
 
 const SAFETY = [
   'You are the assistant inside UMEagleEye, a cyber asset attack surface management platform used by one company\'s IT staff.',
@@ -287,7 +291,7 @@ async function proposeResolve(args: z.infer<typeof ProposeArgs>, s: RunState): P
   if (!s.canPropose) return { error: 'The user did not ask to close an advisory, so nothing can be proposed.' }
   if (s.proposal) return { error: 'Only one advisory can be proposed per question.' }
   if (!decide(ctx.user, 'advisory.close_via_chat').ok || !access.tenantId) {
-    return { error: 'This user\'s role may not change advisories, so nothing can be proposed.' }
+    return { error: 'This user may not close advisories from the assistant, so nothing can be proposed.' }
   }
   const prefix = advisoryIdPrefix(args.advisory_id)
   if (!prefix) return refuseClose(s, 'That is not an advisory ID. Give the first 8 characters of the advisory ID, as the Advisories page shows it.')
@@ -654,7 +658,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     // A role that may not close advisories is told so plainly. When that is all the message asks,
     // it is the whole answer, with no model call; otherwise it becomes a note on the answer.
     const roleCanClose = decide(ctx.user, 'advisory.close_via_chat').ok
-    if (!roleCanClose && onlyAsksToClose(question)) return await release(CANNOT_CLOSE)
+    if (!roleCanClose && onlyAsksToClose(question)) return await release(cannotClose(ctx.user))
 
     let kind = await classify(ctx.ai, question)
     // The user's own words decide this, not the model: a question about "our servers" needs company
@@ -700,7 +704,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     }
 
     const asksToClose = wantsAdvisoryClosed(question)
-    if (asksToClose && !roleCanClose) notes.push(CANNOT_CLOSE)
+    if (asksToClose && !roleCanClose) notes.push(cannotClose(ctx.user))
     const canPropose = asksToClose && roleCanClose
     const s: RunState = { ctx, access, book: new SourceBook(), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
     // Values the server computed (current UTC time, recorded range, gaps, the time asked in UTC+8 and UTC) may be

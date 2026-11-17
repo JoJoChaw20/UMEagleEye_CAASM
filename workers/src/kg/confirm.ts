@@ -13,7 +13,7 @@
  * (kg/detection.ts). The audit record keeps when the device was last scanned.
  */
 import { ACTIVE_ADVISORY_STATUSES } from '../lib/advisoryScope'
-import { decide } from '../lib/actions'
+import { decide, refusalMessage } from '../lib/actions'
 import { parseProposal, proposalKey } from './agent'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import type { Q } from './store'
@@ -75,8 +75,9 @@ export async function confirmAdvisory(input: { kv: ConfirmKv; q: Q; user: Confir
   if (!record) return { ok: false, status: 404, error: GONE }
   // Another user's attempt must not burn the owner's token: refuse without deleting it.
   if (record.userId !== user.userId) return { ok: false, status: 403, error: 'This confirmation belongs to another user.' }
-  if (!decide(user, 'advisory.close_via_chat').ok) {
-    return { ok: false, status: 403, error: 'You do not have permission to resolve advisories from the chat.' }
+  const closing = decide(user, 'advisory.close_via_chat')
+  if (!closing.ok) {
+    return { ok: false, status: 403, error: refusalMessage(closing.reason, 'advisory.close_via_chat') }
   }
   if (!user.tenantId || user.tenantId !== record.tenantId) {
     return { ok: false, status: 403, error: 'This advisory is not in your company.' }

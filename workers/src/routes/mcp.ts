@@ -8,13 +8,13 @@
 import { Hono } from 'hono'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { buildMcpServer } from '../mcp/server'
 
 const app = new Hono<{ Bindings: Env }>()
 
-app.all('/', authMiddleware, async (c) => {
+app.all('/', authMiddleware, requireAction('chatbot.use'), async (c) => {
   if (c.req.method !== 'POST') {
     return c.json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed: this server is stateless, use POST' }, id: null },
       405, { Allow: 'POST' })

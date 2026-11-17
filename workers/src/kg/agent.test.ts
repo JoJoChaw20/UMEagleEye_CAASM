@@ -958,7 +958,7 @@ for (const who of [{ role: 'superadmin', tenantId: null, picked: null }, { role:
     s.ctx.ai = async (...a) => { aiCalls++; return ai(...a) }
     const r = await runGraphAgent(s.ctx, 'Please close advisory 281ab6b4.', [], s.emit)
     assert.equal(aiCalls, 0)
-    assert.match(r.content, /^Your role cannot close advisories\./)
+    assert.match(r.content, /^(You do not have the|The Platform Superadmin)/)
     assert.equal(r.proposal, null)
     assert.equal(s.calls.length, 0)
   })
@@ -990,7 +990,7 @@ test('a refusal does not hide a proposal the model made afterwards', async () =>
 test('a role that cannot close, asking something else too, gets an answer with the refusal as a note', async () => {
   const s = setup({ role: 'superadmin', tenantId: null, picked: A, replies: [tools(search), text('Device web-01 has 5 open ports [S1].')] })
   const r = await runGraphAgent(s.ctx, 'How many ports are open on web-01? Also close advisory 7c9e6679.', [], s.emit)
-  assert.match(r.content, /^> Your role cannot close advisories\./)
+  assert.match(r.content, /^> (You do not have the|The Platform Superadmin)/)
   assert.match(r.content, /Device web-01 has 5 open ports \[S1\]\.$/)
   assert.equal(r.proposal, null)
   assert.ok(!s.m.seen.some(x => JSON.stringify(x.tools ?? []).includes('propose_resolve_advisory')), 'the close tool is not offered')

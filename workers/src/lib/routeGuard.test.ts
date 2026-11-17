@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // Routes that need a login but no permission: they act only on the caller's own account.
 const SELF_SERVICE = new Set([
   'auth.ts:/mfa/setup', 'auth.ts:/mfa/enable', 'auth.ts:/change-password', 'auth.ts:/set-password',
-  'auth.ts:/me', 'auth.ts:/actions', 'auth.ts:/mfa/reset', 'mcp.ts:/',
+  'auth.ts:/me', 'auth.ts:/actions', 'auth.ts:/mfa/reset',
   // Guarded through spread variables the regex cannot see; Task 7 replaces them.
   'tenants.ts:/', 'tenants.ts:/:tenantId',
 ])

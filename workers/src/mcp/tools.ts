@@ -53,6 +53,7 @@ export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
 }
 
 export function canUse(tool: ToolDef, user: ToolUser): boolean {
+  if (!decide(user, 'chatbot.use').ok) return false
   if (tool.access === 'all') return true
   if (tool.proposesAction) return decide(user, 'advisory.close_via_chat').ok
   return analystAccess(user)
