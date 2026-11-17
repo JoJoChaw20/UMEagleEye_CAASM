@@ -360,6 +360,8 @@ router.post(
       previousState: { tenant_id: user.tenantId, role: user.role, actions: user.actions },
       newState: { tenant_id: tenantId, role: 'tenant_user', actions: [] },
     })
+    // The assign also took away any actions the user had: record that as an actions change too
+    if (user.actions?.length) await auditActions(db, c, caller.userId, tenantId, user.userId, user.actions, [])
 
     return c.json({ ok: true, user_id: user.userId, username: user.username, tenant_id: tenantId, role: 'tenant_user', actions: [] })
   }

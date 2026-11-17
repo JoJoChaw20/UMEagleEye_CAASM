@@ -162,9 +162,10 @@ test('a read that keeps failing is bounded too, and its rows wait instead of fai
 // Cloudflare counts every KV read or write, Workers AI call, queue send, Neon query or batch, and
 // fetch (the model and the analytics API) as a subrequest. The fakes below count each of these.
 
-// Spent by the route before the agent runs (routes/chatbot.ts): the rate-limit KV read and write, and
-// perfMiddleware's speed-history data point, counted although Analytics Engine may not count it.
-const ROUTE_REQUESTS = 3
+// Spent by the route before the agent runs (routes/chatbot.ts): authMiddleware's Neon query (role,
+// tenant, active flag and actions are read fresh on every request), the rate-limit KV read and write,
+// and perfMiddleware's speed-history data point, counted although Analytics Engine may not count it.
+const ROUTE_REQUESTS = 4
 const CHAT_LIMIT = 45
 const ADV = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
 const NODE = { key: 'asset:1', type: 'asset', title: 'web-01', body: 'Device web-01, IP 10.0.0.5.', props: {}, source_ref: null }

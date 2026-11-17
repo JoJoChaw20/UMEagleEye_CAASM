@@ -12,14 +12,22 @@ const SELF_SERVICE = new Set([
 const routesDir = join(process.cwd(), 'src/routes')
 const files = readdirSync(routesDir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
 
+// One route registration: a single-quoted path starting with '/', its middleware, then a (c) => handler.
+// The path must start with '/': otherwise c.get('user') in a handler body matches as a route
+// and swallows the next real one.
+const ROUTE_RE = /\.(get|post|put|patch|delete|all)\(\s*'(\/[^']*)'([\s\S]*?)(?:async )?\(c\) =>/g
+
+// Every registration on the file's Hono app(s), whatever its shape: `app.get(`, `router.post(`, ...
+function registrationRe(src: string): RegExp | null {
+  const apps = [...src.matchAll(/const (\w+) = new Hono\b/g)].map((m) => m[1])
+  return apps.length ? new RegExp(String.raw`\b(?:${apps.join('|')})\.(?:get|post|put|patch|delete|all)\(`, 'g') : null
+}
+
 test('every authenticated route checks a permission', () => {
   const offenders: string[] = []
   for (const file of files) {
     const src = readFileSync(join(routesDir, file), 'utf8')
-    // The path must start with '/': otherwise c.get('user') in a handler body matches as a route
-    // and swallows the next real one.
-    const re = /\.(get|post|put|patch|delete|all)\(\s*'(\/[^']*)'([\s\S]*?)(?:async )?\(c\) =>/g
-    for (const m of src.matchAll(re)) {
+    for (const m of src.matchAll(ROUTE_RE)) {
       const [, method, path, middle] = m
       if (!middle!.includes('authMiddleware')) continue
       if (/requireAction\(|requireTenantSuperadmin|requirePlatformSuperadmin/.test(middle!)) continue
@@ -28,6 +36,27 @@ test('every authenticated route checks a permission', () => {
     }
   }
   assert.deepEqual(offenders, [])
+})
+
+// The check above reads only one shape of registration. A route with a named handler, a
+// double-quoted path or no (c) => would be skipped, or merge into the next match and hide it, so
+// every registration in a file must be one the pattern read, and no match may span two.
+test('the permission check reads every route registration', () => {
+  const problems: string[] = []
+  for (const file of files) {
+    const src = readFileSync(join(routesDir, file), 'utf8')
+    const reg = registrationRe(src)
+    if (!reg) continue
+    const registrations = src.match(reg)?.length ?? 0
+    let read = 0
+    for (const m of src.matchAll(ROUTE_RE)) {
+      read++
+      const swallowed = m[0].slice(1).match(new RegExp(reg.source))
+      if (swallowed) problems.push(`${file}:${m[2]} runs into the next registration`)
+    }
+    if (read !== registrations) problems.push(`${file}: ${registrations} registrations, ${read} read by the check`)
+  }
+  assert.deepEqual(problems, [])
 })
 
 test('no route still uses role lists', () => {

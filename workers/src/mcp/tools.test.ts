@@ -9,7 +9,13 @@ const preset = (k: string) => PRESETS.find(p => p.key === k)!.actions
 const names = (u: ToolUser, actions = true) => toolsFor(u, { actions }).map(t => t.name)
 
 test('the superadmin never gets the proposing tool', () => {
-  assert.ok(!names({ userId: 'u', role: 'superadmin', tenantId: null, actions: [] }).includes('resolve_advisory'))
+  // The same write keys give a tenant user the tool, so it is the role that blocks it, not the list
+  const analyst = preset('analyst')
+  assert.ok(analyst.includes('advisory.close_via_chat'))
+  assert.ok(names(user('tenant_user', analyst)).includes('resolve_advisory'))
+  const n = names({ userId: 'u', role: 'superadmin', tenantId: null, actions: analyst })
+  assert.ok(n.length > 0, 'the superadmin still gets the read tools')
+  assert.ok(!n.includes('resolve_advisory'))
 })
 
 test('a user with no actions gets no tools', () => {
