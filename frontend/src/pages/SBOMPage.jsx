@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Package, RefreshCw, Monitor, Bug, Clock3, AlertTriangle, XCircle, Download, Trash2, Play, MoreHorizontal,
+  Package, RefreshCw, Monitor, Bug, Clock3, AlertTriangle, XCircle, Download, Trash2, Play,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -9,7 +9,7 @@ import TenantSelector from '../components/common/TenantSelector'
 import PackageSearch from '../components/common/PackageSearch'
 import { sbomRunProblems } from '../components/common/SbomRunNote'
 import ComputerPanel from '../components/sbom/ComputerPanel'
-import { Tabs, StatTile, Toast, useToast, Spinner, ago } from '../components/common/PageParts'
+import { Tabs, StatTile, Toast, useToast, Spinner, ago, RowMenu } from '../components/common/PageParts'
 
 // SBOM: one row per computer. Every computer with an EagleEye agent should have one (the
 // agent builds it daily with Syft and checks it with Grype); computers without one, or
@@ -27,36 +27,6 @@ const STATE = {
 function elapsed(from, now) {
   const s = Math.max(0, Math.floor((now - new Date(from).getTime()) / 1000))
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
-}
-
-function RowMenu({ items }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-  useEffect(() => {
-    if (!open) return undefined
-    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
-  }, [open])
-  const shown = items.filter(Boolean)
-  if (!shown.length) return null
-  return (
-    <div className="relative" ref={ref}>
-      <button onClick={() => setOpen((v) => !v)} className="p-1.5 rounded hover:bg-dark-700/50 text-dark-400 hover:text-dark-100" aria-label="More actions" aria-expanded={open}>
-        <MoreHorizontal className="w-4 h-4" />
-      </button>
-      {open && (
-        <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-dark-700 bg-dark-850 shadow-float py-1">
-          {shown.map((it) => (
-            <button key={it.label} onClick={() => { setOpen(false); it.onClick() }} disabled={it.disabled}
-              className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-dark-700/50 disabled:opacity-40 ${it.danger ? 'text-red-400' : 'text-dark-200'}`}>
-              <it.icon className="w-4 h-4" /> {it.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
 }
 
 export default function SBOMPage() {

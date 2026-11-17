@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react'
-import { X, CheckCircle2, Info, AlertTriangle } from 'lucide-react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { X, CheckCircle2, Info, AlertTriangle, MoreHorizontal } from 'lucide-react'
 
 // Building blocks shared by the Threat Intel, SBOM and Discovery pages.
 
@@ -45,7 +45,8 @@ export function StatTile({ label, value, sub, tone = 'default', icon: Icon, onCl
 }
 
 // ── Right-hand side panel (closes on Esc or the backdrop) ─────────
-export function SidePanel({ title, subtitle, onClose, children, width = 'sm:w-[560px]' }) {
+// footer: optional content pinned under the scrolling body, e.g. Save and Cancel buttons.
+export function SidePanel({ title, subtitle, onClose, children, footer, width = 'sm:w-[560px]' }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -66,7 +67,40 @@ export function SidePanel({ title, subtitle, onClose, children, width = 'sm:w-[5
           </button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto p-5">{children}</div>
+        {footer && <div className="border-t border-dark-700 bg-dark-800 px-5 py-3">{footer}</div>}
       </aside>
+    </div>
+  )
+}
+
+// ── Row menu ("…" button with a small dropdown) ──────────────────
+// items: [{ label, icon, onClick, danger?, disabled? }]; falsy items are skipped.
+export function RowMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [open])
+  const shown = items.filter(Boolean)
+  if (!shown.length) return null
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((v) => !v)} className="p-1.5 rounded hover:bg-dark-700/50 text-dark-400 hover:text-dark-100" aria-label="More actions" aria-expanded={open}>
+        <MoreHorizontal className="w-4 h-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-dark-700 bg-dark-850 shadow-float py-1">
+          {shown.map((it) => (
+            <button key={it.label} onClick={() => { setOpen(false); it.onClick() }} disabled={it.disabled}
+              className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-dark-700/50 disabled:opacity-40 ${it.danger ? 'text-red-400' : 'text-dark-200'}`}>
+              <it.icon className="w-4 h-4" /> {it.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

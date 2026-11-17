@@ -1,163 +1,212 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Building2, Users, Plus, Check, RefreshCw,
-  ToggleLeft, ToggleRight, X, AlertTriangle,
+  Building2, Users, Plus, Check, RefreshCw, AlertTriangle, SlidersHorizontal, UserX, UserCheck,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import ActionPicker from '../components/users/ActionPicker'
+import { SidePanel, RowMenu, Toast, useToast, Spinner } from '../components/common/PageParts'
+import { accessSummary, actionLabels } from '../utils/actions'
 
-// Roles a tenant_superadmin may assign to other users
-const ASSIGNABLE_ROLES = [
-  { value: 'tenant_admin',   label: 'Tenant Admin',   color: 'text-eagle-400'  },
-  { value: 'business_owner', label: 'Business Owner', color: 'text-green-400' },
-]
+// Users page for the Tenant Superadmin: the tenant's name, and who may do what. Each tenant user
+// holds a list of actions, chosen in the ActionPicker (PUT /tenants/:id/users/:userId/actions).
 
-const ROLE_COLORS = {
-  tenant_superadmin: 'text-accent-purple',
-  tenant_admin:      'text-eagle-400',
-  business_owner:    'text-green-400',
+const errorDetail = (err, fallback) => {
+  const d = err?.response?.data?.detail
+  return typeof d === 'string' && d ? d : fallback
 }
 
-const roleLabel = (r) => ({
-  tenant_superadmin: 'Tenant Superadmin',
-  tenant_admin:      'Tenant Admin',
-  business_owner:    'Business Owner',
-}[r] ?? (r?.replace(/_/g, ' ') ?? '—'))
+function ErrorNote({ children }) {
+  if (!children) return null
+  return (
+    <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>{children}</span>
+    </div>
+  )
+}
 
-// ── Invite / Assign Modal ─────────────────────────────────────────
-function InviteModal({ tenantId, onClose, onInvite }) {
-  const [mode, setMode] = useState('email')
-  const [email, setEmail] = useState('')
-  const [username, setUsername] = useState('')
-  const [role, setRole] = useState('tenant_admin')
-  const [assignUsername, setAssignUsername] = useState('')
+// The picker needs the catalog; it is fetched once per sign-in and may still be on its way.
+function CatalogGate({ children }) {
+  const { catalog, catalogError, retryCatalog } = useAuth()
+  if (catalog) return children
+  if (catalogError) {
+    return (
+      <div className="space-y-2 rounded-lg border border-dark-700 p-4 text-sm text-dark-300">
+        <p>The list of actions could not be loaded.</p>
+        <button type="button" onClick={retryCatalog} className="btn-secondary text-xs py-1.5">Try again</button>
+      </div>
+    )
+  }
+  return <Spinner className="py-10" />
+}
+
+function PanelButtons({ onCancel, submitting, disabled, label, form }) {
+  return (
+    <div className="flex justify-end gap-2">
+      <button type="button" onClick={onCancel} className="btn-secondary text-sm py-1.5">Cancel</button>
+      <button type="submit" form={form} disabled={submitting || disabled}
+        className="btn-primary text-sm py-1.5 flex items-center gap-1.5 disabled:opacity-40">
+        {submitting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+        {label}
+      </button>
+    </div>
+  )
+}
+
+// ── Edit access ───────────────────────────────────────────────────
+function EditAccessPanel({ tenantId, target, onClose, onSaved }) {
+  const { catalog } = useAuth()
+  const [actions, setActions] = useState(target.actions || [])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
-  const [result, setResult] = useState(null)
 
-  const handleSubmit = async (e) => {
+  const initial = target.actions || []
+  const dirty = actions.length !== initial.length || actions.some((k) => !initial.includes(k))
+
+  const save = async (e) => {
     e.preventDefault()
     setSubmitting(true)
     setError(null)
     try {
-      const payload = mode === 'email'
-        ? { email, username: username || undefined, role }
-        : { username: assignUsername }
-      const res = await onInvite(payload)
-      setResult(res)
+      const res = await client.put(`/tenants/${tenantId}/users/${target.user_id}/actions`, { actions })
+      onSaved(target, res.data)
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to invite user')
-    } finally { setSubmitting(false) }
-  }
-
-  if (result) {
-    return (
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-950/70 p-4">
-        <div className="glass-card w-full max-w-sm p-5 space-y-4">
-          <div className="flex items-center gap-2 text-green-400">
-            <Check className="w-5 h-5" />
-            <h3 className="font-semibold text-dark-50 text-sm">
-              {result.action === 'created' ? 'User Created & Assigned' : 'User Assigned'}
-            </h3>
-          </div>
-          <div className="bg-dark-800/60 rounded-xl p-3 text-xs space-y-1 border border-dark-700/40">
-            <p className="text-dark-300"><span className="text-dark-500">Username:</span> {result.username}</p>
-            <p className="text-dark-300"><span className="text-dark-500">Email:</span> {result.email}</p>
-            <p className="text-dark-300"><span className="text-dark-500">Role:</span> {roleLabel(result.role)}</p>
-            {result.action === 'created' && (
-              <p className="text-yellow-400 pt-1">User must sign in via Google using this email address.</p>
-            )}
-          </div>
-          <button onClick={onClose} className="btn-primary w-full text-sm">Done</button>
-        </div>
-      </div>
-    )
+      setError(errorDetail(err, 'Could not update access. Try again.'))
+      setSubmitting(false)
+    }
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-950/70 p-4">
-      <div className="glass-card w-full max-w-sm p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-dark-50 text-sm">Add User</h3>
-          <button onClick={onClose} className="text-dark-400 hover:text-dark-50">
-            <X className="w-4 h-4" />
+    <SidePanel
+      title={`Edit access for ${target.username}`}
+      subtitle={target.email}
+      onClose={onClose}
+      width="sm:w-[640px]"
+      footer={<PanelButtons form="edit-access" onCancel={onClose} submitting={submitting} disabled={!dirty || !catalog} label="Save" />}
+    >
+      <form id="edit-access" onSubmit={save} className="space-y-4">
+        <ErrorNote>{error}</ErrorNote>
+        <p className="text-xs text-dark-400">Changes apply from the person&apos;s next action in the app.</p>
+        <CatalogGate>
+          <ActionPicker value={actions} onChange={setActions} catalog={catalog} disabled={submitting} />
+        </CatalogGate>
+      </form>
+    </SidePanel>
+  )
+}
+
+// ── Invite (new or existing account by email) or add an existing account by username ──
+function InvitePanel({ tenantId, onClose, onDone }) {
+  const { catalog } = useAuth()
+  const [mode, setMode] = useState('email')
+  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
+  const [actions, setActions] = useState([])
+  const [assignUsername, setAssignUsername] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      if (mode === 'email') {
+        const res = await client.post(`/tenants/${tenantId}/users/invite`, {
+          email: email.trim(), username: username.trim() || undefined, actions,
+        })
+        const d = res.data
+        onDone(d.action === 'created'
+          ? `Invited ${d.email}. They sign in with Google using this email.`
+          : `${d.username} added to this tenant.`)
+      } else {
+        const res = await client.post(`/tenants/${tenantId}/users`, { username: assignUsername.trim() })
+        onDone(`${res.data.username || assignUsername.trim()} added to this tenant with no access.`)
+      }
+    } catch (err) {
+      setError(errorDetail(err, mode === 'email' ? 'Could not invite this user.' : 'Could not add this user.'))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <SidePanel
+      title="Add user"
+      onClose={onClose}
+      width="sm:w-[640px]"
+      footer={<PanelButtons form="invite-user" onCancel={onClose} submitting={submitting} label={mode === 'email' ? 'Invite' : 'Add user'} />}
+    >
+      <div className="flex gap-1 rounded-lg border border-dark-700/50 bg-dark-800/60 p-1" role="tablist" aria-label="How to add">
+        {[['email', 'Invite by email'], ['username', 'Existing account']].map(([m, label]) => (
+          <button key={m} type="button" role="tab" aria-selected={mode === m}
+            onClick={() => { setMode(m); setError(null) }}
+            className={`flex-1 rounded-md py-1.5 text-xs transition-colors ${mode === m ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}>
+            {label}
           </button>
-        </div>
-
-        <div className="flex gap-1 p-1 bg-dark-800/60 rounded-lg border border-dark-700/50">
-          {['email', 'username'].map(m => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${mode === m ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}
-            >
-              {m === 'email' ? 'Invite by Email' : 'Assign by Username'}
-            </button>
-          ))}
-        </div>
-
-        {error && <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</p>}
-
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {mode === 'email' ? (
-            <>
-              <div>
-                <label className="block text-xs text-dark-400 mb-1">Email *</label>
-                <input
-                  type="email" value={email} onChange={e => setEmail(e.target.value)}
-                  placeholder="user@gmail.com" className="input-field w-full text-sm" required
-                />
-                <p className="text-xs text-dark-500 mt-1">If no account exists, one will be created. User must sign in via Google.</p>
-              </div>
-              <div>
-                <label className="block text-xs text-dark-400 mb-1">Username <span className="text-dark-600">(optional)</span></label>
-                <input
-                  type="text" value={username} onChange={e => setUsername(e.target.value)}
-                  placeholder="auto-generated" className="input-field w-full text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-dark-400 mb-1">Role</label>
-                <select value={role} onChange={e => setRole(e.target.value)} className="input-field w-full text-sm">
-                  {ASSIGNABLE_ROLES.map(o => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-            </>
-          ) : (
-            <div>
-              <label className="block text-xs text-dark-400 mb-1">Username</label>
-              <input
-                type="text" value={assignUsername} onChange={e => setAssignUsername(e.target.value)}
-                placeholder="e.g. john_doe"
-                className="input-field w-full text-sm" required
-              />
-              <p className="text-xs text-dark-500 mt-1">Must match an existing account username exactly.</p>
-            </div>
-          )}
-
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={onClose} className="btn-secondary flex-1 text-xs py-1.5">Cancel</button>
-            <button type="submit" disabled={submitting} className="btn-primary flex-1 text-xs py-1.5 flex items-center justify-center gap-1">
-              {submitting
-                ? <div className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                : <Check className="w-3 h-3" />}
-              {mode === 'email' ? 'Invite' : 'Assign User'}
-            </button>
-          </div>
-        </form>
+        ))}
       </div>
-    </div>
+
+      <form id="invite-user" onSubmit={submit} className="space-y-4">
+        <ErrorNote>{error}</ErrorNote>
+        {mode === 'email' ? (
+          <>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="invite-email" className="mb-1 block text-xs text-dark-400">Email</label>
+                <input id="invite-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@example.com" className="input-field w-full text-sm" required autoFocus />
+              </div>
+              <div>
+                <label htmlFor="invite-username" className="mb-1 block text-xs text-dark-400">
+                  Username <span className="text-dark-600">(optional)</span>
+                </label>
+                <input id="invite-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
+                  placeholder="From the email" className="input-field w-full text-sm" minLength={3} maxLength={100} />
+              </div>
+            </div>
+            <p className="text-xs text-dark-500">They sign in with Google using this email.</p>
+            <div className="space-y-3 border-t border-dark-700/60 pt-4">
+              <div>
+                <h3 className="text-sm font-semibold text-dark-100">Access</h3>
+                <p className="mt-0.5 text-xs text-dark-400">New users start with no access until you grant actions.</p>
+              </div>
+              <CatalogGate>
+                <ActionPicker value={actions} onChange={setActions} catalog={catalog} disabled={submitting} />
+              </CatalogGate>
+            </div>
+          </>
+        ) : (
+          <div>
+            <label htmlFor="assign-username" className="mb-1 block text-xs text-dark-400">Username</label>
+            <input id="assign-username" type="text" value={assignUsername} onChange={(e) => setAssignUsername(e.target.value)}
+              placeholder="e.g. john_doe" className="input-field w-full text-sm" required autoFocus />
+            <p className="mt-1 text-xs text-dark-500">
+              Must match an existing account that is not in a tenant. New users start with no access until you grant actions.
+            </p>
+          </div>
+        )}
+      </form>
+    </SidePanel>
+  )
+}
+
+function StatusBadge({ active }) {
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-xs ${
+      active ? 'border-green-500/30 bg-green-500/10 text-green-400' : 'border-dark-600 bg-dark-800 text-dark-400'
+    }`}>
+      {active ? 'Active' : 'Inactive'}
+    </span>
   )
 }
 
 // ── Main page ─────────────────────────────────────────────────────
 export default function TenantSettingsPage() {
-  const { user } = useAuth()
+  const { user, catalog } = useAuth()
   const isTenantSuperadmin = user?.role === 'tenant_superadmin'
   const tenantId = user?.tenantId
+  const { toast, show: showToast } = useToast()
 
   const [tenant, setTenant]         = useState(null)
   const [users, setUsers]           = useState([])
@@ -167,39 +216,34 @@ export default function TenantSettingsPage() {
 
   // Tenant edit fields
   const [tenantName, setTenantName] = useState('')
-  const [isActive, setIsActive]     = useState(true)
   const [tenantDirty, setTenantDirty] = useState(false)
 
-  // Per-user role edits
-  const [pendingRoles, setPendingRoles] = useState({})
-  const [savingRole, setSavingRole]     = useState({})
-  const [roleError, setRoleError]       = useState({})
-
-  // Per-user active toggle
   const [togglingActive, setTogglingActive] = useState({})
-  const [activeError, setActiveError]       = useState({})
-
+  const [editing, setEditing] = useState(null)   // user row whose access is open
   const [showInvite, setShowInvite] = useState(false)
+
+  const loadUsers = useCallback(async () => {
+    if (!tenantId) return
+    try {
+      const res = await client.get(`/tenants/${tenantId}/users`)
+      setUsers(res.data.users || [])
+    } catch (err) {
+      showToast(errorDetail(err, 'Could not load users.'), 'error')
+    }
+  }, [tenantId, showToast])
 
   const loadData = useCallback(async () => {
     if (!tenantId) return
     setLoading(true)
-    const [tResult, uResult] = await Promise.allSettled([
-      client.get(`/tenants/${tenantId}`),
-      client.get(`/tenants/${tenantId}/users`),
-    ])
+    const [tResult] = await Promise.allSettled([client.get(`/tenants/${tenantId}`), loadUsers()])
     if (tResult.status === 'fulfilled') {
       const t = tResult.value.data
       setTenant(t)
       setTenantName(t.name)
-      setIsActive(t.is_active)
       setTenantDirty(false)
     }
-    if (uResult.status === 'fulfilled') {
-      setUsers(uResult.value.data.users || [])
-    }
     setLoading(false)
-  }, [tenantId])
+  }, [tenantId, loadUsers])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -208,74 +252,58 @@ export default function TenantSettingsPage() {
     setSaving(true)
     setSaveError(null)
     try {
-      await client.patch(`/tenants/${tenantId}`, { name: tenantName, is_active: isActive })
-      await loadData()
+      const res = await client.patch(`/tenants/${tenantId}`, { name: tenantName })
+      const name = res.data?.name ?? tenantName
+      setTenant((t) => ({ ...t, name }))
+      setTenantName(name)
+      setTenantDirty(false)
     } catch (err) {
-      setSaveError(err?.response?.data?.detail || 'Failed to save settings')
+      setSaveError(errorDetail(err, 'Failed to save settings'))
     } finally { setSaving(false) }
   }
 
-  const saveRole = async (userId) => {
-    const newRole = pendingRoles[userId]
-    if (!newRole || !tenantId) return
-    setSavingRole(prev => ({ ...prev, [userId]: true }))
-    setRoleError(prev => ({ ...prev, [userId]: null }))
-    try {
-      await client.patch(`/tenants/${tenantId}/users/${userId}/role`, { role: newRole })
-      await loadData()
-      setPendingRoles(prev => { const n = { ...prev }; delete n[userId]; return n })
-    } catch (err) {
-      setRoleError(prev => ({ ...prev, [userId]: err?.response?.data?.detail || 'Failed to save role' }))
-    } finally { setSavingRole(prev => ({ ...prev, [userId]: false })) }
-  }
-
-  const toggleUserActive = async (userId, currentIsActive) => {
+  const toggleUserActive = async (u) => {
     if (!tenantId) return
-    setTogglingActive(prev => ({ ...prev, [userId]: true }))
-    setActiveError(prev => ({ ...prev, [userId]: null }))
+    setTogglingActive((prev) => ({ ...prev, [u.user_id]: true }))
     try {
-      await client.patch(`/tenants/${tenantId}/users/${userId}/deactivate`, { is_active: !currentIsActive })
-      await loadData()
+      await client.patch(`/tenants/${tenantId}/users/${u.user_id}/deactivate`, { is_active: !u.is_active })
+      setUsers((rows) => rows.map((r) => (r.user_id === u.user_id ? { ...r, is_active: !u.is_active } : r)))
+      showToast(`${u.username} ${u.is_active ? 'deactivated' : 'activated'}.`)
     } catch (err) {
-      setActiveError(prev => ({ ...prev, [userId]: err?.response?.data?.detail || 'Failed to update status' }))
+      showToast(errorDetail(err, 'Failed to update status'), 'error')
     } finally {
-      setTogglingActive(prev => ({ ...prev, [userId]: false }))
+      setTogglingActive((prev) => ({ ...prev, [u.user_id]: false }))
     }
   }
 
-  const handleInvite = async (payload) => {
-    if (!tenantId) return
-    let result
-    if (payload.username && !payload.email) {
-      const r = await client.post(`/tenants/${tenantId}/users`, { username: payload.username })
-      result = { action: 'assigned', username: r.data.username || payload.username, email: '', role: '' }
-    } else {
-      const r = await client.post(`/tenants/${tenantId}/users/invite`, payload)
-      result = r.data
-    }
-    await loadData()
-    return result
+  const onAccessSaved = (target, data) => {
+    setUsers((rows) => rows.map((r) => (r.user_id === target.user_id ? { ...r, actions: data.actions } : r)))
+    setEditing(null)
+    const added = data.added_requirements || []
+    showToast(`Access updated for ${target.username}.${added.length ? ` Also granted: ${actionLabels(added, catalog)}.` : ''}`)
   }
 
-  if (loading) {
-    return (
-      <div className="flex justify-center py-20">
-        <div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" />
-      </div>
-    )
+  const onInvited = async (message) => {
+    setShowInvite(false)
+    showToast(message)
+    await loadUsers()
   }
+
+  if (loading) return <Spinner className="py-20" />
 
   return (
     <div className="space-y-6">
+      <Toast toast={toast} />
+
       {/* Header */}
       <div>
         <h1 className="page-title">Tenant Management</h1>
         <p className="text-dark-400 text-sm mt-1">
-          {tenant?.name} · {isTenantSuperadmin ? 'Manage settings and users' : 'View users'}
+          {tenant?.name} · Manage settings and who can do what
         </p>
       </div>
 
-      {/* ── Tenant Settings (tenant_superadmin only) ── */}
+      {/* ── Tenant Settings ── */}
       {isTenantSuperadmin && tenant && (
         <div className="glass-card p-6 space-y-5">
           <h2 className="font-semibold text-dark-50 flex items-center gap-2 text-base">
@@ -283,17 +311,13 @@ export default function TenantSettingsPage() {
             Tenant Settings
           </h2>
 
-          {saveError && (
-            <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-              {saveError}
-            </div>
-          )}
+          <ErrorNote>{saveError}</ErrorNote>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs text-dark-400 mb-1">Tenant Name</label>
+              <label htmlFor="tenant-name" className="block text-xs text-dark-400 mb-1">Tenant Name</label>
               <input
+                id="tenant-name"
                 type="text"
                 value={tenantName}
                 onChange={e => { setTenantName(e.target.value); setTenantDirty(true) }}
@@ -301,9 +325,9 @@ export default function TenantSettingsPage() {
               />
             </div>
             <div>
-              <label className="block text-xs text-dark-400 mb-1">Slug</label>
+              <label htmlFor="tenant-slug" className="block text-xs text-dark-400 mb-1">Slug</label>
               <input
-                type="text" value={tenant.slug} disabled
+                id="tenant-slug" type="text" value={tenant.slug} disabled
                 className="input-field w-full text-sm opacity-50 font-mono"
               />
             </div>
@@ -333,7 +357,7 @@ export default function TenantSettingsPage() {
 
       {/* ── Users ── */}
       <div className="glass-card overflow-hidden">
-        <div className="flex items-center justify-between p-4 border-b border-dark-700/50">
+        <div className="flex items-center justify-between gap-3 p-4 border-b border-dark-700/50">
           <div>
             <h2 className="font-semibold text-dark-50 flex items-center gap-2 text-base">
               <Users className="w-4 h-4 text-accent-cyan" />
@@ -351,106 +375,83 @@ export default function TenantSettingsPage() {
           )}
         </div>
 
-        <div className="p-4 space-y-2">
-          {users.length === 0 ? (
-            <p className="text-dark-400 text-sm text-center py-8">No users assigned to this tenant.</p>
-          ) : (
-            users.map(u => {
-              const isSelf          = u.user_id === user?.userId
-              const isTsUser        = u.role === 'tenant_superadmin'
-              const canEditRole     = isTenantSuperadmin && !isTsUser
-              const canToggleActive = isTenantSuperadmin && !isSelf && !isTsUser
-              const currentRole   = pendingRoles[u.user_id] ?? u.role
-              const isDirty       = pendingRoles[u.user_id] !== undefined && pendingRoles[u.user_id] !== u.role
-
-              return (
-                <div key={u.user_id} className="bg-dark-800/60 rounded-xl p-3 border border-dark-700/40 space-y-2">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium text-dark-50 text-sm">
-                        {u.username}
-                        {isSelf && <span className="ml-2 text-[11px] text-dark-500 bg-dark-700 rounded px-1 py-0.5">you</span>}
-                      </p>
-                      <p className="text-xs text-dark-400 truncate">{u.email}</p>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <span className={`text-xs px-2 py-0.5 rounded-full border ${
-                        u.is_active
-                          ? 'text-green-400 border-green-500/30 bg-green-500/10'
-                          : 'text-dark-400 border-dark-600 bg-dark-800'
-                      }`}>
-                        {u.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                      {canToggleActive && (
-                        <button
-                          onClick={() => toggleUserActive(u.user_id, u.is_active)}
-                          disabled={!!togglingActive[u.user_id]}
-                          title={u.is_active ? 'Deactivate user' : 'Activate user'}
-                          className="text-dark-400 hover:text-dark-50 transition-colors"
-                        >
-                          {togglingActive[u.user_id]
-                            ? <RefreshCw className="w-4 h-4 animate-spin" />
-                            : u.is_active
-                              ? <ToggleRight className="w-5 h-5 text-eagle-400" />
-                              : <ToggleLeft  className="w-5 h-5" />}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {canEditRole ? (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={currentRole}
-                        onChange={e => setPendingRoles(prev => ({ ...prev, [u.user_id]: e.target.value }))}
-                        className="flex-1 text-xs bg-dark-700 border border-dark-600 rounded-lg px-2 py-1.5 text-dark-200 focus:border-eagle-500 focus:outline-none"
-                      >
-                        {ASSIGNABLE_ROLES.map(o => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                      </select>
-                      {isDirty && (
-                        <button
-                          onClick={() => saveRole(u.user_id)}
-                          disabled={savingRole[u.user_id]}
-                          className="btn-primary text-xs py-1 px-3 flex items-center gap-1 flex-shrink-0"
-                        >
-                          {savingRole[u.user_id]
-                            ? <RefreshCw className="w-3 h-3 animate-spin" />
-                            : <Check className="w-3 h-3" />}
-                          Save
-                        </button>
-                      )}
-                      {!isDirty && (
-                        <span className={`text-xs font-medium flex-shrink-0 ${ROLE_COLORS[u.role] ?? 'text-dark-300'}`}>
-                          {roleLabel(u.role)}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <p className={`text-xs font-medium ${ROLE_COLORS[u.role] ?? 'text-dark-300'}`}>
-                      {roleLabel(u.role)}
-                    </p>
-                  )}
-
-                  {roleError[u.user_id] && (
-                    <p className="text-xs text-red-400">{roleError[u.user_id]}</p>
-                  )}
-                  {activeError[u.user_id] && (
-                    <p className="text-xs text-red-400">{activeError[u.user_id]}</p>
-                  )}
-                </div>
-              )
-            })
-          )}
-        </div>
+        {users.length === 0 ? (
+          <p className="text-dark-400 text-sm text-center py-8">No users assigned to this tenant.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Access</th>
+                  <th>Status</th>
+                  <th className="w-12"><span className="sr-only">Menu</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => {
+                  const isSelf = u.user_id === user?.userId
+                  const isOwner = u.role === 'tenant_superadmin'
+                  const canEdit = isTenantSuperadmin && u.role === 'tenant_user'
+                  const canToggle = isTenantSuperadmin && !isSelf && !isOwner
+                  const access = isOwner
+                    ? 'Tenant Superadmin · all actions'
+                    : catalog ? accessSummary(u.actions, catalog) : '…'
+                  const accessTone = isOwner ? 'text-accent-purple' : (u.actions?.length ? 'text-dark-100' : 'text-dark-500')
+                  return (
+                    <tr key={u.user_id}>
+                      <td>
+                        <span className="font-medium text-dark-50">{u.username}</span>
+                        {isSelf && <span className="ml-2 rounded bg-dark-700 px-1 py-0.5 text-[11px] text-dark-400">you</span>}
+                      </td>
+                      <td className="text-sm text-dark-300">{u.email}</td>
+                      <td>
+                        {canEdit ? (
+                          <button type="button" onClick={() => setEditing(u)} title="Edit access"
+                            className={`rounded text-left text-sm underline decoration-dark-600 decoration-dotted underline-offset-4 hover:text-eagle-400 hover:decoration-eagle-500 ${accessTone}`}>
+                            {access}
+                          </button>
+                        ) : (
+                          <span className={`text-sm ${accessTone}`}>{access}</span>
+                        )}
+                      </td>
+                      <td><StatusBadge active={u.is_active} /></td>
+                      <td>
+                        {togglingActive[u.user_id]
+                          ? <RefreshCw className="m-1.5 h-4 w-4 animate-spin text-dark-400" />
+                          : (
+                            <RowMenu items={[
+                              canEdit && { label: 'Edit access', icon: SlidersHorizontal, onClick: () => setEditing(u) },
+                              canToggle && (u.is_active
+                                ? { label: 'Deactivate', icon: UserX, danger: true, onClick: () => toggleUserActive(u) }
+                                : { label: 'Activate', icon: UserCheck, onClick: () => toggleUserActive(u) }),
+                            ]} />
+                          )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
+      {editing && (
+        <EditAccessPanel
+          tenantId={tenantId}
+          target={editing}
+          onClose={() => setEditing(null)}
+          onSaved={onAccessSaved}
+        />
+      )}
+
       {showInvite && (
-        <InviteModal
+        <InvitePanel
           tenantId={tenantId}
           onClose={() => setShowInvite(false)}
-          onInvite={handleInvite}
+          onDone={onInvited}
         />
       )}
     </div>
