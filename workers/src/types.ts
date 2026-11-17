@@ -42,4 +42,5 @@ export interface AuthUser {
   role: string
   username: string
   tenantId?: string
+  actions: string[]
 }

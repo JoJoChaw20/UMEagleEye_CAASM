@@ -1,6 +1,10 @@
 import { createMiddleware } from 'hono/factory'
 import type { Env, AuthUser } from '../types'
 import { verifyToken } from '../lib/auth'
+import { getDb } from '../db/client'
+import { users } from '../db/schema'
+import { eq } from 'drizzle-orm'
+import { decide, refusalMessage, type ActionKey } from '../lib/actions'
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -20,19 +24,33 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
     return c.json({ detail: 'Token expired or invalid' }, 401)
   }
 
-  c.set('user', {
+  // Role, tenant, active flag and actions are read fresh on every request, not trusted from the
+  // token, so a change by an administrator (or a deactivation) takes effect at once.
+  const db = getDb(c.env.DATABASE_URL)
+  const [row] = await db
+    .select({ role: users.role, tenantId: users.tenantId, isActive: users.isActive, actions: users.actions })
+    .from(users)
+    .where(eq(users.userId, payload.sub))
+    .limit(1)
+  if (!row || !row.isActive) {
+    return c.json({ detail: 'Your account is deactivated. Contact your Tenant Superadmin.' }, 401)
+  }
+
+  const user: AuthUser = {
     userId: payload.sub,
-    role: payload.role,
+    role: row.role,
     username: payload.username,
-    tenantId: payload.tenant_id,
-  })
+    tenantId: row.tenantId ?? undefined,
+    actions: row.actions ?? [],
+  }
+  c.set('user', user)
 
   // Every role but the platform superadmin sees one tenant. An account with no tenant
   // (made by Google sign-in for an unknown email, or left over when its tenant was
   // deleted) would otherwise pass routes that filter by tenant only when one is set, and
   // read every tenant's data. It may use its own account endpoints (/auth/...) and
   // nothing else until an admin adds it to a tenant.
-  if (payload.role !== 'superadmin' && !payload.tenant_id && !/^\/api\/v1\/auth\//.test(c.req.path)) {
+  if (user.role !== 'superadmin' && !user.tenantId && !/^\/api\/v1\/auth\//.test(c.req.path)) {
     return c.json({ detail: 'Your account is not part of an organisation yet. Ask your administrator to add you.' }, 403)
   }
 
@@ -79,3 +97,46 @@ export function requireTenantAccess(platformRoles: string[], ownTenantRoles: str
     }, 403)
   })
 }
+
+export function hasAction(user: AuthUser, key: ActionKey): boolean {
+  return decide(user, key).ok
+}
+
+// Passes when the user may do at least one of the listed actions.
+export function requireAction(...anyOf: ActionKey[]) {
+  return createMiddleware<{ Bindings: Env }>(async (c, next) => {
+    const user = c.get('user')
+    if (!user) return c.json({ detail: 'Unauthorized' }, 401)
+    let first: Exclude<ReturnType<typeof decide>, { ok: true }> | null = null
+    for (const key of anyOf) {
+      const d = decide(user, key)
+      if (d.ok) {
+        await next()
+        return
+      }
+      first ??= d
+    }
+    const key = anyOf[0]!
+    const reason = first && !first.ok ? first.reason : 'missing_action'
+    return c.json({ detail: refusalMessage(reason, key), missing_action: key }, 403)
+  })
+}
+
+// The Tenant Superadmin of the tenant in the route (:tenantId), or of any tenant when the route has none.
+export const requireTenantSuperadmin = createMiddleware<{ Bindings: Env }>(async (c, next) => {
+  const user = c.get('user')
+  if (!user) return c.json({ detail: 'Unauthorized' }, 401)
+  const tenantId = c.req.param('tenantId')
+  if (user.role === 'tenant_superadmin' && (tenantId === undefined || user.tenantId === tenantId)) {
+    await next()
+    return
+  }
+  return c.json({ detail: 'Only the Tenant Superadmin can do this.' }, 403)
+})
+
+export const requirePlatformSuperadmin = createMiddleware<{ Bindings: Env }>(async (c, next) => {
+  const user = c.get('user')
+  if (!user) return c.json({ detail: 'Unauthorized' }, 401)
+  if (user.role !== 'superadmin') return c.json({ detail: 'Only the Platform Superadmin can do this.' }, 403)
+  await next()
+})

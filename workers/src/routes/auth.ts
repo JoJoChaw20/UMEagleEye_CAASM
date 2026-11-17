@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, or } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { users, tenants } from '../db/schema'
 import {
@@ -18,6 +18,7 @@ import {
 import { authenticator } from 'otplib'
 import { TOO_MANY, clearFailures, overLimit, recordFailure } from '../lib/loginLimit'
 import { audit, callerIp } from '../services/audit'
+import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -33,54 +34,6 @@ const passwordSchema = z.string()
 // as long as a wrong password and cannot be told apart by timing.
 let decoyHash: Promise<string> | null = null
 const decoy = () => (decoyHash ??= hashPassword('decoy-password-never-matches'))
-
-// ── POST /register ───────────────────────────────────────────────
-const registerSchema = z.object({
-  username: z.string().min(3).max(100),
-  email: z.string().email(),
-  password: passwordSchema,
-  role: z.enum(['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']).optional(),
-})
-
-// Platform superadmin only: it can create an account with any role, superadmin included.
-// (It was open to anyone; tenant users are created from the Users and Tenants pages.)
-app.post('/register', authMiddleware, requireRoles('superadmin'), zValidator('json', registerSchema), async (c) => {
-  try {
-    const { username, email, password, role } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
-
-    const existing = await db
-      .select({ userId: users.userId })
-      .from(users)
-      .where(or(eq(users.username, username), eq(users.email, email)))
-      .limit(1)
-
-    if ((existing[0]?.userId) != null) {
-      return c.json({ detail: 'Username or email already registered' }, 409)
-    }
-
-    const passwordHash = await hashPassword(password)
-    const inserted = await db
-      .insert(users)
-      .values({ username, email, passwordHash, role: role ?? 'business_owner' })
-      .returning({
-        userId: users.userId,
-        username: users.username,
-        email: users.email,
-        role: users.role,
-      })
-
-    const newUser = inserted[0]
-    if (!newUser) {
-      return c.json({ detail: 'Registration failed' }, 500)
-    }
-
-    return c.json({ user_id: newUser.userId, username: newUser.username, email: newUser.email, role: newUser.role }, 201)
-  } catch (err) {
-    console.error('register error:', err)
-    return c.json({ detail: 'Registration failed' }, 500)
-  }
-})
 
 // ── POST /login ──────────────────────────────────────────────────
 const loginSchema = z.object({
@@ -413,6 +366,7 @@ app.get('/me', authMiddleware, async (c) => {
         lastLogin:      users.lastLogin,
         telegramChatId: users.telegramChatId,
         passwordHash:   users.passwordHash,
+        actions:        users.actions,
       })
       .from(users)
       .leftJoin(tenants, eq(users.tenantId, tenants.tenantId))
@@ -429,6 +383,18 @@ app.get('/me', authMiddleware, async (c) => {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)
   }
+})
+
+// ── GET /actions ─────────────────────────────────────────────────
+// The catalog the Users page builds its checkboxes from.
+app.get('/actions', authMiddleware, (c) => {
+  return c.json({
+    groups: GROUPS,
+    actions: ACTIONS.map(({ key, group, label, description, impact, requires, readOnly }) => ({
+      key, group, label, description, impact, requires, read_only: readOnly,
+    })),
+    presets: PRESETS,
+  })
 })
 
 // ── POST /mfa/reset ──────────────────────────────────────────────
