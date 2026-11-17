@@ -94,7 +94,6 @@ export function recoveryNext(
   }
   if (action === 'cancel_by_owner') {
     if (r.status === 'on_hold') return { ...keep, status: 'disputed' }
-    if (r.status === 'awaiting_approval') return { ...keep, status: 'cancelled' }
     return null
   }
   if (r.status === 'on_hold' && r.holdUntil && t >= r.holdUntil.getTime()) return { ...keep, status: 'complete_now' }
@@ -186,16 +185,12 @@ export function restoredNotice(date: string): string {
   return `Ownership of this tenant was restored by platform verification on ${date}.`
 }
 
-/** What an emergency completion (Path B) does to the former owner and the tenant; the service runs all of it in one batch. */
+/** Facts about an emergency completion (Path B) the service needs; the swap itself is one guarded batch in the service. */
 export function completionEffects(_reason: string) {
-  return {
-    suspendFormerOwner: true, signFormerOwnerOut: true, deleteUnusedEnrolmentTokens: true,
-    clearPlanPositions: true, checklistHasAgentKeys: true,
-  } as const
+  return { checklistHasAgentKeys: true } as const
 }
 
 export const RECOVERY_DISPUTED_NOTICE = 'Recovery was disputed. Contact platform support for verification.'
-export const RECOVERY_CANCELLED_NOTICE = 'Recovery was cancelled by the current owner.'
 
 const CHECKLIST_ITEMS = [
   "review every user's actions",

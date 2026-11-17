@@ -8,7 +8,7 @@ import { authMiddleware, requireTenantSuperadmin } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { ownershipRecoveries, ownershipTransfers, tenantRecoveryPlans, tenants, users } from '../db/schema'
 import {
-  HOURS_72, RECOVERY_CANCELLED_NOTICE, RECOVERY_DISPUTED_NOTICE, RECOVERY_REASONS, RECOVERY_REASON_LABELS,
+  HOURS_72, RECOVERY_DISPUTED_NOTICE, RECOVERY_REASONS, RECOVERY_REASON_LABELS,
   approverSlot, ownerChecklist, ownershipChangedNotice, recoveryNext, validateRecoveryPlan, validateTransfer,
 } from '../lib/ownership'
 import { ownershipView, transferMessage } from '../lib/ownershipView'
@@ -342,6 +342,9 @@ router.post(
       const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
       const label = RECOVERY_REASON_LABELS[body.reason]
       const message = `${successor.username} asked to take over ${tenant?.name ?? 'this tenant'} as Tenant Superadmin after ${owner.username} (reason: ${label}). Approve within 72 hours if this is right.`
+      const heads = `An emergency recovery of ${tenant?.name ?? 'this tenant'} was started by ${successor.username} (reason: ${label}). It needs two approvals.`
+      await postNotice(db, tenantId, owner.userId, 'recovery_started', heads, expiresAt)
+      await sendMail(c.env, { to: owner.email, subject: 'An emergency recovery of your tenant was started', text: heads })
       for (const a of [a1, a2]) {
         await postNotice(db, tenantId, a.userId, 'recovery_request', message, expiresAt)
         await sendMail(c.env, { to: a.email, subject: 'Emergency ownership recovery needs your approval', text: message })
@@ -454,16 +457,16 @@ router.post(
         .where(and(eq(ownershipRecoveries.recoveryId, r.recoveryId), eq(ownershipRecoveries.status, r.status)))
         .returning({ recoveryId: ownershipRecoveries.recoveryId })
       if (!moved) return c.json({ detail: NOT_OPEN }, 409)
-      const text = next.status === 'disputed' ? RECOVERY_DISPUTED_NOTICE : RECOVERY_CANCELLED_NOTICE
+      const text = RECOVERY_DISPUTED_NOTICE
       const [plan] = await db.select().from(tenantRecoveryPlans).where(eq(tenantRecoveryPlans.tenantId, tenantId)).limit(1)
       const targets = [r.successorId, plan?.approver1Id, plan?.approver2Id].filter((x): x is string => !!x)
       const rows = await db.select({ userId: users.userId, email: users.email }).from(users).where(inArray(users.userId, targets))
       for (const t of rows) {
-        await postNotice(db, tenantId, t.userId, next.status === 'disputed' ? 'recovery_disputed' : 'recovery_cancelled', text)
+        await postNotice(db, tenantId, t.userId, 'recovery_disputed', text)
         await sendMail(c.env, { to: t.email, subject: 'Emergency ownership recovery stopped', text })
       }
       await audit(db, c, {
-        userId: caller.userId, tenantId, actionType: next.status === 'disputed' ? 'ownership.recovery_disputed' : 'ownership.recovery_cancelled',
+        userId: caller.userId, tenantId, actionType: 'ownership.recovery_disputed',
         targetEntity: r.recoveryId, newState: { status: next.status },
       })
       return c.json({ ok: true, status: next.status })

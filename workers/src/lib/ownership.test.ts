@@ -98,7 +98,7 @@ test('expired transitions are refused', () => {
 test('owner cancel: disputes a hold, cancels an open request', () => {
   const hold = rec('resigned', { status: 'on_hold', approver1At: now, approver2At: now, holdUntil: plus(HOURS_72) })
   assert.equal(recoveryNext(hold, 'cancel_by_owner', plus(1000))!.status, 'disputed')
-  assert.equal(recoveryNext(rec('resigned'), 'cancel_by_owner', now)!.status, 'cancelled')
+  assert.equal(recoveryNext(rec('resigned'), 'cancel_by_owner', now), null)   // not while awaiting approval
   assert.equal(recoveryNext({ ...hold, status: 'complete_now' }, 'cancel_by_owner', now), null)
 })
 
@@ -171,13 +171,9 @@ test('swap guard is ANDed into the demote only', () => {
   assert.ok(!/ownership_transfers/.test(plain.sql))
 })
 
-test('completionEffects: every emergency reason suspends, signs out, revokes tokens and flags agent keys', () => {
+test('completionEffects: the checklist has agent keys for every Path B reason', () => {
   for (const r of ['terminated', 'compromised', 'resigned', 'unreachable']) {
-    const e = completionEffects(r)
-    assert.equal(e.suspendFormerOwner, true)
-    assert.equal(e.signFormerOwnerOut, true)
-    assert.equal(e.deleteUnusedEnrolmentTokens, true)
-    assert.equal(e.checklistHasAgentKeys, true)
+    assert.equal(completionEffects(r).checklistHasAgentKeys, true)
   }
 })
 

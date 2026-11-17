@@ -18,7 +18,11 @@ import { sendMail } from './mailer'
  * completion did not finish) is completed. `env`, when given, lets a completion send its emails.
  */
 export async function settleOwnership(db: DB, tenantId: string, env?: Env): Promise<void> {
-  await settleRecovery(db, tenantId, env)
+  try {
+    await settleRecovery(db, tenantId, env)
+  } catch (err) {
+    console.error('settling recovery failed:', err)   // never blocks transfer settling or the calling route
+  }
   const expired = await db.update(ownershipTransfers).set({ status: 'expired', decidedAt: sql`now()` })
     .where(and(
       eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'),
@@ -156,7 +160,13 @@ export async function completeRecovery(db: DB, r: OpenRecovery, env?: Env, c: Co
   ] as any) as unknown as unknown[][]
   const [, f, d, p] = res
   const done = f!.length === 1 && d!.length === 1 && p!.length === 1
-  if (done) await afterRecovery(db, r, env, c)
+  if (done) {
+    try {
+      await afterRecovery(db, r, env, c)   // the swap is committed; a notice failure must not undo or hide it
+    } catch (err) {
+      console.error('after-recovery notices failed:', err)
+    }
+  }
   return { done }
 }
 
