@@ -591,7 +591,7 @@ router.post(
 
 // ── DELETE /:tenantId/users/:userId — Delete a user ────────────────
 // The Tenant Superadmin of this tenant, for tenant users. Step-up: their password and current MFA
-// code, plus the target's username typed exactly. The audit entry is written first; audit rows of the
+// code, plus the target's username typed exactly. The audit entry is written after the delete succeeds; audit rows of the
 // user stay (user_id becomes NULL). A foreign key that refuses the delete (ownership history) gives 409.
 const OWNERSHIP_HISTORY = "This account is part of the tenant's ownership history and cannot be deleted. Deactivate it instead."
 router.delete(
@@ -621,17 +621,20 @@ router.delete(
       const refused = await stepUp(c, db, me, { password, code })
       if (refused) return refused
 
-      await audit(db, c, {
-        userId: caller.userId, tenantId, actionType: 'user.delete', targetEntity: userId,
-        previousState: { user_id: target.userId, username: target.username, email: target.email, actions: target.actions },
-      })
+      const previousState = { user_id: target.userId, username: target.username, email: target.email, actions: target.actions }
       try {
         await db.delete(users).where(and(eq(users.userId, userId), eq(users.tenantId, tenantId)))
       } catch (err) {
         const e = err as { code?: string; cause?: { code?: string } }
-        if (e?.code === '23503' || e?.cause?.code === '23503') return c.json({ detail: OWNERSHIP_HISTORY }, 409)
+        if (e?.code === '23503' || e?.cause?.code === '23503') {
+          await audit(db, c, {
+            userId: caller.userId, tenantId, actionType: 'user.delete_refused', targetEntity: userId, previousState,
+          })
+          return c.json({ detail: OWNERSHIP_HISTORY }, 409)
+        }
         throw err
       }
+      await audit(db, c, { userId: caller.userId, tenantId, actionType: 'user.delete', targetEntity: userId, previousState })
       return c.json({ ok: true })
     } catch (err) {
       console.error('delete user error:', err)
