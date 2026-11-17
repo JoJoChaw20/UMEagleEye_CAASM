@@ -89,6 +89,11 @@ export function planActionsUpdate(
   return { previous: account.actions, set: { actions: next } }
 }
 
+/** MFA set-up asks the Platform Superadmin to add the account on two devices (spec section 7, Layer 1). */
+export function enrolsTwoDevices(row: { role: string }): boolean {
+  return roleOf(row) === 'superadmin'
+}
+
 /** A row's normalized role, for comparisons against 'superadmin' / 'tenant_superadmin'. */
 export function roleOf(row: { role: string }): Role {
   return normalizeAccount(row.role, null).role

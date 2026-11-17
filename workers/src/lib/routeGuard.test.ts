@@ -5,8 +5,8 @@ import { join } from 'node:path'
 
 // Routes that need a login but no permission: they act only on the caller's own account.
 const SELF_SERVICE = new Set([
-  'auth.ts:/mfa/setup', 'auth.ts:/mfa/enable', 'auth.ts:/change-password', 'auth.ts:/set-password',
-  'auth.ts:/me', 'auth.ts:/actions', 'auth.ts:/mfa/reset',
+  'auth.ts:/mfa/status', 'auth.ts:/mfa/recovery-codes', 'auth.ts:/change-password', 'auth.ts:/set-password',
+  'auth.ts:/me', 'auth.ts:/actions',
 ])
 
 const routesDir = join(process.cwd(), 'src/routes')
@@ -65,4 +65,14 @@ test('no route still uses role lists', () => {
     return src.includes('requireRoles(') || src.includes('requireTenantAccess(')
   })
   assert.deepEqual(offenders, [])
+})
+
+// The sign-in steps before an access token exists: they authenticate with the password, Google, or
+// the mfa_token in the body. authMiddleware would refuse them (an mfa_token is not an access token).
+test('the MFA sign-in steps do not use authMiddleware', () => {
+  const src = readFileSync(join(routesDir, 'auth.ts'), 'utf8')
+  const publicPaths = ['/login', '/google', '/mfa/verify', '/mfa/enrol/start', '/mfa/enrol/finish']
+  const seen = new Map([...src.matchAll(ROUTE_RE)].map((m) => [m[2]!, m[3]!.includes('authMiddleware')]))
+  for (const path of publicPaths) assert.equal(seen.get(path), false, path)
+  for (const gone of ['/mfa/setup', '/mfa/enable', '/mfa/reset']) assert.equal(seen.has(gone), false, gone)
 })

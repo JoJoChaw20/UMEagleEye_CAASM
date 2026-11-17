@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { LIMITS, WINDOW_SECONDS, clearFailures, overLimit, recordFailure } from './loginLimit'
+import { LIMITS, WINDOW_SECONDS, clearFailures, minutesLeftInWindow, overLimit, recordFailure } from './loginLimit'
 
 function memoryKv() {
   const m = new Map<string, string>()
@@ -36,4 +36,12 @@ test('a broken cache never blocks sign-in', async () => {
   const broken = { get: async () => { throw new Error('kv down') }, put: async () => { throw new Error('kv down') }, delete: async () => {} }
   assert.equal(await overLimit(broken, 'password_address', '1.2.3.4'), false)
   await recordFailure(broken, 'password_address', '1.2.3.4')
+})
+
+test('minutes left in the window: the real remaining time, rounded up, at least 1', () => {
+  const start = Math.floor(Date.UTC(2026, 10, 9, 10, 0, 0) / 1000 / WINDOW_SECONDS) * WINDOW_SECONDS * 1000
+  assert.equal(minutesLeftInWindow(start), 15)
+  assert.equal(minutesLeftInWindow(start + 1_000), 15)
+  assert.equal(minutesLeftInWindow(start + 3 * 60_000 + 1), 12)
+  assert.equal(minutesLeftInWindow(start + WINDOW_SECONDS * 1000 - 1), 1)
 })

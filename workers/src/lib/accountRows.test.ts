@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { MIGRATION_ACTIONS } from './actions'
 import {
-  assignableUsers, canBeAssignedAlerts, planActionsUpdate, roleOf, signIn, toAuthUser, withAccount, tenantUserItem,
+  assignableUsers, canBeAssignedAlerts, enrolsTwoDevices, planActionsUpdate, roleOf, signIn, toAuthUser, withAccount, tenantUserItem,
 } from './accountRows'
 
 const T = 'tenant-a'
@@ -90,4 +90,11 @@ test('a stray old role value fails closed: a tenant user with no actions', () =>
   assert.equal(roleOf({ role: LEGACY_OWNER }), 'tenant_user')
   assert.equal(canBeAssignedAlerts({ tenantId: T, role: LEGACY_ADMIN, actions: ADMIN_SET }), false)
   assert.deepEqual(planActionsUpdate({ role: LEGACY_OWNER, actions: OWNER_SET }, ['alert.view'])?.previous, [])
+})
+
+test('MFA set-up asks for two devices for the Platform Superadmin only', () => {
+  assert.equal(enrolsTwoDevices({ role: 'superadmin' }), true)
+  assert.equal(enrolsTwoDevices({ role: 'tenant_superadmin' }), false)
+  assert.equal(enrolsTwoDevices({ role: 'tenant_user' }), false)
+  assert.equal(enrolsTwoDevices({ role: LEGACY_ADMIN }), false)
 })

@@ -41,4 +41,10 @@ export async function clearFailures(kv: Kv, kind: LimitKind, who: string, now = 
   try { await kv.delete(limitKey(kind, who, now)) } catch { /* ignore */ }
 }
 
-export const TOO_MANY = 'Too many failed attempts. Try again in 15 minutes.'
+/** Whole minutes (rounded up, at least 1) until the current window ends and its count lapses. */
+export function minutesLeftInWindow(now = Date.now()): number {
+  const end = (window(now) + 1) * WINDOW_SECONDS * 1000
+  return Math.max(1, Math.ceil((end - now) / 60_000))
+}
+
+export const TOO_MANY ='Too many failed attempts. Try again in 15 minutes.'
