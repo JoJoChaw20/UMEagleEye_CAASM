@@ -13,6 +13,8 @@ const SELF_SERVICE = new Set([
   // Path B: the successor, an approver and the former owner are Tenant users; each handler checks the caller's own tenant and role.
   'ownership.ts:/:tenantId/ownership/recovery', 'ownership.ts:/:tenantId/ownership/recovery/approve',
   'ownership.ts:/:tenantId/ownership/recovery/cancel',
+  // The caller's own tenant-wide and personal notices; dismiss only matches user_id = caller.
+  'notices.ts:/', 'notices.ts:/:id/dismiss',
 ])
 
 const routesDir = join(process.cwd(), 'src/routes')

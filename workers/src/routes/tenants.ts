@@ -18,6 +18,7 @@ import { audit } from '../services/audit'
 import { mfaClearStatements, stepUp } from '../services/mfaStepUp'
 import { deleteUserStatements } from '../services/userDelete'
 import { sendMail } from '../services/mailer'
+import { ALREADY_OWNED, OWNERSHIP_ONLY, auditOwnerInvite, ownerInviteStatement, planOwnerInvite } from '../services/ownerInvite'
 import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
@@ -29,7 +30,6 @@ const router = new Hono<{ Bindings: Env }>()
 // Superadmin lists, creates, switches off and deactivates tenants here, and invites a tenant's
 // first Tenant Superadmin.
 
-const OWNERSHIP_ONLY = 'The Tenant Superadmin can only change through an ownership transfer.'
 
 // Every change to a user's actions is audited as user.actions, with what was added and removed.
 async function auditActions(db: DB, c: Context, by: string, tenantId: string, target: string, previous: readonly string[], next: readonly string[]) {
@@ -400,14 +400,29 @@ router.post(
       actions = parsed.actions
     }
 
+    if (role === 'tenant_superadmin') {
+      // The shared owner-invite path (services/ownerInvite.ts), also used by the platform restore.
+      const plan = await planOwnerInvite(db, caller, tenantId, email, username, false)
+      if (!plan.ok) return c.json({ detail: plan.error.detail }, plan.error.status)
+      try {
+        const [added] = await ownerInviteStatement(db, plan, tenantId, email)
+        if (!added) return c.json(ALREADY_OWNED, 409)
+        await auditOwnerInvite(db, c, caller, tenantId, plan, added, email)
+        return c.json({
+          ok: true, user_id: added.userId, username: added.username, email: added.email,
+          role, actions, action: plan.existing ? 'assigned' : 'created',
+        }, plan.existing ? 200 : 201)
+      } catch (err) {
+        // Two invitations at once: the unique index (one tenant superadmin per tenant) refuses the second.
+        if (/uq_users_one_tenant_superadmin/.test(String((err as { message?: unknown })?.message ?? err))) {
+          return c.json(ALREADY_OWNED, 409)
+        }
+        throw err
+      }
+    }
+
     const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
-    const ALREADY_OWNED = { detail: 'This tenant already has a Tenant Superadmin.' }
-    if (role === 'tenant_superadmin') {
-      const [owner] = await db.select({ userId: users.userId }).from(users)
-        .where(and(eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'))).limit(1)
-      if (owner) return c.json(ALREADY_OWNED, 409)
-    }
 
     try {
       const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
@@ -466,10 +481,6 @@ router.post(
         action: 'created',
       }, 201)
     } catch (err) {
-      // Two invitations at once: the unique index (one tenant superadmin per tenant) refuses the second.
-      if (role === 'tenant_superadmin' && /uq_users_one_tenant_superadmin/.test(String((err as { message?: unknown })?.message ?? err))) {
-        return c.json(ALREADY_OWNED, 409)
-      }
       throw err
     }
   }

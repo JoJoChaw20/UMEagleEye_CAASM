@@ -30,7 +30,8 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   const db = getDb(c.env.DATABASE_URL)
   const [row] = await db
     .select({ role: users.role, tenantId: users.tenantId, isActive: users.isActive, actions: users.actions,
-      mfaEnabled: users.mfaEnabled, sessionsValidAfter: users.sessionsValidAfter })
+      mfaEnabled: users.mfaEnabled, sessionsValidAfter: users.sessionsValidAfter,
+      scheduledDeactivationAt: users.scheduledDeactivationAt })
     .from(users)
     .where(eq(users.userId, payload.sub))
     .limit(1)

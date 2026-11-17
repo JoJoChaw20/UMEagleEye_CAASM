@@ -7,8 +7,9 @@ import {
   enrolmentTokens, ownershipRecoveries, ownershipTransfers, tenantNotices, tenantRecoveryPlans, users,
 } from '../db/schema'
 import {
-  completionEffects, ownerChecklist, ownershipChangedNotice, recoveryNext, swapStatements, type AfterChoice,
+  completionEffects, ownerChecklist, ownershipChangedNotice, recoveryNext, restoredNotice, swapStatements, type AfterChoice,
 } from '../lib/ownership'
+import { auditOwnerInvite, candidateEligible, ownerInviteStatement, type OwnerInvitePlan } from './ownerInvite'
 import { audit } from './audit'
 import { sendMail } from './mailer'
 
@@ -97,7 +98,7 @@ export async function acceptTransfer(
 }
 
 /** Removes both users from the tenant's recovery-plan positions, only where `guard` holds. */
-function clearPlanStatement(db: DB, tenantId: string, a: string, b: string, guard: SQL) {
+export function clearPlanStatement(db: DB, tenantId: string, a: string, b: string, guard: SQL) {
   const nullIfMember = (col: string) => sql`case when ${sql.raw(col)} in (${a}::uuid, ${b}::uuid) then null else ${sql.raw(col)} end`
   return db.update(tenantRecoveryPlans).set({
     successorId: nullIfMember('successor_id'), approver1Id: nullIfMember('approver1_id'),
@@ -217,5 +218,101 @@ async function settleRecovery(db: DB, tenantId: string, env?: Env) {
   if (next?.status === 'complete_now' || approvedNotCompleted) {
     const { done } = await completeRecovery(db, r, env)
     if (!done) await closeStaleRecovery(db, r)
+  }
+}
+
+const DAYS_30 = 30 * 24 * 60 * 60 * 1000
+type Person = { userId: string; username: string; email: string | null }
+
+/**
+ * Path C, platform restore, as ONE batch (one transaction), so the tenant never ends without an owner:
+ *  1. lock the current owner and the invited account (FOR UPDATE), when they exist;
+ *  2. demote + suspend the current owner (role tenant_user, is_active = false, actions cleared, sessions_valid_after = now()),
+ *     only if they are still the owner AND (for an existing invited account) that account is still promotable, so
+ *     the demote cannot commit without the promote;
+ *  3. guarded by "this transaction demoted the owner" (sessions_valid_after = now() and is_active = false): delete unused
+ *     enrolment tokens (uses = 0), clear the owner and the invited account from the recovery plan, cancel an open
+ *     transfer and recovery, end their request notices;
+ *  4. the owner write from services/ownerInvite.ts: promote the existing account (guarded: no owner left, still
+ *     eligible, demote happened) or insert a new Tenant Superadmin (the unique index uq_users_one_tenant_superadmin
+ *     makes it raise if an owner is still present, and the raise rolls the whole batch back).
+ * done = demote (when there was an owner) and the owner write each returned 1 row; otherwise nothing changed.
+ * Notices, audit and emails follow outside the batch.
+ */
+export async function restoreOwnership(
+  db: DB, c: Context | null,
+  i: { tenantId: string; platformUserId: string; email: string; plan: Extract<OwnerInvitePlan, { ok: true }>; formerOwner: Person | null },
+  env?: Env,
+): Promise<{ done: boolean; newOwner?: Person }> {
+  const { tenantId, plan, email, formerOwner } = i
+  const oldId = formerOwner?.userId
+  const candidateId = plan.existing?.userId
+  const lockIds = [oldId, candidateId].filter((x): x is string => !!x)
+  const stmts: unknown[] = []
+  if (lockIds.length) {
+    stmts.push(db.select({ userId: users.userId }).from(users)
+      .where(and(eq(users.tenantId, tenantId), inArray(users.userId, lockIds))).for('update'))
+  }
+  // An invited account with no tenant yet is not matched by the tenant filter above: lock it by id.
+  if (candidateId && plan.existing?.tenantId === null) {
+    stmts.push(db.select({ userId: users.userId }).from(users).where(eq(users.userId, candidateId)).for('update'))
+  }
+  let demoteAt = -1
+  let demoted: SQL | undefined
+  if (oldId) {
+    demoted = sql`exists (select 1 from users where user_id = ${oldId}::uuid and tenant_id = ${tenantId}::uuid
+      and role = 'tenant_user' and is_active = false and sessions_valid_after = now())`
+    demoteAt = stmts.length
+    stmts.push(db.update(users).set({
+      role: 'tenant_user', isActive: false, actions: [], scheduledDeactivationAt: null, sessionsValidAfter: sql`now()`,
+    }).where(and(
+      eq(users.userId, oldId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'),
+      candidateId ? candidateEligible(candidateId, tenantId) : undefined,
+    )).returning({ userId: users.userId }))
+    stmts.push(db.delete(enrolmentTokens).where(and(eq(enrolmentTokens.tenantId, tenantId), eq(enrolmentTokens.uses, 0), demoted)))
+    stmts.push(clearPlanStatement(db, tenantId, oldId, candidateId ?? oldId, demoted))
+    stmts.push(db.update(ownershipTransfers).set({ status: 'cancelled', decidedAt: sql`now()` })
+      .where(and(eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'), demoted)))
+    stmts.push(db.update(ownershipRecoveries).set({ status: 'cancelled' })
+      .where(and(eq(ownershipRecoveries.tenantId, tenantId), inArray(ownershipRecoveries.status, ['awaiting_approval', 'on_hold']), demoted)))
+    stmts.push(db.update(tenantNotices).set({ expiresAt: sql`now()` }).where(and(
+      eq(tenantNotices.tenantId, tenantId), inArray(tenantNotices.kind, ['transfer_request', 'recovery_request', 'recovery_hold']),
+      or(isNull(tenantNotices.expiresAt), gt(tenantNotices.expiresAt, sql`now()`)), demoted,
+    )))
+  }
+  const ownerAt = stmts.length
+  stmts.push(ownerInviteStatement(db, plan, tenantId, email, demoted))
+  const res = await db.batch(stmts as any) as unknown as unknown[][]
+  const added = res[ownerAt]![0] as Person | undefined
+  const done = (!oldId || res[demoteAt]!.length === 1) && !!added
+  if (!done || !added) return { done: false }
+  try {
+    await afterRestore(db, c, tenantId, i.platformUserId, formerOwner, added, plan, email, env)
+  } catch (err) {
+    console.error('after-restore notices failed:', err)   // the restore is committed; a notice failure must not hide it
+  }
+  return { done: true, newOwner: added }
+}
+
+async function afterRestore(
+  db: DB, c: Context | null, tenantId: string, platformUserId: string, former: Person | null, added: Person,
+  plan: Extract<OwnerInvitePlan, { ok: true }>, email: string, env: Env | undefined,
+) {
+  const date = today()
+  await postNotice(db, tenantId, null, 'ownership_restored', restoredNotice(date), new Date(Date.now() + DAYS_30))
+  if (former) await postNotice(db, tenantId, null, 'ownership_changed', ownershipChangedNotice(former.username, added.username, date))
+  await postNotice(db, tenantId, added.userId, 'owner_checklist', ownerChecklist(true))
+  await auditOwnerInvite(db, c, { userId: platformUserId, role: 'superadmin' }, tenantId, plan, added, email)
+  await audit(db, c, {
+    userId: platformUserId, tenantId, actionType: 'ownership.restored', targetEntity: added.userId,
+    previousState: { owner: former?.userId ?? null }, newState: { owner: added.userId },
+  })
+  if (env) {
+    const text = former
+      ? ownershipChangedNotice(former.username, added.username, date) + ' ' + restoredNotice(date)
+      : restoredNotice(date)
+    for (const to of [former?.email, added.email]) {
+      if (to) await sendMail(env, { to, subject: 'Tenant ownership restored', text })
+    }
   }
 }

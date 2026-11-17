@@ -21,6 +21,7 @@ import { claimStep, codeFailed, codeLimited, stepUp } from '../services/mfaStepU
 import { mailConfigured, sendMail } from '../services/mailer'
 import { applyDueBreakGlass } from '../services/breakGlass'
 import { settleOwnership } from '../services/ownership'
+import { isDeactivated } from '../lib/sessionGate'
 import { HOLD_HOURS, breakGlassEligible, nextState } from '../lib/breakGlass'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 import { enrolsTwoDevices, signIn, withAccount } from '../lib/accountRows'
@@ -84,7 +85,7 @@ async function mfaAccount(
   if (!claims || claims.stage !== stage) return { refused: c.json({ detail: SIGN_IN_AGAIN }, 401) }
   const [row] = await db.select().from(users).where(eq(users.userId, claims.sub)).limit(1)
   if (!row) return { refused: c.json({ detail: SIGN_IN_AGAIN }, 401) }
-  if (!row.isActive) return { refused: c.json({ detail: DEACTIVATED }, 401) }
+  if (isDeactivated(row)) return { refused: c.json({ detail: DEACTIVATED }, 401) }
   return { row }
 }
 
@@ -163,7 +164,7 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
       .limit(1)
 
     const valid = await verifyPassword(password, user?.passwordHash ?? await decoy())
-    if (!user || !user.isActive || !valid) {
+    if (!user || isDeactivated(user) || !valid) {
       await Promise.all([recordFailure(kv, 'password_account', username), recordFailure(kv, 'password_address', ip)])
       if (user) {
         await audit(db, c, { userId: user.userId, tenantId: user.tenantId, actionType: 'auth.login_failed', targetEntity: user.userId })
@@ -539,7 +540,7 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
       await db.update(users).set({ googleId: googlePayload.sub }).where(eq(users.userId, resolvedUser.userId))
     }
 
-    if (!resolvedUser.isActive) {
+    if (isDeactivated(resolvedUser)) {
       return c.json({ detail: 'Account is disabled' }, 403)
     }
 

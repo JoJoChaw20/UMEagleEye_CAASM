@@ -4,7 +4,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireTenantSuperadmin } from '../middleware/auth'
+import { authMiddleware, requirePlatformSuperadmin, requireTenantSuperadmin } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { ownershipRecoveries, ownershipTransfers, tenantRecoveryPlans, tenants, users } from '../db/schema'
 import {
@@ -17,8 +17,9 @@ import { audit } from '../services/audit'
 import { stepUp } from '../services/mfaStepUp'
 import { sendMail } from '../services/mailer'
 import {
-  acceptTransfer, closeRequestNotice, closeStaleRecovery, completeRecovery, openRecovery, postNotice, settleOwnership,
+  acceptTransfer, closeRequestNotice, closeStaleRecovery, completeRecovery, openRecovery, postNotice, restoreOwnership, settleOwnership,
 } from '../services/ownership'
+import { planOwnerInvite } from '../services/ownerInvite'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -473,6 +474,59 @@ router.post(
     } catch (err) {
       console.error('recovery cancel error:', err)
       return c.json({ detail: 'Failed to cancel the recovery' }, 500)
+    }
+  }
+)
+
+// -- POST /:tenantId/ownership/restore: Path C, the Platform Superadmin restores ownership (step-up) --
+// Demotes and suspends the current owner, if any, then invites the named person as Tenant Superadmin through the
+// shared owner-invite code (services/ownerInvite.ts), all in one batch (services/ownership.ts restoreOwnership).
+// The step-up is the Platform Superadmin's own password and MFA code. The Platform Superadmin gains no tenant access.
+router.post(
+  '/:tenantId/ownership/restore',
+  authMiddleware,
+  requirePlatformSuperadmin,
+  zValidator('json', z.object({
+    email: z.string().email(), username: z.string().min(3).max(100).optional(),
+    password: z.string().optional(), code: z.string(),
+  })),
+  async (c) => {
+    try {
+      const { tenantId } = c.req.param()
+      const body = c.req.valid('json')
+      const caller = c.get('user')
+      const db = getDb(c.env.DATABASE_URL)
+
+      const plan = await planOwnerInvite(db, caller, tenantId, body.email, body.username, true)
+      if (!plan.ok) return c.json({ detail: plan.error.detail }, plan.error.status)
+      if (plan.existing && plan.existing.isActive === false) {
+        return c.json({ detail: 'That account is deactivated. Choose an active account or a new email.' }, 409)
+      }
+      const [former] = await db.select({ userId: users.userId, username: users.username, email: users.email }).from(users)
+        .where(and(eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'))).limit(1)
+
+      const [me] = await db.select().from(users).where(eq(users.userId, caller.userId)).limit(1)
+      if (!me) return c.json({ detail: 'User not found' }, 404)
+      const refused = await stepUp(c, db, me, { password: body.password, code: body.code })
+      if (refused) return refused
+
+      let result
+      try {
+        result = await restoreOwnership(db, c, {
+          tenantId, platformUserId: caller.userId, email: body.email, plan, formerOwner: former ?? null,
+        }, c.env)
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err
+        return c.json({ detail: CHANGED }, 409)   // the batch rolled back: an owner appeared, or the username/email is taken
+      }
+      if (!result.done || !result.newOwner) return c.json({ detail: CHANGED }, 409)
+      return c.json({
+        ok: true, user_id: result.newOwner.userId, username: result.newOwner.username, email: result.newOwner.email,
+        action: plan.existing ? 'assigned' : 'created',
+      }, 201)
+    } catch (err) {
+      console.error('ownership restore error:', err)
+      return c.json({ detail: 'Failed to restore ownership' }, 500)
     }
   }
 )
