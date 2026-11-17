@@ -21,6 +21,19 @@ export function policyChangeActions(body: { settings?: Record<string, unknown>; 
   return needed
 }
 
+/**
+ * The actions a PATCH /tenants/:tenantId/agent-policy body needs beyond "Change default agent
+ * settings": a tenant default reaches every agent of that kind without an override, so role and
+ * sightings defaults need the same high-impact actions as the per-agent change. Catalog order.
+ */
+export function defaultsChangeActions(changes: Record<string, Record<string, unknown>>): ActionKey[] {
+  const needed = new Set<ActionKey>()
+  for (const settings of Object.values(changes)) {
+    for (const key of policyChangeActions({ settings })) if (key !== 'agent.configure') needed.add(key)
+  }
+  return (['agent.roles.assign', 'agent.sightings.enable'] as const).filter((k) => needed.has(k))
+}
+
 type Caller = { role: string; tenantId?: string | null; actions: readonly string[] }
 export type TenantPatch = {
   name?: string
@@ -38,9 +51,9 @@ export type PatchRefusal = { status: 403; detail: string; missing_action?: Actio
 export function tenantPatchRefusal(user: Caller, tenantId: string, patch: TenantPatch): PatchRefusal | null {
   const touchesScanPolicy = patch.auto_investigate_new_devices !== undefined || patch.allow_local_scans !== undefined
   if (user.role === 'superadmin') {
-    if (patch.name !== undefined || touchesScanPolicy) {
-      return { status: 403, detail: refusalMessage('superadmin_read_only', 'settings.scan_policy.edit') }
-    }
+    if (touchesScanPolicy) return { status: 403, detail: refusalMessage('superadmin_read_only', 'settings.scan_policy.edit') }
+    // A rename has no action of its own; the read-only refusal is the same for every key.
+    if (patch.name !== undefined) return { status: 403, detail: refusalMessage('superadmin_read_only', 'settings.view') }
     return null
   }
   if (!user.tenantId || user.tenantId !== tenantId) return { status: 403, detail: 'You can only change your own tenant.' }

@@ -1,7 +1,7 @@
 // Who may add which user to a tenant (routes/tenants.ts: assign and invite), and the action lists
 // a Tenant Superadmin grants. A tenant superadmin may add only accounts that belong to no tenant yet
-// (or already to theirs), never the platform superadmin and never a tenant superadmin; only the
-// platform superadmin moves accounts between tenants. Until 2026-11-09 any tenant superadmin could
+// (or already to theirs), never the platform superadmin and never a tenant superadmin. Nobody takes
+// an account from another tenant, the platform superadmin included. Until 2026-11-09 any tenant superadmin could
 // pull any account, the platform superadmin's included, into their tenant and then demote or
 // deactivate it.
 
@@ -12,12 +12,10 @@ export interface Account { userId: string; role: string; tenantId?: string | nul
 export type Refusal = 'superadmin' | 'other_tenant' | 'tenant_superadmin'
 
 /** Why `caller` may not add `target` to `tenantId`; null = allowed. */
-export function addRefusal(caller: Account, target: Account, tenantId: string): Refusal | null {
+export function addRefusal(_caller: Account, target: Account, tenantId: string): Refusal | null {
   if (target.role === 'superadmin') return 'superadmin'
-  if (caller.role !== 'superadmin') {
-    const current = target.tenantId ?? null
-    if (current !== null && current !== tenantId) return 'other_tenant'
-  }
+  const current = target.tenantId ?? null
+  if (current !== null && current !== tenantId) return 'other_tenant'
   // A tenant superadmin changes only through an ownership transfer: adding one elsewhere would
   // leave its own tenant without one.
   if (target.role === 'tenant_superadmin') return 'tenant_superadmin'

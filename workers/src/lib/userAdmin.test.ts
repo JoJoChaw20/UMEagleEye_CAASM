@@ -20,10 +20,12 @@ test('a tenant superadmin adds accounts without a tenant, or already theirs, nev
   assert.equal(addRefusal(ownerA, ownerA, A), 'tenant_superadmin')
 })
 
-test('the platform superadmin moves accounts between tenants, but no superadmin and no tenant superadmin', () => {
-  assert.equal(addRefusal(platform, { userId: 'b1', role: 'tenant_user', tenantId: B }, A), null)
+test('the platform superadmin takes no account from another tenant, no superadmin and no tenant superadmin', () => {
+  assert.equal(addRefusal(platform, { userId: 'b1', role: 'tenant_user', tenantId: B }, A), 'other_tenant')
+  assert.equal(addRefusal(platform, { userId: 'f', role: 'tenant_user', tenantId: null }, A), null)
   assert.equal(addRefusal(platform, { userId: 'p2', role: 'superadmin', tenantId: null }, A), 'superadmin')
-  assert.equal(addRefusal(platform, { userId: 'ob', role: 'tenant_superadmin', tenantId: B }, A), 'tenant_superadmin')
+  assert.equal(addRefusal(platform, { userId: 'ob', role: 'tenant_superadmin', tenantId: B }, A), 'other_tenant')
+  assert.equal(addRefusal(platform, { userId: 'oa', role: 'tenant_superadmin', tenantId: A }, A), 'tenant_superadmin')
 })
 
 test('parseActionList closes requirements and reports unknown keys', () => {
@@ -41,4 +43,8 @@ test('actionChanges lists what was added and removed', () => {
   assert.deepEqual(actionChanges(['asset.view', 'alert.view'], ['alert.view', 'alert.manage']),
     { added: ['alert.manage'], removed: ['asset.view'] })
   assert.deepEqual(actionChanges([], []), { added: [], removed: [] })
+})
+
+test('the platform superadmin may promote a member of the same tenant (interim provisioning)', () => {
+  assert.equal(addRefusal(platform, { userId: 'a1', role: 'tenant_user', tenantId: A }, A), null)
 })

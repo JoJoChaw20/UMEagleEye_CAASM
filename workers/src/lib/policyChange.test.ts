@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { policyChangeActions, tenantPatchRefusal } from './policyChange'
+import { defaultsChangeActions, policyChangeActions, tenantPatchRefusal } from './policyChange'
 
 test('plain setting needs configure only', () =>
   assert.deepEqual(policyChangeActions({ settings: { inventory_interval: 3600 } }), ['agent.configure']))
@@ -45,4 +45,18 @@ test('a tenant user needs the scan policy action, and can never rename', () => {
   assert.equal(tenantPatchRefusal(holder, T, { allow_local_scans: false }), null)
   assert.equal(tenantPatchRefusal(holder, T, { name: 'x' })?.detail, 'Only the Tenant Superadmin can do this.')
   assert.equal(tenantPatchRefusal(holder, 'other', { allow_local_scans: false })?.status, 403)
+})
+
+test('tenant default changes need the same high-impact actions as per-agent changes', () => {
+  assert.deepEqual(defaultsChangeActions({ host: { inventory_interval: 3600 } }), [])
+  assert.deepEqual(defaultsChangeActions({ host: { scanner: false } }), ['agent.roles.assign'])
+  assert.deepEqual(defaultsChangeActions({ host: { sightings: true }, network: { network_poll: true } }),
+    ['agent.roles.assign', 'agent.sightings.enable'])
+  assert.deepEqual(defaultsChangeActions({}), [])
+})
+
+test('the Platform Superadmin refusal for a rename names no scan-policy action', () => {
+  const r = tenantPatchRefusal(platform, T, { name: 'x' })
+  assert.equal(r?.missing_action, undefined)
+  assert.equal(r?.detail, 'The Platform Superadmin can view tenants but cannot make changes inside them.')
 })

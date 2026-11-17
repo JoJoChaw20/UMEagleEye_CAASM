@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, count, and } from 'drizzle-orm'
@@ -6,11 +6,12 @@ import type { Env } from '../types'
 import {
   authMiddleware, hasAction, requireAction, requireOwnTenant, requirePlatformSuperadmin, requireTenantSuperadmin,
 } from '../middleware/auth'
-import { getDb } from '../db/client'
+import { getDb, type DB } from '../db/client'
 import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
-import { tenantPatchRefusal } from '../lib/policyChange'
+import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
+import { decide, refusalMessage } from '../lib/actions'
 import { audit } from '../services/audit'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
@@ -24,13 +25,22 @@ const router = new Hono<{ Bindings: Env }>()
 
 const OWNERSHIP_ONLY = 'The Tenant Superadmin can only change through an ownership transfer.'
 
+// Every change to a user's actions is audited as user.actions, with what was added and removed.
+async function auditActions(db: DB, c: Context, by: string, tenantId: string, target: string, previous: readonly string[], next: readonly string[]) {
+  const { added, removed } = actionChanges(previous, next)
+  await audit(db, c, {
+    userId: by, tenantId, actionType: 'user.actions', targetEntity: target,
+    previousState: { actions: previous }, newState: { actions: next, added, removed },
+  })
+}
+
 // What a refused add says (lib/userAdmin.ts). To a tenant superadmin, an account they may not add
 // looks like one that does not exist, so accounts of other tenants cannot be discovered.
 function refusalDetail(r: Refusal, callerIsSuperadmin: boolean, what: string): { detail: string; status: 403 | 404 } {
   if (callerIsSuperadmin) {
-    return r === 'tenant_superadmin'
-      ? { detail: `That account is already a Tenant Superadmin. ${OWNERSHIP_ONLY}`, status: 403 }
-      : { detail: 'The platform superadmin cannot be added to a tenant', status: 403 }
+    if (r === 'tenant_superadmin') return { detail: `That account is already a Tenant Superadmin. ${OWNERSHIP_ONLY}`, status: 403 }
+    if (r === 'other_tenant') return { detail: 'This account belongs to another tenant.', status: 403 }
+    return { detail: 'The platform superadmin cannot be added to a tenant', status: 403 }
   }
   return { detail: `No user available with that ${what}`, status: 404 }
 }
@@ -127,7 +137,7 @@ router.patch(
     is_active: z.boolean().optional(),
     auto_investigate_new_devices: z.boolean().optional(),
     allow_local_scans: z.boolean().optional(),
-  })),
+  }).strict()),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId } = c.req.param()
@@ -229,6 +239,10 @@ router.patch(
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
 
     const changes = c.req.valid('json').settings
+    for (const key of defaultsChangeActions(changes)) {
+      const decision = decide(user, key)
+      if (!decision.ok) return c.json({ detail: refusalMessage(decision.reason, key), missing_action: key }, 403)
+    }
     const policy = defaultsByKind(tenant.agentPolicy)
     const errors: string[] = []
     for (const [kind, change] of Object.entries(changes)) {
@@ -414,6 +428,7 @@ router.post(
           previousState: { tenant_id: existing.tenantId, role: existing.role, actions: existing.actions },
           newState: { tenant_id: tenantId, by: 'email', role, actions },
         })
+        if (actions.length) await auditActions(db, c, caller.userId, tenantId, existing.userId, existing.actions ?? [], actions)
         return c.json({
           ok: true,
           user_id: existing.userId,
@@ -441,6 +456,7 @@ router.post(
         userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: newUser.userId,
         newState: { email, username: newUser.username, role: newUser.role, actions: newUser.actions },
       })
+      if (newUser.actions.length) await auditActions(db, c, caller.userId, tenantId, newUser.userId, [], newUser.actions)
 
       return c.json({
         ok: true,
@@ -486,12 +502,7 @@ router.put(
     const previous = target.actions ?? []
     const next = parsed.actions
     await db.update(users).set({ actions: next }).where(eq(users.userId, userId))
-    const { added, removed } = actionChanges(previous, next)
-    await audit(db, c, {
-      userId: caller.userId, tenantId, actionType: 'user.actions', targetEntity: userId,
-      previousState: { actions: previous },
-      newState: { actions: next, added, removed },
-    })
+    await auditActions(db, c, caller.userId, tenantId, userId, previous, next)
 
     return c.json({ actions: next, added_requirements: next.filter((k) => !requested.includes(k)) })
   }
@@ -511,6 +522,7 @@ router.patch(
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId, userId } = c.req.param()
     const { is_active } = c.req.valid('json')
+    if (!z.string().uuid().safeParse(userId).success) return c.json({ detail: 'User not found in this tenant' }, 404)
 
     const [target] = await db
       .select()
