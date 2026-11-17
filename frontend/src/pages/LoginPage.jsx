@@ -13,7 +13,12 @@ export default function LoginPage() {
   const [mfaRequired, setMfaRequired] = useState(() => sessionStorage.getItem('mfa_pending') === 'true')
   const [mfaUserId, setMfaUserId] = useState(() => sessionStorage.getItem('mfa_user_id') || '')
   const [mfaCode, setMfaCode] = useState('')
-  const [error, setError] = useState('')
+  // api/client.js sends a user deactivated mid-session here with ?reason=deactivated
+  const [error, setError] = useState(() => (
+    new URLSearchParams(window.location.search).get('reason') === 'deactivated'
+      ? 'Your account is deactivated. Contact your Tenant Superadmin.'
+      : ''
+  ))
   const [loading, setLoading] = useState(false)
 
   const { login, verifyMFA, loginWithGoogle } = useAuth()

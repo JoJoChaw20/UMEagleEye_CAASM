@@ -29,7 +29,14 @@ client.interceptors.response.use(
     if (error.response?.status === 401 && !isAuthenticationAttempt) {
       localStorage.removeItem('access_token')
       localStorage.removeItem('user')
-      window.location.href = '/login'
+      // A user deactivated mid-session keeps the reason so the login page can say why
+      const detail = String(error.response?.data?.detail || '')
+      window.location.href = /deactivated/i.test(detail) ? '/login?reason=deactivated' : '/login'
+    }
+    // A refusal for a missing action means the grants may have changed since sign-in:
+    // AuthContext re-reads the profile so the UI follows.
+    if (error.response?.status === 403 && error.response?.data?.missing_action) {
+      window.dispatchEvent(new CustomEvent('auth:missing-action', { detail: error.response.data.missing_action }))
     }
     return Promise.reject(error)
   }

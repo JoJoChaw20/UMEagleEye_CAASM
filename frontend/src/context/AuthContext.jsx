@@ -11,6 +11,8 @@ export function AuthProvider({ children }) {
   // pending until the catalog request settles; 'error' when it failed after retries
   const [catalogStatus, setCatalogStatus] = useState('pending')
   const [catalogTry, setCatalogTry] = useState(0)
+  // Bumped on every sign-in so /auth/me runs again even if the token string is unchanged
+  const [session, setSession] = useState(0)
 
   useEffect(() => {
     if (!token) { setLoading(false); return undefined }
@@ -29,7 +31,7 @@ export function AuthProvider({ children }) {
         setLoading(false)
       })
     return () => { cancelled = true }
-  }, [token])
+  }, [token, session])
 
   // The action catalog is fetched once per sign-in; it tells can() which actions are read-only.
   // Retried twice with a short backoff; retryCatalog() runs it again after a failure.
@@ -53,11 +55,38 @@ export function AuthProvider({ children }) {
 
   const retryCatalog = useCallback(() => setCatalogTry(n => n + 1), [])
 
-  // Re-read the profile, e.g. after the user's grants changed
+  // Re-read the profile, e.g. after the user's grants changed. The user object is only
+  // replaced when something changed, so pages that refetch on a new can() do not loop.
   const refreshUser = useCallback(async () => {
     const res = await client.get('/auth/me')
-    setUser(res.data)
+    setUser(prev => (prev && JSON.stringify(prev) === JSON.stringify(res.data) ? prev : res.data))
   }, [])
+
+  // New grants appear and removed ones hide without a reload: re-read the profile when the
+  // window regains focus (at most every 30s) and when the API refuses a call for a missing
+  // action (at most every 10s; api/client.js raises the event).
+  useEffect(() => {
+    if (!token) return undefined
+    let lastFocus = Date.now()
+    let lastRefusal = 0
+    const quietly = () => { refreshUser().catch(() => {}) }
+    const onFocus = () => {
+      if (Date.now() - lastFocus < 30_000) return
+      lastFocus = Date.now()
+      quietly()
+    }
+    const onRefusal = () => {
+      if (Date.now() - lastRefusal < 10_000) return
+      lastRefusal = Date.now()
+      quietly()
+    }
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('auth:missing-action', onRefusal)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('auth:missing-action', onRefusal)
+    }
+  }, [token, refreshUser])
 
   // Mirrors the server decide(): platform superadmin read-only, tenant superadmin everything, others by grant.
   // Only the platform superadmin needs the catalog.
@@ -72,6 +101,17 @@ export function AuthProvider({ children }) {
   const ready = !loading && (!user || user.role !== 'superadmin' || catalogStatus !== 'pending')
   const catalogError = catalogStatus === 'error'
 
+  // The login responses lack actions and tenantId, so the user is never taken from them:
+  // loading goes up before the token changes and /auth/me alone fills the user.
+  const startSession = (data) => {
+    localStorage.setItem('access_token', data.access_token)
+    localStorage.setItem('user', JSON.stringify(data))
+    setLoading(true)
+    setUser(null)
+    setToken(data.access_token)
+    setSession(n => n + 1)
+  }
+
   const login = async (username, password) => {
     const res = await client.post('/auth/login', { username, password })
     const data = res.data
@@ -80,20 +120,14 @@ export function AuthProvider({ children }) {
       return { mfa_required: true, user_id: data.user_id }
     }
 
-    localStorage.setItem('access_token', data.access_token)
-    localStorage.setItem('user', JSON.stringify(data))
-    setToken(data.access_token)
-    setUser(data)
+    startSession(data)
     return data
   }
 
   const verifyMFA = async (userId, code) => {
     const res = await client.post('/auth/mfa/verify', { user_id: userId, code })
     const data = res.data
-    localStorage.setItem('access_token', data.access_token)
-    localStorage.setItem('user', JSON.stringify(data))
-    setToken(data.access_token)
-    setUser(data)
+    startSession(data)
     return data
   }
 
@@ -103,10 +137,7 @@ export function AuthProvider({ children }) {
     if (data.mfa_required) {
       return { mfa_required: true, user_id: data.user_id }
     }
-    localStorage.setItem('access_token', data.access_token)
-    localStorage.setItem('user', JSON.stringify(data))
-    setToken(data.access_token)
-    setUser(data)
+    startSession(data)
     return data
   }
 
