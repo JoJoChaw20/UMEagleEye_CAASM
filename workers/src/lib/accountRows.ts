@@ -17,13 +17,22 @@ export function toAuthUser(
   return { userId, role, username, tenantId: row.tenantId ?? undefined, actions }
 }
 
-/** The JWT claims for a sign-in (password, MFA verify, Google). */
-export function tokenClaims(row: { userId: string; role: string; username: string; tenantId: string | null }) {
+/**
+ * A sign-in (password, MFA verify, Google): the JWT claims and the role for the JSON response.
+ * The token carries the STORED role, not the normalized one: the previous worker (main) trusts
+ * payload.role, so after a rollback a legacy user's token must still name its old role. The new
+ * middleware ignores the token's role and reads the row on every request. The response body
+ * carries the normalized role.
+ */
+export function signIn(row: { userId: string; role: string; username: string; tenantId: string | null }) {
   return {
-    sub: row.userId,
+    claims: {
+      sub: row.userId,
+      role: row.role,
+      username: row.username,
+      tenant_id: row.tenantId ?? undefined,
+    },
     role: roleOf(row),
-    username: row.username,
-    tenant_id: row.tenantId ?? undefined,
   }
 }
 

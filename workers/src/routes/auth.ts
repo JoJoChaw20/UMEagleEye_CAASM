@@ -19,7 +19,7 @@ import { authenticator } from 'otplib'
 import { TOO_MANY, clearFailures, overLimit, recordFailure } from '../lib/loginLimit'
 import { audit, callerIp } from '../services/audit'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
-import { roleOf, tokenClaims, withAccount } from '../lib/accountRows'
+import { signIn, withAccount } from '../lib/accountRows'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -77,9 +77,11 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
       return c.json({ mfa_required: true, user_id: user.userId })
     }
 
-    const access_token = await createToken(tokenClaims(user), c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
+    // Token: stored role (the previous worker trusts it). Response: normalized role (lib/accountRows.ts).
+    const session = signIn(user)
+    const access_token = await createToken(session.claims, c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
 
-    return c.json({ access_token, role: roleOf(user), user_id: user.userId, mfa_required: false })
+    return c.json({ access_token, role: session.role, user_id: user.userId, mfa_required: false })
   } catch (err) {
     console.error('login error:', err)
     return c.json({ detail: 'Login failed' }, 500)
@@ -176,9 +178,10 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
       return c.json({ detail: 'Invalid TOTP code' }, 401)
     }
 
-    const access_token = await createToken(tokenClaims(user), c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
+    const session = signIn(user)
+    const access_token = await createToken(session.claims, c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
 
-    return c.json({ access_token, role: roleOf(user), user_id: user.userId })
+    return c.json({ access_token, role: session.role, user_id: user.userId })
   } catch (err) {
     console.error('mfa/verify error:', err)
     return c.json({ detail: 'MFA verification failed' }, 500)
@@ -261,9 +264,10 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
       return c.json({ mfa_required: true, user_id: resolvedUser.userId })
     }
 
-    const access_token = await createToken(tokenClaims(resolvedUser), c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
+    const session = signIn(resolvedUser)
+    const access_token = await createToken(session.claims, c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
 
-    return c.json({ access_token, role: roleOf(resolvedUser), user_id: resolvedUser.userId })
+    return c.json({ access_token, role: session.role, user_id: resolvedUser.userId })
   } catch (err) {
     console.error('google auth error:', err)
     return c.json({ detail: 'Google authentication failed' }, 500)

@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { MIGRATION_ACTIONS } from './actions'
 import {
-  assignableUsers, canBeAssignedAlerts, planActionsUpdate, toAuthUser, tokenClaims, withAccount, tenantUserItem,
+  assignableUsers, canBeAssignedAlerts, planActionsUpdate, signIn, toAuthUser, withAccount, tenantUserItem,
 } from './accountRows'
 
 const T = 'tenant-a'
@@ -56,18 +56,31 @@ test('PUT actions accepts a legacy user and keeps its stored role', () => {
   assert.equal(planActionsUpdate({ role: 'superadmin', actions: null }, []), null)
 })
 
-test('the signed-in user, token claims and profile carry the normalized role', () => {
+test('the signed-in user and profile carry the normalized role', () => {
   const user = toAuthUser('u1', 'alice', { role: LEGACY_OWNER, tenantId: T, actions: null })
   assert.deepEqual(user, {
     userId: 'u1', role: 'tenant_user', username: 'alice', tenantId: T, actions: [...MIGRATION_ACTIONS.business_owner],
   })
   assert.equal(toAuthUser('p', 'root', { role: 'superadmin', tenantId: null, actions: null }).tenantId, undefined)
 
-  assert.deepEqual(tokenClaims({ userId: 'u1', role: LEGACY_ADMIN, username: 'alice', tenantId: null }),
-    { sub: 'u1', role: 'tenant_user', username: 'alice', tenant_id: undefined })
-
   const me = withAccount({ userId: 'u1', role: LEGACY_ADMIN, actions: null, email: 'a@x' })
   assert.equal(me.role, 'tenant_user')
   assert.equal(me.actions.length, 53)
   assert.equal(me.email, 'a@x')
+})
+
+test('sign-in: the token keeps the stored role, the response carries the normalized one', () => {
+  // The previous worker trusts payload.role: after a rollback a legacy user's token must still work there.
+  const legacy = signIn({ userId: 'u1', role: LEGACY_ADMIN, username: 'alice', tenantId: T })
+  assert.deepEqual(legacy.claims, { sub: 'u1', role: LEGACY_ADMIN, username: 'alice', tenant_id: T })
+  assert.equal(legacy.role, 'tenant_user')
+
+  const owner = signIn({ userId: 'u2', role: LEGACY_OWNER, username: 'bob', tenantId: null })
+  assert.equal(owner.claims.role, LEGACY_OWNER)
+  assert.equal(owner.claims.tenant_id, undefined)
+  assert.equal(owner.role, 'tenant_user')
+
+  const boss = signIn({ userId: 'u3', role: 'tenant_superadmin', username: 'carol', tenantId: T })
+  assert.equal(boss.claims.role, 'tenant_superadmin')
+  assert.equal(boss.role, 'tenant_superadmin')
 })
