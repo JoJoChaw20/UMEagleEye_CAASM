@@ -139,7 +139,7 @@ export const platformMfaResets = pgTable('platform_mfa_resets', {
   confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
   effectiveAt: timestamp('effective_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
-}, (t) => [index('idx_platform_mfa_resets_secret').on(t.secretHash)])
+}, (t) => [uniqueIndex('uq_platform_mfa_resets_secret').on(t.secretHash)])
 
 // ─── Table 3: Assets ────────────────────────────────────────────
 export const assets = pgTable('assets', {

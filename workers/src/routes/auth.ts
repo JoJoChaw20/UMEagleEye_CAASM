@@ -60,8 +60,11 @@ const ENTER_SIX_DIGITS = 'Enter the 6-digit code from your authenticator app.'
 /** The answer to a correct password or Google sign-in: the MFA step, no access token. */
 async function mfaStep(c: Ctx, row: UserRow) {
   // A break-glass reset whose hold is over is applied first: the account then sets MFA up again.
-  const reset = await applyDueBreakGlass(getDb(c.env.DATABASE_URL), row.userId)
-  const stage = signInOutcome(reset ? false : row.mfaEnabled)
+  // The stage comes from the account as it is after that, never from the row read before it.
+  const db = getDb(c.env.DATABASE_URL)
+  await applyDueBreakGlass(db, row.userId)
+  const [fresh] = await db.select({ mfaEnabled: users.mfaEnabled }).from(users).where(eq(users.userId, row.userId)).limit(1)
+  const stage = signInOutcome(fresh?.mfaEnabled ?? row.mfaEnabled)
   return c.json({ mfa_token: await createMfaToken(row.userId, stage, c.env.JWT_SECRET_KEY), stage })
 }
 
@@ -227,9 +230,12 @@ app.post(
 
       const confirm = newLinkToken()
       const cancel = newLinkToken()
-      await db.insert(platformMfaResets).values({
+      // The unique index on secret_hash makes "used once" strict: a concurrent second request with
+      // the same secret inserts nothing and takes the refused path.
+      const inserted = await db.insert(platformMfaResets).values({
         userId: user.userId, secretHash, confirmHash: await sha256Hex(confirm), cancelHash: await sha256Hex(cancel),
-      })
+      }).onConflictDoNothing().returning({ resetId: platformMfaResets.resetId })
+      if (inserted.length === 0) return c.json({ detail: BREAK_GLASS_ACCEPTED }, 202)
       await audit(db, c, { userId: user.userId, tenantId: null, actionType: 'auth.break_glass_requested', targetEntity: user.userId })
       const base = `${c.env.FRONTEND_URL}/mfa-recovery`
       await sendMail(c.env, {

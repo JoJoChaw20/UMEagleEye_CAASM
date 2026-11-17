@@ -32,4 +32,4 @@ ALTER TABLE "platform_mfa_resets" ADD CONSTRAINT "platform_mfa_resets_user_id_us
 --> statement-breakpoint
 CREATE UNIQUE INDEX "uq_mfa_recovery_user_hash" ON "mfa_recovery_codes" USING btree ("user_id","code_hash");
 --> statement-breakpoint
-CREATE INDEX "idx_platform_mfa_resets_secret" ON "platform_mfa_resets" USING btree ("secret_hash");
+CREATE UNIQUE INDEX "uq_platform_mfa_resets_secret" ON "platform_mfa_resets" USING btree ("secret_hash");

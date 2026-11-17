@@ -1,7 +1,7 @@
 // MFA failure counting and step-up confirmation, shared by the routes that need them
 // (routes/auth.ts: sign-in, recovery codes; routes/tenants.ts: MFA reset).
 import type { Context } from 'hono'
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, eq, isNull, lt, or, sql, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import type { DB } from '../db/client'
 import { mfaRecoveryCodes, users } from '../db/schema'
@@ -80,14 +80,15 @@ export async function stepUp(
 /**
  * The statements that reset an account's MFA, for db.batch (one transaction): MFA off, the secret
  * and any pending one gone, recovery codes deleted, open sessions ended. Used by the Tenant
- * Superadmin's reset and the break-glass reset.
+ * Superadmin's reset and the break-glass reset. `guard`, when given, must also hold for both
+ * statements to change anything (break-glass: only if this transaction won the status flip).
  */
-export function mfaClearStatements(db: DB, userId: string) {
+export function mfaClearStatements(db: DB, userId: string, guard?: SQL) {
   return [
     db.update(users).set({
       mfaEnabled: false, totpSecret: null, mfaPendingSecret: null, totpLastStep: null,
       sessionsValidAfter: sql`now()`,
-    }).where(eq(users.userId, userId)),
-    db.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, userId)),
+    }).where(guard ? and(eq(users.userId, userId), guard) : eq(users.userId, userId)),
+    db.delete(mfaRecoveryCodes).where(guard ? and(eq(mfaRecoveryCodes.userId, userId), guard) : eq(mfaRecoveryCodes.userId, userId)),
   ] as const
 }

@@ -2725,8 +2725,8 @@
         }
       },
       "indexes": {
-        "idx_platform_mfa_resets_secret": {
-          "name": "idx_platform_mfa_resets_secret",
+        "uq_platform_mfa_resets_secret": {
+          "name": "uq_platform_mfa_resets_secret",
           "columns": [
             {
               "expression": "secret_hash",
@@ -2735,7 +2735,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
