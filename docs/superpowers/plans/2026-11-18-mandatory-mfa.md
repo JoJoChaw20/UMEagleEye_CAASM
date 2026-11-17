@@ -18,7 +18,14 @@
 
 - Every account, the Platform Superadmin included, must have MFA. A new or existing account without MFA sets it up at sign-in before it can see anything. There is no grace period. Google sign-in also asks for the MFA code.
 - TOTP: 6 digits, 30-second step, accept the current step ±1 (`window: 1`). A step that was already used for this account is refused.
-- `mfa_token`: JWT signed with `JWT_SECRET_KEY`, claim `purpose: 'mfa'`, claim `stage: 'verify' | 'enrol'`, lifetime 5 minutes. `authMiddleware` must refuse any token that carries a `purpose` claim.
+- `mfa_token`: JWT signed with `JWT_SECRET_KEY`, claim `purpose: 'mfa'`, claim `stage: 'verify' | 'enrol'`. Lifetime: 5 minutes for `verify`, 15 minutes for `enrol`, so a user has time to install an authenticator app. `authMiddleware` must refuse any token that carries a `purpose` claim.
+- Set-up is permanent, as in Microsoft or Google Authenticator. Once set-up finishes, the account entry in the app keeps working with no expiry. Only an MFA reset (by the Tenant Superadmin, or break-glass) replaces the secret. Nothing else may overwrite `totp_secret` of an enabled account: no timer, no new sign-in, no Settings action. Each sign-in asks for the 6-digit code the app shows at that moment.
+- Set-up must not break on a retry, a slow user or a new sign-in:
+  - `enrol/start` reuses the existing `mfa_pending_secret` when there is one, so the QR the phone already scanned stays valid. It makes a new secret only when the body says `{ new_secret: true }`, behind the UI button "Show a new QR code".
+  - The pending secret is kept until set-up finishes or an MFA reset clears it.
+- Clear messages instead of a bare "invalid code":
+  - **Phone clock off:** when a code is not accepted but matches within ±10 steps, the answer is 401 `Your phone's clock is about N minutes off. Turn on automatic date and time on your phone, then try again.` It is still refused.
+  - **Locked out:** the answer is 429 `Too many wrong codes. Try again in N minutes.`, with the real remaining time.
 - Recovery codes: 10 per account, shown once, format `XXXXX-XXXXX` from the alphabet `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (50 bits each). Store only their SHA-256 hex. Each works once. Input is case-insensitive and ignores spaces and dashes.
 - "Sign out everywhere" = set `users.sessions_valid_after = now()`. A token whose `iat` (seconds) is earlier is refused with 401 `Your session has ended. Sign in again.`
 - MFA failure limit: the existing KV limiter (`workers/src/lib/loginLimit.ts`, `mfa_account`, 5 per 15 minutes) applies to code and recovery-code attempts, keyed by user id. A success clears it.
@@ -75,7 +82,8 @@
   - `generateRecoveryCodes(): string[]` returns 10 codes as `XXXXX-XXXXX`, using `crypto.getRandomValues`.
   - `normalizeRecoveryCode(input: string): string` uppercases and strips spaces and dashes.
   - `hashRecoveryCode(code: string): Promise<string>` returns the SHA-256 hex of the normalized code, via WebCrypto.
-  - `createMfaToken(userId: string, stage: 'verify' | 'enrol', secret: string): Promise<string>` and `verifyMfaToken(token: string, secret: string): Promise<{ sub: string; stage: 'verify' | 'enrol' } | null>`. The token has `purpose: 'mfa'` and a 5-minute expiry. Verifying refuses a missing or wrong purpose.
+  - `createMfaToken(userId: string, stage: 'verify' | 'enrol', secret: string): Promise<string>` and `verifyMfaToken(token: string, secret: string): Promise<{ sub: string; stage: 'verify' | 'enrol' } | null>`. The token has `purpose: 'mfa'`, with a 5-minute expiry for `verify` and 15 minutes for `enrol`. Verifying refuses a missing or wrong purpose.
+  - `clockSkewMinutes(secret: string, code: string, nowMs?: number): number | null`. When the code matches at a step between 2 and 10 steps away, it returns the signed offset rounded to whole minutes, with at least 1 in magnitude. Otherwise it returns null. It is for the message only and never accepts a code.
   - `sha256Hex(s: string): Promise<string>` and `timingSafeEqualStr(a: string, b: string): boolean`.
 
 - [ ] **Step 1: Write the failing tests** in `mfa.test.ts`:
@@ -85,6 +93,9 @@
   - `normalize ignores case, spaces and dashes`: `normalizeRecoveryCode(' abcde-fghjk ') === 'ABCDEFGHJK'`.
   - `recovery code consumed once` is pinned in Task 4's mapper test. Here, test that the hash is stable and 64 hex chars.
   - `mfa token round-trip; wrong secret, expired, or missing purpose are refused`.
+  - `enrol token lives 15 minutes, verify token 5`: decode `exp - iat`.
+  - `a secret keeps working months later`: a code generated at set-up time + 180 days with the same secret is matched at that time.
+  - `clockSkewMinutes reports a phone 3 minutes behind and stays null for a random wrong code`.
 - [ ] **Step 2:** Run `npm test`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `npm test` and `npx tsc --noEmit`. Expected: PASS.
@@ -135,9 +146,10 @@ Rules, in this order:
     - Code path: `matchTotpStep`, then the atomic replay guard `UPDATE users SET totp_last_step = $step WHERE user_id = $id AND (totp_last_step IS NULL OR totp_last_step < $step) RETURNING user_id`. No row → 401 `This code was already used. Wait for the next one.`
     - Recovery path: `UPDATE mfa_recovery_codes SET used_at = now() WHERE user_id = $id AND code_hash = $h AND used_at IS NULL RETURNING code_id`. No row → 401 `That recovery code is not valid.` On success, audit `auth.mfa_recovery_code_used` and email the user (Task 5 mailer; until Task 5, skip). Return `recovery_codes_left`.
     - On success: update `lastLogin`, clear the failure limit, and return `{ access_token, role, user_id, recovery_codes_left? }`.
+  - **Wrong code** (verify and enrol finish): when `clockSkewMinutes` is not null, use the clock message from Global Constraints. When the limiter blocks, answer 429 with the remaining minutes.
   - **`POST /auth/mfa/enrol/start`:**
-    - Body `{ mfa_token }`, stage `enrol`.
-    - Writes a new `mfa_pending_secret`. Never touches `totp_secret` of an enabled account; refuse with 409 if already enabled.
+    - Body `{ mfa_token, new_secret?: boolean }`, stage `enrol`.
+    - Reuses an existing `mfa_pending_secret`. It writes a new one only when none exists or `new_secret` is true. Never touches `totp_secret` of an enabled account; refuse with 409 if already enabled.
     - Returns `{ totp_secret, qr_code_base64, otpauth_url, two_devices: boolean }`. `two_devices` is true for role `superadmin` (spec Layer 1).
   - **`POST /auth/mfa/enrol/finish`:**
     - Body `{ mfa_token, code }`, stage `enrol`.
@@ -252,7 +264,8 @@ Behaviour:
     - when `two_devices`, the note "Scan this code on two devices: your phone and a backup device kept somewhere safe.";
     - a code field.
   - After finish: `RecoveryCodes` shows the 10 codes once, with "Copy" and "Download .txt", and a required checkbox "I have saved these codes". Only then does it start the session.
-  - When the `mfa_token` expires (401 with the token error), go back to the password form with "The sign-in took too long. Sign in again.".
+  - When the `mfa_token` expires (401 with the token error), go back to the password form with "The sign-in took too long. Sign in again.". After signing in again, set-up shows the same QR, so the code already scanned still works. A small "Show a new QR code" button sends `new_secret: true`.
+  - Show the server's message for a wrong code as it is: the clock-off and lockout texts tell the user what to do.
 - **Lost MFA:** a link "Lost your authenticator?" opens a short explanation:
   - "Use a recovery code. If you have none, ask your Tenant Superadmin to reset your MFA."
   - For the Tenant Superadmin: "use a recovery code or emergency recovery".
