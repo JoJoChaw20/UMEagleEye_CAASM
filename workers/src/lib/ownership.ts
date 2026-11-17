@@ -1,5 +1,5 @@
 // Tenant ownership handover rules. Pure logic: no DB calls, no clock reads (callers pass `now`).
-import { and, eq, exists, notExists, sql } from 'drizzle-orm'
+import { and, eq, exists, inArray, notExists, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { users } from '../db/schema'
 import { parseActionList } from './userAdmin'
@@ -113,7 +113,7 @@ export function approverSlot(
 }
 
 export type SwapUpdate = {
-  label: 'demote' | 'promote'
+  label: 'lock' | 'demote' | 'promote'
   userId: string
   tenantId: string
   set: Record<string, unknown>
@@ -122,18 +122,21 @@ export type SwapUpdate = {
 }
 
 /**
- * Ordered updates for one db.batch: demote the old owner first, then promote the new one.
+ * Ordered statements for one db.batch: lock -> demote -> promote.
+ * `lock` is a SELECT ... FOR UPDATE on both users: it holds both rows until commit, so a
+ * concurrent deactivate or role change of either user waits, and the guards below see a stable
+ * recipient. Its result is not an update result; check only demote and promote.
  * All-or-nothing at the SQL level (a 0-row statement does not abort a batch):
  *  - demote runs only if the sender is still the owner AND the recipient is still an active tenant_user;
  *  - promote runs only if the recipient is still an active tenant_user AND the tenant has no owner
  *    (so it is a no-op when the demote was a no-op).
- * Success = both statements returned 1 row. Otherwise nothing changed: the caller answers 409
+ * Success = demote and promote each returned 1 row. With the lock held, otherwise nothing changed: the caller answers 409
  * "Ownership changed. Reload and try again." The unique index `uq_users_one_tenant_superadmin`
  * is the final backstop against two owners.
  */
 export function swapStatements(
   tenantId: string, fromId: string, toId: string, after: AfterChoice,
-): [SwapUpdate, SwapUpdate] {
+): [SwapUpdate, SwapUpdate, SwapUpdate] {
   const mode = after.mode
   if (!(AFTER_MODES as readonly string[]).includes(mode)) throw new Error(`Unknown after mode: ${mode}`)
   const actions = mode === 'deactivate_now' ? [] : ((after.actions as string[] | undefined) ?? [])
@@ -164,7 +167,13 @@ export function swapStatements(
       ))),
     )).returning({ userId: users.userId }),
   }
-  return [demote, promote]
+  const lock: SwapUpdate = {
+    label: 'lock', userId: fromId, tenantId, set: {},
+    build: (db) => db.select({ userId: users.userId }).from(users)
+      .where(and(eq(users.tenantId, tenantId), inArray(users.userId, [fromId, toId])))
+      .for('update'),
+  }
+  return [lock, demote, promote]
 }
 
 export function ownershipChangedNotice(a: string, b: string, date: string): string {
