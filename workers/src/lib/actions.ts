@@ -203,6 +203,27 @@ export const MIGRATION_ACTIONS: { tenant_admin: readonly ActionKey[]; business_o
   business_owner: VIEWER.filter((k) => k !== 'scan.view' && k !== 'relationship.view'),
 }
 
+export type Role = 'superadmin' | 'tenant_superadmin' | 'tenant_user'
+export type LegacyRole = 'tenant_admin' | 'business_owner'
+
+/**
+ * Turns a stored user row into the new model. Legacy roles read as tenant_user: stored actions win
+ * (even an empty list), otherwise the converted set applies. Unknown roles fail closed to no actions.
+ */
+export function normalizeAccount(
+  role: string,
+  actions: readonly string[] | null | undefined,
+): { role: Role; actions: ActionKey[] } {
+  const stored = actions ? actions.filter(isActionKey) : null
+  if (role === 'tenant_admin' || role === 'business_owner') {
+    return { role: 'tenant_user', actions: stored ?? [...MIGRATION_ACTIONS[role]] }
+  }
+  if (role === 'superadmin' || role === 'tenant_superadmin' || role === 'tenant_user') {
+    return { role, actions: stored ?? [] }
+  }
+  return { role: 'tenant_user', actions: [] }
+}
+
 export type Decision =
   | { ok: true }
   | { ok: false; reason: 'superadmin_read_only' | 'missing_action' | 'not_tenant_member' }
