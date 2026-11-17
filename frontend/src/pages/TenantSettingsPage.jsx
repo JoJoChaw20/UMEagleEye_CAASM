@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Building2, Users, Plus, Check, RefreshCw, AlertTriangle, SlidersHorizontal, UserX, UserCheck,
+  Building2, Users, Plus, Check, RefreshCw, AlertTriangle, SlidersHorizontal, UserX, UserCheck, KeyRound,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import ActionPicker from '../components/users/ActionPicker'
 import { SidePanel, RowMenu, Toast, useToast, Spinner } from '../components/common/PageParts'
+import StepUpDialog from '../components/auth/StepUpDialog'
+import { MFA_RESET_GUIDANCE, mfaResetToast } from '../utils/mfa'
 import { accessSummary, actionLabels } from '../utils/actions'
 
 // Users page for the Tenant Superadmin: the tenant's name, and who may do what. Each tenant user
@@ -230,6 +232,7 @@ export default function TenantSettingsPage() {
   const [togglingActive, setTogglingActive] = useState({})
   const [editing, setEditing] = useState(null)   // user row whose access is open
   const [showInvite, setShowInvite] = useState(false)
+  const [resetting, setResetting] = useState(null)  // user row whose MFA reset is being confirmed
 
   const loadUsers = useCallback(async () => {
     if (!tenantId) return
@@ -283,6 +286,13 @@ export default function TenantSettingsPage() {
     } finally {
       setTogglingActive((prev) => ({ ...prev, [u.user_id]: false }))
     }
+  }
+
+  const resetMfa = async (body) => {
+    const target = resetting
+    await client.post(`/tenants/${tenantId}/users/${target.user_id}/mfa-reset`, body)
+    setResetting(null)
+    showToast(mfaResetToast(target.username))
   }
 
   const onAccessSaved = (target, data) => {
@@ -404,6 +414,7 @@ export default function TenantSettingsPage() {
                   const isOwner = u.role === 'tenant_superadmin'
                   const canEdit = isTenantSuperadmin && u.role === 'tenant_user'
                   const canToggle = isTenantSuperadmin && !isSelf && !isOwner
+                  const canResetMfa = isTenantSuperadmin && !isSelf && u.role === 'tenant_user'
                   const catalogFailed = !isOwner && !catalog && catalogError
                   const access = isOwner
                     ? 'Tenant Superadmin · all actions'
@@ -441,6 +452,7 @@ export default function TenantSettingsPage() {
                               canToggle && (u.is_active
                                 ? { label: 'Deactivate', icon: UserX, danger: true, onClick: () => toggleUserActive(u) }
                                 : { label: 'Activate', icon: UserCheck, onClick: () => toggleUserActive(u) }),
+                              canResetMfa && { label: 'Reset MFA', icon: KeyRound, danger: true, onClick: () => setResetting(u) },
                             ]} />
                           )}
                       </td>
@@ -452,6 +464,14 @@ export default function TenantSettingsPage() {
           </div>
         )}
       </div>
+
+      {resetting && (
+        <StepUpDialog title="Reset MFA" idPrefix="reset" confirmLabel="Reset MFA" danger
+          onSubmit={resetMfa} onCancel={() => setResetting(null)}>
+          <p>{MFA_RESET_GUIDANCE}</p>
+          <p className="mt-2">Reset MFA for <span className="font-medium text-dark-50">{resetting.username}</span>.</p>
+        </StepUpDialog>
+      )}
 
       {editing && (
         <EditAccessPanel

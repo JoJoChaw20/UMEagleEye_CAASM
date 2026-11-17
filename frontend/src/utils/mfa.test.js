@@ -116,3 +116,38 @@ test('recoveryCodesLeftText counts the codes left and warns at 2 or fewer', () =
     message: 'Signed in with a recovery code. You have 0 recovery codes left.', warning: warn,
   })
 })
+
+import {
+  needsPasswordForStepUp, stepUpReady, stepUpBody, recoveryCodesLeftLabel, mfaResetToast, MFA_RESET_GUIDANCE,
+} from './mfa.js'
+
+test('needsPasswordForStepUp is false only for an account known to have no password', () => {
+  assert.equal(needsPasswordForStepUp({ hasPassword: true }), true)
+  assert.equal(needsPasswordForStepUp({ hasPassword: false }), false)
+  assert.equal(needsPasswordForStepUp({}), true)
+  assert.equal(needsPasswordForStepUp(null), true)
+})
+
+test('stepUpReady needs a 6-digit code, and a password when the account has one', () => {
+  assert.equal(stepUpReady({ hasPassword: true, password: 'x', code: '123456' }), true)
+  assert.equal(stepUpReady({ hasPassword: true, password: '', code: '123456' }), false)
+  assert.equal(stepUpReady({ hasPassword: true, password: 'x', code: '12345' }), false)
+  assert.equal(stepUpReady({ hasPassword: false, password: '', code: '123456' }), true)
+  assert.equal(stepUpReady({ hasPassword: false, password: '', code: '' }), false)
+})
+
+test('stepUpBody leaves the password out for an account without one', () => {
+  assert.deepEqual(stepUpBody({ hasPassword: true, password: 'pw', code: '123456' }), { password: 'pw', code: '123456' })
+  assert.deepEqual(stepUpBody({ hasPassword: false, password: 'pw', code: '123456' }), { code: '123456' })
+})
+
+test('recoveryCodesLeftLabel pluralises', () => {
+  assert.equal(recoveryCodesLeftLabel(10), '10 recovery codes left')
+  assert.equal(recoveryCodesLeftLabel(1), '1 recovery code left')
+  assert.equal(recoveryCodesLeftLabel(0), '0 recovery codes left')
+})
+
+test('mfaResetToast and guidance are verbatim', () => {
+  assert.equal(mfaResetToast('Sam'), 'MFA reset. Sam must set it up at their next sign-in.')
+  assert.equal(MFA_RESET_GUIDANCE, 'Confirm this request in person or by phone. Do not reset MFA based only on an email or chat message, because these are common ways attackers take over accounts.')
+})

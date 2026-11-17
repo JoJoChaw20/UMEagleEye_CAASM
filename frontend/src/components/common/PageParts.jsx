@@ -49,7 +49,7 @@ export function StatTile({ label, value, sub, tone = 'default', icon: Icon, onCl
 // Portalled to <body> so a transformed parent (the side panel's slide-in) cannot trap it. The
 // cancel button takes focus first; Tab stays inside the dialog; Esc and the backdrop cancel. Esc
 // is caught before a surrounding side panel's own Esc handler sees it.
-export function ConfirmDialog({ title, children, confirmLabel, cancelLabel = 'Cancel', onConfirm, onCancel, danger = false }) {
+export function ConfirmDialog({ title, children, confirmLabel, cancelLabel = 'Cancel', onConfirm, onCancel, danger = false, confirmDisabled = false }) {
   const boxRef = useRef(null)
   const cancelRef = useRef(null)
   const onCancelRef = useRef(onCancel)
@@ -64,7 +64,7 @@ export function ConfirmDialog({ title, children, confirmLabel, cancelLabel = 'Ca
         return
       }
       if (e.key !== 'Tab') return
-      const items = [...(boxRef.current?.querySelectorAll('button:not([disabled])') || [])]
+      const items = [...(boxRef.current?.querySelectorAll('button:not([disabled]), input:not([disabled]):not([readonly])') || [])]
       if (!items.length) return
       const i = items.indexOf(document.activeElement)
       e.preventDefault()
@@ -95,9 +95,9 @@ export function ConfirmDialog({ title, children, confirmLabel, cancelLabel = 'Ca
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button ref={cancelRef} type="button" onClick={onCancel} className="btn-secondary text-sm py-1.5">{cancelLabel}</button>
-          <button type="button" onClick={onConfirm}
+          <button type="button" onClick={onConfirm} disabled={confirmDisabled}
             className={danger
-              ? 'rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25'
+              ? 'rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25 disabled:opacity-50'
               : 'btn-primary text-sm py-1.5'}>
             {confirmLabel}
           </button>

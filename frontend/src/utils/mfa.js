@@ -87,3 +87,30 @@ export function recoveryCodesLeftText(left) {
     warning: n <= 2 ? RUNNING_OUT : '',
   }
 }
+
+// ── Step-up confirmation (new recovery codes, MFA reset) ──────────────────────
+
+export const MFA_RESET_GUIDANCE = 'Confirm this request in person or by phone. Do not reset MFA based only on an email or chat message, because these are common ways attackers take over accounts.'
+
+/** A Google-only account (/auth/me hasPassword === false) confirms with the code alone. */
+export function needsPasswordForStepUp(user) {
+  return user?.hasPassword !== false
+}
+
+export function stepUpReady({ hasPassword, password, code }) {
+  return cleanTotpInput(code).length === 6 && (!hasPassword || String(password ?? '').length > 0)
+}
+
+/** The request body for a step-up route: { password?, code }. */
+export function stepUpBody({ hasPassword, password, code }) {
+  return hasPassword ? { password, code } : { code }
+}
+
+export function recoveryCodesLeftLabel(left) {
+  const n = Number(left)
+  return `${n} recovery ${n === 1 ? 'code' : 'codes'} left`
+}
+
+export function mfaResetToast(name) {
+  return `MFA reset. ${name} must set it up at their next sign-in.`
+}

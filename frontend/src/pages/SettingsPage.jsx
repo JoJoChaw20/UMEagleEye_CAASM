@@ -1,8 +1,12 @@
-import { useState } from 'react'
-import { Users, Shield, Clock, Eye, EyeOff, Lock, Copy, Check } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Users, Shield, Clock, Eye, EyeOff, Lock, Check, LifeBuoy } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 import { roleLabel } from '../utils/actions'
+import { recoveryCodesLeftLabel } from '../utils/mfa'
+import { FormAlert, errorText } from '../components/auth/AuthParts'
+import StepUpDialog from '../components/auth/StepUpDialog'
+import RecoveryCodes from '../components/auth/RecoveryCodes'
 
 const passwordRequirements = [
   ['length', 'At least 12 characters'],
@@ -26,11 +30,27 @@ export default function SettingsPage() {
   const { user } = useAuth()
 
   // MFA state
-  const [mfaSetup, setMfaSetup]     = useState(null)
-  const [mfaCode, setMfaCode]       = useState('')
-  const [mfaMessage, setMfaMessage] = useState('')
-  const [mfaLoading, setMfaLoading] = useState(false)
-  const [copied, setCopied]         = useState(false)
+  const [mfaStatus, setMfaStatus] = useState(null)      // { mfa_enabled, recovery_codes_left }
+  const [mfaStatusError, setMfaStatusError] = useState('')
+  const [askCodes, setAskCodes] = useState(false)
+  const [newCodes, setNewCodes] = useState(null)
+
+  const loadMfaStatus = useCallback(async () => {
+    try {
+      const res = await client.get('/auth/mfa/status')
+      setMfaStatus(res.data)
+      setMfaStatusError('')
+    } catch (err) {
+      setMfaStatusError(errorText(err, 'Could not load MFA status.'))
+    }
+  }, [])
+  useEffect(() => { loadMfaStatus() }, [loadMfaStatus])
+
+  const regenerateCodes = async (body) => {
+    const res = await client.post('/auth/mfa/recovery-codes', body)
+    setAskCodes(false)
+    setNewCodes(res.data.recovery_codes)
+  }
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('')
@@ -45,38 +65,6 @@ export default function SettingsPage() {
   const hasPassword = passwordSet || user?.hasPassword !== false
   const newPasswordChecks = passwordChecks(newPassword)
   const newPasswordIsStrong = Object.values(newPasswordChecks).every(Boolean)
-
-  const setupMFA = async () => {
-    try {
-      const res = await client.post('/auth/mfa/setup')
-      setMfaSetup(res.data)
-      setMfaMessage('')
-    } catch (err) {
-      setMfaMessage(err.response?.data?.detail || 'MFA setup failed')
-    }
-  }
-
-  const enableMFA = async () => {
-    if (mfaCode.length !== 6 || mfaLoading) return
-    setMfaLoading(true)
-    setMfaMessage('')
-    try {
-      await client.post('/auth/mfa/enable', { code: mfaCode })
-      setMfaMessage('MFA enabled successfully!')
-      setMfaSetup(null)
-      setMfaCode('')
-    } catch (err) {
-      setMfaMessage(err.response?.data?.detail || 'Invalid code — check your authenticator app and try again')
-    } finally {
-      setMfaLoading(false)
-    }
-  }
-
-  const copySecret = () => {
-    navigator.clipboard.writeText(mfaSetup?.totp_secret ?? '')
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
 
   const handleChangePassword = async (e) => {
     e.preventDefault()
@@ -258,87 +246,44 @@ export default function SettingsPage() {
           <Shield className="w-5 h-5 text-accent-green" />
           <h2 className="text-lg font-semibold text-dark-50">Multi-Factor Authentication</h2>
         </div>
-        {mfaMessage && (
-          <p className={`text-sm mb-3 ${mfaMessage.includes('success') ? 'text-accent-green' : 'text-red-400'}`}>
-            {mfaMessage}
-          </p>
-        )}
-
-        {!mfaSetup ? (
-          <div className="space-y-2">
-            <p className="text-dark-400 text-sm">Use any TOTP authenticator app (Google Authenticator, Authy, Microsoft Authenticator).</p>
-            <button onClick={setupMFA} className="btn-primary flex items-center gap-2">
-              <Shield className="w-4 h-4" /> Setup TOTP MFA
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-5 max-w-sm">
-
-            {/* Step 1 — QR */}
-            <div>
-              <p className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Step 1 — Scan QR code</p>
-              <div className="bg-white p-3 rounded-xl inline-block shadow">
-                <img
-                  src={`data:image/svg+xml;base64,${mfaSetup.qr_code_base64}`}
-                  alt="TOTP QR Code"
-                  className="w-44 h-44 block"
-                />
-              </div>
-            </div>
-
-            {/* Manual entry fallback */}
-            <div>
-              <p className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Can't scan? Enter secret manually</p>
-              <div className="flex items-center gap-2 bg-dark-900/60 border border-dark-700/50 rounded-lg px-3 py-2">
-                <code className="flex-1 text-xs font-mono text-eagle-300 break-all select-all">
-                  {mfaSetup.totp_secret}
-                </code>
-                <button
-                  onClick={copySecret}
-                  className="flex-shrink-0 p-1 text-dark-400 hover:text-eagle-400 transition-colors"
-                  title="Copy secret"
-                >
-                  {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-                </button>
-              </div>
-              <p className="text-[11px] text-dark-500 mt-1">In your authenticator app → Add account → Enter setup key → paste the secret above</p>
-            </div>
-
-            {/* Step 2 — Verify */}
-            <div>
-              <p className="text-xs font-semibold text-dark-400 uppercase tracking-wider mb-2">Step 2 — Enter the 6-digit code</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={mfaCode}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, '').slice(0, 6)
-                    setMfaCode(val)
-                  }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') enableMFA() }}
-                  className="input-field flex-1 text-center font-mono tracking-[0.4em] text-lg"
-                  placeholder="000000"
-                  maxLength={6}
-                  autoComplete="one-time-code"
-                />
-                <button
-                  onClick={enableMFA}
-                  disabled={mfaCode.length !== 6 || mfaLoading}
-                  className="btn-primary flex items-center gap-2 disabled:opacity-50"
-                >
-                  {mfaLoading
-                    ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    : <Check className="w-4 h-4" />}
-                  Verify
-                </button>
-              </div>
-            </div>
-
+        {mfaStatusError && <FormAlert className="mb-3">{mfaStatusError}</FormAlert>}
+        {!mfaStatus && !mfaStatusError && <p className="text-sm text-dark-400">Loading…</p>}
+        {mfaStatus && (
+          <div className="space-y-3">
+            <p className="text-sm text-dark-50">
+              <span className="font-medium">{mfaStatus.mfa_enabled ? 'MFA is on' : 'MFA is off'}</span>
+              {mfaStatus.mfa_enabled && <span className="text-dark-400"> · {recoveryCodesLeftLabel(mfaStatus.recovery_codes_left)}</span>}
+            </p>
+            <p className="text-sm text-dark-400">
+              Your authenticator app keeps working with no expiry. To use a different authenticator or phone,
+              ask your Tenant Superadmin to reset your MFA.
+            </p>
+            {mfaStatus.mfa_enabled && (
+              <button type="button" onClick={() => setAskCodes(true)} className="btn-primary flex items-center gap-2">
+                <LifeBuoy className="w-4 h-4" /> Get new recovery codes
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {askCodes && (
+        <StepUpDialog title="Get new recovery codes" idPrefix="codes" confirmLabel="Get new codes"
+          onSubmit={regenerateCodes} onCancel={() => setAskCodes(false)}>
+          Your current recovery codes stop working as soon as new ones are issued. Confirm it is you.
+        </StepUpDialog>
+      )}
+
+      {newCodes && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-dark-950/70 p-4">
+          <div role="dialog" aria-modal="true" className="glass-card my-auto w-full max-w-md bg-dark-800 p-6">
+            <RecoveryCodes codes={newCodes} title="Your new recovery codes"
+              intro="Your old recovery codes no longer work. Each new code works once. They are shown only now."
+              doneLabel="Done" DoneIcon={Check}
+              onDone={() => { setNewCodes(null); loadMfaStatus() }} />
+          </div>
+        </div>
+      )}
 
       {/* System config */}
       <div className="glass-card p-6">

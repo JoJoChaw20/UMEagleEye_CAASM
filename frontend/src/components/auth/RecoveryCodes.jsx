@@ -10,7 +10,13 @@ const FILE_NAME = 'umeagleeye-recovery-codes.txt'
  * reachable after "I have saved these codes" is ticked. Until then, closing or reloading the tab
  * asks first, because the codes cannot be shown again.
  */
-export default function RecoveryCodes({ codes, onDone }) {
+export default function RecoveryCodes({
+  codes, onDone,
+  title = 'Save your recovery codes',
+  intro = 'MFA is set up. If you lose your authenticator app, sign in with one of these codes instead. Each code works once. They are shown only now.',
+  doneLabel = 'Continue to the dashboard',
+  DoneIcon = LogIn,
+}) {
   const [saved, setSaved] = useState(false)
   const [leaving, setLeaving] = useState(false)
   const [copyState, copy] = useCopy()
@@ -45,11 +51,8 @@ export default function RecoveryCodes({ codes, onDone }) {
       <span className="flex h-10 w-10 items-center justify-center rounded-md border border-eagle-500/30 bg-eagle-500/10 text-eagle-400">
         <LifeBuoy className="h-5 w-5" />
       </span>
-      <h1 className="mt-4 text-[26px] font-semibold leading-8 text-dark-50">Save your recovery codes</h1>
-      <p className="mt-1.5 text-sm text-dark-400">
-        MFA is set up. If you lose your authenticator app, sign in with one of these codes instead.
-        Each code works once. They are shown only now.
-      </p>
+      <h1 className="mt-4 text-[26px] font-semibold leading-8 text-dark-50">{title}</h1>
+      <p className="mt-1.5 text-sm text-dark-400">{intro}</p>
 
       <ol className="mt-6 grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-dark-700 bg-dark-900 px-4 py-3.5 font-mono text-sm text-dark-100" aria-label="Recovery codes">
         {codes.map((code) => <li key={code} className="tabular-nums tracking-wide">{code}</li>)}
@@ -72,7 +75,7 @@ export default function RecoveryCodes({ codes, onDone }) {
       </label>
 
       <button type="button" onClick={finish} disabled={!saved || leaving} className="btn-primary mt-4 w-full py-2.5" id="recovery-continue">
-        <LogIn className="h-4 w-4" />Continue to the dashboard
+        <DoneIcon className="h-4 w-4" />{doneLabel}
       </button>
     </>
   )
