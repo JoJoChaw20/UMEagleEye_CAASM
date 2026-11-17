@@ -1,10 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { getDb } from '../db/client'
 import {
   validateTransfer, validateRecoveryPlan, transferNext, recoveryNext, approverSlot,
   swapStatements, ownershipChangedNotice, restoredNotice, HOURS_72,
 } from './ownership'
 
+const db = getDb('postgres://u:p@localhost/none')   // builds queries only; nothing connects
 const now = new Date('2026-11-18T00:00:00Z')
 const T = 'tenant-a'
 const to = { userId: 'u2', tenantId: T, isActive: true, role: 'tenant_user' }
@@ -129,7 +131,17 @@ test('swap runs demote before promote in one transaction (statement order)', () 
   assert.equal(gone[0].set.scheduledDeactivationAt, null)
   const stay = swapStatements(T, 'o', 'n', { mode: 'stay' })
   assert.deepEqual(stay[0].set.actions, [])
-  assert.equal(typeof s[0].build, 'function')
+  const q = s.map((x) => (x.build(db) as unknown as { toSQL(): { sql: string; params: unknown[] } }).toSQL())
+  for (const { sql } of q) {
+    assert.match(sql, /^update "users"/)
+    assert.match(sql, /"user_id" = \$\d+/)
+    assert.match(sql, /"tenant_id" = \$\d+/)
+    assert.match(sql, /"role" = \$\d+/)
+    assert.match(sql, /returning "user_id"/)
+  }
+  assert.ok(q[0].params.includes('o') && q[0].params.includes('tenant_superadmin') && q[0].params.includes(T))
+  assert.ok(q[1].params.includes('n') && q[1].params.includes('tenant_user') && q[1].params.includes(T))
+  assert.throws(() => swapStatements(T, 'o', 'n', { mode: 'bogus' }), /Unknown after mode/)
 })
 
 test('notice texts verbatim', () => {

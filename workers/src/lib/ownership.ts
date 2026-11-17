@@ -120,11 +120,19 @@ export type SwapUpdate = {
   build: (db: any) => any
 }
 
-/** Ordered updates for one db.batch: demote the old owner first, then promote the new one. */
+/**
+ * Ordered updates for one db.batch: demote the old owner first, then promote the new one.
+ * Each update pins the row's current role and has `.returning({ userId })`. The caller MUST
+ * check both results: a demote returning 0 rows means the sender is no longer the owner, a
+ * promote returning 0 rows means the recipient is no longer a plain tenant_user; either way
+ * treat the swap as failed. The unique index `uq_users_one_tenant_superadmin` is the backstop
+ * against two owners.
+ */
 export function swapStatements(
   tenantId: string, fromId: string, toId: string, after: AfterChoice,
 ): [SwapUpdate, SwapUpdate] {
   const mode = after.mode
+  if (!(AFTER_MODES as readonly string[]).includes(mode)) throw new Error(`Unknown after mode: ${mode}`)
   const actions = mode === 'deactivate_now' ? [] : ((after.actions as string[] | undefined) ?? [])
   const demoteSet = {
     role: 'tenant_user',
@@ -133,11 +141,13 @@ export function swapStatements(
     scheduledDeactivationAt: mode === 'deactivate_on' ? (after.deactivateOn ?? null) : null,
   }
   const promoteSet = { role: 'tenant_superadmin', actions: [] as string[] }
-  const mk = (label: 'demote' | 'promote', userId: string, set: Record<string, unknown>): SwapUpdate => ({
+  const mk = (label: 'demote' | 'promote', userId: string, currentRole: 'tenant_superadmin' | 'tenant_user', set: Record<string, unknown>): SwapUpdate => ({
     label, userId, tenantId, set,
-    build: (db) => db.update(users).set(set).where(and(eq(users.userId, userId), eq(users.tenantId, tenantId))),
+    build: (db) => db.update(users).set(set)
+      .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId), eq(users.role, currentRole)))
+      .returning({ userId: users.userId }),
   })
-  return [mk('demote', fromId, demoteSet), mk('promote', toId, promoteSet)]
+  return [mk('demote', fromId, 'tenant_superadmin', demoteSet), mk('promote', toId, 'tenant_user', promoteSet)]
 }
 
 export function ownershipChangedNotice(a: string, b: string, date: string): string {
