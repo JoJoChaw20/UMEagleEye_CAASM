@@ -106,7 +106,7 @@ export const users = pgTable('users', {
 }, (t) => [
   index('idx_users_username').on(t.username),
   index('idx_users_tenant').on(t.tenantId),
-  // Exactly one Tenant Superadmin per tenant
+  // At most one Tenant Superadmin per tenant
   uniqueIndex('uq_users_one_tenant_superadmin').on(t.tenantId).where(sql`${t.role} = 'tenant_superadmin'`),
 ])
 

@@ -3,7 +3,7 @@
 //   node scripts/db/check-0035.mjs <staging|production>
 //
 // Prints users per role, and every tenant with more than one Tenant Superadmin, showing which
-// account the migration keeps (active first, then oldest) and which become full-access users.
+// account the migration keeps (active first, then oldest, then lowest user_id) and which become full-access users.
 import { neon } from '@neondatabase/serverless'
 import { die, loadEnvFile, describe } from './lib.mjs'
 
@@ -22,7 +22,7 @@ console.log(`\nTenant Superadmins with no tenant (become users with no actions):
 
 const rows = await sql(`
   select t.name as tenant, u.username, u.is_active, u.created_at,
-         row_number() over (partition by u.tenant_id order by u.is_active desc, u.created_at asc) as rn,
+         row_number() over (partition by u.tenant_id order by u.is_active desc, u.created_at asc, u.user_id asc) as rn,
          count(*) over (partition by u.tenant_id) as total
   from users u join tenants t on t.tenant_id = u.tenant_id
   where u.role = 'tenant_superadmin'
