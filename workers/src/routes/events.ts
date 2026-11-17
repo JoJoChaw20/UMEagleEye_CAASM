@@ -10,10 +10,10 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, or, desc, sql, gte, inArray, isNull, ilike } from 'drizzle-orm'
+import { eq, and, or, desc, sql, gte, inArray, isNull, ilike, ne } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireAction } from '../middleware/auth'
-import { decide } from '../lib/actions'
+import { assignableUsers, canBeAssignedAlerts } from '../lib/accountRows'
 import { getDb, type DB } from '../db/client'
 import {
   events, assets, advisories, users, auditLogs,
@@ -405,11 +405,13 @@ app.get('/assignees', authMiddleware, requireAction('alert.manage', 'advisory.up
       .where(and(
         eq(users.tenantId, tenantId),
         eq(users.isActive, true),
-        inArray(users.role, ['tenant_superadmin', 'tenant_user']),
+        // Any tenant member: valid whatever role values the enum holds (before and after migration 0036).
+        ne(users.role, 'superadmin'),
       ))
       .orderBy(users.username)
 
-    return c.json({ items: rows.filter(u => decide({ role: u.role, tenantId, actions: u.actions }, 'alert.manage').ok).map(u => ({ user_id: u.userId, username: u.username, role: u.role })) })
+    // A legacy role reads as a tenant user with its converted actions (lib/accountRows.ts).
+    return c.json({ items: assignableUsers(rows, tenantId) })
   } catch (err) {
     console.error('events GET assignees error:', err)
     return c.json({ detail: 'Failed to fetch assignees' }, 500)
@@ -622,7 +624,7 @@ async function applyUpdate(
     if (body.assigned_to !== null) {
       const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role, actions: users.actions })
         .from(users).where(eq(users.userId, body.assigned_to)).limit(1)
-      if (!assignee || !decide(assignee, 'alert.manage').ok
+      if (!assignee || !canBeAssignedAlerts(assignee)
           || (asset.tenantId && assignee.tenantId !== asset.tenantId)) {
         return { error: 'Assignee must be able to manage alerts in the asset\'s tenant' }
       }
@@ -681,7 +683,7 @@ export async function applyUpdateMany(
   if (body.assigned_to) {
     const [assignee] = await db.select({ tenantId: users.tenantId, role: users.role, actions: users.actions })
       .from(users).where(eq(users.userId, body.assigned_to)).limit(1)
-    if (!assignee || !decide(assignee, 'alert.manage').ok
+    if (!assignee || !canBeAssignedAlerts(assignee)
         || rows.some(r => r.asset.tenantId && assignee.tenantId !== r.asset.tenantId)) {
       return { updated: 0, error: 'Assignee must be able to manage alerts in the asset\'s tenant' }
     }

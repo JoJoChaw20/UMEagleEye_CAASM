@@ -19,6 +19,7 @@ import { authenticator } from 'otplib'
 import { TOO_MANY, clearFailures, overLimit, recordFailure } from '../lib/loginLimit'
 import { audit, callerIp } from '../services/audit'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
+import { roleOf, tokenClaims, withAccount } from '../lib/accountRows'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -76,13 +77,9 @@ app.post('/login', zValidator('json', loginSchema), async (c) => {
       return c.json({ mfa_required: true, user_id: user.userId })
     }
 
-    const access_token = await createToken(
-      { sub: user.userId, role: user.role, username: user.username, tenant_id: user.tenantId ?? undefined },
-      c.env.JWT_SECRET_KEY,
-      parseInt(c.env.JWT_EXPIRE_MINUTES),
-    )
+    const access_token = await createToken(tokenClaims(user), c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
 
-    return c.json({ access_token, role: user.role, user_id: user.userId, mfa_required: false })
+    return c.json({ access_token, role: roleOf(user), user_id: user.userId, mfa_required: false })
   } catch (err) {
     console.error('login error:', err)
     return c.json({ detail: 'Login failed' }, 500)
@@ -179,13 +176,9 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
       return c.json({ detail: 'Invalid TOTP code' }, 401)
     }
 
-    const access_token = await createToken(
-      { sub: user.userId, role: user.role, username: user.username, tenant_id: user.tenantId ?? undefined },
-      c.env.JWT_SECRET_KEY,
-      parseInt(c.env.JWT_EXPIRE_MINUTES),
-    )
+    const access_token = await createToken(tokenClaims(user), c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
 
-    return c.json({ access_token, role: user.role, user_id: user.userId })
+    return c.json({ access_token, role: roleOf(user), user_id: user.userId })
   } catch (err) {
     console.error('mfa/verify error:', err)
     return c.json({ detail: 'MFA verification failed' }, 500)
@@ -268,18 +261,9 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
       return c.json({ mfa_required: true, user_id: resolvedUser.userId })
     }
 
-    const access_token = await createToken(
-      {
-        sub: resolvedUser.userId,
-        role: resolvedUser.role,
-        username: resolvedUser.username,
-        tenant_id: resolvedUser.tenantId ?? undefined,
-      },
-      c.env.JWT_SECRET_KEY,
-      parseInt(c.env.JWT_EXPIRE_MINUTES),
-    )
+    const access_token = await createToken(tokenClaims(resolvedUser), c.env.JWT_SECRET_KEY, parseInt(c.env.JWT_EXPIRE_MINUTES))
 
-    return c.json({ access_token, role: resolvedUser.role, user_id: resolvedUser.userId })
+    return c.json({ access_token, role: roleOf(resolvedUser), user_id: resolvedUser.userId })
   } catch (err) {
     console.error('google auth error:', err)
     return c.json({ detail: 'Google authentication failed' }, 500)
@@ -377,7 +361,8 @@ app.get('/me', authMiddleware, async (c) => {
       return c.json({ detail: 'User not found' }, 404)
     }
 
-    const { passwordHash, ...profile } = row
+    // Role and actions as normalized (a legacy role reads as a tenant user): lib/accountRows.ts
+    const { passwordHash, ...profile } = withAccount(row)
     return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH })
   } catch (err) {
     console.error('me error:', err)

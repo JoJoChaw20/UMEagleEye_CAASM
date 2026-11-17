@@ -12,6 +12,7 @@ import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, 
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
 import { decide, refusalMessage } from '../lib/actions'
+import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
@@ -307,18 +308,8 @@ router.get(
       lastLogin: users.lastLogin,
     }).from(users).where(eq(users.tenantId, tenantId))
 
-    return c.json({
-      users: rows.map((u) => ({
-        user_id: u.userId,
-        username: u.username,
-        email: u.email,
-        role: u.role,
-        actions: u.actions ?? [],
-        is_active: u.isActive,
-        created_at: u.createdAt,
-        last_login: u.lastLogin,
-      })),
-    })
+    // A legacy role reads as a tenant user with its converted actions (lib/accountRows.ts).
+    return c.json({ users: rows.map(tenantUserItem) })
   }
 )
 
@@ -346,7 +337,7 @@ router.post(
     const [user] = await db.select().from(users)
       .where(user_id ? eq(users.userId, user_id) : eq(users.username, username!)).limit(1)
     if (!user) return c.json({ detail: `No user available with that ${what}` }, 404)
-    const refusal = addRefusal(caller, user, tenantId)
+    const refusal = addRefusal(caller, { ...user, role: roleOf(user) }, tenantId)
     if (refusal) {
       const { detail, status } = refusalDetail(refusal, false, what)
       return c.json({ detail }, status)
@@ -416,7 +407,7 @@ router.post(
     try {
       const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
       if (existing) {
-        const refusal = addRefusal(caller, existing, tenantId)
+        const refusal = addRefusal(caller, { ...existing, role: roleOf(existing) }, tenantId)
         if (refusal) {
           // Not a 404 here (an unknown email creates an account): the same answer for every refusal.
           return c.json({ detail: byPlatform ? refusalDetail(refusal, true, 'email').detail
@@ -458,15 +449,15 @@ router.post(
         userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: newUser.userId,
         newState: { email, username: newUser.username, role: newUser.role, actions: newUser.actions },
       })
-      if (newUser.actions.length) await auditActions(db, c, caller.userId, tenantId, newUser.userId, [], newUser.actions)
+      if (actions.length) await auditActions(db, c, caller.userId, tenantId, newUser.userId, [], actions)
 
       return c.json({
         ok: true,
         user_id: newUser.userId,
         username: newUser.username,
         email: newUser.email,
-        role: newUser.role,
-        actions: newUser.actions,
+        role,
+        actions,
         action: 'created',
       }, 201)
     } catch (err) {
@@ -499,12 +490,14 @@ router.put(
     if (!z.string().uuid().safeParse(userId).success) return c.json({ detail: 'User not found in this tenant' }, 404)
     const [target] = await db.select().from(users)
       .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId))).limit(1)
-    if (!target || target.role !== 'tenant_user') return c.json({ detail: 'User not found in this tenant' }, 404)
+    // A legacy-role row is a tenant user too; only its actions are written, so it keeps its stored
+    // role and old code still works for it until migration 0036 (lib/accountRows.ts).
+    const plan = target ? planActionsUpdate(target, parsed.actions) : null
+    if (!plan) return c.json({ detail: 'User not found in this tenant' }, 404)
 
-    const previous = target.actions ?? []
-    const next = parsed.actions
-    await db.update(users).set({ actions: next }).where(eq(users.userId, userId))
-    await auditActions(db, c, caller.userId, tenantId, userId, previous, next)
+    const next = plan.set.actions
+    await db.update(users).set(plan.set).where(eq(users.userId, userId))
+    await auditActions(db, c, caller.userId, tenantId, userId, plan.previous, next)
 
     return c.json({ actions: next, added_requirements: next.filter((k) => !requested.includes(k)) })
   }
@@ -535,8 +528,9 @@ router.patch(
     if (!target) return c.json({ detail: 'User not found in this tenant' }, 404)
 
     const caller = c.get('user')
-    if (target.role === 'superadmin') return c.json({ detail: 'The platform superadmin cannot be deactivated here' }, 403)
-    if (target.userId === caller.userId || target.role === 'tenant_superadmin') return c.json({ detail: OWNERSHIP_ONLY }, 403)
+    const targetRole = roleOf(target)
+    if (targetRole === 'superadmin') return c.json({ detail: 'The platform superadmin cannot be deactivated here' }, 403)
+    if (target.userId === caller.userId || targetRole === 'tenant_superadmin') return c.json({ detail: OWNERSHIP_ONLY }, 403)
 
     await db.update(users).set({ isActive: is_active }).where(eq(users.userId, userId))
     await audit(db, c, {

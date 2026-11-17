@@ -1,6 +1,7 @@
 import { createMiddleware } from 'hono/factory'
 import type { Env, AuthUser } from '../types'
 import { verifyToken } from '../lib/auth'
+import { toAuthUser } from '../lib/accountRows'
 import { getDb } from '../db/client'
 import { users } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -35,13 +36,8 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
     return c.json({ detail: 'Your account is deactivated. Contact your Tenant Superadmin.' }, 401)
   }
 
-  const user: AuthUser = {
-    userId: payload.sub,
-    role: row.role,
-    username: payload.username,
-    tenantId: row.tenantId ?? undefined,
-    actions: row.actions ?? [],
-  }
+  // A legacy role (tenant_admin, business_owner) reads as a tenant user (lib/accountRows.ts).
+  const user: AuthUser = toAuthUser(payload.sub, payload.username, row)
   c.set('user', user)
 
   // Every role but the platform superadmin sees one tenant. An account with no tenant

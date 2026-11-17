@@ -13,5 +13,5 @@ test('0035 is additive: adds tenant_user and a nullable actions column', () => {
 })
 test('0035 changes no rows and removes nothing', () => {
   const code = sqlText.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n')
-  assert.doesNotMatch(code, /\bUPDATE\b|\bDELETE\b|DROP TYPE|DROP DEFAULT|ALTER COLUMN role|CREATE UNIQUE INDEX/i)
+  assert.doesNotMatch(code, /\bUPDATE\b|\bDELETE\b|\bDROP\b|\bTRUNCATE\b|ALTER COLUMN role|CREATE UNIQUE INDEX/i)
 })
