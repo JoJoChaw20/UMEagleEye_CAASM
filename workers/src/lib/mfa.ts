@@ -1,7 +1,7 @@
 import { authenticator } from 'otplib'
 import { SignJWT, jwtVerify } from 'jose'
 
-// Clones keep the shared global authenticator.options untouched.
+// Use clones only; never set the global authenticator.options (shared singleton).
 const STEP_MS = 30_000
 const SKEW_MAX_STEPS = 10
 const SKEW_MIN_STEPS = 2
@@ -94,7 +94,7 @@ export async function verifyMfaToken(
   secret: string,
 ): Promise<{ sub: string; stage: MfaStage } | null> {
   try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret), { algorithms: ['HS256'] })
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret), { algorithms: ['HS256'], requiredClaims: ['exp', 'iat'] })
     if (payload.purpose !== 'mfa') return null
     if (payload.stage !== 'verify' && payload.stage !== 'enrol') return null
     if (typeof payload.sub !== 'string' || !payload.sub) return null

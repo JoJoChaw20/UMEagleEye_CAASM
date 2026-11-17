@@ -9,13 +9,16 @@ import {
 } from './mfa'
 
 const SECRET = 'JBSWY3DPEHPK3PXP'
-const T0 = 1_700_000_010_000 // fixed time, step boundary irrelevant
+const T0 = 1_700_000_027_000 // mid-step (17 s into a step) so floor vs round is exercised
 const STEP = 30_000
 const codeAt = (ms: number, secret = SECRET) =>
   authenticator.clone({ epoch: ms }).generate(secret)
 
 test('matchTotpStep accepts the current, previous and next step and refuses two steps away', () => {
   const cur = Math.floor(T0 / STEP)
+  assert.equal(T0 % STEP !== 0, true)
+  assert.equal(cur, Math.floor(T0 / STEP))
+  assert.notEqual(cur, Math.round(T0 / STEP))
   assert.equal(matchTotpStep(SECRET, codeAt(T0), T0), cur)
   assert.equal(matchTotpStep(SECRET, codeAt(T0 - STEP), T0), cur - 1)
   assert.equal(matchTotpStep(SECRET, codeAt(T0 + STEP), T0), cur + 1)
@@ -74,6 +77,15 @@ test('mfa token round-trip; wrong secret, expired, or missing purpose are refuse
     .setProtectedHeader({ alg: 'HS256' }).setSubject('u1').setIssuedAt()
     .setExpirationTime('5m').sign(key)
   assert.equal(await verifyMfaToken(noPurpose, 'k1'), null)
+
+  const wrongPurpose = await new SignJWT({ purpose: 'reset', stage: 'verify' })
+    .setProtectedHeader({ alg: 'HS256' }).setSubject('u1').setIssuedAt()
+    .setExpirationTime('5m').sign(key)
+  assert.equal(await verifyMfaToken(wrongPurpose, 'k1'), null)
+
+  const noExp = await new SignJWT({ purpose: 'mfa', stage: 'verify' })
+    .setProtectedHeader({ alg: 'HS256' }).setSubject('u1').setIssuedAt().sign(key)
+  assert.equal(await verifyMfaToken(noExp, 'k1'), null)
 
   const access = await createToken({ sub: 'u1' } as never, 'k1')
   assert.equal(await verifyMfaToken(access, 'k1'), null)
