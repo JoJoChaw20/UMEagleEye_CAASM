@@ -18,6 +18,7 @@ import topologyRoutes from './routes/topology'
 import networkRoutes from './routes/network'
 import enrolmentRoutes from './routes/enrolment'
 import tenantRoutes from './routes/tenants'
+import ownershipRoutes from './routes/ownership'
 import notificationRoutes from './routes/notifications'
 import chatbotRoutes from './routes/chatbot'
 import mcpRoutes from './routes/mcp'
@@ -90,6 +91,7 @@ api.route('/topology', topologyRoutes)
 api.route('/network', networkRoutes)
 api.route('/enrolment', enrolmentRoutes)
 api.route('/tenants', tenantRoutes)
+api.route('/tenants', ownershipRoutes)
 api.route('/notifications', notificationRoutes)
 api.route('/chatbot', chatbotRoutes)
 api.route('/mcp', mcpRoutes)

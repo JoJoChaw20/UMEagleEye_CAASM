@@ -1,5 +1,5 @@
 // Tenant ownership handover rules. Pure logic: no DB calls, no clock reads (callers pass `now`).
-import { and, eq, exists, inArray, notExists, sql } from 'drizzle-orm'
+import { and, eq, exists, inArray, notExists, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { users } from '../db/schema'
 import { parseActionList } from './userAdmin'
@@ -130,12 +130,14 @@ export type SwapUpdate = {
  *  - demote runs only if the sender is still the owner AND the recipient is still an active tenant_user;
  *  - promote runs only if the recipient is still an active tenant_user AND the tenant has no owner
  *    (so it is a no-op when the demote was a no-op).
+ * An optional `guard` (SQL) is ANDed into the demote's WHERE, so the caller can make the swap depend on another
+ * statement of the same batch (e.g. a transfer flipped by this transaction); promote then no-ops with it.
  * Success = demote and promote each returned 1 row. With the lock held, otherwise nothing changed: the caller answers 409
  * "Ownership changed. Reload and try again." The unique index `uq_users_one_tenant_superadmin`
  * is the final backstop against two owners.
  */
 export function swapStatements(
-  tenantId: string, fromId: string, toId: string, after: AfterChoice,
+  tenantId: string, fromId: string, toId: string, after: AfterChoice, guard?: SQL,
 ): [SwapUpdate, SwapUpdate, SwapUpdate] {
   const mode = after.mode
   if (!(AFTER_MODES as readonly string[]).includes(mode)) throw new Error(`Unknown after mode: ${mode}`)
@@ -156,6 +158,7 @@ export function swapStatements(
       exists(db.select({ one: sql`1` }).from(r).where(and(
         eq(r.userId, toId), eq(r.tenantId, tenantId), eq(r.role, 'tenant_user'), eq(r.isActive, true),
       ))),
+      guard,
     )).returning({ userId: users.userId }),
   }
   const promote: SwapUpdate = {

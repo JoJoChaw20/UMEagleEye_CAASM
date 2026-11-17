@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import {
   validateTransfer, validateRecoveryPlan, transferNext, recoveryNext, approverSlot,
@@ -156,4 +157,15 @@ test('swap runs demote before promote in one transaction (statement order)', () 
 test('notice texts verbatim', () => {
   assert.equal(ownershipChangedNotice('Ann', 'Bob', '18 Nov 2026'), 'Tenant ownership changed from Ann to Bob on 18 Nov 2026.')
   assert.equal(restoredNotice('18 Nov 2026'), 'Ownership of this tenant was restored by platform verification on 18 Nov 2026.')
+})
+
+test('swap guard is ANDed into the demote only', () => {
+  const g = sql`exists (select 1 from ownership_transfers where transfer_id = ${'tx'})`
+  const s = swapStatements(T, 'o', 'n', { mode: 'stay' }, g)
+  const q = s.map((x) => (x.build(db) as unknown as { toSQL(): { sql: string; params: unknown[] } }).toSQL())
+  assert.match(q[1].sql, /exists \(select 1 from ownership_transfers where transfer_id = \$\d+\)/)
+  assert.ok(q[1].params.includes('tx'))
+  assert.ok(!q[2].params.includes('tx'))
+  const plain = swapStatements(T, 'o', 'n', { mode: 'stay' })[1].build(db).toSQL()
+  assert.ok(!/ownership_transfers/.test(plain.sql))
 })

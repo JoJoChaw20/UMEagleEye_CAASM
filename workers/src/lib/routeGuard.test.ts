@@ -7,6 +7,9 @@ import { join } from 'node:path'
 const SELF_SERVICE = new Set([
   'auth.ts:/mfa/status', 'auth.ts:/mfa/recovery-codes', 'auth.ts:/change-password', 'auth.ts:/set-password',
   'auth.ts:/me', 'auth.ts:/actions',
+  // Ownership handover: the caller's own tenant and own pending transfer are checked in the handler.
+  'ownership.ts:/:tenantId/ownership', 'ownership.ts:/:tenantId/ownership/transfer/accept',
+  'ownership.ts:/:tenantId/ownership/transfer/decline',
 ])
 
 const routesDir = join(process.cwd(), 'src/routes')
