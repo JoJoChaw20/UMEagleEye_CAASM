@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { useState, useEffect, useMemo } from 'react'
 import { ChevronRight, Check, ShieldOff, ShieldCheck, AlertTriangle, Info } from 'lucide-react'
 import {
   matchPreset, addAction, removeAction, presetActions, accessSummary, actionLabel, actionLabels,
 } from '../../utils/actions'
+import { ConfirmDialog } from '../common/PageParts'
 
 // Chooses a person's actions. Controlled: `value` is the selected action keys, `onChange` gets the
 // next list (always closed over requirements, in catalog order). No requests of its own.
@@ -19,51 +19,6 @@ const NOTE_MS = 6000
 function ImpactBadge({ impact }) {
   const it = IMPACT[impact] || IMPACT.low
   return <span className={`shrink-0 rounded-md border px-1.5 py-px text-[11px] font-medium ${it.cls}`}>{it.label}</span>
-}
-
-// "Removing … also removes … Remove all n?" Esc and the backdrop cancel; Esc stops here so a
-// surrounding side panel stays open.
-function RemoveConfirm({ label, removedLabels, count, onConfirm, onCancel }) {
-  const cancelRef = useRef(null)
-  const onCancelRef = useRef(onCancel)
-  onCancelRef.current = onCancel
-  useEffect(() => {
-    cancelRef.current?.focus()
-    const onKey = (e) => {
-      if (e.key !== 'Escape') return
-      e.stopPropagation()
-      onCancelRef.current()
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [])
-  return createPortal(
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-dark-950/70 p-4 animate-[palette-fade_160ms_ease-out]" onClick={onCancel}>
-      <div role="alertdialog" aria-modal="true" aria-labelledby="remove-action-title" aria-describedby="remove-action-body"
-        className="glass-card w-full max-w-md bg-dark-800 p-5 animate-[palette-rise_220ms_cubic-bezier(0.16,1,0.3,1)]"
-        onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500/10">
-            <AlertTriangle className="h-4 w-4 text-amber-400" />
-          </span>
-          <div className="min-w-0">
-            <h3 id="remove-action-title" className="font-semibold text-dark-50">Remove access</h3>
-            <p id="remove-action-body" className="mt-1 text-sm text-dark-300">
-              Removing &quot;{label}&quot; also removes: {removedLabels}. Remove all {count}?
-            </p>
-          </div>
-        </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button ref={cancelRef} type="button" onClick={onCancel} className="btn-secondary text-sm py-1.5">Cancel</button>
-          <button type="button" onClick={onConfirm}
-            className="rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25">
-            Remove all
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  )
 }
 
 function ActionRow({ action, checked, note, onToggle, disabled }) {
@@ -88,7 +43,7 @@ function ActionRow({ action, checked, note, onToggle, disabled }) {
         </span>
       </label>
       {note && (
-        <p role="status" className="ml-7 mt-1.5 flex items-start gap-1.5 text-xs text-eagle-400 animate-[palette-fade_160ms_ease-out]">
+        <p aria-hidden="true" className="ml-7 mt-1.5 flex items-start gap-1.5 text-xs text-eagle-400 animate-[palette-fade_160ms_ease-out]">
           <Info className="mt-px h-3 w-3 shrink-0" />
           Also added: {note}
         </p>
@@ -210,14 +165,15 @@ export default function ActionPicker({ value, onChange, catalog, disabled = fals
         })}
       </div>
 
+      {/* Always mounted, so screen readers announce each new "Also added" note */}
+      <p className="sr-only" aria-live="polite">{note ? `Also added: ${note.text}` : ''}</p>
+
       {confirm && (
-        <RemoveConfirm
-          label={actionLabel(confirm.key, catalog)}
-          removedLabels={actionLabels(confirm.removed, catalog)}
-          count={confirm.removed.length + 1}
+        <ConfirmDialog title="Remove access" confirmLabel="Remove all" danger
           onCancel={() => setConfirm(null)}
-          onConfirm={() => { onChange(confirm.next); setConfirm(null); setNote(null) }}
-        />
+          onConfirm={() => { onChange(confirm.next); setConfirm(null); setNote(null) }}>
+          Removing &quot;{actionLabel(confirm.key, catalog)}&quot; also removes: {actionLabels(confirm.removed, catalog)}. Remove all {confirm.removed.length + 1}?
+        </ConfirmDialog>
       )}
     </div>
   )

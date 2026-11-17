@@ -41,15 +41,19 @@ function CatalogGate({ children }) {
   return <Spinner className="py-10" />
 }
 
-function PanelButtons({ onCancel, submitting, disabled, label, form }) {
+// Pinned under the panel body, so a save error is always in view next to the button.
+function PanelButtons({ onCancel, submitting, disabled, label, form, error }) {
   return (
-    <div className="flex justify-end gap-2">
-      <button type="button" onClick={onCancel} className="btn-secondary text-sm py-1.5">Cancel</button>
-      <button type="submit" form={form} disabled={submitting || disabled}
-        className="btn-primary text-sm py-1.5 flex items-center gap-1.5 disabled:opacity-40">
-        {submitting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-        {label}
-      </button>
+    <div className="space-y-3">
+      <ErrorNote>{error}</ErrorNote>
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="btn-secondary text-sm py-1.5">Cancel</button>
+        <button type="submit" form={form} disabled={submitting || disabled}
+          className="btn-primary text-sm py-1.5 flex items-center gap-1.5 disabled:opacity-40">
+          {submitting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+          {label}
+        </button>
+      </div>
     </div>
   )
 }
@@ -83,10 +87,12 @@ function EditAccessPanel({ tenantId, target, onClose, onSaved }) {
       subtitle={target.email}
       onClose={onClose}
       width="sm:w-[640px]"
-      footer={<PanelButtons form="edit-access" onCancel={onClose} submitting={submitting} disabled={!dirty || !catalog} label="Save" />}
+      dirty={dirty}
+      footer={(requestClose) => (
+        <PanelButtons form="edit-access" onCancel={requestClose} submitting={submitting} disabled={!dirty || !catalog} label="Save" error={error} />
+      )}
     >
       <form id="edit-access" onSubmit={save} className="space-y-4">
-        <ErrorNote>{error}</ErrorNote>
         <p className="text-xs text-dark-400">Changes apply from the person&apos;s next action in the app.</p>
         <CatalogGate>
           <ActionPicker value={actions} onChange={setActions} catalog={catalog} disabled={submitting} />
@@ -106,6 +112,7 @@ function InvitePanel({ tenantId, onClose, onDone }) {
   const [assignUsername, setAssignUsername] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const dirty = !!(email || username || actions.length || assignUsername)
 
   const submit = async (e) => {
     e.preventDefault()
@@ -135,7 +142,10 @@ function InvitePanel({ tenantId, onClose, onDone }) {
       title="Add user"
       onClose={onClose}
       width="sm:w-[640px]"
-      footer={<PanelButtons form="invite-user" onCancel={onClose} submitting={submitting} label={mode === 'email' ? 'Invite' : 'Add user'} />}
+      dirty={dirty}
+      footer={(requestClose) => (
+        <PanelButtons form="invite-user" onCancel={requestClose} submitting={submitting} label={mode === 'email' ? 'Invite' : 'Add user'} error={error} />
+      )}
     >
       <div className="flex gap-1 rounded-lg border border-dark-700/50 bg-dark-800/60 p-1" role="tablist" aria-label="How to add">
         {[['email', 'Invite by email'], ['username', 'Existing account']].map(([m, label]) => (
@@ -148,7 +158,6 @@ function InvitePanel({ tenantId, onClose, onDone }) {
       </div>
 
       <form id="invite-user" onSubmit={submit} className="space-y-4">
-        <ErrorNote>{error}</ErrorNote>
         {mode === 'email' ? (
           <>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -203,7 +212,7 @@ function StatusBadge({ active }) {
 
 // ── Main page ─────────────────────────────────────────────────────
 export default function TenantSettingsPage() {
-  const { user, catalog } = useAuth()
+  const { user, catalog, catalogError, retryCatalog } = useAuth()
   const isTenantSuperadmin = user?.role === 'tenant_superadmin'
   const tenantId = user?.tenantId
   const { toast, show: showToast } = useToast()
@@ -395,6 +404,7 @@ export default function TenantSettingsPage() {
                   const isOwner = u.role === 'tenant_superadmin'
                   const canEdit = isTenantSuperadmin && u.role === 'tenant_user'
                   const canToggle = isTenantSuperadmin && !isSelf && !isOwner
+                  const catalogFailed = !isOwner && !catalog && catalogError
                   const access = isOwner
                     ? 'Tenant Superadmin · all actions'
                     : catalog ? accessSummary(u.actions, catalog) : '…'
@@ -407,7 +417,12 @@ export default function TenantSettingsPage() {
                       </td>
                       <td className="text-sm text-dark-300">{u.email}</td>
                       <td>
-                        {canEdit ? (
+                        {catalogFailed ? (
+                          <span className="flex items-center gap-2 text-sm text-dark-500">
+                            Could not load
+                            <button type="button" onClick={retryCatalog} className="text-xs text-eagle-400 hover:underline">Retry</button>
+                          </span>
+                        ) : canEdit ? (
                           <button type="button" onClick={() => setEditing(u)} title="Edit access"
                             className={`rounded text-left text-sm underline decoration-dark-600 decoration-dotted underline-offset-4 hover:text-eagle-400 hover:decoration-eagle-500 ${accessTone}`}>
                             {access}

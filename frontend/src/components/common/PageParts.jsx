@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { X, CheckCircle2, Info, AlertTriangle, MoreHorizontal } from 'lucide-react'
 
 // Building blocks shared by the Threat Intel, SBOM and Discovery pages.
@@ -44,16 +45,90 @@ export function StatTile({ label, value, sub, tone = 'default', icon: Icon, onCl
     : <div className="stat-card" title={title}>{body}</div>
 }
 
-// ── Right-hand side panel (closes on Esc or the backdrop) ─────────
-// footer: optional content pinned under the scrolling body, e.g. Save and Cancel buttons.
-export function SidePanel({ title, subtitle, onClose, children, footer, width = 'sm:w-[560px]' }) {
+// ── Confirm dialog ────────────────────────────────────────────────
+// Portalled to <body> so a transformed parent (the side panel's slide-in) cannot trap it. The
+// cancel button takes focus first; Tab stays inside the dialog; Esc and the backdrop cancel. Esc
+// is caught before a surrounding side panel's own Esc handler sees it.
+export function ConfirmDialog({ title, children, confirmLabel, cancelLabel = 'Cancel', onConfirm, onCancel, danger = false }) {
+  const boxRef = useRef(null)
+  const cancelRef = useRef(null)
+  const onCancelRef = useRef(onCancel)
+  onCancelRef.current = onCancel
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    const before = document.activeElement
+    cancelRef.current?.focus()
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onCancelRef.current()
+        return
+      }
+      if (e.key !== 'Tab') return
+      const items = [...(boxRef.current?.querySelectorAll('button:not([disabled])') || [])]
+      if (!items.length) return
+      const i = items.indexOf(document.activeElement)
+      e.preventDefault()
+      e.stopPropagation()
+      const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : (i === -1 || i === items.length - 1 ? 0 : i + 1)
+      items[next].focus()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      if (before && typeof before.focus === 'function' && document.contains(before)) before.focus()
+    }
+  }, [])
+  return createPortal(
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-dark-950/70 p-4 animate-[palette-fade_160ms_ease-out]"
+      onClick={(e) => { e.stopPropagation(); onCancel() }}>
+      <div ref={boxRef} role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-body"
+        className="glass-card w-full max-w-md bg-dark-800 p-5 animate-[palette-rise_220ms_cubic-bezier(0.16,1,0.3,1)]"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500/10">
+            <AlertTriangle className="h-4 w-4 text-amber-400" />
+          </span>
+          <div className="min-w-0">
+            <h3 id="confirm-dialog-title" className="font-semibold text-dark-50">{title}</h3>
+            {children && <div id="confirm-dialog-body" className="mt-1 text-sm text-dark-300">{children}</div>}
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button ref={cancelRef} type="button" onClick={onCancel} className="btn-secondary text-sm py-1.5">{cancelLabel}</button>
+          <button type="button" onClick={onConfirm}
+            className={danger
+              ? 'rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/25'
+              : 'btn-primary text-sm py-1.5'}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+// ── Right-hand side panel (closes on Esc or the backdrop) ─────────
+// footer: optional content pinned under the scrolling body, e.g. Save and Cancel buttons. Pass a
+// function to get the panel's close request, for a Cancel button that should ask like Esc does.
+// dirty: while true, Esc, the backdrop, the close button and that close request first ask
+// "Discard unsaved changes?". Closing by calling onClose yourself (after a save) never asks.
+export function SidePanel({ title, subtitle, onClose, children, footer, dirty = false, width = 'sm:w-[560px]' }) {
+  const [asking, setAsking] = useState(false)
+  const stateRef = useRef({ dirty, onClose })
+  stateRef.current = { dirty, onClose }
+  const requestClose = useCallback(() => {
+    if (stateRef.current.dirty) setAsking(true)
+    else stateRef.current.onClose()
+  }, [])
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') requestClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [requestClose])
+  const footerContent = typeof footer === 'function' ? footer(requestClose) : footer
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-dark-950/70 animate-[palette-fade_160ms_ease-out]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-dark-950/70 animate-[palette-fade_160ms_ease-out]" onClick={requestClose}>
       <aside role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined}
         className={`flex h-full w-full flex-col border-l border-dark-700 bg-dark-900 shadow-float animate-[panel-slide_260ms_cubic-bezier(0.16,1,0.3,1)] ${width}`}
         onClick={(e) => e.stopPropagation()}>
@@ -62,13 +137,18 @@ export function SidePanel({ title, subtitle, onClose, children, footer, width = 
             <h2 className="break-words text-base font-semibold text-dark-50">{title}</h2>
             {subtitle && <div className="text-xs text-dark-400 mt-0.5">{subtitle}</div>}
           </div>
-          <button type="button" onClick={onClose} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-dark-400 transition-colors hover:bg-dark-700/40 hover:text-dark-50" title="Close" aria-label="Close">
+          <button type="button" onClick={requestClose} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-dark-400 transition-colors hover:bg-dark-700/40 hover:text-dark-50" title="Close" aria-label="Close">
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto p-5">{children}</div>
-        {footer && <div className="border-t border-dark-700 bg-dark-800 px-5 py-3">{footer}</div>}
+        {footerContent && <div className="border-t border-dark-700 bg-dark-800 px-5 py-3">{footerContent}</div>}
       </aside>
+      {asking && (
+        <ConfirmDialog title="Discard unsaved changes?" confirmLabel="Discard" cancelLabel="Keep editing" danger
+          onCancel={() => setAsking(false)}
+          onConfirm={() => { setAsking(false); stateRef.current.onClose() }} />
+      )}
     </div>
   )
 }

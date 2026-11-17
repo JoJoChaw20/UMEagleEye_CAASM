@@ -3,7 +3,7 @@ import { Plus, Edit2, Users, X, Check, Shield, ToggleLeft, ToggleRight, RefreshC
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { SidePanel, Toast, useToast, Spinner } from '../components/common/PageParts'
-import { accessSummary } from '../utils/actions'
+import { accessSummary, countActions } from '../utils/actions'
 
 // ── Status badge ──────────────────────────────────────────────────
 function ActiveBadge({ active }) {
@@ -284,7 +284,7 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
                           <p className="mt-0.5 break-all font-mono text-[11px] text-dark-500" title="User ID">{u.user_id}</p>
                         </td>
                         <td className={`text-sm ${tone}`}>
-                          {isOwner ? 'Tenant Superadmin · all actions' : accessSummary(u.actions, catalog)}
+                          {isOwner ? 'Tenant Superadmin · all actions' : catalog ? accessSummary(u.actions, catalog) : (u.actions?.length ? countActions(u.actions.length) : 'No access')}
                         </td>
                         <td><ActiveBadge active={u.is_active} /></td>
                       </tr>
