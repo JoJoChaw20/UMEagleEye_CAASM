@@ -44,7 +44,7 @@ const ORPHAN_SBOM_SCANS_AFTER = `select s.scan_id from scan_results s
     not exists (select 1 from assets a where a.asset_id::text = s.subnet)
     or s.subnet in (select asset_id::text from (${STALE_ASSETS}) x))`
 
-// Since migration 0035 the old business_owner role is tenant_user (roles: superadmin |
+// Since migration 0036 the old business_owner role is tenant_user (roles: superadmin |
 // tenant_superadmin | tenant_user), so a tenantless account of that kind is a tenantless tenant_user.
 const TENANTLESS_USERS = `select user_id from users
   where tenant_id is null and role = 'tenant_user' and user_id <> '${KEEP_USER_ID}'`

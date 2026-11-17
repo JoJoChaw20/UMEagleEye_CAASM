@@ -142,7 +142,7 @@ async function seed() {
 
   // ── users: one of each kind, plus enough for the 25-user stress step ──
   // Roles are superadmin | tenant_superadmin | tenant_user (migration 0035). The analyst and owner are
-  // tenant users with the actions migration 0035 gave the old tenant_admin and business_owner roles.
+  // tenant users with the actions migration 0036 gave the old tenant_admin and business_owner roles.
   const { MIGRATION_ACTIONS } = await workerLib('src/lib/actions.ts')
   const users = {}
   const userRows = []

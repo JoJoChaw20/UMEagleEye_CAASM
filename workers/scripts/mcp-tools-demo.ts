@@ -46,7 +46,7 @@ const KV_CACHE = {
 const env = { DEEPSEEK_API_KEY: 'test-key', KV_CACHE } as unknown as Env
 const T = '00000000-0000-0000-0000-0000000000aa'
 const A = '00000000-0000-0000-0000-0000000000bb'
-// A tenant user with the actions migration 0035 gave the old tenant_admin role
+// A tenant user with the actions migration 0036 gave the old tenant_admin role
 const admin: ToolContext = { db, env, user: { userId: 'u1', role: 'tenant_user', tenantId: T, actions: MIGRATION_ACTIONS.tenant_admin }, tenantId: T }
 
 async function main() {
