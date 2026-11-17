@@ -11,6 +11,7 @@ import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
+import { isFkViolation } from '../lib/fkViolation'
 import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
@@ -628,8 +629,7 @@ router.delete(
         // One Neon HTTP transaction (db.batch): the audit rows keep the username, then the user goes.
         await db.batch([...deleteUserStatements(db, tenantId, userId, target.username)])
       } catch (err) {
-        const e = err as { code?: string; cause?: { code?: string } }
-        if (e?.code === '23503' || e?.cause?.code === '23503') {
+        if (isFkViolation(err)) {
           await audit(db, c, {
             userId: caller.userId, tenantId, actionType: 'user.delete_refused', targetEntity: userId, previousState,
           })
