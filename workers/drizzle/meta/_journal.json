@@ -246,6 +246,13 @@
       "when": 1794845727575,
       "tag": "0034_sightings_list_index",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794912409156,
+      "tag": "0035_action_based_access",
+      "breakpoints": true
     }
   ]
 }
