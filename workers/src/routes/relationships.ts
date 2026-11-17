@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { eq, and, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, assetRelationships, tenants, topologyNodes } from '../db/schema'
 import { inferForTenant, resolveParents } from './topology'
@@ -18,9 +18,6 @@ import { computeBlastRadius, clampDepth, normalizeDirection, type BlastNodeInput
 const REL_INSERT_CHUNK = 200
 
 const app = new Hono<{ Bindings: Env }>()
-const VIEW_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin'] as const
-const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin'] as const
-const DELETE_ROLES = ['tenant_superadmin', 'tenant_admin'] as const
 
 // ── Helpers ───────────────────────────────────────────────────────
 // `layer` is the asset's topology layer (the graph MAY read topology; the engine never
@@ -68,7 +65,7 @@ function anyOfUuids(col: any, ids: string[]) {
 }
 
 // ── GET /graph/:assetId — subgraph for one asset ─────────────────
-app.get('/graph/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
+app.get('/graph/:assetId', authMiddleware, requireAction('relationship.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -170,7 +167,7 @@ export async function loadBlastGraph(
 // 2 queries, then runs the pure traversal. Response is backward compatible with
 // BlastRadiusModal (origin_asset_id, affected_assets[], total_affected, max_depth)
 // with added fields: direction, reason, truncated, skipped_types, per-node hub + via.
-app.get('/blast-radius/:assetId', authMiddleware, requireRoles(...VIEW_ROLES), async (c) => {
+app.get('/blast-radius/:assetId', authMiddleware, requireAction('relationship.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -295,7 +292,7 @@ export async function inferRelationshipsForTenant(db: DbClient, tenantId: string
 // infra→infra become connects_to (downstream), host→host becomes depends_on.
 // The tenant's topology and relationships built again now (services/relationshipRefresh.ts; they are
 // also rebuilt on their own when devices come or go, and every night).
-app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/infer', authMiddleware, requireAction('relationship.manage'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -329,7 +326,7 @@ app.post('/infer', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
 })
 
 // ── POST / — Create a relationship manually ───────────────────────
-app.post('/', authMiddleware, requireRoles(...WRITE_ROLES),
+app.post('/', authMiddleware, requireAction('relationship.manage'),
   zValidator('json', z.object({
     source_asset_id:   z.string().uuid(),
     target_asset_id:   z.string().uuid(),
@@ -372,7 +369,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES),
 )
 
 // ── DELETE /:relationshipId ───────────────────────────────────────
-app.delete('/:relationshipId', authMiddleware, requireRoles(...DELETE_ROLES), async (c) => {
+app.delete('/:relationshipId', authMiddleware, requireAction('relationship.delete'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)

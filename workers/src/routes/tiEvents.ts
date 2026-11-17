@@ -22,7 +22,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { auditLogs, ctiIndicators, tenants, tiEvents, users } from '../db/schema'
 import { IOC_TYPES, parseIocs, type IocType } from '../lib/iocParse'
@@ -33,8 +33,6 @@ import { resolveSoftware, softwareName, techniqueIds, techniqueName } from '../l
 
 const app = new Hono<{ Bindings: Env }>()
 
-const READ_ROLES  = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
-const WRITE_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin']
 const MAX_ATTRIBUTES_PER_ADD = 2000
 const MAX_ATTRIBUTES_PER_EVENT = 10000
 
@@ -50,10 +48,8 @@ function canView(user: User, ev: EventRow): boolean {
   return ev.status === 'published' && isShared(ev.distribution)
 }
 
-/** Tenant writers edit their tenant's events; superadmins edit platform events. */
+/** Writers edit their own tenant's events. The action guard already refused platform superadmins. */
 function canEdit(user: User, ev: EventRow): boolean {
-  if (user.role === 'superadmin') return ev.tenantId === null
-  if (!['tenant_superadmin', 'tenant_admin'].includes(user.role)) return false
   return !!ev.tenantId && ev.tenantId === user.tenantId
 }
 
@@ -170,16 +166,12 @@ function badRequest(result: { success: boolean; error?: z.ZodError }, c: { json:
 
 /** The distribution a user may set, or an error message. */
 function allowedDistribution(user: User, wanted: string | undefined): { value?: 'organisation' | 'all_tenants' | 'platform'; error?: string } {
-  if (user.role === 'superadmin') {
-    if (wanted && wanted !== 'platform') return { error: 'Superadmins publish platform events (shared with every tenant)' }
-    return { value: 'platform' }
-  }
-  if (wanted === 'platform') return { error: 'Only a superadmin can create platform events' }
+  if (wanted === 'platform') return { error: 'Platform events cannot be created here' }
   return { value: (wanted as 'organisation' | 'all_tenants' | undefined) ?? 'organisation' }
 }
 
 // ── GET / ─── events this user may see ─────────────────────────
-app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/', authMiddleware, requireAction('ti_event.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
@@ -216,17 +208,17 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 })
 
 // ── POST / ─── create a draft event ────────────────────────────
-app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', eventBody, badRequest), async (c) => {
+app.post('/', authMiddleware, requireAction('ti_event.create'), zValidator('json', eventBody, badRequest), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
     const body = c.req.valid('json')
     const dist = allowedDistribution(user, body.distribution)
     if (dist.error) return c.json({ detail: dist.error }, 403)
-    if (user.role !== 'superadmin' && !user.tenantId) return c.json({ detail: 'Your account has no tenant' }, 403)
+    if (!user.tenantId) return c.json({ detail: 'Your account has no tenant' }, 403)
 
     const [ev] = await db.insert(tiEvents).values({
-      tenantId: user.role === 'superadmin' ? null : user.tenantId!,
+      tenantId: user.tenantId,
       title: body.title,
       description: body.description ?? null,
       threatLevel: body.threat_level ?? 'medium',
@@ -245,7 +237,7 @@ app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', e
 })
 
 // ── GET /:id ─── one event with its attributes ─────────────────
-app.get('/:id', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:id', authMiddleware, requireAction('ti_event.view'), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
@@ -286,7 +278,7 @@ app.get('/:id', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 })
 
 // ── PATCH /:id ─── edit title, description, level, sharing, tags ──
-app.patch('/:id', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', eventBody.partial(), badRequest), async (c) => {
+app.patch('/:id', authMiddleware, requireAction('ti_event.edit'), zValidator('json', eventBody.partial(), badRequest), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
@@ -328,7 +320,7 @@ app.patch('/:id', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json
 })
 
 // ── DELETE /:id ─── delete an event and its attributes ─────────
-app.delete('/:id', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.delete('/:id', authMiddleware, requireAction('ti_event.delete'), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
@@ -365,14 +357,14 @@ async function setStatus(c: Context<{ Bindings: Env }>, status: 'draft' | 'publi
   return c.json(eventOut(updated, user, { alerts_updated: alerts }))
 }
 
-app.post('/:id/publish', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/:id/publish', authMiddleware, requireAction('ti_event.publish'), async (c) => {
   try { return await setStatus(c, 'published') } catch (err) {
     console.error('ti event publish error:', err)
     return c.json({ detail: 'Failed to publish event' }, 500)
   }
 })
 
-app.post('/:id/unpublish', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/:id/unpublish', authMiddleware, requireAction('ti_event.publish'), async (c) => {
   try { return await setStatus(c, 'draft') } catch (err) {
     console.error('ti event unpublish error:', err)
     return c.json({ detail: 'Failed to unpublish event' }, 500)
@@ -389,7 +381,7 @@ const addBody = z.object({
   comment: z.string().max(1000).nullish(),
 })
 
-app.post('/:id/attributes', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', addBody, badRequest), async (c) => {
+app.post('/:id/attributes', authMiddleware, requireAction('ti_event.edit'), zValidator('json', addBody, badRequest), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
@@ -459,7 +451,7 @@ app.post('/:id/attributes', authMiddleware, requireRoles(...WRITE_ROLES), zValid
 // ── PATCH /:id/attributes/:attrId ─── to_ids, comment ─────────
 const attrPatch = z.object({ to_ids: z.boolean().optional(), comment: z.string().max(1000).nullish() })
 
-app.patch('/:id/attributes/:attrId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', attrPatch, badRequest), async (c) => {
+app.patch('/:id/attributes/:attrId', authMiddleware, requireAction('ti_event.edit'), zValidator('json', attrPatch, badRequest), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
@@ -481,7 +473,7 @@ app.patch('/:id/attributes/:attrId', authMiddleware, requireRoles(...WRITE_ROLES
 })
 
 // ── DELETE /:id/attributes/:attrId ───────────────────────────
-app.delete('/:id/attributes/:attrId', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.delete('/:id/attributes/:attrId', authMiddleware, requireAction('ti_event.edit'), async (c) => {
   try {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)

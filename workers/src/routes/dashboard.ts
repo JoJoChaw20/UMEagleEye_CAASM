@@ -9,7 +9,7 @@
 import { Hono } from 'hono'
 import { eq, and, desc, sql, inArray, isNull } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, agents, scanResults, sboms, events, advisories, users, cveFindings } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
@@ -27,7 +27,7 @@ const ASSET_STALE_DAYS = 7
 const SEV_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 }
 const PATCH_TOP = 6
 
-app.get('/summary', authMiddleware, async (c) => {
+app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)

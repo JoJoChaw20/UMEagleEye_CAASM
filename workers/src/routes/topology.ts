@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { topologyNodes, assets, tenants } from '../db/schema'
 
@@ -246,7 +246,7 @@ export async function inferForTenant(
 // Superadmin: returns { tenant_trees: [{tenant_id, tenant_name, tree, node_count}] }
 //             or { tree: [...] } when ?tenant_id= is specified
 // Regular user: { tree: [...] }
-router.get('/', authMiddleware, requireRoles('superadmin', 'tenant_superadmin', 'tenant_admin'), async (c) => {
+router.get('/', authMiddleware, requireAction('network.view'), async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
   const tenantIdFilter = c.req.query('tenant_id')
@@ -298,7 +298,7 @@ router.get('/', authMiddleware, requireRoles('superadmin', 'tenant_superadmin', 
 router.post(
   '/nodes',
   authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'),
+  requireAction('topology.edit'),
   zValidator('json', z.object({
     nodes: z.array(z.object({
       asset_id:       z.string().uuid().optional(),
@@ -338,7 +338,7 @@ router.post(
 router.delete(
   '/nodes/:nodeId',
   authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'),
+  requireAction('topology.edit'),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
@@ -359,7 +359,7 @@ router.delete(
 router.post(
   '/infer',
   authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'),
+  requireAction('topology.edit'),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')

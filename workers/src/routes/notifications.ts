@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq, and, lt, desc, isNull } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { advisories, agents } from '../db/schema'
 import { advisoryScope } from '../lib/advisoryScope'
@@ -26,7 +26,7 @@ interface Notification {
 const agentStatus = (lastHeartbeat: Date | null, kind: string | null) => agentLiveness(lastHeartbeat, kind)
 
 // ── GET / — aggregated notification feed ─────────────────────────
-app.get('/', authMiddleware, async (c) => {
+app.get('/', authMiddleware, requireAction('dashboard.view'), async (c) => {
   const user = c.get('user')
   const db = getDb(c.env.DATABASE_URL)
   const items: Notification[] = []
@@ -134,7 +134,7 @@ app.get('/', authMiddleware, async (c) => {
 })
 
 // ── GET /count — lightweight unread count for header polling ──────
-app.get('/count', authMiddleware, async (c) => {
+app.get('/count', authMiddleware, requireAction('dashboard.view'), async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const scope = advisoryScope(db, c.get('user'))
   try {

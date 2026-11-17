@@ -6,9 +6,9 @@
 import { Hono } from 'hono'
 import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { CTI_INGEST_LOCK, LAST_INGEST_KEY, type LastIngest } from '../services/cti'
+import { LAST_INGEST_KEY, type LastIngest } from '../services/cti'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
   ATTACK, buildMatrix, expandTechniques, type MatrixGroup, softwareName, softwareUsing, techniqueName, techniquesFor,
@@ -16,11 +16,6 @@ import {
 
 const app = new Hono<{ Bindings: Env }>()
 
-const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
-// The feeds are shared by every tenant, so only the platform superadmin starts an early
-// run (staging has no crons, so this is how its feeds get loaded). Production loads them
-// nightly at INGEST_HOUR_UTC.
-const INGEST_ROLES = ['superadmin']
 const INGEST_HOUR_UTC = 22     // wrangler.toml "0 22 * * *" = 06:00 MYT
 
 /** The next nightly ingestion after `now` (exported for tests). */
@@ -89,7 +84,7 @@ function matchedIndicatorIds(db: DB, user: { role: string; tenantId?: string | n
 }
 
 // ── GET /indicators ──────────────────────────────────────────────
-app.get('/indicators', authMiddleware, async (c) => {
+app.get('/indicators', authMiddleware, requireAction('cti.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
 
@@ -130,7 +125,7 @@ app.get('/indicators', authMiddleware, async (c) => {
 })
 
 // ── GET /stats ───────────────────────────────────────────────────
-app.get('/stats', authMiddleware, async (c) => {
+app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
@@ -214,7 +209,6 @@ app.get('/stats', authMiddleware, async (c) => {
       })),
       last_ingest_at: lastIngest?.at ?? null,
       next_ingest_at: nextIngestAt(new Date()).toISOString(),
-      can_ingest: isSuper,
     })
   } catch (err) {
     console.error('cti GET /stats error:', err)
@@ -223,7 +217,7 @@ app.get('/stats', authMiddleware, async (c) => {
 })
 
 // ── GET /attack ─── the ATT&CK catalogue, for picking techniques on an event ──
-app.get('/attack', authMiddleware, (c) => {
+app.get('/attack', authMiddleware, requireAction('cti.view'), (c) => {
   c.header('Cache-Control', 'private, max-age=86400')
   return c.json({
     version: ATTACK.version,
@@ -305,7 +299,7 @@ export async function matrixGroups(
   return groups
 }
 
-app.get('/matrix', authMiddleware, async (c) => {
+app.get('/matrix', authMiddleware, requireAction('cti.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const wanted = c.req.query('scope')
@@ -323,7 +317,7 @@ app.get('/matrix', authMiddleware, async (c) => {
 })
 
 // ── GET /lookup ──────────────────────────────────────────────────
-app.get('/lookup', authMiddleware, async (c) => {
+app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
   try {
     const db    = getDb(c.env.DATABASE_URL)
     const user  = c.get('user')
@@ -451,7 +445,7 @@ app.get('/lookup', authMiddleware, async (c) => {
 
 // ── GET /debug ───────────────────────────────────────────────────
 // Live reachability test of the feeds, with the platform's API keys: the platform superadmin only.
-app.get('/debug', authMiddleware, requireRoles('superadmin'), async (c) => {
+app.get('/debug', authMiddleware, requirePlatformSuperadmin, async (c) => {
   const results: Record<string, unknown> = {}
 
   // ── OTX ──
@@ -508,25 +502,6 @@ app.get('/debug', authMiddleware, requireRoles('superadmin'), async (c) => {
   }
 
   return c.json(results)
-})
-
-// ── POST /ingest ─────────────────────────────────────────────────
-app.post('/ingest', authMiddleware, requireRoles(...INGEST_ROLES), async (c) => {
-  try {
-    const lockKey  = CTI_INGEST_LOCK
-    const existing = await c.env.KV_CACHE.get(lockKey)
-    if (existing) {
-      return c.json({ message: 'CTI ingestion already running or recently completed', queued: false })
-    }
-
-    await c.env.KV_CACHE.put(lockKey, '1', { expirationTtl: 3600 })
-    await c.env.ADVISORY_QUEUE.send({ type: 'cti_ingest', triggeredBy: c.get('user').userId })
-
-    return c.json({ message: 'CTI ingestion queued successfully', queued: true })
-  } catch (err) {
-    console.error('cti POST /ingest error:', err)
-    return c.json({ detail: 'Failed to queue CTI ingestion' }, 500)
-  }
 })
 
 export default app

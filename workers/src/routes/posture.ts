@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { eq, and, desc, gte, sql, isNull, or, ne, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, events } from '../db/schema'
 import { isOpenEvent, postureScore } from '../lib/eventStatus'
@@ -11,7 +11,7 @@ const app = new Hono<{ Bindings: Env }>()
 // ── GET /current ─────────────────────────────────────────────────
 // Counts OPEN critical/high alerts (open + in_progress) — the same definition
 // the Alerts page, /history and the nightly snapshot use.
-app.get('/current', authMiddleware, async (c) => {
+app.get('/current', authMiddleware, requireAction('dashboard.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -97,7 +97,7 @@ app.get('/current', authMiddleware, async (c) => {
 })
 
 // ── GET /history ─────────────────────────────────────────────────
-app.get('/history', authMiddleware, async (c) => {
+app.get('/history', authMiddleware, requireAction('dashboard.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)

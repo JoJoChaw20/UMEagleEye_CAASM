@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, gte, sql, or, desc } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { isOpenEvent } from '../lib/eventStatus'
 import { assets, events, postureMetrics, advisories, ctiIndicators, scanResults, sboms } from '../db/schema'
@@ -11,12 +11,9 @@ import { buildReportData } from '../services/reportData'
 
 const app = new Hono<{ Bindings: Env }>()
 
-const READ_ROLES     = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
-const GENERATE_ROLES = ['tenant_superadmin', 'tenant_admin']
-const SNAPSHOT_ROLES = ['tenant_superadmin']
 
 // ── GET /data — synchronous report data for browser-side PDF ─────
-app.get('/data', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/data', authMiddleware, requireAction('report.view'), async (c) => {
   try {
     const user = c.get('user')
     if (user.role !== 'superadmin' && !user.tenantId) return c.json({ detail: 'Your account is not part of an organisation' }, 403)
@@ -34,7 +31,7 @@ const generateSchema = z.object({
   report_type: z.enum(['weekly', 'monthly', 'executive']),
 })
 
-app.post('/generate', authMiddleware, requireRoles(...GENERATE_ROLES), zValidator('json', generateSchema), async (c) => {
+app.post('/generate', authMiddleware, requireAction('report.generate'), zValidator('json', generateSchema), async (c) => {
   try {
     const user = c.get('user')
     const { report_type } = c.req.valid('json')
@@ -72,7 +69,7 @@ app.post('/generate', authMiddleware, requireRoles(...GENERATE_ROLES), zValidato
 })
 
 // ── POST /upload — receive PDF blob from browser, store in R2 ────
-app.post('/upload', authMiddleware, requireRoles(...GENERATE_ROLES), async (c) => {
+app.post('/upload', authMiddleware, requireAction('report.generate'), async (c) => {
   try {
     const user = c.get('user')
     const formData = await c.req.formData()
@@ -112,7 +109,7 @@ app.post('/upload', authMiddleware, requireRoles(...GENERATE_ROLES), async (c) =
 })
 
 // ── GET /list ────────────────────────────────────────────────────
-app.get('/list', authMiddleware, async (c) => {
+app.get('/list', authMiddleware, requireAction('report.view'), async (c) => {
   try {
     const user = c.get('user')
 
@@ -170,7 +167,7 @@ app.get('/list', authMiddleware, async (c) => {
 })
 
 // ── GET /download/:filename ──────────────────────────────────────
-app.get('/download/:filename', authMiddleware, async (c) => {
+app.get('/download/:filename', authMiddleware, requireAction('report.download'), async (c) => {
   try {
     const user = c.get('user')
     const { filename } = c.req.param()
@@ -207,7 +204,7 @@ app.get('/download/:filename', authMiddleware, async (c) => {
 })
 
 // ── DELETE /delete/:filename ─────────────────────────────────────
-app.delete('/delete/:filename', authMiddleware, requireRoles(...GENERATE_ROLES), async (c) => {
+app.delete('/delete/:filename', authMiddleware, requireAction('report.delete'), async (c) => {
   try {
     const user = c.get('user')
     const { filename } = c.req.param()
@@ -236,7 +233,7 @@ app.delete('/delete/:filename', authMiddleware, requireRoles(...GENERATE_ROLES),
 })
 
 // ── POST /snapshot ───────────────────────────────────────────────
-app.post('/snapshot', authMiddleware, requireRoles(...SNAPSHOT_ROLES), async (c) => {
+app.post('/snapshot', authMiddleware, requireAction('report.snapshot'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)

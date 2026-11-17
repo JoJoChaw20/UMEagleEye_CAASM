@@ -13,8 +13,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
-import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { agents, assetAddresses, assetIdentifiers, assets, auditLogs, networkLinks, scanResults } from '../db/schema'
 import { jobRefusal } from '../lib/agentPolicy'
@@ -221,7 +220,7 @@ app.post('/topology', zValidator('json', topologySchema, (result, c) => {
 })
 
 // ── GET /links ── the tenant's cables seen in the last LINK_DAYS ───────────────
-app.get('/links', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) => {
+app.get('/links', authMiddleware, requireAction('network.view'), async (c) => {
   const user = c.get('user')
   if (!user.tenantId) return c.json({ links: [] })
   const db = getDb(c.env.DATABASE_URL)
@@ -241,7 +240,7 @@ app.get('/links', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) =
 })
 
 // ── POST /run/:agentId ── "Run now": the network agent crawls at its next heartbeat ──
-app.post('/run/:agentId', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), async (c) => {
+app.post('/run/:agentId', authMiddleware, requireAction('network.map.run'), async (c) => {
   const user = c.get('user')
   const agentId = c.req.param('agentId')
   if (!z.string().uuid().safeParse(agentId).success) return c.json({ detail: 'Invalid agent id' }, 400)
@@ -270,7 +269,7 @@ app.post('/run/:agentId', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), a
 
 // ── GET /map ── routers, switches, cables and where each device is plugged in, and every
 // network the tenant's agents see (its gateway, the agents watching it, its devices) ───
-app.get('/map', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) => {
+app.get('/map', authMiddleware, requireAction('network.view'), async (c) => {
   const user = c.get('user')
   const tenantId = user.role === 'superadmin' ? c.req.query('tenant_id') : user.tenantId
   if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
