@@ -160,7 +160,8 @@
   - `settings.view`
 
 **Migration map:**
-- `tenant_admin`: operator plus these 8 actions:
+- `tenant_admin`: operator plus these 9 actions:
+  - `asset.inventory.clear`
   - `sbom.delete`
   - `ti_event.delete`
   - `relationship.delete`
@@ -200,7 +201,7 @@ test('requirements are acyclic and closure is transitive', () => {
 })
 test('dependentsOf lists what removing a view action would take away', () => {
   assert.deepEqual(dependentsOf('alert.view').sort(),
-    ['advisory.close_via_chat', 'advisory.generate', 'alert.bulk_update', 'alert.manage', 'scan.drift.run'].sort())
+    ['advisory.generate', 'alert.bulk_update', 'alert.manage', 'scan.drift.run'].sort())
 })
 test('presets: sizes, cumulative, closed under requirements, never high impact', () => {
   const [v, a, o] = PRESETS

@@ -483,7 +483,7 @@ A peer reset can then be added: one Platform Superadmin resets the other's MFA, 
 |---|---|
 | **superadmin** | Platform Superadmin: view only across tenants, plus Provision tenant and Restore tenant ownership. |
 | **tenant_superadmin** | Tenant Superadmin. If a tenant has more than one, the oldest active account stays Tenant Superadmin. The others become Tenant users with all 58 actions, so they lose only the reserved actions, and they are notified. A read-only check before migration lists these tenants, so the choice can be made by hand. |
-| **tenant_admin** | Tenant user with 53 actions: Operator plus Delete SBOMs, Delete threat events, Delete relationships, Delete reports, Enrol agents, Enable threat sightings on agents, Replace agent keys, Remove agents. Not granted, because they cannot do these today: Delete assets, Merge duplicate assets, Take posture snapshots, Change scan policy, Change default agent settings. |
+| **tenant_admin** | Tenant user with 53 actions: Operator plus Clear software inventory, Delete SBOMs, Delete threat events, Delete relationships, Delete reports, Enrol agents, Enable threat sightings on agents, Replace agent keys, Remove agents. Not granted, because they cannot do these today: Delete assets, Merge duplicate assets, Take posture snapshots, Change scan policy, Change default agent settings. |
 | **business_owner** | Tenant user with 13 actions: Viewer except View scans and View relationships. They cannot see the Discovery page or relationships today. |
 
 ### What the Platform Superadmin loses
