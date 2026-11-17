@@ -17,8 +17,8 @@ type AccessUser = { role: string; tenantId?: string | null; actions: readonly st
 
 /**
  * True when the user may view assets, alerts, advisories, scans and relationships: the detail level the
- * assistant needs. scan.view and relationship.view are required as well because the migrated business_owner
- * set (the viewer preset without those two) holds the other three and must stay on status and score only.
+ * assistant needs. scan.view and relationship.view are required as well because the set migrated from the old
+ * business owner role (the viewer preset without those two) holds the other three and must stay on status and score only.
  */
 export function analystAccess(user: AccessUser): boolean {
   return (['asset.view', 'alert.view', 'advisory.view', 'scan.view', 'relationship.view'] as const).every(k => decide(user, k).ok)

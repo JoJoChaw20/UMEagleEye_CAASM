@@ -7,14 +7,12 @@ import { join } from 'node:path'
 const SELF_SERVICE = new Set([
   'auth.ts:/mfa/setup', 'auth.ts:/mfa/enable', 'auth.ts:/change-password', 'auth.ts:/set-password',
   'auth.ts:/me', 'auth.ts:/actions', 'auth.ts:/mfa/reset',
-  // Guarded through spread variables the regex cannot see; Task 7 replaces them.
-  'tenants.ts:/', 'tenants.ts:/:tenantId',
 ])
 
 const routesDir = join(process.cwd(), 'src/routes')
 const files = readdirSync(routesDir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
 
-test('every authenticated route checks a permission', { todo: 'Tasks 4-7' }, () => {
+test('every authenticated route checks a permission', () => {
   const offenders: string[] = []
   for (const file of files) {
     const src = readFileSync(join(routesDir, file), 'utf8')
@@ -32,7 +30,7 @@ test('every authenticated route checks a permission', { todo: 'Tasks 4-7' }, () 
   assert.deepEqual(offenders, [])
 })
 
-test('no route still uses role lists', { todo: 'Tasks 4-7' }, () => {
+test('no route still uses role lists', () => {
   const offenders = files.filter((f) => {
     const src = readFileSync(join(routesDir, f), 'utf8')
     return src.includes('requireRoles(') || src.includes('requireTenantAccess(')

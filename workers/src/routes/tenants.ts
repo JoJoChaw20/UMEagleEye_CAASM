@@ -1,36 +1,42 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, count, and, ne } from 'drizzle-orm'
+import { eq, count, and } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles, requireTenantAccess } from '../middleware/auth'
+import {
+  authMiddleware, hasAction, requireAction, requireOwnTenant, requirePlatformSuperadmin, requireTenantSuperadmin,
+} from '../middleware/auth'
 import { getDb } from '../db/client'
 import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
-import { addRefusal, mayGrantRole, type Refusal } from '../lib/userAdmin'
+import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
+import { tenantPatchRefusal } from '../lib/policyChange'
 import { audit } from '../services/audit'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
 
 const router = new Hono<{ Bindings: Env }>()
 
-// ── Middleware combos ─────────────────────────────────────────────
-const superadminOnly      = [authMiddleware, requireRoles('superadmin')] as const
-// superadmin platform-wide OR tenant_superadmin for their own tenant
-const tenantAdminAccess   = [authMiddleware, requireTenantAccess(['superadmin'], ['tenant_superadmin'])] as const
-// superadmin platform-wide OR tenant_superadmin / tenant_admin for their own tenant
-const tenantViewAccess    = [authMiddleware, requireTenantAccess(['superadmin'], ['tenant_superadmin', 'tenant_admin'])] as const
+// Guards (middleware/guards.ts) are written on each route, so lib/routeGuard.test.ts can see them.
+// Until the tenant provisioning flow exists (access-control spec, section 5), the Platform
+// Superadmin lists, creates, switches off and deactivates tenants here, and invites a tenant's
+// first Tenant Superadmin.
+
+const OWNERSHIP_ONLY = 'The Tenant Superadmin can only change through an ownership transfer.'
 
 // What a refused add says (lib/userAdmin.ts). To a tenant superadmin, an account they may not add
 // looks like one that does not exist, so accounts of other tenants cannot be discovered.
 function refusalDetail(r: Refusal, callerIsSuperadmin: boolean, what: string): { detail: string; status: 403 | 404 } {
-  if (r === 'role') return { detail: 'Only the platform administrator can make a tenant superadmin', status: 403 }
-  if (callerIsSuperadmin) return { detail: 'The platform superadmin cannot be added to a tenant', status: 403 }
+  if (callerIsSuperadmin) {
+    return r === 'tenant_superadmin'
+      ? { detail: `That account is already a Tenant Superadmin. ${OWNERSHIP_ONLY}`, status: 403 }
+      : { detail: 'The platform superadmin cannot be added to a tenant', status: 403 }
+  }
   return { detail: `No user available with that ${what}`, status: 404 }
 }
 
-// ── GET / — List all tenants (superadmin only) ────────────────────
-router.get('/', ...superadminOnly, async (c) => {
+// ── GET / — List all tenants (Platform Superadmin) ────────────────
+router.get('/', authMiddleware, requirePlatformSuperadmin, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const rows = await db.select().from(tenants)
   return c.json({
@@ -44,10 +50,11 @@ router.get('/', ...superadminOnly, async (c) => {
   })
 })
 
-// ── POST / — Create tenant (superadmin only) ──────────────────────
+// ── POST / — Create tenant (Platform Superadmin) ──────────────────
 router.post(
   '/',
-  ...superadminOnly,
+  authMiddleware,
+  requirePlatformSuperadmin,
   zValidator('json', z.object({
     name: z.string().min(1).max(100),
     slug: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase kebab-case'),
@@ -75,8 +82,8 @@ router.post(
 )
 
 // ── GET /:tenantId — Single tenant with counts ────────────────────
-// superadmin sees any; tenant_superadmin + tenant_admin see own
-router.get('/:tenantId', ...tenantViewAccess, async (c) => {
+// "View tenant settings": the Platform Superadmin sees any tenant, everyone else only their own.
+router.get('/:tenantId', authMiddleware, requireAction('settings.view'), requireOwnTenant, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const { tenantId } = c.req.param()
 
@@ -107,17 +114,14 @@ router.get('/:tenantId', ...tenantViewAccess, async (c) => {
 })
 
 // ── PATCH /:tenantId — Update tenant ─────────────────────────────
-// superadmin: name + is_active; tenant_superadmin: name only (own tenant). Both: the scan
-// policy (auto-investigate new devices, allow agents' local scans), audited.
+// Platform Superadmin: is_active only. Tenant Superadmin of this tenant: name. The scan policy
+// (auto-investigate new devices, allow agents' local scans) needs "Change scan policy", audited.
+// Who may change which field: lib/policyChange.ts (tenantPatchRefusal). Everyone who may change
+// something here holds "View tenant settings", the route guard.
 router.patch(
   '/:tenantId',
   authMiddleware,
-  async (c, next) => {
-    const user = c.get('user')
-    if (user.role === 'superadmin') return next()
-    if (user.role === 'tenant_superadmin' && user.tenantId === c.req.param('tenantId')) return next()
-    return c.json({ detail: 'Insufficient permissions' }, 403)
-  },
+  requireAction('settings.view'),
   zValidator('json', z.object({
     name: z.string().min(1).max(100).optional(),
     is_active: z.boolean().optional(),
@@ -129,16 +133,18 @@ router.patch(
     const { tenantId } = c.req.param()
     const user = c.get('user')
     const updates = c.req.valid('json')
+    const refused = tenantPatchRefusal(user, tenantId, updates)
+    if (refused) {
+      const { status, ...body } = refused
+      return c.json(body, status)
+    }
 
     const [existing] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!existing) return c.json({ detail: 'Tenant not found' }, 404)
 
     const updateData: Record<string, unknown> = {}
     if (updates.name !== undefined) updateData.name = updates.name
-    // only superadmin can toggle tenant is_active
-    if (updates.is_active !== undefined && user.role === 'superadmin') {
-      updateData.isActive = updates.is_active
-    }
+    if (updates.is_active !== undefined) updateData.isActive = updates.is_active
     const policy: Record<string, boolean> = {}
     if (updates.auto_investigate_new_devices !== undefined && updates.auto_investigate_new_devices !== existing.autoInvestigateNewDevices) {
       updateData.autoInvestigateNewDevices = policy.auto_investigate_new_devices = updates.auto_investigate_new_devices
@@ -200,18 +206,20 @@ function agentPolicyOut(t: typeof tenants.$inferSelect, canEdit: boolean) {
   }
 }
 
-router.get('/:tenantId/agent-policy', ...tenantViewAccess, async (c) => {
+router.get('/:tenantId/agent-policy', authMiddleware, requireAction('settings.view', 'agent.view'), requireOwnTenant, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
   const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, c.req.param('tenantId'))).limit(1)
   if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
-  return c.json(agentPolicyOut(tenant, user.role === 'superadmin' || user.role === 'tenant_superadmin'))
+  return c.json(agentPolicyOut(tenant, hasAction(user, 'settings.agent_defaults.edit')))
 })
 
 // {settings: {kind: {setting: value | null}}}: null = no tenant default (each agent's own).
 router.patch(
   '/:tenantId/agent-policy',
-  ...tenantAdminAccess,
+  authMiddleware,
+  requireAction('settings.agent_defaults.edit'),
+  requireOwnTenant,
   zValidator('json', z.object({ settings: z.record(z.string(), z.record(z.string(), z.unknown())) })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -246,8 +254,8 @@ router.patch(
   }
 )
 
-// ── DELETE /:tenantId — Deactivate tenant (superadmin only) ───────
-router.delete('/:tenantId', ...superadminOnly, async (c) => {
+// ── DELETE /:tenantId — Deactivate tenant (Platform Superadmin) ───
+router.delete('/:tenantId', authMiddleware, requirePlatformSuperadmin, async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const { tenantId } = c.req.param()
 
@@ -261,43 +269,52 @@ router.delete('/:tenantId', ...superadminOnly, async (c) => {
 })
 
 // ── GET /:tenantId/users — List users in tenant ───────────────────
-// superadmin sees any; tenant_superadmin + tenant_admin see own
-router.get('/:tenantId/users', ...tenantViewAccess, async (c) => {
-  const db = getDb(c.env.DATABASE_URL)
-  const { tenantId } = c.req.param()
+// The tenant's own Tenant Superadmin; the Platform Superadmin reads any tenant's list ("View tenant
+// settings" is a read action it holds). Each row has the account's role and granted actions.
+router.get(
+  '/:tenantId/users',
+  authMiddleware,
+  (c, next) => (c.get('user').role === 'superadmin' ? requireAction('settings.view') : requireTenantSuperadmin)(c, next),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const { tenantId } = c.req.param()
 
-  const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
-  if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
 
-  const rows = await db.select({
-    userId: users.userId,
-    username: users.username,
-    email: users.email,
-    role: users.role,
-    isActive: users.isActive,
-    createdAt: users.createdAt,
-    lastLogin: users.lastLogin,
-  }).from(users).where(eq(users.tenantId, tenantId))
+    const rows = await db.select({
+      userId: users.userId,
+      username: users.username,
+      email: users.email,
+      role: users.role,
+      actions: users.actions,
+      isActive: users.isActive,
+      createdAt: users.createdAt,
+      lastLogin: users.lastLogin,
+    }).from(users).where(eq(users.tenantId, tenantId))
 
-  return c.json({
-    users: rows.map((u) => ({
-      user_id: u.userId,
-      username: u.username,
-      email: u.email,
-      role: u.role,
-      is_active: u.isActive,
-      created_at: u.createdAt,
-      last_login: u.lastLogin,
-    })),
-  })
-})
+    return c.json({
+      users: rows.map((u) => ({
+        user_id: u.userId,
+        username: u.username,
+        email: u.email,
+        role: u.role,
+        actions: u.actions ?? [],
+        is_active: u.isActive,
+        created_at: u.createdAt,
+        last_login: u.lastLogin,
+      })),
+    })
+  }
+)
 
 // ── POST /:tenantId/users — Assign existing user to tenant ────────
-// superadmin platform-wide; tenant_superadmin for own tenant, and only accounts without a
-// tenant (lib/userAdmin.ts). Accepts user_id (UUID) or username for lookup
+// The Tenant Superadmin of this tenant, and only accounts without a tenant (lib/userAdmin.ts).
+// The account joins as a tenant user with no actions. Accepts user_id (UUID) or username for lookup.
 router.post(
   '/:tenantId/users',
-  ...tenantAdminAccess,
+  authMiddleware,
+  requireTenantSuperadmin,
   zValidator('json', z.object({
     user_id:  z.string().uuid().optional(),
     username: z.string().min(1).optional(),
@@ -317,159 +334,176 @@ router.post(
     if (!user) return c.json({ detail: `No user available with that ${what}` }, 404)
     const refusal = addRefusal(caller, user, tenantId)
     if (refusal) {
-      const { detail, status } = refusalDetail(refusal, caller.role === 'superadmin', what)
+      const { detail, status } = refusalDetail(refusal, false, what)
       return c.json({ detail }, status)
     }
-    const resolvedId = user.userId
+    // Adding again would wipe the actions already granted; those change through PUT .../actions.
+    if (user.tenantId === tenantId) return c.json({ detail: 'This user is already in this tenant.' }, 409)
 
-    await db.update(users).set({ tenantId }).where(eq(users.userId, resolvedId))
+    await db.update(users).set({ tenantId, role: 'tenant_user', actions: [] }).where(eq(users.userId, user.userId))
     await audit(db, c, {
-      userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: resolvedId,
-      previousState: { tenant_id: user.tenantId, role: user.role }, newState: { tenant_id: tenantId },
+      userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: user.userId,
+      previousState: { tenant_id: user.tenantId, role: user.role, actions: user.actions },
+      newState: { tenant_id: tenantId, role: 'tenant_user', actions: [] },
     })
 
-    return c.json({ ok: true, user_id: resolvedId, username: user.username, tenant_id: tenantId })
+    return c.json({ ok: true, user_id: user.userId, username: user.username, tenant_id: tenantId, role: 'tenant_user', actions: [] })
   }
 )
 
 // ── POST /:tenantId/users/invite — Create or assign user by email ──
-// superadmin platform-wide; tenant_superadmin for own tenant
+// The Tenant Superadmin of this tenant invites tenant users, with the actions to grant (closed over
+// their requirements). Until the provisioning flow exists (spec, section 5), the Platform Superadmin
+// may only invite a tenant's first Tenant Superadmin: as_tenant_superadmin, into a tenant that has none.
 router.post(
   '/:tenantId/users/invite',
-  ...tenantAdminAccess,
+  authMiddleware,
+  (c, next) => (c.get('user').role === 'superadmin' ? requirePlatformSuperadmin : requireTenantSuperadmin)(c, next),
   zValidator('json', z.object({
     email: z.string().email(),
     username: z.string().min(3).max(100).optional(),
-    role: z.enum(['tenant_superadmin', 'tenant_admin', 'business_owner']).optional(),
+    actions: z.array(z.string()).optional(),
+    as_tenant_superadmin: z.boolean().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId } = c.req.param()
-    const { email, username, role } = c.req.valid('json')
+    const { email, username, actions: requested, as_tenant_superadmin } = c.req.valid('json')
     const caller = c.get('user')
+    const byPlatform = caller.role === 'superadmin'
+
+    let role: 'tenant_superadmin' | 'tenant_user'
+    let actions: string[] = []
+    if (byPlatform) {
+      if (!as_tenant_superadmin) {
+        return c.json({ detail: "The Platform Superadmin can only invite a tenant's first Tenant Superadmin." }, 403)
+      }
+      if (requested?.length) return c.json({ detail: 'A Tenant Superadmin holds every action; send no actions.' }, 400)
+      role = 'tenant_superadmin'
+    } else {
+      if (as_tenant_superadmin) return c.json({ detail: OWNERSHIP_ONLY }, 403)
+      const parsed = parseActionList(requested ?? [])
+      if (!parsed.ok) return c.json({ detail: `Unknown actions: ${parsed.unknown.join(', ')}` }, 400)
+      role = 'tenant_user'
+      actions = parsed.actions
+    }
 
     const [tenant] = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
-    if (role && !mayGrantRole(caller, role)) {
-      return c.json({ detail: 'Only the platform administrator can make a tenant superadmin' }, 403)
+    const ALREADY_OWNED = { detail: 'This tenant already has a Tenant Superadmin.' }
+    if (role === 'tenant_superadmin') {
+      const [owner] = await db.select({ userId: users.userId }).from(users)
+        .where(and(eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'))).limit(1)
+      if (owner) return c.json(ALREADY_OWNED, 409)
     }
 
-    const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
-    if (existing) {
-      const refusal = addRefusal(caller, existing, tenantId)
-      if (refusal) {
-        // Not a 404 here (an unknown email creates an account): the same answer for every refusal.
-        return c.json({ detail: caller.role === 'superadmin' ? refusalDetail(refusal, true, 'email').detail
-          : 'This email cannot be invited to your tenant. Ask the platform administrator.' }, 403)
+    try {
+      const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
+      if (existing) {
+        const refusal = addRefusal(caller, existing, tenantId)
+        if (refusal) {
+          // Not a 404 here (an unknown email creates an account): the same answer for every refusal.
+          return c.json({ detail: byPlatform ? refusalDetail(refusal, true, 'email').detail
+            : 'This email cannot be invited to your tenant. Ask the platform administrator.' }, 403)
+        }
+        // Inviting again would wipe the actions already granted; those change through PUT .../actions.
+        if (!byPlatform && existing.tenantId === tenantId) return c.json({ detail: 'This user is already in this tenant.' }, 409)
+        await db.update(users).set({ tenantId, role, actions }).where(eq(users.userId, existing.userId))
+        await audit(db, c, {
+          userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: existing.userId,
+          previousState: { tenant_id: existing.tenantId, role: existing.role, actions: existing.actions },
+          newState: { tenant_id: tenantId, by: 'email', role, actions },
+        })
+        return c.json({
+          ok: true,
+          user_id: existing.userId,
+          username: existing.username,
+          email: existing.email,
+          role,
+          actions,
+          action: 'assigned',
+        })
       }
-      await db.update(users).set({ tenantId }).where(eq(users.userId, existing.userId))
+
+      const uname = username ?? (email.split('@')[0] ?? email).toLowerCase().replace(/[^a-z0-9_]/g, '_')
+      const inserted = await db.insert(users).values({
+        username: uname,
+        email,
+        passwordHash: NO_PASSWORD_HASH,
+        role,
+        actions,
+        tenantId,
+      }).returning()
+
+      const newUser = inserted[0]
+      if (!newUser) return c.json({ detail: 'Failed to create user' }, 500)
       await audit(db, c, {
-        userId: caller.userId, tenantId, actionType: 'user.assign', targetEntity: existing.userId,
-        previousState: { tenant_id: existing.tenantId, role: existing.role }, newState: { tenant_id: tenantId, by: 'email' },
+        userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: newUser.userId,
+        newState: { email, username: newUser.username, role: newUser.role, actions: newUser.actions },
       })
+
       return c.json({
         ok: true,
-        user_id: existing.userId,
-        username: existing.username,
-        email: existing.email,
-        role: existing.role,
-        action: 'assigned',
-      })
+        user_id: newUser.userId,
+        username: newUser.username,
+        email: newUser.email,
+        role: newUser.role,
+        actions: newUser.actions,
+        action: 'created',
+      }, 201)
+    } catch (err) {
+      // Two invitations at once: the unique index (one tenant superadmin per tenant) refuses the second.
+      if (role === 'tenant_superadmin' && /uq_users_one_tenant_superadmin/.test(String((err as { message?: unknown })?.message ?? err))) {
+        return c.json(ALREADY_OWNED, 409)
+      }
+      throw err
     }
-
-    const uname = username ?? (email.split('@')[0] ?? email).toLowerCase().replace(/[^a-z0-9_]/g, '_')
-    const inserted = await db.insert(users).values({
-      username: uname,
-      email,
-      passwordHash: NO_PASSWORD_HASH,
-      role: role ?? 'business_owner',
-      tenantId,
-    }).returning()
-
-    const newUser = inserted[0]
-    if (!newUser) return c.json({ detail: 'Failed to create user' }, 500)
-    await audit(db, c, {
-      userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: newUser.userId,
-      newState: { email, username: newUser.username, role: newUser.role },
-    })
-
-    return c.json({
-      ok: true,
-      user_id: newUser.userId,
-      username: newUser.username,
-      email: newUser.email,
-      role: newUser.role,
-      action: 'created',
-    }, 201)
   }
 )
 
-// ── PATCH /:tenantId/users/:userId/role — Change user role ────────
-// superadmin: any tenant; tenant_superadmin: own tenant only
-// Neither can elevate to superadmin
-router.patch(
-  '/:tenantId/users/:userId/role',
+// ── PUT /:tenantId/users/:userId/actions — Set a tenant user's actions ──
+// The Tenant Superadmin of this tenant. The list replaces the user's actions; each action's
+// requirements are added (added_requirements says which). Effective on the user's next request.
+router.put(
+  '/:tenantId/users/:userId/actions',
   authMiddleware,
-  async (c, next) => {
-    const user = c.get('user')
-    if (user.role === 'superadmin') return next()
-    if (user.role === 'tenant_superadmin' && user.tenantId === c.req.param('tenantId')) return next()
-    return c.json({ detail: 'Insufficient permissions' }, 403)
-  },
-  zValidator('json', z.object({
-    role: z.enum(['tenant_superadmin', 'tenant_admin', 'business_owner']),
-  })),
+  requireTenantSuperadmin,
+  zValidator('json', z.object({ actions: z.array(z.string()) })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId, userId } = c.req.param()
-    const { role } = c.req.valid('json')
+    const requested = c.req.valid('json').actions
     const caller = c.get('user')
 
-    const [target] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId)))
-      .limit(1)
+    const parsed = parseActionList(requested)
+    if (!parsed.ok) return c.json({ detail: `Unknown actions: ${parsed.unknown.join(', ')}` }, 400)
 
-    if (!target) return c.json({ detail: 'User not found in this tenant' }, 404)
-    if (target.role === 'superadmin') return c.json({ detail: "The platform superadmin's role cannot be changed here" }, 403)
+    if (!z.string().uuid().safeParse(userId).success) return c.json({ detail: 'User not found in this tenant' }, 404)
+    const [target] = await db.select().from(users)
+      .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId))).limit(1)
+    if (!target || target.role !== 'tenant_user') return c.json({ detail: 'User not found in this tenant' }, 404)
 
-    // Prevent tenant_superadmin from reassigning another tenant_superadmin's role
-    if (target.role === 'tenant_superadmin' && caller.role !== 'superadmin') {
-      return c.json({ detail: 'Only superadmin can reassign a tenant superadmin role' }, 403)
-    }
-
-    // tenant_superadmin can only assign tenant_admin or business_owner — not tenant_superadmin
-    if (caller.role === 'tenant_superadmin' && role === 'tenant_superadmin') {
-      return c.json({ detail: 'Tenant superadmin cannot assign the tenant superadmin role' }, 403)
-    }
-
-    // Enforce 1 tenant_superadmin per tenant: demote existing one first
-    if (role === 'tenant_superadmin') {
-      await db.update(users)
-        .set({ role: 'tenant_admin' })
-        .where(and(
-          eq(users.tenantId, tenantId),
-          eq(users.role, 'tenant_superadmin'),
-          ne(users.userId, userId),
-        ))
-    }
-
-    await db.update(users).set({ role }).where(eq(users.userId, userId))
+    const previous = target.actions ?? []
+    const next = parsed.actions
+    await db.update(users).set({ actions: next }).where(eq(users.userId, userId))
+    const { added, removed } = actionChanges(previous, next)
     await audit(db, c, {
-      userId: caller.userId, tenantId, actionType: 'user.role', targetEntity: userId,
-      previousState: { role: target.role }, newState: { role },
+      userId: caller.userId, tenantId, actionType: 'user.actions', targetEntity: userId,
+      previousState: { actions: previous },
+      newState: { actions: next, added, removed },
     })
 
-    return c.json({ ok: true, user_id: userId, role })
+    return c.json({ actions: next, added_requirements: next.filter((k) => !requested.includes(k)) })
   }
 )
 
 // ── PATCH /:tenantId/users/:userId/deactivate — Deactivate user ───
-// tenant_superadmin: own tenant; superadmin: any
+// The Tenant Superadmin of this tenant, for tenant users. The Tenant Superadmin's own account
+// changes only through an ownership transfer (spec, section 6).
 router.patch(
   '/:tenantId/users/:userId/deactivate',
-  ...tenantAdminAccess,
+  authMiddleware,
+  requireTenantSuperadmin,
   zValidator('json', z.object({
     is_active: z.boolean(),
   })),
@@ -488,10 +522,7 @@ router.patch(
 
     const caller = c.get('user')
     if (target.role === 'superadmin') return c.json({ detail: 'The platform superadmin cannot be deactivated here' }, 403)
-    if (caller.role !== 'superadmin') {
-      if (target.userId === caller.userId) return c.json({ detail: 'Cannot deactivate your own account' }, 403)
-      if (target.role === 'tenant_superadmin') return c.json({ detail: 'Cannot deactivate another tenant superadmin' }, 403)
-    }
+    if (target.userId === caller.userId || target.role === 'tenant_superadmin') return c.json({ detail: OWNERSHIP_ONLY }, 403)
 
     await db.update(users).set({ isActive: is_active }).where(eq(users.userId, userId))
     await audit(db, c, {

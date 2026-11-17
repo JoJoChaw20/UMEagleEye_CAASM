@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Hono } from 'hono'
-import { requireAction, requireTenantSuperadmin } from './guards'
+import { requireAction, requireOwnTenant, requireTenantSuperadmin } from './guards'
 import type { AuthUser } from '../types'
 
 const user = (over: Partial<AuthUser>): AuthUser => ({
@@ -9,7 +9,7 @@ const user = (over: Partial<AuthUser>): AuthUser => ({
 })
 
 // A tiny app: stub user, then the guard, then a 200 handler. No database.
-function appWith(u: AuthUser, guard: ReturnType<typeof requireAction> | typeof requireTenantSuperadmin, path = '/x') {
+function appWith(u: AuthUser, guard: ReturnType<typeof requireAction> | typeof requireTenantSuperadmin | typeof requireOwnTenant, path = '/x') {
   const app = new Hono()
   app.use('*', async (c, next) => { c.set('user', u); await next() })
   app.get(path, guard as never, (c) => c.json({ ok: true }))
@@ -53,4 +53,14 @@ test('requireTenantSuperadmin checks the :tenantId of the route', async () => {
   const res = await appWith(user({}), requireTenantSuperadmin, '/t/:tenantId').request('/t/t1')
   assert.equal(res.status, 403)
   assert.equal(((await res.json()) as { detail: string }).detail, 'Only the Tenant Superadmin can do this.')
+})
+
+test('requireOwnTenant lets the Platform Superadmin through and holds everyone else to their own tenant', async () => {
+  const sa = user({ role: 'superadmin', tenantId: undefined })
+  assert.equal((await appWith(sa, requireOwnTenant, '/t/:tenantId').request('/t/t2')).status, 200)
+  const app = appWith(user({ actions: ['settings.view'] }), requireOwnTenant, '/t/:tenantId')
+  assert.equal((await app.request('/t/t1')).status, 200)
+  const res = await app.request('/t/t2')
+  assert.equal(res.status, 403)
+  assert.equal(((await res.json()) as { detail: string }).detail, 'You can only access your own tenant.')
 })

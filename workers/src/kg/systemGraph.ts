@@ -4,8 +4,8 @@
  * which bundles it with esbuild. Nothing in the Worker imports it, and it must stay free of
  * Node-only imports so it can be unit tested and bundled either way.
  *
- * Every node it makes has tenant_id NULL, role_group 'analyst' (so a business_owner never sees
- * it) and a key starting with SYSTEM_PREFIX, which is the only thing a rebuild may delete.
+ * Every node it makes has tenant_id NULL, role_group 'analyst' (so a user without analyst access,
+ * kg/access.ts, never sees it) and a key starting with SYSTEM_PREFIX, which is the only thing a rebuild may delete.
  */
 import { containsSecret } from './redact'
 import type { KgEdge, KgNode, RoleGroup, Visibility } from './extract'
@@ -83,8 +83,8 @@ const ALL_STAFF_DOCS = new Set(['PRODUCT.md', 'AGENT_SETUP_GUIDE.md', 'agent-gui
 
 /**
  * Product docs and how-to knowledge may be read by any signed-in staff; code, tests, migrations and
- * internal docs are for the UMEagleEye team. Every node is 'analyst': a business_owner gets only
- * the status node and the security score, never this layer.
+ * internal docs are for the UMEagleEye team. Every node is 'analyst': a user without analyst access gets
+ * only the status node and the security score, never this layer.
  */
 export function visibilityFor(path: string, opts: { reference?: boolean } = {}): { visibility: Visibility; roleGroup: RoleGroup } {
   const open = opts.reference === true || ALL_STAFF_DOCS.has(norm(path))

@@ -12,8 +12,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
-import { AGENT_MANAGE_ROLES } from '../lib/permissions'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { agents, auditLogs, enrolmentTokens } from '../db/schema'
 import { generateApiKey } from '../lib/auth'
@@ -34,7 +33,7 @@ function tokenOut(t: typeof enrolmentTokens.$inferSelect) {
   }
 }
 
-app.get('/tokens', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), async (c) => {
+app.get('/tokens', authMiddleware, requireAction('agent.enrol'), async (c) => {
   const user = c.get('user')
   if (!user.tenantId) return c.json({ tokens: [] })
   const db = getDb(c.env.DATABASE_URL)
@@ -43,7 +42,7 @@ app.get('/tokens', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), async (c
   return c.json({ tokens: rows.map(tokenOut) })
 })
 
-app.post('/tokens', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), zValidator('json', z.object({
+app.post('/tokens', authMiddleware, requireAction('agent.enrol'), zValidator('json', z.object({
   name: z.string().trim().min(1).max(100),
   kind: z.enum(['host', 'network', 'mobile']).default('host'),
   days: z.number().int().min(1).max(90).default(14),
@@ -69,7 +68,7 @@ app.post('/tokens', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), zValida
   return c.json({ ...tokenOut(row), token }, 201)
 })
 
-app.delete('/tokens/:id', authMiddleware, requireRoles(...AGENT_MANAGE_ROLES), async (c) => {
+app.delete('/tokens/:id', authMiddleware, requireAction('agent.enrol'), async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
   if (!user.tenantId || !z.string().uuid().safeParse(id).success) return c.json({ detail: 'Install code not found' }, 404)

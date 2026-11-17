@@ -4,8 +4,9 @@ import { z } from 'zod'
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm'
 import type { R2Bucket } from '@cloudflare/workers-types'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
-import { AGENT_MANAGE_ROLES, AGENT_READ_ROLES } from '../lib/permissions'
+import { authMiddleware, hasAction, requireAction } from '../middleware/auth'
+import { decide, refusalMessage } from '../lib/actions'
+import { policyChangeActions } from '../lib/policyChange'
 import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys, roleChange, tenantDefaultsFor, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
 import { pendingJobsFor } from '../services/pendingJobs'
@@ -84,7 +85,7 @@ const hostColumns = {
 }
 
 // ── GET / — List agents ───────────────────────────────────────────
-router.get('/', authMiddleware, async (c) => {
+router.get('/', authMiddleware, requireAction('agent.view'), async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
 
@@ -104,7 +105,7 @@ router.get('/', authMiddleware, async (c) => {
 router.post(
   '/',
   authMiddleware,
-  requireRoles(...AGENT_MANAGE_ROLES),
+  requireAction('agent.enrol'),
   zValidator('json', z.object({
     name: z.string().trim().min(1).max(100),
   })),
@@ -143,9 +144,9 @@ router.post(
 // Uploaded to R2 under agent-installer/ (AGENT_SETUP_GUIDE.md, "Publishing a new version"): the
 // Windows installer EagleEyeAgent-Setup-<version>.exe, and the source package for Linux and the
 // network agent, eagleeye-agent-<version>.tar.gz. The newest UPLOAD of each is offered, not the
-// highest number, so a release renumbered to 1.0 replaces the 2.x development builds. Any signed-in
-// user may download them: they hold no secrets, the connection code is what ties an agent to a
-// tenant. Declared before /:agentId.
+// highest number, so a release renumbered to 1.0 replaces the 2.x development builds. Downloading
+// needs "Download agent installer": they hold no secrets, the connection code is what ties an agent
+// to a tenant. Declared before /:agentId.
 const INSTALLER_PREFIX = 'agent-installer/'
 const VERSION_RE = String.raw`(\d+(?:\.\d+){1,3})`
 const PACKAGES = {
@@ -175,7 +176,7 @@ async function latestPackages(bucket: R2Bucket): Promise<Record<PackageKind, Pac
 
 const packageOut = (p: Package | null) => p && ({ filename: p.filename, version: p.version, size: p.size, uploaded_at: p.uploaded })
 
-router.get('/installer', authMiddleware, async (c) => {
+router.get('/installer', authMiddleware, requireAction('agent.installer.download'), async (c) => {
   const latest = await latestPackages(c.env.REPORTS_BUCKET)
   if (!latest.windows && !latest.source && !latest.android) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
   // The Windows installer's fields at the top level, as before; `packages` has each download.
@@ -184,7 +185,7 @@ router.get('/installer', authMiddleware, async (c) => {
 })
 
 // ?package=windows (default) | source | android
-router.get('/installer/download', authMiddleware, async (c) => {
+router.get('/installer/download', authMiddleware, requireAction('agent.installer.download'), async (c) => {
   const kind = (c.req.query('package') ?? 'windows') as PackageKind
   if (!(kind in PACKAGES)) return c.json({ detail: 'package must be windows, source or android' }, 400)
   const pkg = (await latestPackages(c.env.REPORTS_BUCKET))[kind]
@@ -200,7 +201,7 @@ router.get('/installer/download', authMiddleware, async (c) => {
 })
 
 // ── GET /:agentId — Single agent detail ───────────────────────────
-router.get('/:agentId', authMiddleware, async (c) => {
+router.get('/:agentId', authMiddleware, requireAction('agent.view'), async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
   const { agentId } = c.req.param()
@@ -239,7 +240,7 @@ function policyOut(agent: AgentRow, resolved: ResolvedPolicy, canEdit: boolean) 
   }
 }
 
-router.get('/:agentId/policy', authMiddleware, requireRoles(...AGENT_READ_ROLES), async (c) => {
+router.get('/:agentId/policy', authMiddleware, requireAction('agent.view'), async (c) => {
   const db = getDb(c.env.DATABASE_URL)
   const user = c.get('user')
   const { agentId } = c.req.param()
@@ -248,18 +249,19 @@ router.get('/:agentId/policy', authMiddleware, requireRoles(...AGENT_READ_ROLES)
   if (!found || (user.role !== 'superadmin' && found.agent.tenantId !== user.tenantId)) {
     return c.json({ detail: 'Agent not found' }, 404)
   }
-  const canEdit = (AGENT_MANAGE_ROLES as readonly string[]).includes(user.role) && !found.agent.retiredAt
+  const canEdit = hasAction(user, 'agent.configure') && !found.agent.retiredAt
   return c.json(policyOut(found.agent, found.resolved, canEdit))
 })
 
 // ── PATCH /:agentId/policy — change this agent's overrides ──
 // {settings: {setting: value | null}} (null = back to the tenant default / the built-in
 // default), and/or {roles: {inventory|sensor|scanner: true|false}}, which sets the role's
-// settings. Applied by the agent at its next heartbeat, between jobs.
+// settings. Applied by the agent at its next heartbeat, between jobs. Role changes and threat
+// sightings need actions of their own beyond "Configure agents" (lib/policyChange.ts).
 router.patch(
   '/:agentId/policy',
   authMiddleware,
-  requireRoles(...AGENT_MANAGE_ROLES),
+  requireAction('agent.configure'),
   zValidator('json', z.object({
     settings: z.record(z.string(), z.unknown()).optional(),
     roles: z.record(z.enum(Object.keys(ROLE_KEYS) as [Role, ...Role[]]), z.boolean()).optional(),
@@ -270,6 +272,10 @@ router.patch(
     const { agentId } = c.req.param()
     if (!z.string().uuid().safeParse(agentId).success) return c.json({ detail: 'Invalid agent id' }, 400)
     const body = c.req.valid('json')
+    for (const key of policyChangeActions(body)) {
+      const decision = decide(user, key)
+      if (!decision.ok) return c.json({ detail: refusalMessage(decision.reason, key), missing_action: key }, 403)
+    }
 
     const found = await agentPolicy(db, agentId)
     if (!found || found.agent.tenantId !== user.tenantId) return c.json({ detail: 'Agent not found' }, 404)
@@ -302,7 +308,7 @@ router.patch(
 router.patch(
   '/:agentId',
   authMiddleware,
-  requireRoles(...AGENT_MANAGE_ROLES),
+  requireAction('agent.rename'),
   zValidator('json', z.object({
     name: z.string().trim().min(1).max(100).optional(),
   })),
@@ -335,7 +341,7 @@ router.patch(
 router.post(
   '/:agentId/rotate-key',
   authMiddleware,
-  requireRoles(...AGENT_MANAGE_ROLES),
+  requireAction('agent.key.rotate'),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')
@@ -365,7 +371,7 @@ router.post(
 router.delete(
   '/:agentId',
   authMiddleware,
-  requireRoles(...AGENT_MANAGE_ROLES),
+  requireAction('agent.remove'),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const user = c.get('user')

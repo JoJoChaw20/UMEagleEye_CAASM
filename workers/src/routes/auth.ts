@@ -195,7 +195,7 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
 // ── POST /google ─────────────────────────────────────────────────
 // Sign in with Google to an account an administrator created (Users page). An email with no
 // account is refused: access is granted by an admin, never by signing in (until 2026-11-09 it
-// created a tenantless business_owner). An existing account is matched by its linked Google
+// created a tenantless account with the old business owner role). An existing account is matched by its linked Google
 // ID, or by email only when Google has verified that email.
 const googleSchema = z.object({ access_token: z.string() })
 

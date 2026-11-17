@@ -40,3 +40,15 @@ export const requirePlatformSuperadmin = createMiddleware<{ Bindings: Env }>(asy
   if (user.role !== 'superadmin') return c.json({ detail: 'Only the Platform Superadmin can do this.' }, 403)
   await next()
 })
+
+// Holds tenant users and the Tenant Superadmin to the tenant in the route (:tenantId). The Platform
+// Superadmin passes: it sees every tenant, and the action guard before this one limits it to reading.
+export const requireOwnTenant = createMiddleware<{ Bindings: Env }>(async (c, next) => {
+  const user = c.get('user')
+  if (!user) return c.json({ detail: 'Unauthorized' }, 401)
+  if (user.role === 'superadmin' || (user.tenantId && user.tenantId === c.req.param('tenantId'))) {
+    await next()
+    return
+  }
+  return c.json({ detail: 'You can only access your own tenant.' }, 403)
+})
