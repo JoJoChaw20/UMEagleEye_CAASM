@@ -1,6 +1,6 @@
 import {
   pgTable, pgEnum, uuid, varchar, text, boolean, integer,
-  smallint, timestamp, jsonb, numeric, index, uniqueIndex,
+  smallint, bigint, char, timestamp, jsonb, numeric, index, uniqueIndex,
   primaryKey
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
@@ -100,6 +100,12 @@ export const users = pgTable('users', {
   googleId: varchar('google_id', { length: 255 }).unique(),
   totpSecret: varchar('totp_secret', { length: 64 }),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
+  // Secret of an MFA setup in progress; moves to totp_secret when the first code is confirmed.
+  mfaPendingSecret: varchar('mfa_pending_secret', { length: 64 }),
+  // Last accepted TOTP step (30 s counter); a step at or below it is refused (replay guard).
+  totpLastStep: bigint('totp_last_step', { mode: 'number' }),
+  // Sign out everywhere: a token issued before this instant is refused.
+  sessionsValidAfter: timestamp('sessions_valid_after', { withTimezone: true }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   lastLogin: timestamp('last_login', { withTimezone: true }),
@@ -110,6 +116,30 @@ export const users = pgTable('users', {
   // One Tenant Superadmin per tenant.
   uniqueIndex('uq_users_one_tenant_superadmin').on(t.tenantId).where(sql`${t.role} = 'tenant_superadmin'`),
 ])
+
+// MFA recovery codes: only the SHA-256 hex of each code is stored; each works once.
+export const mfaRecoveryCodes = pgTable('mfa_recovery_codes', {
+  codeId: uuid('code_id').primaryKey().default(newUuid()),
+  userId: uuid('user_id').notNull().references(() => users.userId, { onDelete: 'cascade' }),
+  codeHash: char('code_hash', { length: 64 }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [uniqueIndex('uq_mfa_recovery_user_hash').on(t.userId, t.codeHash)])
+
+// Break-glass MFA reset of a Platform Superadmin: hashes of the one-time secret and of the
+// confirm and cancel links, with a hold between confirmation and effect.
+export const platformMfaResets = pgTable('platform_mfa_resets', {
+  resetId: uuid('reset_id').primaryKey().default(newUuid()),
+  userId: uuid('user_id').notNull().references(() => users.userId, { onDelete: 'cascade' }),
+  secretHash: char('secret_hash', { length: 64 }).notNull(),
+  confirmHash: char('confirm_hash', { length: 64 }).notNull(),
+  cancelHash: char('cancel_hash', { length: 64 }).notNull(),
+  status: varchar('status', { length: 16 }).notNull().default('requested'),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().default(now()),
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  effectiveAt: timestamp('effective_at', { withTimezone: true }),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, (t) => [index('idx_platform_mfa_resets_secret').on(t.secretHash)])
 
 // ─── Table 3: Assets ────────────────────────────────────────────
 export const assets = pgTable('assets', {
