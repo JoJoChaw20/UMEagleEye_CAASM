@@ -20,12 +20,14 @@ import { useEffect } from 'react'
 import { useChatbot } from './context/ChatbotContext'
 import { useAuth } from './context/AuthContext'
 import PermissionsError from './components/common/PermissionsError'
+import { buildNavSections } from './components/layout/navConfig'
 
 // Route guards: pages need a view action; users and tenants are role-only
 const isTenantSuperadmin = (u) => u.role === 'tenant_superadmin'
 const isPlatformSuperadmin = (u) => u.role === 'superadmin'
 
-// A tenant user with no actions yet gets this instead of an empty dashboard.
+// Without dashboard.view the user is sent to their first page; a tenant user with no
+// page at all gets this instead of an empty dashboard.
 function DashboardRoute() {
   const { can, ready, user, catalogError } = useAuth()
   if (!ready) {
@@ -37,6 +39,11 @@ function DashboardRoute() {
   }
   if (user?.role === 'superadmin' && catalogError) return <PermissionsError />
   if (!can('dashboard.view')) {
+    // Open the first page the user can see instead (never '/' itself, never Settings)
+    const first = buildNavSections(can, user?.role)
+      .flatMap((s) => s.items)
+      .find((i) => i.to !== '/' && i.to !== '/settings')
+    if (first) return <Navigate to={first.to} replace />
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="glass-card p-8 text-center max-w-md">
@@ -65,7 +72,10 @@ function LegacyAssetsRedirect({ scope }) {
 // link or bookmark opens the bubble's panel over the dashboard.
 function ChatbotRedirect() {
   const { setWidgetOpen } = useChatbot()
-  useEffect(() => { setWidgetOpen(true) }, [setWidgetOpen])
+  const { can, ready } = useAuth()
+  const allowed = ready && can('chatbot.use')
+  useEffect(() => { if (allowed) setWidgetOpen(true) }, [allowed, setWidgetOpen])
+  if (!ready) return null
   return <Navigate to="/" replace />
 }
 

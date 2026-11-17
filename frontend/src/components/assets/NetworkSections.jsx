@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Router } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
 import { Section, Field, Empty, fmtDateTime } from './DetailParts'
 
 /** "SW2 Gi0/3 · VLAN 1" for the Identity section, or null when no network agent placed it. */
@@ -35,12 +36,16 @@ const uptime = (s) => {
 /** A router or switch the network agent polled: its facts, ports and cables. */
 export function NetworkDeviceSection({ assetId, device }) {
   const [links, setLinks] = useState(null)
+  // GET /network/links needs network.view, which the asset page does not: without it the
+  // ports are listed with no cables
+  const { can } = useAuth()
+  const canSeeLinks = can('network.view')
   useEffect(() => {
-    if (!device) return
+    if (!device || !canSeeLinks) return
     client.get('/network/links')
       .then(({ data }) => setLinks((data.links ?? []).filter((l) => l.a.asset_id === assetId || l.b.asset_id === assetId)))
       .catch(() => setLinks([]))
-  }, [assetId, device])
+  }, [assetId, device, canSeeLinks])
   if (!device) return null
 
   const ports = (device.interfaces ?? []).filter((i) => i.name && !/^(Nu|Null)/.test(i.name))

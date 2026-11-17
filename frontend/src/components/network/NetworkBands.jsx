@@ -11,6 +11,7 @@ import {
   Network, Router, Server, Smartphone, X, Zap,
 } from 'lucide-react'
 import { TONE } from '../common/alertMeta'
+import { useAuth } from '../../context/AuthContext'
 import { formatSeen } from '../../utils/time'
 import { BOX_HEAD, BOX_ROW, BOX_W, NODE_H, NODE_W, layoutTree } from '../../utils/networkTreeLayout'
 
@@ -285,14 +286,22 @@ export function PanelShell({ kind, title, onClose, children }) {
   )
 }
 
+// The Network page needs network.view only: the asset page needs asset.view and the blast
+// radius relationship.view, so each button shows with its own action.
 function AssetButtons({ assetId, onBlast }) {
+  const { can } = useAuth()
+  const canOpen = can('asset.view')
+  const canBlast = can('relationship.view')
+  if (!canOpen && !canBlast) return null
   return (
     <div className="flex flex-wrap gap-2">
-      <Link to={`/inventory/${assetId}`} className="btn-primary text-sm inline-flex items-center gap-2">Open asset <ExternalLink className="w-3.5 h-3.5" /></Link>
-      <button type="button" onClick={() => onBlast(assetId)} className="btn-secondary text-sm inline-flex items-center gap-2"
-        title="What would be affected if this device were compromised or went down">
-        <Zap className="w-3.5 h-3.5" /> Blast radius
-      </button>
+      {canOpen && <Link to={`/inventory/${assetId}`} className="btn-primary text-sm inline-flex items-center gap-2">Open asset <ExternalLink className="w-3.5 h-3.5" /></Link>}
+      {canBlast && (
+        <button type="button" onClick={() => onBlast(assetId)} className="btn-secondary text-sm inline-flex items-center gap-2"
+          title="What would be affected if this device were compromised or went down">
+          <Zap className="w-3.5 h-3.5" /> Blast radius
+        </button>
+      )}
     </div>
   )
 }

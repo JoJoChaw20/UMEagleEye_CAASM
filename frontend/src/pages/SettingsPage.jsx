@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Users, Shield, Clock, Eye, EyeOff, Lock, Copy, Check } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
+import { roleLabel } from '../utils/actions'
 
 const passwordRequirements = [
   ['length', 'At least 12 characters'],
@@ -153,7 +154,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <p className="text-dark-400 mb-1">Role</p>
-            <p className="text-dark-50 font-medium capitalize">{user?.role?.replace(/_/g, ' ') || '—'}</p>
+            <p className="text-dark-50 font-medium">{user?.role ? roleLabel(user.role) : '—'}</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Tenant</p>

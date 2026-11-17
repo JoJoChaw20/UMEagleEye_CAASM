@@ -13,15 +13,20 @@ import { CopyButton } from './parts'
 
 // {windows, source}: each {filename, version, size, uploaded_at} or null; undefined while loading,
 // null when nothing is uploaded or the request failed.
+// GET /agents/installer needs agent.installer.download, which the Agents page (agent.view) does
+// not: without it nothing is asked for and the download buttons say what is missing.
 export function useDownloads() {
+  const { can } = useAuth()
+  const allowed = can('agent.installer.download')
   const [downloads, setDownloads] = useState(undefined)
   useEffect(() => {
+    if (!allowed) { setDownloads(null); return undefined }
     let live = true
     client.get('/agents/installer')
       .then((r) => live && setDownloads(r.data.packages ?? { windows: r.data, source: null }))   // a server before the source package
       .catch(() => live && setDownloads(null))
     return () => { live = false }
-  }, [])
+  }, [allowed])
   return downloads
 }
 
@@ -31,6 +36,10 @@ const formatDay = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { 
 // One download: `pkg` is the package's details (null: not uploaded yet), `package` its name in the API.
 export function DownloadButton({ pkg, package: kind = 'windows', label, className = 'btn-secondary', details = true }) {
   const [state, setState] = useState(null)                   // null | 'downloading' | error text
+  const { can, catalog } = useAuth()
+  if (!can('agent.installer.download')) {
+    return <span className="text-xs text-dark-400">{requiresTitle('agent.installer.download', catalog)}</span>
+  }
   if (pkg === undefined) return null
   if (pkg === null) {
     return <span className="text-xs text-dark-400" title="Ask the platform administrator to upload it">Not available yet</span>

@@ -258,16 +258,21 @@ export default function DiscoveryPage() {
 
   const tParams = useMemo(() => (tenantFilter ? { tenant_id: tenantFilter } : {}), [tenantFilter])
 
+  // GET /agents needs agent.view, which this page (scan.view) does not: it is only asked for
+  // with that grant, and a failure there does not empty the networks list.
+  const canSeeAgents = can('agent.view')
   const loadNetworks = useCallback(async () => {
-    const [agentsRes, netRes] = await Promise.all([
-      client.get('/agents'),
+    const [agentsRes, netRes] = await Promise.allSettled([
+      canSeeAgents ? client.get('/agents') : Promise.resolve(null),
       client.get('/scans/networks', { params: tParams }),
     ])
-    setAgents((agentsRes.data.agents || []).filter((a) => a.status !== 'retired' && (!tenantFilter || a.tenant_id === tenantFilter)))
-    setNetworks(netRes.data.networks || [])
-    setCrawls(netRes.data.crawls || [])
-    setNetworkDays(netRes.data.days ?? 30)
-  }, [tParams, tenantFilter])
+    const agentRows = agentsRes.status === 'fulfilled' ? (agentsRes.value?.data?.agents || []) : []
+    setAgents(agentRows.filter((a) => a.status !== 'retired' && (!tenantFilter || a.tenant_id === tenantFilter)))
+    if (netRes.status === 'rejected') throw netRes.reason
+    setNetworks(netRes.value.data.networks || [])
+    setCrawls(netRes.value.data.crawls || [])
+    setNetworkDays(netRes.value.data.days ?? 30)
+  }, [tParams, tenantFilter, canSeeAgents])
 
   const loadScans = useCallback(async () => {
     const params = { ...tParams, page, page_size: PAGE_SIZE }

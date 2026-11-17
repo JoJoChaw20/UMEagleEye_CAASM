@@ -43,13 +43,14 @@ function RecentChange({ event, tenantId }) {
   </Link>
 }
 
-export default function ExposureAndChanges({ overview, surface, recentChanges, changesLoading, changesError, tenantId }) {
+// showChanges is false without alert.view: the recent changes are alerts
+export default function ExposureAndChanges({ overview, surface, recentChanges, changesLoading, changesError, showChanges = true, tenantId }) {
   const changes = classifyRecentChanges(recentChanges)
   return (
     <section aria-labelledby="exposure-title">
       <SectionHeader id="exposure-title" title="Security exposure & recent changes" className="mb-4"
         description="Current weaknesses, kept apart from changes first observed in the last 24 hours." />
-      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
+      <div className={`grid grid-cols-1 items-start gap-4 ${showChanges ? 'xl:grid-cols-2' : ''}`}>
         <div className="glass-card overflow-hidden">
           <div className="px-5 pt-5 lg:px-6 lg:pt-6">
             <PanelHeading title="Security exposure" detail="Open findings, with finding and asset counts kept distinct." className="mb-4" />
@@ -76,7 +77,7 @@ export default function ExposureAndChanges({ overview, surface, recentChanges, c
           </div>
         </div>
 
-        <div className="glass-card p-5 lg:p-6">
+        {showChanges && <div className="glass-card p-5 lg:p-6">
           <PanelHeading title="Observed security changes" detail="First seen in the last 24 hours · not every change is malicious." className="mb-4"
             action={<Link to={dashboardHref('/alerts', { view: 'drift' }, tenantId)} className="inline-flex items-center gap-1 text-xs font-medium text-eagle-400 hover:text-eagle-300">All drift <ArrowUpRight className="h-3.5 w-3.5" /></Link>} />
           {changesLoading ? <div className="space-y-3 animate-pulse py-3">{[0,1,2,3].map(n => <div key={n} className="h-10 rounded bg-dark-700/50" />)}</div>
@@ -87,7 +88,7 @@ export default function ExposureAndChanges({ overview, surface, recentChanges, c
                     <p className="text-sm text-dark-300">No supported security changes in the last 24 hours.</p>
                     <p className="max-w-sm text-xs text-dark-500">New devices, opened ports, exposure and software changes appear here as scans and agents report them.</p>
                   </div>}
-        </div>
+        </div>}
       </div>
     </section>
   )

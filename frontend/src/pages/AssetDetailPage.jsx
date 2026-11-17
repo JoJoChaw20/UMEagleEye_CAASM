@@ -67,6 +67,10 @@ export default function AssetDetailPage() {
   const { can } = useAuth()
   const canEditAsset = can('asset.edit')
   const canViewGraph = can('relationship.view')
+  // The asset page needs asset.view only: alerts (alert.view) and SBOMs (sbom.view) are
+  // fetched and shown only with their own action
+  const canViewAlerts = can('alert.view')
+  const canViewSbom = can('sbom.view')
 
   const [asset, setAsset] = useState(null)
   const [status, setStatus] = useState('loading')   // loading | ready | notfound | error
@@ -100,26 +104,32 @@ export default function AssetDetailPage() {
   const loadPanels = useCallback(() => {
     client.get(`/assets/${assetId}/score`).then((r) => setScore(r.data)).catch(() => setScore(null))
     client.get(`/assets/${assetId}/addresses`).then((r) => setAddresses(r.data.addresses || [])).catch(() => setAddresses([]))
-    client.get('/events', { params: { asset_id: assetId, status: 'open', page_size: 10, sort: 'priority' } })
-      .then((r) => setAlerts({ items: r.data.items || [], total: r.data.total ?? (r.data.items || []).length }))
-      .catch(() => setAlerts({ items: [], total: 0 }))
+    if (canViewAlerts) {
+      client.get('/events', { params: { asset_id: assetId, status: 'open', page_size: 10, sort: 'priority' } })
+        .then((r) => setAlerts({ items: r.data.items || [], total: r.data.total ?? (r.data.items || []).length }))
+        .catch(() => setAlerts({ items: [], total: 0 }))
+    }
     client.get(`/assets/${assetId}/software`).then((r) => setSoftware(r.data)).catch(() => setSoftware({ items: [], total: 0 }))
-    client.get('/sboms', { params: { asset_id: assetId, page_size: 1 } })
-      .then((r) => setSbom(r.data.items?.[0] ?? null)).catch(() => setSbom(null))
-    // An SBOM already running (daily or weekly run, or one asked for elsewhere): follow it
-    // too, so "Run SBOM scan" is unavailable until it finishes.
-    client.get(`/assets/${assetId}/sbom-scan-status`).then(({ data }) => {
-      if (data.status === 'pending' || data.status === 'running') {
-        setSbomScan((cur) => cur ?? { status: data.status, mode: data.mode })
-      }
-    }).catch(() => {})
+    if (canViewSbom) {
+      client.get('/sboms', { params: { asset_id: assetId, page_size: 1 } })
+        .then((r) => setSbom(r.data.items?.[0] ?? null)).catch(() => setSbom(null))
+      // An SBOM already running (daily or weekly run, or one asked for elsewhere): follow it
+      // too, so "Run SBOM scan" is unavailable until it finishes.
+      client.get(`/assets/${assetId}/sbom-scan-status`).then(({ data }) => {
+        if (data.status === 'pending' || data.status === 'running') {
+          setSbomScan((cur) => cur ?? { status: data.status, mode: data.mode })
+        }
+      }).catch(() => {})
+    } else {
+      setSbom(null)
+    }
     client.get(`/assets/${assetId}/inventory-job-status`).then(({ data }) => {
       if (data.status === 'pending' || data.status === 'running') setInvJob((cur) => cur ?? { status: data.status })
     }).catch(() => {})
     if (canViewGraph) {
       client.get(`/relationships/graph/${assetId}`).then((r) => setGraph(r.data)).catch(() => setGraph({ nodes: [], edges: [] }))
     }
-  }, [assetId, canViewGraph])
+  }, [assetId, canViewGraph, canViewAlerts, canViewSbom])
 
   // Duplicates are tenant-wide; scope to the asset's tenant (matters for superadmin).
   const tenantId = asset?.tenantId
@@ -547,8 +557,8 @@ export default function AssetDetailPage() {
         {inv && <ListeningSection inv={inv} className="xl:col-span-2" />}
         {inv && <InterfacesSection inv={inv} />}
 
-        {/* Alerts */}
-        <Section icon={Bell} title="Open alerts" className="xl:col-span-2"
+        {/* Alerts: only with alert.view */}
+        {canViewAlerts && <Section icon={Bell} title="Open alerts" className="xl:col-span-2"
           right={alerts?.total > 0 && (
             <Link to={`/alerts?${new URLSearchParams({ asset_id: assetId, label: assetName(asset) })}`} className="text-xs text-eagle-400 hover:underline">
               View all {alerts.total}
@@ -569,7 +579,7 @@ export default function AssetDetailPage() {
               ))}
             </ul>
           ) : <Empty>No open alerts for this asset.</Empty>}
-        </Section>
+        </Section>}
 
         {/* Baseline */}
         <Section icon={Bookmark} title="Baseline">

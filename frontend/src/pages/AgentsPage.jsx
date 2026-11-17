@@ -479,7 +479,8 @@ export default function AgentsPage() {
         <div className="space-y-6">
           <AgentDefaultsCard tenantId={policyTenant} onSaved={load} />
           {/* Platform superadmin: the policy of the tenant picked in the filter */}
-          <ScanPolicyCard tenantId={policyTenant} canEdit={can('settings.scan_policy.edit')} />
+          {/* GET /tenants/:id needs settings.view, which this page does not */}
+          {can('settings.view') && <ScanPolicyCard tenantId={policyTenant} canEdit={can('settings.scan_policy.edit')} />}
         </div>
       )}
 

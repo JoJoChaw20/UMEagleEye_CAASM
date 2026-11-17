@@ -33,7 +33,9 @@ function severityText(s) {
 }
 
 export default function Header({ onToggleSidebar, onOpenPalette }) {
-  const { user, logout } = useAuth()
+  const { user, logout, can } = useAuth()
+  // GET /notifications needs dashboard.view: without it there is nothing to poll
+  const canNotify = can('dashboard.view')
   const { theme, setTheme } = useTheme()
   const navigate = useNavigate()
 
@@ -111,6 +113,7 @@ export default function Header({ onToggleSidebar, onOpenPalette }) {
 
   // ── Poll notifications every 20 s + on window focus ──────────────
   useEffect(() => {
+    if (!canNotify) { setNotifs([]); return undefined }
     const fetchNotifs = () => {
       client.get('/notifications')
         .then(r => {
@@ -139,7 +142,7 @@ export default function Header({ onToggleSidebar, onOpenPalette }) {
       clearInterval(interval)
       window.removeEventListener('focus', fetchNotifs)
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canNotify]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const unreadCount = notifs.filter(n => !seenIds.has(n.id)).length
 
@@ -227,8 +230,8 @@ export default function Header({ onToggleSidebar, onOpenPalette }) {
           ))}
         </div>
 
-        {/* Notifications bell */}
-        <div className="relative" ref={notifRef}>
+        {/* Notifications bell: only with dashboard.view, which GET /notifications needs */}
+        {canNotify && <div className="relative" ref={notifRef}>
           <button type="button" onClick={openNotifications} className={iconBtn} title="Notifications" id="notifications-btn"
             aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'} aria-expanded={notifOpen}>
             <Bell className="h-4 w-4" />
@@ -287,7 +290,7 @@ export default function Header({ onToggleSidebar, onOpenPalette }) {
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Profile dropdown */}
         <div className="relative" ref={profileRef}>

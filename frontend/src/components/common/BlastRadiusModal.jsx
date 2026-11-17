@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, AlertTriangle, Shield, ChevronRight, Server, Monitor, Network, Cpu, Smartphone, HelpCircle } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
 
 const DEVICE_ICON = { server: Server, workstation: Monitor, network: Network, iot: Cpu, mobile: Smartphone }
 const DEPTH_COLORS = ['rgb(var(--sev-critical))', 'rgb(var(--sev-high))', 'rgb(var(--sev-medium))', 'rgb(var(--sev-low))']
@@ -16,18 +17,23 @@ export default function BlastRadiusModal({ assetId, onClose }) {
   const [loading, setLoading] = useState(true)
   const [assetInfo, setAssetInfo] = useState(null)
   const [direction, setDirection] = useState('downstream')
+  // The origin's name comes from GET /assets/:id (asset.view), which the Network page does not
+  // need: it is only asked for with that action, and the blast radius loads either way.
+  const { can } = useAuth()
+  const canSeeAsset = can('asset.view')
 
   useEffect(() => {
     if (!assetId) return
     const fetchData = async () => {
       setLoading(true)
       try {
-        const [blastRes, assetRes] = await Promise.all([
+        const [blastRes, assetRes] = await Promise.allSettled([
           client.get(`/relationships/blast-radius/${assetId}?max_depth=3&direction=${direction}`),
-          client.get(`/assets/${assetId}`),
+          canSeeAsset ? client.get(`/assets/${assetId}`) : Promise.resolve(null),
         ])
-        setData(blastRes.data)
-        setAssetInfo(assetRes.data)
+        if (blastRes.status === 'rejected') throw blastRes.reason
+        setData(blastRes.value.data)
+        setAssetInfo(assetRes.status === 'fulfilled' ? assetRes.value?.data ?? null : null)
       } catch (err) {
         console.error('Blast radius load error:', err)
       } finally {
@@ -35,7 +41,7 @@ export default function BlastRadiusModal({ assetId, onClose }) {
       }
     }
     fetchData()
-  }, [assetId, direction])
+  }, [assetId, direction, canSeeAsset])
 
   if (!assetId) return null
 

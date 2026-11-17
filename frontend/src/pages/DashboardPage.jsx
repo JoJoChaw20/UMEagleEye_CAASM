@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, RefreshCw, ScanLine, ArrowRight } from 'lucide-react'
 import SectionHeader from '../components/ui/SectionHeader'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import SecurityOverview from '../components/dashboard/SecurityOverview'
 import PriorityActionCentre from '../components/dashboard/PriorityActionCentre'
@@ -13,6 +14,9 @@ import { buildPriorityActions, dashboardHref } from '../components/dashboard/das
 
 export default function DashboardPage() {
   const navigate = useNavigate()
+  // Recent changes are alerts (GET /events: alert.view), which the dashboard does not need
+  const { can } = useAuth()
+  const canAlerts = can('alert.view')
   const [tenantFilter, setTenantFilter] = useState('')
   const [summary, setSummary] = useState(null)
   const [posture, setPosture] = useState(null)
@@ -34,7 +38,7 @@ export default function DashboardPage() {
       client.get('/dashboard/summary', { params: tenant }),
       client.get('/posture/current', { params: tenant }),
       client.get('/posture/history', { params: { limit: 30, ...tenant } }),
-      client.get('/events', { params: { page: 1, page_size: 30, since, sort: 'time', ...tenant } }),
+      canAlerts ? client.get('/events', { params: { page: 1, page_size: 30, since, sort: 'time', ...tenant } }) : Promise.resolve({ data: null }),
     ])
     const values = results.map(result => result.status === 'fulfilled' ? result.value.data : null)
     const nextErrors = {
@@ -50,7 +54,7 @@ export default function DashboardPage() {
     setErrors(nextErrors)
     setLoading(false)
     setRefreshing(false)
-  }, [tenantFilter])
+  }, [tenantFilter, canAlerts])
 
   useEffect(() => { loadDashboard() }, [loadDashboard])
 
@@ -104,7 +108,7 @@ export default function DashboardPage() {
 
       <SecurityOverview summary={summary} posture={posture} history={history} loading={loading} onAssets={() => openInventory({ scope: 'any' })} onAlerts={() => openAlerts({ sort: 'priority' })} onAgents={openAgents} onPosture={openPostureTrend} />
       <PriorityActionCentre actions={priorityActions} loading={loading} available={!errors.summary} tenantId={tenantFilter} />
-      <ExposureAndChanges overview={summary?.overview} surface={summary?.attack_surface} recentChanges={recentChanges} changesLoading={loading} changesError={errors.changes} tenantId={tenantFilter} />
+      <ExposureAndChanges overview={summary?.overview} surface={summary?.attack_surface} recentChanges={recentChanges} changesLoading={loading} changesError={errors.changes} showChanges={canAlerts} tenantId={tenantFilter} />
       <AssetVisibility summary={summary} loading={loading} onInventory={openInventory} onAgents={openAgents} />
       <RemediationAndTrend remediation={summary?.remediation} posture={posture} history={history} loading={loading} onManage={openAdvisories} tenantId={tenantFilter} />
       <p className="text-right text-[11px] text-dark-500">Windows: new assets 7 days · security changes 24 hours · posture trend 30 days</p>

@@ -5,6 +5,7 @@ import Header from './Header'
 import CommandPalette from './CommandPalette'
 import ChatWidget from '../chat/ChatWidget'
 import { useChatbot } from '../../context/ChatbotContext'
+import { useAuth } from '../../context/AuthContext'
 
 const isTypingTarget = (el) =>
   el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
@@ -28,7 +29,10 @@ export default function MainLayout() {
   const location = useLocation()
   const isDesktop = useMedia(DESKTOP)
   const isWide = useMedia(WIDE)
-  const { widgetOpen } = useChatbot()
+  const { widgetOpen: chatOpen } = useChatbot()
+  const { can } = useAuth()
+  // The assistant is only for users granted chatbot.use
+  const widgetOpen = chatOpen && can('chatbot.use')
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') === 'true'
   )
@@ -84,7 +88,7 @@ export default function MainLayout() {
           <Outlet />
         </main>
       </div>
-      <ChatWidget />
+      {can('chatbot.use') && <ChatWidget />}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   )

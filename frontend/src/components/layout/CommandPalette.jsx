@@ -24,6 +24,7 @@ const matches = (q, ...fields) => {
 export default function CommandPalette({ open, onClose }) {
   const navigate = useNavigate()
   const { user, can, ready } = useAuth()
+  const canSearchAssets = can('asset.view')
   const { theme, setTheme } = useTheme()
   const { setWidgetOpen } = useChatbot()
   const [query, setQuery] = useState('')
@@ -50,7 +51,8 @@ export default function CommandPalette({ open, onClose }) {
 
   // Live asset search, debounced
   useEffect(() => {
-    if (!open || q.length < 2) { setAssets([]); setAssetState('idle'); return undefined }
+    // GET /assets needs asset.view: without it the palette searches pages and actions only
+    if (!open || q.length < 2 || !canSearchAssets) { setAssets([]); setAssetState('idle'); return undefined }
     setAssetState('loading')
     let cancelled = false
     const timer = setTimeout(() => {
@@ -59,7 +61,7 @@ export default function CommandPalette({ open, onClose }) {
         .catch(() => { if (!cancelled) { setAssets([]); setAssetState('error') } })
     }, 220)
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [q, open])
+  }, [q, open, canSearchAssets])
 
   const groups = useMemo(() => {
     const go = (to, state) => () => navigate(to, state ? { state } : undefined)
@@ -69,9 +71,9 @@ export default function CommandPalette({ open, onClose }) {
       .map((item) => ({ id: `page:${item.to}`, icon: item.icon, label: item.label, hint: item.section, run: go(item.to) }))
 
     const actions = [
-      { id: 'act:priority', icon: Bell, label: 'Open alerts by priority', keywords: 'urgent triage', run: go('/alerts?sort=priority') },
-      ...(can('scan.view') ? [{ id: 'act:scan', icon: Radar, label: 'Start a discovery scan', keywords: 'scan network nmap', run: go('/discovery') }] : []),
-      { id: 'act:chat', icon: MessageCircle, label: 'Ask the security assistant', keywords: 'chatbot ai question', run: () => setWidgetOpen(true) },
+      ...(can('alert.view') ? [{ id: 'act:priority', icon: Bell, label: 'Open alerts by priority', keywords: 'urgent triage', run: go('/alerts?sort=priority') }] : []),
+      ...(can('scan.active.run') || can('scan.passive.run') ? [{ id: 'act:scan', icon: Radar, label: 'Start a discovery scan', keywords: 'scan network nmap', run: go('/discovery') }] : []),
+      ...(can('chatbot.use') ? [{ id: 'act:chat', icon: MessageCircle, label: 'Ask the security assistant', keywords: 'chatbot ai question', run: () => setWidgetOpen(true) }] : []),
       { id: 'theme:dark', icon: Moon, label: 'Switch to dark theme', keywords: 'theme mode appearance', hint: theme === 'dark' ? 'Current' : '', run: () => setTheme('dark') },
       { id: 'theme:light', icon: Sun, label: 'Switch to light theme', keywords: 'theme mode bright appearance', hint: theme === 'light' ? 'Current' : '', run: () => setTheme('light') },
       { id: 'theme:system', icon: MonitorSmartphone, label: 'Match system theme', keywords: 'theme mode auto appearance', hint: theme === 'system' ? 'Current' : '', run: () => setTheme('system') },
@@ -86,7 +88,7 @@ export default function CommandPalette({ open, onClose }) {
       deviceHint: true,
       run: go(`/inventory/${encodeURIComponent(a.assetId)}`),
     }))
-    if (q.length >= 2) {
+    if (q.length >= 2 && canSearchAssets) {
       assetItems.push({
         id: 'asset:all', icon: Boxes, label: `Search the inventory for “${q}”`, hint: 'All known assets',
         run: go(`/inventory?${new URLSearchParams({ scope: 'any', q })}`),
@@ -97,8 +99,8 @@ export default function CommandPalette({ open, onClose }) {
       { title: 'Assets', items: assetItems, status: assetState },
       { title: 'Pages', items: pages },
       { title: 'Actions', items: actions },
-    ].filter((g) => g.items.length || (g.title === 'Assets' && q.length >= 2))
-  }, [q, assets, assetState, user, can, ready, theme, navigate, setTheme])
+    ].filter((g) => g.items.length || (g.title === 'Assets' && q.length >= 2 && canSearchAssets))
+  }, [q, assets, assetState, user, can, ready, canSearchAssets, theme, navigate, setTheme])
 
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups])
 

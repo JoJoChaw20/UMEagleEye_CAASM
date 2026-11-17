@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
 
 // Live agent counts for the rail: polls /agents every 60 s while the tab is visible.
 // Returns null until the first answer (or when the call is not allowed).
 export default function useAgentPulse() {
+  const { can } = useAuth()
+  // GET /agents needs agent.view: without it nothing is polled
+  const allowed = can('agent.view')
   const [pulse, setPulse] = useState(null)
 
   useEffect(() => {
+    if (!allowed) { setPulse(null); return undefined }
     let cancelled = false
     const load = () => {
       if (document.visibilityState === 'hidden') return
@@ -32,7 +37,7 @@ export default function useAgentPulse() {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', load)
     }
-  }, [])
+  }, [allowed])
 
   return pulse
 }

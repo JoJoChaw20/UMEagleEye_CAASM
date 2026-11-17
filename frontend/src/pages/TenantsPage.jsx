@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Edit2, Users, X, Check, Shield, ToggleLeft, ToggleRight, RefreshCw, Building2, UserPlus } from 'lucide-react'
+import { Plus, Users, X, Check, Shield, ToggleLeft, ToggleRight, RefreshCw, Building2, UserPlus } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { SidePanel, Toast, useToast, Spinner } from '../components/common/PageParts'
@@ -92,66 +92,6 @@ function CreateTenantModal({ onClose, onSubmit }) {
             </button>
           </div>
         </form>
-      </div>
-    </div>
-  )
-}
-
-// ── Edit Tenant Modal ─────────────────────────────────────────────
-function EditTenantModal({ tenant, onClose, onSave }) {
-  const [name, setName] = useState(tenant.name)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
-
-  const handleSave = async () => {
-    setSaving(true)
-    setError(null)
-    try {
-      await onSave(tenant.tenant_id, { name })
-      onClose()
-    } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to update tenant')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4">
-      <div className="glass-card w-full max-w-md p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-dark-50">Edit Tenant</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-dark-50 transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3">{error}</p>}
-
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="input-field w-full text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs text-dark-400 mb-1">Slug</label>
-            <input type="text" value={tenant.slug} disabled className="input-field w-full text-sm opacity-50 font-mono" />
-          </div>
-        </div>
-
-        <div className="flex gap-3">
-          <button onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="btn-primary flex-1 text-sm flex items-center justify-center gap-2">
-            {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
-            Save Changes
-          </button>
-        </div>
       </div>
     </div>
   )
@@ -309,7 +249,6 @@ export default function TenantsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
-  const [editTenant, setEditTenant] = useState(null)
   const [usersTenant, setUsersTenant] = useState(null)
 
   const loadTenants = useCallback(async () => {
@@ -351,11 +290,6 @@ export default function TenantsPage() {
   const handleCreate = async ({ name, slug }) => {
     await client.post('/tenants', { name, slug })
     await loadTenants()
-  }
-
-  const handleEdit = async (tenantId, updates) => {
-    await client.patch(`/tenants/${tenantId}`, updates)
-    setTenants(prev => prev.map(t => t.tenant_id === tenantId ? { ...t, ...updates } : t))
   }
 
   const handleDeactivate = async (tenantId, currentActive) => {
@@ -448,13 +382,6 @@ export default function TenantsPage() {
                           <Users className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => setEditTenant(t)}
-                          className="p-1.5 hover:bg-dark-700 rounded text-dark-400 hover:text-dark-50 transition-colors"
-                          title="Edit Tenant"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button
                           onClick={() => handleDeactivate(t.tenant_id, t.is_active)}
                           className={`p-1.5 rounded transition-colors ${t.is_active ? 'text-dark-400 hover:text-yellow-400 hover:bg-yellow-500/10' : 'text-dark-400 hover:text-green-400 hover:bg-green-500/10'}`}
                           title={t.is_active ? 'Deactivate' : 'Activate'}
@@ -486,14 +413,6 @@ export default function TenantsPage() {
         <CreateTenantModal
           onClose={() => setShowCreate(false)}
           onSubmit={handleCreate}
-        />
-      )}
-
-      {editTenant && (
-        <EditTenantModal
-          tenant={editTenant}
-          onClose={() => setEditTenant(null)}
-          onSave={handleEdit}
         />
       )}
 

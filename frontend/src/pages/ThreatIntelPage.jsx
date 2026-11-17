@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Globe, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle } from 'lucide-react'
 import client from '../api/client'
+import { useAuth } from '../context/AuthContext'
 import TiEventsPanel from '../components/threatintel/TiEventsPanel'
 import AttackMatrixPanel from '../components/threatintel/AttackMatrixPanel'
 import MatchesPanel from '../components/threatintel/MatchesPanel'
@@ -60,6 +61,11 @@ function FeedHealth({ stats }) {
 
 export default function ThreatIntelPage() {
   const { toast, show: showToast } = useToast()
+  const { can } = useAuth()
+  // Matches are alerts (GET /events: alert.view) and Events are threat events (GET /cti/events:
+  // ti_event.view); this page only needs cti.view, so each tab shows with its own action.
+  const canMatches = can('alert.view')
+  const canEvents = can('ti_event.view')
   const [stats, setStats] = useState(null)
   const [tab, setTab] = useState(null)              // set once the stats say whether there are matches
   const [lookupInput, setLookupInput] = useState('')
@@ -81,12 +87,16 @@ export default function ThreatIntelPage() {
     try {
       const res = await client.get('/cti/stats')
       setStats(res.data)
-      setTab((cur) => cur ?? (res.data?.matches?.open > 0 ? 'matches' : 'events'))
+      setTab((cur) => cur ?? (canMatches && res.data?.matches?.open > 0 ? 'matches' : canEvents ? 'events' : 'indicators'))
     } catch {
-      setTab((cur) => cur ?? 'events')
+      setTab((cur) => cur ?? (canEvents ? 'events' : 'indicators'))
     }
-  }, [])
+  }, [canMatches, canEvents])
   useEffect(() => { loadStats() }, [loadStats])
+  // A grant removed mid-session hides its tab: move off it
+  useEffect(() => {
+    if ((tab === 'matches' && !canMatches) || (tab === 'events' && !canEvents)) setTab(canEvents ? 'events' : 'indicators')
+  }, [tab, canMatches, canEvents])
 
   useEffect(() => {
     const t = setTimeout(() => { setQDebounced(q.trim()); setPage(1) }, 300)
@@ -156,13 +166,13 @@ export default function ThreatIntelPage() {
         <StatTile label="Matches on our assets" icon={Crosshair}
           value={m ? m.open : '—'} tone={m?.open > 0 ? 'danger' : 'good'}
           sub={m ? (m.open > 0 ? `${m.high} critical or high${m.sightings ? ` · ${m.sightings} seen in traffic` : ''}` : 'nothing matched') : ' '}
-          onClick={() => setTab('matches')} />
+          onClick={canMatches ? () => setTab('matches') : undefined} />
         <StatTile label="Assets affected" icon={Server}
           value={m ? m.assets : '—'} tone={m?.assets > 0 ? 'warning' : 'muted'}
-          sub="with an open match" onClick={() => setTab('matches')} />
+          sub="with an open match" onClick={canMatches ? () => setTab('matches') : undefined} />
         <StatTile label="Threat-intel events" icon={BookOpen}
           value={stats?.ti_events?.total ?? '—'} sub={stats ? `${stats.ti_events.published} published` : ' '}
-          onClick={() => setTab('events')} />
+          onClick={canEvents ? () => setTab('events') : undefined} />
         <StatTile label="Feed indicators" icon={Database}
           value={stats ? stats.total_indicators.toLocaleString() : '—'}
           sub={stats ? `+${stats.recent_7d.toLocaleString()} in the last 7 days` : ' '}
@@ -173,16 +183,16 @@ export default function ThreatIntelPage() {
 
       {tab && (
         <Tabs label="Threat intelligence views" active={tab} onChange={setTab} tabs={[
-          { id: 'matches', label: 'Matches', count: m?.open },
-          { id: 'events', label: 'Events', count: stats?.ti_events?.total },
+          ...(canMatches ? [{ id: 'matches', label: 'Matches', count: m?.open }] : []),
+          ...(canEvents ? [{ id: 'events', label: 'Events', count: stats?.ti_events?.total }] : []),
           { id: 'indicators', label: 'Indicators' },
           { id: 'matrix', label: 'MITRE ATT&CK' },
         ]} />
       )}
 
-      {!tab ? <Spinner /> : tab === 'matches' ? (
+      {!tab ? <Spinner /> : tab === 'matches' && canMatches ? (
         <MatchesPanel onLookup={setPanelValue} showToast={showToast} />
-      ) : tab === 'events' ? (
+      ) : tab === 'events' && canEvents ? (
         <TiEventsPanel showToast={showToast} />
       ) : tab === 'matrix' ? (
         <AttackMatrixPanel onShowIndicators={showAttackIndicators} />
