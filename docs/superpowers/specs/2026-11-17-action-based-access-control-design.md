@@ -248,6 +248,7 @@ Total: 15 + 12 + 17 + 14 = 58.
 - Invite users to the tenant, or add existing accounts
 - Grant or remove actions for any user
 - Deactivate or reactivate users
+- Delete a user (section 4.1)
 - Reset a user's MFA (section 7)
 - View the tenant audit log
 - Rename the tenant
@@ -265,6 +266,23 @@ The Platform Superadmin cannot add users to a tenant, grant actions, reset MFA, 
 change or delete any record inside a tenant.
 
 ---
+
+### 4.1 Deactivating and deleting users (Tenant Superadmin only)
+
+| | Deactivate | Delete |
+|---|---|---|
+| **What it does** | Signs the user out and blocks sign-in. Everything is kept. | Removes the account permanently. |
+| **Undo** | Reactivate at any time. | Not possible. |
+| **Who can be targeted** | Any Tenant user of the same tenant | Any Tenant user of the same tenant |
+| **Confirmation** | A confirm dialog | The Tenant Superadmin's password and MFA code, plus typing the user's username |
+
+- Neither action can target yourself, the Tenant Superadmin, or the Platform Superadmin. The Tenant Superadmin changes only through section 6.
+- **When a user is deleted:**
+  - Their past actions stay in the audit log, shown as a deleted user with the username they had.
+  - Alerts and advisories assigned to them become unassigned.
+  - Their MFA and recovery codes are removed with the account.
+- An account that appears in the ownership history (a transfer or a recovery, section 6) cannot be deleted. It can only be deactivated, so the history of who held ownership stays intact. The refusal says: "This account is part of the tenant's ownership history and cannot be deleted. Deactivate it instead."
+- Dialog text for delete: "Delete [username]? This removes the account permanently and cannot be undone. Their past actions stay in the audit log. To keep the account, deactivate it instead."
 
 ## 5. Setting up a new tenant
 

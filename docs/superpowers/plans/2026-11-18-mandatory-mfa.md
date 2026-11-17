@@ -308,7 +308,7 @@ Behaviour:
 - [ ] **Step 1:** Tell the owner and the teammate:
   - after this deploy, every staging account without MFA must set it up at its next sign-in, and every open session without MFA is refused at once;
   - agents are not affected, because they authenticate with agent keys.
-- [ ] **Step 2:** `npm run db:status:staging`. Expected: pending exactly `0037_mfa`. Then `npm run db:migrate:staging`.
+- [ ] **Step 2:** `npm run db:status:staging`. Expected: pending exactly `0037_mfa` and `0038_audit_keeps_deleted_users` (delete-user plan). Then `npm run db:migrate:staging`.
 - [ ] **Step 3:** Deploy the worker, run `node scripts/kg/build-system-graph.mjs staging`, then deploy the frontend (VITE_* unset), and check the bundle.
 - [ ] **Step 4:** API smoke test with a temporary test tenant (otplib generates the codes):
   - password sign-in returns stage `enrol`;

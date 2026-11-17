@@ -76,12 +76,12 @@ Run this plan after that one.
 
 ---
 
-### Task 1: Migration 0038 (additive) and schema
+### Task 1: Migration 0039 (additive) and schema
 
 **Files:**
-- Create: `workers/drizzle/0038_ownership.sql`, plus its snapshot and journal (via `npm run db:generate`, renamed)
+- Create: `workers/drizzle/0039_ownership.sql`, plus its snapshot and journal (via `npm run db:generate`, renamed)
 - Modify: `workers/src/db/schema.ts`
-- Test: `workers/src/lib/migration0038.test.ts`
+- Test: `workers/src/lib/migration0039.test.ts`
 
 **Interfaces:**
 - Produces:
@@ -134,7 +134,7 @@ Run this plan after that one.
 - [ ] **Step 2:** Run the tests. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `npm test`, `npx tsc --noEmit` and `npm run db:generate` (no changes). Expected: PASS.
-- [ ] **Step 5:** Commit `feat(db): 0038 adds ownership transfers, recovery plans and recoveries, tenant notices`.
+- [ ] **Step 5:** Commit `feat(db): 0039 adds ownership transfers, recovery plans and recoveries, tenant notices`.
 
 ### Task 2: Ownership core logic (`lib/ownership.ts`)
 
@@ -307,7 +307,7 @@ Run this plan after that one.
 
 ### Task 8: Staging rollout (controller; needs owner go-ahead)
 
-- [ ] **Step 1:** `npm run db:status:staging`. Expected: pending exactly `0038_ownership`. Then migrate.
+- [ ] **Step 1:** `npm run db:status:staging`. Expected: pending exactly `0039_ownership`. Then migrate.
 - [ ] **Step 2:** Deploy the worker, the system graph and the frontend (VITE_* unset). Check the bundle.
 - [ ] **Step 3:** API smoke test in a temporary test tenant with 5 users (owner, recipient, successor, 2 approvers; all with MFA set up through the API):
   - **Path A:** transfer, accept → exactly one owner, and the former owner is `tenant_user` with the chosen actions. A second accept → 409. An expired request cannot be accepted (set `expires_at` in the past with SQL on the test row).
