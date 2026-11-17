@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, or, isNull, inArray, desc, asc, ilike, sql, getTableColumns, type SQL, type SQLWrapper } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { agentLiveness } from '../lib/agentLiveness'
 import { audit } from '../services/audit'
@@ -29,7 +29,6 @@ import { agentPolicy } from '../services/agentPolicy'
 
 const app = new Hono<{ Bindings: Env }>()
 
-const READ_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
 
 /** An asset's IP or hostname changed: match it against threat intel (best effort). */
 async function rematch(db: ReturnType<typeof getDb>, assetId: string): Promise<void> {
@@ -39,9 +38,6 @@ async function rematch(db: ReturnType<typeof getDb>, assetId: string): Promise<v
     console.error('assets: threat-intel matching failed:', err)
   }
 }
-const WRITE_ROLES  = ['tenant_superadmin', 'tenant_admin']
-const DELETE_ROLES = ['tenant_superadmin']
-const MERGE_ROLES  = ['tenant_superadmin']   // same guard as delete (destructive, irreversible)
 
 // Map a pure MergeOp to the Drizzle statement(s) for one db.batch. userId/tenantId are
 // supplied here (the pure planner has no request context).
@@ -138,7 +134,7 @@ async function recordManualAddress(
 
 
 // ── GET / ────────────────────────────────────────────────────────
-app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -341,7 +337,7 @@ async function tenantDismissals(db: ReturnType<typeof getDb>, tenantId: string |
 // ── GET /duplicates ─── detect duplicate asset groups (tenant-scoped) ──
 // Subrequests: 4 (tenant assets, tenant addresses, agent-reported machine identifiers,
 // "Not a duplicate" dismissals). Also returns the dismissed pairs, for Undo.
-app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/duplicates', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -385,7 +381,7 @@ app.get('/duplicates', authMiddleware, requireRoles(...READ_ROLES), async (c) =>
 // strong evidence links it. Groups are recomputed server-side (client contents are never
 // trusted). Subrequests: 4 (as GET /duplicates) + 1 batch (pairs + audit).
 const dismissSchema = z.object({ asset_ids: z.array(z.string().uuid()).min(2).max(20) })
-app.post('/duplicates/dismiss', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', dismissSchema), async (c) => {
+app.post('/duplicates/dismiss', authMiddleware, requireAction('asset.duplicate.dismiss'), zValidator('json', dismissSchema), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -446,7 +442,7 @@ app.post('/duplicates/dismiss', authMiddleware, requireRoles(...WRITE_ROLES), zV
 
 // ── DELETE /duplicates/dismissals/:dismissalId ─── Undo "Not a duplicate" ──
 // The pair is detected again on the next duplicates read. Subrequests: 1 + 1 batch.
-app.delete('/duplicates/dismissals/:dismissalId', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.delete('/duplicates/dismissals/:dismissalId', authMiddleware, requireAction('asset.duplicate.dismiss'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -476,7 +472,7 @@ const mergeSchema = z.object({
   loser_ids: z.array(z.string().uuid()).min(1).max(10),
   dry_run: z.boolean().optional(),
 })
-app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('json', mergeSchema), async (c) => {
+app.post('/merge', authMiddleware, requireAction('asset.merge'), zValidator('json', mergeSchema), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -535,7 +531,7 @@ app.post('/merge', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('jso
 // Groups are RECOMPUTED server-side (client group contents are never trusted).
 // Subrequests: 4 (assets, addresses, identifiers, dismissals) + 2 (relationships, topology) + up to 4 batches = ~10.
 const mergeSafeSchema = z.object({ group_ids: z.array(z.string()).optional(), dry_run: z.boolean().optional() })
-app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES), zValidator('json', mergeSafeSchema), async (c) => {
+app.post('/duplicates/merge-safe', authMiddleware, requireAction('asset.merge'), zValidator('json', mergeSafeSchema), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -606,7 +602,7 @@ app.post('/duplicates/merge-safe', authMiddleware, requireRoles(...MERGE_ROLES),
 })
 
 // ── GET /:assetId ────────────────────────────────────────────────
-app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -634,7 +630,7 @@ app.get('/:assetId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 })
 
 // ── GET /:assetId/software — installed software reported by the agent on this asset ──
-app.get('/:assetId/software', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId/software', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -665,7 +661,7 @@ app.get('/:assetId/software', authMiddleware, requireRoles(...READ_ROLES), async
 // its scans and alerts stay. The agent on that
 // machine sends a fresh inventory at its next run unless it is stopped or set to
 // --no-inventory. Subrequests: 1 (asset) + 1 (count) + 1 (batch).
-app.delete('/:assetId/inventory', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.delete('/:assetId/inventory', authMiddleware, requireAction('asset.inventory.clear'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -698,7 +694,7 @@ app.delete('/:assetId/inventory', authMiddleware, requireRoles(...WRITE_ROLES), 
 })
 
 // ── GET /:assetId/addresses — full address timeline (tenant-scoped, 1 query) ──
-app.get('/:assetId/addresses', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId/addresses', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -743,7 +739,7 @@ const createAssetSchema = z.object({
   tenant_id: z.string().uuid().optional(),
 })
 
-app.post('/', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', createAssetSchema), async (c) => {
+app.post('/', authMiddleware, requireAction('asset.create'), zValidator('json', createAssetSchema), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -892,7 +888,7 @@ const updateAssetSchema = z.object({
   update_baseline: z.boolean().optional(),
 })
 
-app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator('json', updateAssetSchema), async (c) => {
+app.patch('/:assetId', authMiddleware, requireAction('asset.edit'), zValidator('json', updateAssetSchema), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1053,7 +1049,7 @@ app.patch('/:assetId', authMiddleware, requireRoles(...WRITE_ROLES), zValidator(
 })
 
 // ── DELETE /:assetId ─────────────────────────────────────────────
-app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c) => {
+app.delete('/:assetId', authMiddleware, requireAction('asset.delete'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1120,7 +1116,7 @@ app.delete('/:assetId', authMiddleware, requireRoles(...DELETE_ROLES), async (c)
 })
 
 // ── POST /:assetId/baseline ──────────────────────────────────────
-app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/:assetId/baseline', authMiddleware, requireAction('asset.edit'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1161,7 +1157,7 @@ app.post('/:assetId/baseline', authMiddleware, requireRoles(...WRITE_ROLES), asy
 // ── POST /rescore ─── Bulk re-score tenant assets (scope=my_assets optional) ──
 // Scores with the active formula (v2); a score still stored from v1 is rewritten.
 // Endpoint posture is refreshed from stored inventories in the same pass.
-app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/rescore', authMiddleware, requireAction('asset.rescore'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1199,7 +1195,7 @@ app.post('/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => 
 // ── GET /:assetId/score ─── Score breakdown for one asset ─────────
 // Score, factors (with sources), breakdown, confidence and unknowns from the active
 // formula; stored_model says which formula produced the stored score.
-app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId/score', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1222,8 +1218,8 @@ app.get('/:assetId/score', authMiddleware, requireRoles(...READ_ROLES), async (c
 // ── POST /:assetId/rescore ─── recompute ONE asset's criticality ──
 // Uses the same scorer as the bulk run, so per-asset == bulk.
 // Scored from the asset's own facts (no topology). Writes only when something changed.
-// Subrequests: 1 (asset) + 1 (re-read) + 1 (update, only if changed). Role: WRITE_ROLES.
-app.post('/:assetId/rescore', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+// Subrequests: 1 (asset) + 1 (re-read) + 1 (update, only if changed). Action: asset.rescore.
+app.post('/:assetId/rescore', authMiddleware, requireAction('asset.rescore'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1270,7 +1266,7 @@ function parseCSVRow(line: string): string[] {
 
 const VALID_DEVICE_TYPES = new Set(['server', 'workstation', 'network', 'iot', 'mobile', 'unknown'])
 
-app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/import', authMiddleware, requireAction('asset.import'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1494,7 +1490,7 @@ app.post('/import', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
 })
 
 // ── GET /:assetId/baseline ───────────────────────────────────────
-app.get('/:assetId/baseline', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId/baseline', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -1532,7 +1528,7 @@ async function assetVisible(db: ReturnType<typeof getDb>, user: { role: string; 
 }
 
 // ── GET /:assetId/sbom-scan-status ─── frontend polls this after triggering ───
-app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId/sbom-scan-status', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const { assetId } = c.req.param()
@@ -1567,7 +1563,7 @@ app.get('/:assetId/sbom-scan-status', authMiddleware, requireRoles(...READ_ROLES
 })
 
 // ── GET /:assetId/inventory-job-status ─── frontend polls this after "Collect inventory" ───
-app.get('/:assetId/inventory-job-status', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:assetId/inventory-job-status', authMiddleware, requireAction('asset.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const { assetId } = c.req.param()
@@ -1592,7 +1588,7 @@ app.get('/:assetId/inventory-job-status', authMiddleware, requireRoles(...READ_R
 // Queues an inventory job for the agent installed ON this asset, like scan-sbom. The agent
 // (2.3.0+) picks it up via GET /scans/pending and posts its inventory; any inventory from
 // that agent completes its open jobs (agents POST /:agentId/inventory).
-app.post('/:assetId/collect-inventory', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/:assetId/collect-inventory', authMiddleware, requireAction('asset.inventory.collect'), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)
@@ -1662,7 +1658,7 @@ app.post('/:assetId/collect-inventory', authMiddleware, requireRoles(...WRITE_RO
 // set when the agent's inventory is bound to it). The agent picks it up via GET /scans/pending,
 // runs Syft and Grype on its own machine and posts to /sboms/ingest and /sboms/ingest-cve.
 // Which folders it scans is the agent's own setting; the dashboard cannot choose a path.
-app.post('/:assetId/scan-sbom', authMiddleware, requireRoles(...WRITE_ROLES), async (c) => {
+app.post('/:assetId/scan-sbom', authMiddleware, requireAction('sbom.scan'), async (c) => {
     try {
       const user = c.get('user')
       const db   = getDb(c.env.DATABASE_URL)

@@ -3,7 +3,8 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, or, sql, desc, gte, inArray, isNull, notInArray, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
+import { decide, refusalMessage, scanActionFor } from '../lib/actions'
 import { getDb } from '../db/client'
 import { scanResults, agents, assets, assetAddresses, events, tenants } from '../db/schema'
 import { matchIocs } from '../services/iocMatch'
@@ -184,7 +185,7 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 // ── POST /drift-audit ─── manual on-demand drift run ────────────
-app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
+app.post('/drift-audit', authMiddleware, requireAction('scan.drift.run'), async (c) => {
   try {
     const user = c.get('user')
     const db   = getDb(c.env.DATABASE_URL)
@@ -204,7 +205,7 @@ app.post('/drift-audit', authMiddleware, requireRoles('tenant_superadmin', 'tena
 })
 
 // ── GET / ─── list scans for authenticated user ──────────────────
-app.get('/', authMiddleware, async (c) => {
+app.get('/', authMiddleware, requireAction('scan.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -304,7 +305,7 @@ function networkCondition(subnet: string): SQL {
 // heard passively, the last full scan of it, hosts seen in 24 h, open new-device alerts.
 const NETWORK_DAYS = 30
 // ── GET /route?subnet= ─── which agent New scan would send it to, and why ──
-app.get('/route', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
+app.get('/route', authMiddleware, requireAction('scan.route.view'), async (c) => {
   const user = c.get('user')
   const subnet = c.req.query('subnet') ?? ''
   if (!user.tenantId || !isValidSubnet(subnet)) return c.json({ detail: 'Enter an IPv4 address or range' }, 400)
@@ -312,7 +313,7 @@ app.get('/route', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admi
   return c.json(chooseAgent(subnet, await routeAgents(db, user.tenantId)))
 })
 
-app.get('/networks', authMiddleware, async (c) => {
+app.get('/networks', authMiddleware, requireAction('scan.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -374,7 +375,7 @@ app.get('/networks', authMiddleware, async (c) => {
 })
 
 // ── GET /:scanId/hosts ─── one record's hosts, each with the asset it became ──
-app.get('/:scanId/hosts', authMiddleware, async (c) => {
+app.get('/:scanId/hosts', authMiddleware, requireAction('scan.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -435,7 +436,7 @@ app.get('/:scanId/hosts', authMiddleware, async (c) => {
 
 // ── GET /compare ─── cross-reference active vs passive results ───
 // Finds IPs that appear in both scan types and diffs captured data.
-app.get('/compare', authMiddleware, async (c) => {
+app.get('/compare', authMiddleware, requireAction('scan.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -584,7 +585,7 @@ app.get('/pending', async (c) => {
 
 // ── POST /:scanId/cancel ── tenant admin cancels pending/running SBOM scan ──
 app.post('/:scanId/cancel', authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
+  requireAction('scan.cancel'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -653,7 +654,7 @@ const activeScanSchema = z.object({
   scan_type: z.enum(['active', 'passive']).optional().default('active'),
 })
 
-app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_admin'), zValidator('json', activeScanSchema, (result, c) => {
+app.post('/active', authMiddleware, requireAction('scan.active.run', 'scan.passive.run'), zValidator('json', activeScanSchema, (result, c) => {
   if (!result.success) {
     const firstIssue = result.error.issues[0]
     const detail = firstIssue?.message ?? 'Invalid request body'
@@ -666,6 +667,12 @@ app.post('/active', authMiddleware, requireRoles('tenant_superadmin', 'tenant_ad
     const { subnet, agent_id: requestedAgent, tenant_id, scan_type } = c.req.valid('json')
 
     const effectiveScanType = scan_type ?? 'active'
+    // The route guard passes on either run action; the one this scan type needs is checked here.
+    const neededAction = scanActionFor(effectiveScanType)
+    const actionDecision = decide(user, neededAction)
+    if (!actionDecision.ok) {
+      return c.json({ detail: refusalMessage(actionDecision.reason, neededAction), missing_action: neededAction }, 403)
+    }
     const effectiveSubnet = effectiveScanType === 'passive' ? 'arp-discovery' : (subnet ?? c.env.SCAN_DEFAULT_SUBNET ?? '192.168.1.0/24')
 
     // Only tenant roles reach this route, and they always act in their own tenant: a
@@ -1554,7 +1561,7 @@ app.post('/fail', async (c) => {
 })
 
 // ── GET /status/:scanId ──────────────────────────────────────────
-app.get('/status/:scanId', authMiddleware, async (c) => {
+app.get('/status/:scanId', authMiddleware, requireAction('scan.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)

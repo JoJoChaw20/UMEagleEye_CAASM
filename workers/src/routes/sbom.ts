@@ -8,7 +8,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { eq, and, desc, ilike, isNull, sql, count, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireRoles } from '../middleware/auth'
+import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { sboms, dependencies, assets, scanResults, agents } from '../db/schema'
 import { buildPackageMap, planPackageBaselineCompletion, type AssetBaseline } from '../services/drift'
@@ -21,8 +21,6 @@ import { findingKey, planPackageAlerts, type Finding } from '../lib/packageAlert
 import { loadAlerts, loadPresentFindings, planStatements, runBatches } from '../services/packageAlerts'
 
 const app = new Hono<{ Bindings: Env }>()
-
-const READ_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
 
 type User = { role: string; tenantId?: string | null }
 
@@ -44,7 +42,7 @@ function componentCountOf(raw: Record<string, unknown>): number | null {
 
 // ── GET /stats/summary ───────────────────────────────────────────
 // Must be defined BEFORE /:sbomId to avoid being swallowed by the param route
-app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/stats/summary', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -109,7 +107,7 @@ app.get('/stats/summary', authMiddleware, requireRoles(...READ_ROLES), async (c)
 // ── GET /scans/active ───────────────────────────────────────────
 // Restores visible progress after navigation or a browser refresh.
 // Must remain above /:sbomId so "scans" is not treated as an SBOM UUID.
-app.get('/scans/active', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/scans/active', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -155,7 +153,7 @@ app.get('/scans/active', authMiddleware, requireRoles(...READ_ROLES), async (c) 
 })
 
 // ── GET / ────────────────────────────────────────────────────────
-app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -245,7 +243,7 @@ app.get('/', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 // (kind host: a phone's app and the network agent build no SBOM) plus any other asset that has an SBOM. Computers with an agent but no SBOM are
 // listed too (coverage). Each row carries its SBOM summary, its open CVE alerts and its
 // latest SBOM job. Query: tenant_id (superadmin). Defined BEFORE /:sbomId.
-app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/computers', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -351,7 +349,7 @@ app.get('/computers', authMiddleware, requireRoles(...READ_ROLES), async (c) => 
 // announced, before any vulnerability database knows it. Searches each asset's latest
 // SBOM. Query: q (package name; exact match ranks first, else contains), version
 // (optional exact version), tenant_id (superadmin). Defined BEFORE /:sbomId.
-app.get('/packages/search', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/packages/search', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
@@ -393,7 +391,7 @@ app.get('/packages/search', authMiddleware, requireRoles(...READ_ROLES), async (
 
 // ── GET /:sbomId ─────────────────────────────────────────────────
 // Metadata only; the document itself comes from GET /:sbomId/download.
-app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:sbomId', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const sbom = await visibleSbom(db, c.get('user'), c.req.param('sbomId'))
@@ -420,7 +418,7 @@ app.get('/:sbomId', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
 })
 
 // ── GET /:sbomId/download ─── the CycloneDX document (R2, or the database for old SBOMs) ──
-app.get('/:sbomId/download', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:sbomId/download', authMiddleware, requireAction('sbom.download'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const sbom = await visibleSbom(db, c.get('user'), c.req.param('sbomId'))
@@ -441,7 +439,7 @@ app.get('/:sbomId/download', authMiddleware, requireRoles(...READ_ROLES), async 
 })
 
 // ── GET /:sbomId/dependencies ────────────────────────────────────
-app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), async (c) => {
+app.get('/:sbomId/dependencies', authMiddleware, requireAction('sbom.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
     const { sbomId } = c.req.param()
@@ -490,7 +488,7 @@ app.get('/:sbomId/dependencies', authMiddleware, requireRoles(...READ_ROLES), as
 
 // ── DELETE /by-asset/:assetId ─── tenant admins clean up their tenant's SBOMs ──
 app.delete('/by-asset/:assetId', authMiddleware,
-  requireRoles('tenant_superadmin', 'tenant_admin'), async (c) => {
+  requireAction('sbom.delete'), async (c) => {
   try {
     const user = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
