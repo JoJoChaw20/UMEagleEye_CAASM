@@ -101,44 +101,50 @@ export function AuthProvider({ children }) {
   const ready = !loading && (!user || user.role !== 'superadmin' || catalogStatus !== 'pending')
   const catalogError = catalogStatus === 'error'
 
-  // The login responses lack actions and tenantId, so the user is never taken from them:
-  // loading goes up before the token changes and /auth/me alone fills the user.
+  // Sign-in ends with an access_token only after the MFA step (/auth/mfa/verify or
+  // /auth/mfa/enrol/finish). Those responses lack actions and tenantId, so the user is never
+  // taken from them: loading goes up before the token changes and /auth/me alone fills the user.
+  // Only role and user_id are kept in storage, never the recovery codes of an enrol response.
   const startSession = (data) => {
     localStorage.setItem('access_token', data.access_token)
-    localStorage.setItem('user', JSON.stringify(data))
+    localStorage.setItem('user', JSON.stringify({ role: data.role, user_id: data.user_id }))
     setLoading(true)
     setUser(null)
     setToken(data.access_token)
     setSession(n => n + 1)
   }
 
+  // Password and Google sign-in answer { mfa_token, stage }: 'verify' asks for a code,
+  // 'enrol' sets MFA up first. The mfa_token stays in LoginPage's memory only.
   const login = async (username, password) => {
     const res = await client.post('/auth/login', { username, password })
-    const data = res.data
-
-    if (data.mfa_required) {
-      return { mfa_required: true, user_id: data.user_id }
-    }
-
-    startSession(data)
-    return data
-  }
-
-  const verifyMFA = async (userId, code) => {
-    const res = await client.post('/auth/mfa/verify', { user_id: userId, code })
-    const data = res.data
-    startSession(data)
-    return data
+    return { mfa_token: res.data.mfa_token, stage: res.data.stage }
   }
 
   const loginWithGoogle = async (access_token) => {
     const res = await client.post('/auth/google', { access_token })
-    const data = res.data
-    if (data.mfa_required) {
-      return { mfa_required: true, user_id: data.user_id }
-    }
-    startSession(data)
-    return data
+    return { mfa_token: res.data.mfa_token, stage: res.data.stage }
+  }
+
+  // answer: { code } or { recovery_code }. Starts the session on success.
+  const verifyMfa = async (mfaToken, answer) => {
+    const res = await client.post('/auth/mfa/verify', { mfa_token: mfaToken, ...answer })
+    startSession(res.data)
+    return res.data
+  }
+
+  // Reuses the pending secret (same QR) unless newSecret asks for a new one.
+  const startMfaEnrol = async (mfaToken, newSecret = false) => {
+    const body = newSecret ? { mfa_token: mfaToken, new_secret: true } : { mfa_token: mfaToken }
+    const res = await client.post('/auth/mfa/enrol/start', body)
+    return res.data
+  }
+
+  // Returns { access_token, role, user_id, recovery_codes } without starting the session:
+  // the recovery codes are shown first, and startSession runs once the user saved them.
+  const finishMfaEnrol = async (mfaToken, code) => {
+    const res = await client.post('/auth/mfa/enrol/finish', { mfa_token: mfaToken, code })
+    return res.data
   }
 
   const logout = () => {
@@ -149,8 +155,10 @@ export function AuthProvider({ children }) {
   }
 
   const value = useMemo(() => ({
-    user, token, loading, ready, isPlatformSuperadmin: user?.role === 'superadmin', login, verifyMFA, loginWithGoogle, logout, can, catalog, catalogError, retryCatalog, refreshUser,
-  // login/verifyMFA/loginWithGoogle/logout only set state, so they are safe to leave out
+    user, token, loading, ready, isPlatformSuperadmin: user?.role === 'superadmin',
+    login, loginWithGoogle, verifyMfa, startMfaEnrol, finishMfaEnrol, startSession,
+    logout, can, catalog, catalogError, retryCatalog, refreshUser,
+  // the sign-in helpers and logout only call the API and set state, so they are safe to leave out
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [user, token, loading, ready, can, catalog, catalogError, retryCatalog, refreshUser])
 

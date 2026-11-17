@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { isMfaSetupRequired } from '../utils/mfa.js'
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1'
 
@@ -21,17 +22,27 @@ client.interceptors.response.use(
   (response) => response,
   (error) => {
     const requestUrl = error.config?.url || ''
-    const isAuthenticationAttempt = /^\/?auth\/(login|register|google|mfa\/verify)(?:\?|$)/.test(requestUrl)
+    const isAuthenticationAttempt = /^\/?auth\/(login|register|google)(?:\?|$)/.test(requestUrl)
+      || /^\/?auth\/mfa\//.test(requestUrl)
 
     // A failed sign-in is expected to return 401. Keep it on the login form so
     // LoginPage can show the API's "Invalid credentials" message instead of
-    // reloading the page and clearing the form.
+    // reloading the page and clearing the form. Every /auth/mfa/ route answers a
+    // wrong code, an expired mfa_token or a wrong step-up password with 401 too:
+    // the screen that asked shows the message.
     if (error.response?.status === 401 && !isAuthenticationAttempt) {
       localStorage.removeItem('access_token')
       localStorage.removeItem('user')
       // A user deactivated mid-session keeps the reason so the login page can say why
       const detail = String(error.response?.data?.detail || '')
       window.location.href = /deactivated/i.test(detail) ? '/login?reason=deactivated' : '/login'
+    }
+    // An account without MFA (a session from before MFA became mandatory) is refused
+    // everywhere outside /auth: end the session and send it to sign in, which sets MFA up.
+    if (isMfaSetupRequired(error.response)) {
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('user')
+      window.location.href = '/login?reason=mfa_setup'
     }
     // A refusal for a missing action means the grants may have changed since sign-in:
     // AuthContext re-reads the profile so the UI follows.

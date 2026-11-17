@@ -1,101 +1,150 @@
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, Eye, EyeOff, KeyRound, LogIn } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, KeyRound, LogIn } from 'lucide-react'
 import { useGoogleLogin } from '@react-oauth/google'
 import { useAuth } from '../context/AuthContext'
 import BrandLogo from '../components/ui/BrandLogo'
 import CircuitField from '../components/ui/CircuitField'
+import MfaEnrol from '../components/auth/MfaEnrol'
+import RecoveryCodes from '../components/auth/RecoveryCodes'
+import LostMfaHelp from '../components/auth/LostMfaHelp'
+import { FormAlert, Spin, TotpField, errorText, useSingleFlight } from '../components/auth/AuthParts'
+import {
+  isMfaTokenExpired, isRecoveryCodeComplete, loginReasonMessage, normalizeRecoveryCode,
+  SET_UP_MFA_TO_CONTINUE, SIGN_IN_TOOK_TOO_LONG,
+} from '../utils/mfa.js'
 
+// Sign-in always ends with MFA. Password or Google sign-in returns { mfa_token, stage }:
+//   'verify' asks for the authenticator code (or a recovery code), then starts the session;
+//   'enrol'  sets MFA up (MfaEnrol), shows the recovery codes once, then starts the session.
+// The mfa_token lives in this component's state only, never in storage.
 export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [mfaRequired, setMfaRequired] = useState(() => sessionStorage.getItem('mfa_pending') === 'true')
-  const [mfaUserId, setMfaUserId] = useState(() => sessionStorage.getItem('mfa_user_id') || '')
+  const [stage, setStage] = useState('password') // password | verify | enrol | codes
+  const [mfaToken, setMfaToken] = useState('')
+  const [useRecovery, setUseRecovery] = useState(false)
+  const [lostOpen, setLostOpen] = useState(false)
   const [mfaCode, setMfaCode] = useState('')
-  // api/client.js sends a user deactivated mid-session here with ?reason=deactivated
-  const [error, setError] = useState(() => (
-    new URLSearchParams(window.location.search).get('reason') === 'deactivated'
-      ? 'Your account is deactivated. Contact your Tenant Superadmin.'
-      : ''
-  ))
-  const [loading, setLoading] = useState(false)
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [enrolled, setEnrolled] = useState(null) // the enrol/finish answer, until the codes are saved
+  // api/client.js sends a user here with ?reason=deactivated or ?reason=mfa_setup
+  const [notice, setNotice] = useState(() => {
+    const text = loginReasonMessage(new URLSearchParams(window.location.search).get('reason'))
+    return text ? { tone: text === SET_UP_MFA_TO_CONTINUE ? 'info' : 'error', text } : null
+  })
+  const [busy, run] = useSingleFlight()
+  const codeRef = useRef(null)
+  const recoveryRef = useRef(null)
 
-  const { login, verifyMFA, loginWithGoogle } = useAuth()
+  const { login, loginWithGoogle, verifyMfa, startSession } = useAuth()
   const navigate = useNavigate()
+
+  const showError = (text) => setNotice(text ? { tone: 'error', text } : null)
+
+  // Back to the password form: the mfa_token and everything typed for it are dropped.
+  const restart = useCallback((message, tone = 'error') => {
+    setStage('password')
+    setMfaToken('')
+    setMfaCode('')
+    setRecoveryCode('')
+    setUseRecovery(false)
+    setLostOpen(false)
+    setEnrolled(null)
+    setPassword('')
+    setNotice(message ? { tone, text: message } : null)
+  }, [])
+
+  const beginMfa = (result) => {
+    setMfaToken(result.mfa_token)
+    setMfaCode('')
+    setRecoveryCode('')
+    setUseRecovery(false)
+    setLostOpen(false)
+    setPassword('')
+    setStage(result.stage === 'enrol' ? 'enrol' : 'verify')
+  }
 
   const googleLogin = useGoogleLogin({
     onSuccess: (tokenResponse) => handleGoogleLogin(tokenResponse.access_token),
-    onError: () => setError('Google login failed'),
+    onError: () => showError('Google login failed'),
     prompt: 'select_account',
   })
 
-  const handleLogin = async (e) => {
+  const handleLogin = (e) => {
     e.preventDefault()
-    setError('')
-    setLoading(true)
-
-    try {
-      const result = await login(username, password)
-      if (result.mfa_required) {
-        sessionStorage.setItem('mfa_pending', 'true')
-        sessionStorage.setItem('mfa_user_id', result.user_id)
-        setMfaUserId(result.user_id)
-        setMfaRequired(true)
-      } else {
-        navigate('/')
+    run(async () => {
+      setNotice(null)
+      try {
+        beginMfa(await login(username, password))
+      } catch (err) {
+        showError(errorText(err, 'Login failed'))
       }
-    } catch (err) {
-      setError(err.response?.data?.detail || 'Login failed')
-    } finally {
-      setLoading(false)
-    }
+    })
   }
 
-  const handleGoogleLogin = async (credential) => {
-    setError('')
-    setLoading(true)
+  const handleGoogleLogin = (credential) => run(async () => {
+    setNotice(null)
     try {
-      const result = await loginWithGoogle(credential)
-      if (result.mfa_required) {
-        sessionStorage.setItem('mfa_pending', 'true')
-        sessionStorage.setItem('mfa_user_id', result.user_id)
-        setMfaUserId(result.user_id)
-        setMfaRequired(true)
-      } else {
-        navigate('/')
-      }
+      beginMfa(await loginWithGoogle(credential))
     } catch (err) {
-      setError(err.response?.data?.detail || 'Google login failed')
-    } finally {
-      setLoading(false)
+      showError(errorText(err, 'Google login failed'))
     }
-  }
+  })
 
-  const handleMFAVerify = async (e) => {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
-
+  // One request at a time, and the code field is emptied after a refusal, so a code is never
+  // sent twice (the server counts a replayed code as a failed attempt).
+  const submitVerify = (answer) => run(async () => {
+    setNotice(null)
     try {
-      await verifyMFA(mfaUserId, mfaCode)
-      sessionStorage.removeItem('mfa_pending')
-      sessionStorage.removeItem('mfa_user_id')
+      await verifyMfa(mfaToken, answer)
       navigate('/')
+      return true
     } catch (err) {
-      setError(err.response?.data?.detail || 'Invalid MFA code')
-    } finally {
-      setLoading(false)
+      const response = err?.response
+      // These end the attempt: back to the password form, which must stay usable (return false
+      // so the single-flight guard unlocks).
+      if (isMfaTokenExpired(response)) { restart(SIGN_IN_TOOK_TOO_LONG); return false }
+      if (response?.status === 401 && /deactivated/i.test(response?.data?.detail || '')) {
+        restart(response.data.detail)
+        return false
+      }
+      showError(errorText(err, 'MFA verification failed'))
+      if (answer.code) {
+        setMfaCode('')
+        requestAnimationFrame(() => codeRef.current?.focus())
+      } else {
+        // Keep a typed recovery code so a typo can be fixed
+        requestAnimationFrame(() => recoveryRef.current?.select())
+      }
+      return false
+    }
+  })
+
+  const submitCode = (code) => { if (code.length === 6) submitVerify({ code }) }
+
+  const handleVerify = (e) => {
+    e.preventDefault()
+    if (useRecovery) {
+      if (isRecoveryCodeComplete(recoveryCode)) submitVerify({ recovery_code: normalizeRecoveryCode(recoveryCode) })
+    } else {
+      submitCode(mfaCode)
     }
   }
 
-  const resetMfa = () => {
-    sessionStorage.removeItem('mfa_pending')
-    sessionStorage.removeItem('mfa_user_id')
-    setMfaRequired(false)
-    setMfaUserId('')
+  const switchToRecovery = (on) => {
+    setUseRecovery(on)
+    setLostOpen(false)
+    setNotice(null)
     setMfaCode('')
-    setError('')
+    requestAnimationFrame(() => (on ? recoveryRef : codeRef).current?.focus())
+  }
+
+  const finishSignIn = () => {
+    startSession(enrolled)
+    setEnrolled(null)
+    navigate('/')
   }
 
   return (
@@ -124,16 +173,12 @@ export default function LoginPage() {
 
         <div className="flex flex-1 items-center justify-center px-6 py-12">
           <div className="w-full max-w-[380px]">
-            {!mfaRequired ? (
+            {stage === 'password' && (
               <>
                 <h1 className="text-[26px] font-semibold leading-8 text-dark-50">Sign in</h1>
                 <p className="mt-1.5 text-sm text-dark-400">Use your UMEagleEye account to open the dashboard.</p>
 
-                {error && (
-                  <div role="alert" className="mt-6 flex items-start gap-2.5 rounded-md border border-red-500/30 bg-red-500/[0.08] px-3.5 py-3 text-sm text-red-400">
-                    <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />{error}
-                  </div>
-                )}
+                <FormAlert tone={notice?.tone}>{notice?.text}</FormAlert>
 
                 <form onSubmit={handleLogin} className="mt-6 space-y-4">
                   <div>
@@ -153,8 +198,8 @@ export default function LoginPage() {
                       </button>
                     </div>
                   </div>
-                  <button type="submit" disabled={loading} className="btn-primary w-full py-2.5" id="login-submit">
-                    {loading ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />Signing in…</> : <><LogIn className="h-4 w-4" />Sign in</>}
+                  <button type="submit" disabled={busy} className="btn-primary w-full py-2.5" id="login-submit">
+                    {busy ? <><Spin />Signing in…</> : <><LogIn className="h-4 w-4" />Sign in</>}
                   </button>
                 </form>
 
@@ -165,7 +210,7 @@ export default function LoginPage() {
                       <span className="text-xs text-dark-500">or</span>
                       <div className="h-px flex-1 bg-dark-700" />
                     </div>
-                    <button type="button" onClick={() => googleLogin()} disabled={loading}
+                    <button type="button" onClick={() => googleLogin()} disabled={busy}
                       className="flex w-full items-center justify-center gap-3 rounded-md border border-dark-700 bg-white px-4 py-2.5 text-sm font-medium text-[#1f1f1f] transition-colors hover:bg-[#f2f4f8] disabled:opacity-50">
                       <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
                         <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -179,36 +224,68 @@ export default function LoginPage() {
                   </>
                 )}
               </>
-            ) : (
+            )}
+
+            {stage === 'verify' && (
               <>
                 <span className="flex h-10 w-10 items-center justify-center rounded-md border border-eagle-500/30 bg-eagle-500/10 text-eagle-400">
                   <KeyRound className="h-5 w-5" />
                 </span>
                 <h1 className="mt-4 text-[26px] font-semibold leading-8 text-dark-50">Two-factor check</h1>
-                <p className="mt-1.5 text-sm text-dark-400">Enter the 6-digit code from your authenticator app.</p>
+                <p className="mt-1.5 text-sm text-dark-400">
+                  {useRecovery
+                    ? 'Enter one of the recovery codes you saved when you set up MFA. Each code works once.'
+                    : 'Enter the 6-digit code from your authenticator app.'}
+                </p>
 
-                {error && (
-                  <div role="alert" className="mt-6 flex items-start gap-2.5 rounded-md border border-red-500/30 bg-red-500/[0.08] px-3.5 py-3 text-sm text-red-400">
-                    <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />{error}
-                  </div>
-                )}
+                <FormAlert tone={notice?.tone}>{notice?.text}</FormAlert>
 
-                <form onSubmit={handleMFAVerify} className="mt-6 space-y-4">
-                  <div>
-                    <label htmlFor="mfa-code" className="mb-1.5 block text-sm font-medium text-dark-200">Authentication code</label>
-                    <input type="text" inputMode="numeric" autoComplete="one-time-code" value={mfaCode}
-                      onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      className="input-field w-full py-3 text-center font-mono text-2xl tracking-[0.5em]"
-                      placeholder="000000" maxLength={6} required id="mfa-code" autoFocus />
-                  </div>
-                  <button type="submit" disabled={loading || mfaCode.length !== 6} className="btn-primary w-full py-2.5" id="mfa-submit">
-                    {loading ? 'Verifying…' : 'Verify and continue'}
-                  </button>
-                  <button type="button" onClick={resetMfa} className="btn-ghost w-full">
-                    <ArrowLeft className="h-4 w-4" />Back to sign in
+                <form onSubmit={handleVerify} className="mt-6 space-y-4">
+                  {useRecovery ? (
+                    <div>
+                      <label htmlFor="mfa-recovery-code" className="mb-1.5 block text-sm font-medium text-dark-200">Recovery code</label>
+                      <input ref={recoveryRef} id="mfa-recovery-code" type="text" value={recoveryCode} readOnly={busy}
+                        onChange={(e) => setRecoveryCode(e.target.value.slice(0, 24))}
+                        className="input-field w-full py-3 text-center font-mono text-lg uppercase tracking-[0.2em]"
+                        placeholder="XXXXX-XXXXX" autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} autoFocus />
+                    </div>
+                  ) : (
+                    <TotpField id="mfa-code" value={mfaCode} onChange={setMfaCode} onComplete={submitCode} busy={busy} inputRef={codeRef} />
+                  )}
+                  <button type="submit" disabled={busy || (useRecovery ? !isRecoveryCodeComplete(recoveryCode) : mfaCode.length !== 6)}
+                    className="btn-primary w-full py-2.5" id="mfa-submit">
+                    {busy ? <><Spin />Verifying…</> : 'Verify and continue'}
                   </button>
                 </form>
+
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <button type="button" onClick={() => switchToRecovery(!useRecovery)} className="text-eagle-400 hover:text-eagle-300 hover:underline">
+                    {useRecovery ? 'Use your authenticator app' : 'Use a recovery code'}
+                  </button>
+                  <button type="button" onClick={() => setLostOpen((v) => !v)} aria-expanded={lostOpen}
+                    className="text-dark-400 hover:text-dark-100 hover:underline">
+                    Lost your authenticator?
+                  </button>
+                </div>
+                {lostOpen && <LostMfaHelp onUseRecoveryCode={() => switchToRecovery(true)} />}
+
+                <button type="button" onClick={() => restart('')} className="btn-ghost mt-4 w-full">
+                  <ArrowLeft className="h-4 w-4" />Back to sign in
+                </button>
               </>
+            )}
+
+            {stage === 'enrol' && (
+              <MfaEnrol
+                mfaToken={mfaToken}
+                onFinished={(data) => { setEnrolled(data); setStage('codes') }}
+                onRestart={restart}
+                onBack={() => restart('')}
+              />
+            )}
+
+            {stage === 'codes' && enrolled && (
+              <RecoveryCodes codes={enrolled.recovery_codes || []} onDone={finishSignIn} />
             )}
           </div>
         </div>

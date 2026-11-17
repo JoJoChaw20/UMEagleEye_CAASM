@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import MainLayout from './components/layout/MainLayout'
 import ProtectedRoute from './components/common/ProtectedRoute'
 import LoginPage from './pages/LoginPage'
+import MfaRecoveryPage from './pages/MfaRecoveryPage'
 import DashboardPage from './pages/DashboardPage'
 import InventoryPage from './pages/InventoryPage'
 import NetworkMapPage from './pages/NetworkMapPage'
@@ -83,6 +84,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Public: the confirm and cancel links of the break-glass MFA reset email */}
+      <Route path="/mfa-recovery" element={<MfaRecoveryPage />} />
       <Route path="/" element={
         <ProtectedRoute><MainLayout /></ProtectedRoute>
       }>
