@@ -35,6 +35,7 @@ export interface JWTPayload {
   tenant_id?: string
   iat: number
   exp: number
+  purpose?: unknown  // set only on MFA step tokens, never on access tokens
 }
 
 export interface AuthUser {

@@ -2,6 +2,7 @@ import { createMiddleware } from 'hono/factory'
 import type { Env, AuthUser } from '../types'
 import { verifyToken } from '../lib/auth'
 import { toAuthUser } from '../lib/accountRows'
+import { sessionGate } from '../lib/sessionGate'
 import { getDb } from '../db/client'
 import { users } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -28,13 +29,16 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   // token, so a change by an administrator (or a deactivation) takes effect at once.
   const db = getDb(c.env.DATABASE_URL)
   const [row] = await db
-    .select({ role: users.role, tenantId: users.tenantId, isActive: users.isActive, actions: users.actions })
+    .select({ role: users.role, tenantId: users.tenantId, isActive: users.isActive, actions: users.actions,
+      mfaEnabled: users.mfaEnabled, sessionsValidAfter: users.sessionsValidAfter })
     .from(users)
     .where(eq(users.userId, payload.sub))
     .limit(1)
-  if (!row || !row.isActive) {
+  if (!row) {
     return c.json({ detail: 'Your account is deactivated. Contact your Tenant Superadmin.' }, 401)
   }
+  const refused = sessionGate(payload, row, c.req.path)
+  if (refused) return c.json(refused.body, refused.status)
 
   // The row's role and actions, normalized (lib/accountRows.ts).
   const user: AuthUser = toAuthUser(payload.sub, payload.username, row)
