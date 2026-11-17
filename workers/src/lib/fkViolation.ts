@@ -6,3 +6,11 @@ export function isFkViolation(err: unknown): boolean {
   if (e.code === '23503' || e.cause?.code === '23503') return true
   return typeof e.message === 'string' && /violates foreign key constraint|23503/i.test(e.message)
 }
+
+// True when a Postgres error is a unique violation (23505); same shapes as above.
+export function isUniqueViolation(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false
+  const e = err as { code?: unknown; cause?: { code?: unknown; message?: unknown }; message?: unknown }
+  if (e.code === '23505' || e.cause?.code === '23505') return true
+  return typeof e.message === 'string' && /duplicate key value violates unique constraint/i.test(e.message)
+}

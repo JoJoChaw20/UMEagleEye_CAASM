@@ -9,10 +9,11 @@ import { getDb } from '../db/client'
 import { ownershipTransfers, tenantRecoveryPlans, tenants, users } from '../db/schema'
 import { HOURS_72, ownershipChangedNotice, validateTransfer } from '../lib/ownership'
 import { ownershipView, transferMessage } from '../lib/ownershipView'
+import { isUniqueViolation } from '../lib/fkViolation'
 import { audit } from '../services/audit'
 import { stepUp } from '../services/mfaStepUp'
 import { sendMail } from '../services/mailer'
-import { acceptTransfer, postNotice, settleOwnership } from '../services/ownership'
+import { acceptTransfer, closeRequestNotice, postNotice, settleOwnership } from '../services/ownership'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -100,7 +101,8 @@ router.post(
           deactivateOn: after.mode === 'deactivate_on' ? after.deactivateOn : null, expiresAt,
         }).returning({ transferId: ownershipTransfers.transferId })
         transferId = row!.transferId
-      } catch {
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err
         return c.json({ detail: 'A transfer is already pending. Cancel it first.' }, 409)   // unique index: one pending per tenant
       }
       const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
@@ -133,8 +135,9 @@ router.delete(
         .where(and(
           eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'),
           eq(ownershipTransfers.fromUserId, caller.userId), sql`${ownershipTransfers.expiresAt} > now()`,
-        )).returning({ transferId: ownershipTransfers.transferId, toUserId: ownershipTransfers.toUserId })
+        )).returning({ transferId: ownershipTransfers.transferId, toUserId: ownershipTransfers.toUserId, createdAt: ownershipTransfers.createdAt })
       if (!row) return c.json({ detail: NOT_OPEN }, 409)
+      await closeRequestNotice(db, tenantId, row.toUserId, row.createdAt)
       await audit(db, c, {
         userId: caller.userId, tenantId, actionType: 'ownership.transfer_cancelled', targetEntity: row.toUserId,
         newState: { transfer_id: row.transferId },
@@ -207,8 +210,9 @@ router.post(
         .where(and(
           eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'),
           eq(ownershipTransfers.toUserId, caller.userId), sql`${ownershipTransfers.expiresAt} > now()`,
-        )).returning({ transferId: ownershipTransfers.transferId, fromUserId: ownershipTransfers.fromUserId })
+        )).returning({ transferId: ownershipTransfers.transferId, fromUserId: ownershipTransfers.fromUserId, createdAt: ownershipTransfers.createdAt })
       if (!row) return c.json({ detail: NOT_OPEN }, 409)
+      await closeRequestNotice(db, tenantId, caller.userId, row.createdAt)
       await audit(db, c, {
         userId: caller.userId, tenantId, actionType: 'ownership.transfer_declined', targetEntity: row.fromUserId,
         newState: { transfer_id: row.transferId },
