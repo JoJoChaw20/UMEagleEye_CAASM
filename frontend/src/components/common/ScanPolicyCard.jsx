@@ -49,7 +49,7 @@ export default function ScanPolicyCard({ tenantId, canEdit }) {
           Scan Policy
         </h2>
         <p className="text-xs text-dark-400 mt-0.5">
-          {canEdit ? 'What the EagleEye agents of this tenant may do on their own.' : 'Only the tenant superadmin can change these.'}
+          {canEdit ? 'What the EagleEye agents of this tenant may do on their own.' : 'Requires the "Change scan policy" action.'}
         </p>
       </div>
       {error && (

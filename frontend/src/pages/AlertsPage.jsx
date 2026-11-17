@@ -69,10 +69,12 @@ function writeLastVisit(v) {
 }
 
 export default function AlertsPage() {
-  const { user } = useAuth()
-  const isSuperadmin    = user?.role === 'superadmin'
-  const isBusinessOwner = user?.role === 'business_owner'
-  const canManage       = !isSuperadmin && !isBusinessOwner
+  const { can } = useAuth()
+  const canUpdateAlert       = can('alert.manage')
+  const canBulk         = can('alert.bulk_update')
+  const canAdvisory     = can('advisory.generate')
+  const canDriftAudit   = can('scan.drift.run')
+  const canAssignees    = can('alert.manage') || can('advisory.update')
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [view,         setView]         = useState(() => resolveView(searchParams.get('view')))
@@ -150,11 +152,11 @@ export default function AlertsPage() {
   useEffect(() => { loadData() }, [loadData])
 
   useEffect(() => {
-    if (!canManage) return
+    if (!canAssignees) return
     client.get('/events/assignees', { params: tenantFilter ? { tenant_id: tenantFilter } : {} })
       .then(r => setAssignees(r.data.items || []))
       .catch(() => setAssignees([]))
-  }, [canManage, tenantFilter])
+  }, [canAssignees, tenantFilter])
 
   // Keep view / search / open drawer in the URL so a link reproduces the queue
   useEffect(() => {
@@ -266,7 +268,7 @@ export default function AlertsPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={resetPage(setTenantFilter)} />
-          {canManage && (
+          {canDriftAudit && (
             <button onClick={triggerDriftAudit} disabled={auditing} className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-60">
               <RefreshCw className={`w-4 h-4 ${auditing ? 'animate-spin' : ''}`} />
               {auditing ? 'Running audit…' : 'Run Drift Audit'}
@@ -349,7 +351,7 @@ export default function AlertsPage() {
 
       {/* ── Saved views ── */}
       <div className="flex gap-1 overflow-x-auto border-b border-dark-700 -mb-2">
-        {VIEWS.filter(v => !v.concern && (canManage || v.id !== 'mine')).map(v => (
+        {VIEWS.filter(v => !v.concern && (canUpdateAlert || v.id !== 'mine')).map(v => (
           <button key={v.id} onClick={() => { setView(v.id); setPage(1) }}
             className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 transition-colors ${view === v.id
               ? 'border-eagle-500 text-eagle-400 font-medium'
@@ -451,7 +453,7 @@ export default function AlertsPage() {
       </div>
 
       {/* ── Bulk action bar ── */}
-      {canManage && selected.size > 0 && (
+      {canBulk && selected.size > 0 && (
         <div className="glass-card px-4 py-2.5 flex items-center gap-2 flex-wrap border-eagle-500/40">
           <span className="text-sm text-dark-200 font-medium mr-2">{selected.size} selected</span>
           <AssignSelect assignees={assignees} value="" onChange={(v) => assign([...selected], v)} placeholder="Assign to…" />
@@ -460,9 +462,11 @@ export default function AlertsPage() {
               {ACTION_LABELS[s]}
             </button>
           ))}
-          <button onClick={() => triggerAdvisory([...selected])} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1">
-            <Zap className="w-3.5 h-3.5" /> Advisory
-          </button>
+          {canAdvisory && (
+            <button onClick={() => triggerAdvisory([...selected])} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1">
+              <Zap className="w-3.5 h-3.5" /> Advisory
+            </button>
+          )}
           <button onClick={() => setSelected(new Set())} className="ml-auto text-xs text-dark-400 hover:text-dark-200">Clear selection</button>
         </div>
       )}
@@ -477,7 +481,7 @@ export default function AlertsPage() {
           <table className="data-table">
             <thead>
               <tr>
-                {canManage && <th className="w-8"><input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} aria-label="Select all" /></th>}
+                {canBulk && <th className="w-8"><input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} aria-label="Select all" /></th>}
                 <th title="P1 urgent → P4 low. Score = risk × internet exposure × asset criticality (+ threat intel)">Priority</th>
                 <th>Alert &amp; why it matters</th>
                 <th>Evidence</th>
@@ -492,7 +496,7 @@ export default function AlertsPage() {
               {events.map(e => (
                 <tr key={e.event_id} onClick={() => setDetailId(e.event_id)}
                   className={`cursor-pointer ${detailId === e.event_id ? 'bg-eagle-500/5' : ''}`}>
-                  {canManage && (
+                  {canBulk && (
                     <td onClick={ev => ev.stopPropagation()}>
                       <input type="checkbox" checked={selected.has(e.event_id)} onChange={() => toggleOne(e.event_id)} aria-label="Select alert" />
                     </td>
@@ -606,7 +610,8 @@ export default function AlertsPage() {
       {detailId && (
         <AlertDrawer
           eventId={detailId}
-          canManage={canManage}
+          canUpdateAlert={canUpdateAlert}
+          canAdvisory={canAdvisory}
           assignees={assignees}
           onClose={() => setDetailId(null)}
           onStatus={(status) => requestStatus([detailId], status)}
@@ -682,7 +687,7 @@ function CloseDialog({ count, status, onCancel, onConfirm }) {
 }
 
 // ── Detail drawer: everything needed to decide, without leaving the queue ──
-function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssign, onAdvisory, onAssetAlerts, onPackageAlerts, onNavigate, reloadKey }) {
+function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose, onStatus, onAssign, onAdvisory, onAssetAlerts, onPackageAlerts, onNavigate, reloadKey }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
 
@@ -765,7 +770,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
             )}
 
             {/* Actions */}
-            {canManage && (
+            {canUpdateAlert && (
               <div className="flex items-center gap-2 flex-wrap">
                 <AssignSelect assignees={assignees} value={e.assigned_to} onChange={onAssign} />
                 {isOpen ? (
@@ -949,7 +954,7 @@ function AlertDrawer({ eventId, canManage, assignees, onClose, onStatus, onAssig
                   <AdvisoryBody text={e.advisory.recommended_action} compact />
                   <Link to="/advisories" state={{ openAdvisoryId: e.advisory.advisory_id }} className="text-xs text-eagle-400 hover:underline">Open this advisory<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></Link>
                 </div>
-              ) : canManage ? (
+              ) : canAdvisory ? (
                 <button onClick={onAdvisory} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Generate advisory</button>
               ) : <p className="text-xs text-dark-500">No advisory yet.</p>}
             </Section>

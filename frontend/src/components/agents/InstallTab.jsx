@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { Apple, Download, Monitor, Plus, Server, Smartphone, Terminal } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
 import InstallCodesCard from './InstallCodesCard'
 import { CopyButton } from './parts'
 
@@ -270,7 +271,8 @@ const PLATFORMS = [
   { key: 'android', label: 'Android', icon: Smartphone },
 ]
 
-export default function InstallTab({ downloads, canManage, isSuperadmin, onRegister }) {
+export default function InstallTab({ downloads, isSuperadmin, onRegister }) {
+  const { can, catalog } = useAuth()
   const [platform, setPlatform] = useState('windows')
   return (
     <div className="space-y-6">
@@ -301,13 +303,13 @@ export default function InstallTab({ downloads, canManage, isSuperadmin, onRegis
           Register an agent for the computer and paste its connection code into the agent. A connection code belongs to that one agent:
           for many computers use an install code.
         </p>
-        {canManage
+        {can('agent.enrol')
           ? <button onClick={onRegister} className="btn-primary flex items-center gap-2 text-sm"><Plus className="w-4 h-4" /> Register agent</button>
-          : <p className="text-xs text-dark-500">Only a tenant superadmin or admin can register agents.</p>}
+          : <p className="text-xs text-dark-500">Requires the "{(catalog?.actions || []).find((a) => a.key === 'agent.enrol')?.label || 'Enrol agents'}" action.</p>}
       </div>
 
       {/* Install codes are per tenant: for the tenant's own admins (the platform superadmin has none) */}
-      <InstallCodesCard enabled={canManage && !isSuperadmin} />
+      <InstallCodesCard enabled={can('agent.enrol') && !isSuperadmin} />
     </div>
   )
 }

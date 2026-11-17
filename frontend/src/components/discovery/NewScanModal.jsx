@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X, Wifi } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
+
+// Scan types the server accepts on POST /scans/active, each with the action it needs
+const SCAN_TYPES = [
+  { value: 'active', label: 'Full scan (active)', action: 'scan.active.run' },
+  { value: 'passive', label: 'Passive scan (listen only)', action: 'scan.passive.run' },
+]
 
 // A full (active) scan, run by one agent. Passive listening needs no scan: agents listen
 // all the time. "Automatic" lets the server pick the online agent with the Scanner role
@@ -30,6 +37,9 @@ function validateSubnet(value) {
 }
 
 export default function NewScanModal({ agents: allAgents, networks, initial, onClose, onSubmit }) {
+  const { can } = useAuth()
+  const scanTypes = SCAN_TYPES.filter((t) => can(t.action))
+  const [scanType, setScanType] = useState(scanTypes[0]?.value ?? 'active')
   // A network agent reads routers and switches; it does not run scans (the server refuses it)
   const agents = useMemo(() => allAgents.filter((a) => a.kind !== 'network'), [allAgents])
   const online = agents.filter((a) => a.status === 'online')
@@ -78,7 +88,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
     setSubmitting(true)
     setError(null)
     try {
-      await onSubmit({ subnet: subnet.trim(), agent_id: agentId })
+      await onSubmit({ subnet: subnet.trim(), agent_id: agentId, scan_type: scanType })
       onClose()
     } catch (err) {
       const d = err?.response?.data
@@ -102,6 +112,14 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
           <p className="text-sm text-dark-300">No agent is online. Start the EagleEye agent on a computer in the network you want to scan.</p>
         ) : (
           <form onSubmit={submit} className="space-y-4">
+            {scanTypes.length > 1 && (
+              <div>
+                <label htmlFor="scan-type" className="block text-xs text-dark-400 mb-1">Scan type</label>
+                <select id="scan-type" value={scanType} onChange={(e) => setScanType(e.target.value)} className="input-field w-full text-sm">
+                  {scanTypes.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <label htmlFor="scan-agent" className="block text-xs text-dark-400 mb-1">Agent that runs it</label>
               <select id="scan-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
@@ -153,7 +171,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, onC
             </div>
             <div className="flex gap-3 pt-1">
               <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
-              <button type="submit" disabled={submitting || !!subnetError || !agentId || (agentId === 'auto' && route && !route.agent_id)}
+              <button type="submit" disabled={submitting || scanTypes.length === 0 || !!subnetError || !agentId || (agentId === 'auto' && route && !route.agent_id)}
                 className="btn-primary flex-1 text-sm flex items-center justify-center gap-2 disabled:opacity-50">
                 {submitting ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Wifi className="w-4 h-4" />}
                 Start scan

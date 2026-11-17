@@ -96,12 +96,12 @@ function MenuButton({ label, icon: Icon, items, primary = false, title }) {
 
 // ── Main page ─────────────────────────────────────────────────────
 export default function InventoryPage() {
-  const { user } = useAuth()
+  const { can } = useAuth()
   const navigate = useNavigate()
-  const isSuperadmin = user?.role === 'superadmin'
-  const isBusinessOwner = user?.role === 'business_owner'
-  const isReadOnly = isSuperadmin || isBusinessOwner
-  const canDelete = user?.role === 'tenant_superadmin'
+  const canEditAsset = can('asset.edit')
+  const canRemoveAsset = can('asset.delete')
+  const canCreate = can('asset.create')
+  const canImport = can('asset.import')
 
   const [searchParams, setSearchParams] = useSearchParams()
   const [scope, setScope] = useState(() => readScope(searchParams))
@@ -208,12 +208,11 @@ export default function InventoryPage() {
   }, [tenantFilter])
 
   const loadDuplicates = useCallback(async () => {
-    if (isBusinessOwner) return
     try {
       const res = await client.get('/assets/duplicates', { params: tenantFilter ? { tenant_id: tenantFilter } : {} })
       setDupGroups(res.data.groups || [])
     } catch { setDupGroups([]) }
-  }, [tenantFilter, isBusinessOwner])
+  }, [tenantFilter])
 
   useEffect(() => { loadAssets() }, [loadAssets])
   useEffect(() => { loadScopeCounts() }, [loadScopeCounts])
@@ -295,7 +294,7 @@ export default function InventoryPage() {
 
   // ── Derived ──
   const totalPages = Math.ceil(total / PAGE_SIZE)
-  const showActions = !isReadOnly
+  const showActions = canEditAsset || canRemoveAsset
   const colCount = showActions ? 8 : 7
   const matchedDiscoveredCount = useMemo(() => {
     let n = 0
@@ -343,7 +342,7 @@ export default function InventoryPage() {
             else next.delete('tenant_id')
             setSearchParams(next, { replace: true })
           }} />
-          {!isBusinessOwner && (
+          {can('asset.view') && (
             <button
               onClick={() => setShowDuplicates(true)}
               title="Assets that look like the same device: merge them, or mark them as not duplicates"
@@ -353,11 +352,11 @@ export default function InventoryPage() {
               Duplicates{dupGroups.length > 0 && <span className="text-dark-300">({dupGroups.length})</span>}
             </button>
           )}
-          {!isReadOnly && (
+          {(canCreate || canImport) && (
             <MenuButton primary label="Add asset" icon={Plus} items={[
-              { label: 'Add manually', icon: Plus, hint: 'Goes to My Assets', onClick: () => setShowAdd(true) },
-              { label: 'Import CSV', icon: Upload, hint: 'Goes to My Assets', onClick: () => setShowImport(true) },
-            ]} />
+              canCreate && { label: 'Add manually', icon: Plus, hint: 'Goes to My Assets', onClick: () => setShowAdd(true) },
+              canImport && { label: 'Import CSV', icon: Upload, hint: 'Goes to My Assets', onClick: () => setShowImport(true) },
+            ].filter(Boolean)} />
           )}
         </div>
       </div>
@@ -458,7 +457,7 @@ export default function InventoryPage() {
                   <Fragment key={a.assetId}>
                     <tr onClick={() => navigate(`/inventory/${a.assetId}`)} className="cursor-pointer">
                       <td>
-                        {isReadOnly ? (
+                        {!canEditAsset ? (
                           <span className="flex items-center gap-1.5 whitespace-nowrap">
                             <span className="text-base leading-none">{deviceMeta.icon}</span>
                             <span className="text-xs text-dark-300">{deviceMeta.label}</span>
@@ -516,7 +515,7 @@ export default function InventoryPage() {
                       {showActions && (
                         <td className="actions-col">
                           <div className="flex items-center justify-end gap-1">
-                            {!isReadOnly && a.inMyAssets && (
+                            {canEditAsset && a.inMyAssets && (
                               <>
                                 <button onClick={stop(() => setEditingAsset(a))} className="p-1.5 hover:bg-eagle-500/10 rounded text-dark-400 hover:text-eagle-400 transition-colors" title="Edit asset" aria-label="Edit asset">
                                   <Pencil className="w-4 h-4" />
@@ -529,12 +528,12 @@ export default function InventoryPage() {
                                 </button>
                               </>
                             )}
-                            {!isReadOnly && !a.inMyAssets && (
+                            {canEditAsset && !a.inMyAssets && (
                               <button onClick={stop(() => handleAdopt(a))} className="px-2 py-1 hover:bg-green-500/10 rounded text-green-400 transition-colors flex items-center gap-1 text-xs font-medium" title="Adopt into My Assets" aria-label="Adopt into My Assets">
                                 <CheckCircle className="w-4 h-4" /> Adopt
                               </button>
                             )}
-                            {canDelete && !a.inMyAssets && (
+                            {canRemoveAsset && !a.inMyAssets && (
                               <button onClick={stop(() => handleDelete(a))} className="p-1.5 hover:bg-red-500/10 rounded text-dark-400 hover:text-red-400 transition-colors" title="Delete permanently" aria-label="Delete permanently">
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -564,7 +563,7 @@ export default function InventoryPage() {
                 <p className="text-lg font-medium mb-2">No assets in My Assets yet</p>
                 <p className="text-sm mb-4">Add assets by hand, import a CSV, or adopt them from Discovered.</p>
                 <div className="flex items-center justify-center gap-2">
-                  {!isReadOnly && (
+                  {canCreate && (
                     <button onClick={() => setShowAdd(true)} className="btn-primary text-sm flex items-center gap-2"><Plus className="w-4 h-4" /> Add Asset</button>
                   )}
                   <button onClick={() => changeScope('discovered')} className="btn-secondary text-sm">Go to Discovered</button>
@@ -591,8 +590,8 @@ export default function InventoryPage() {
       {showDuplicates && (
         <DuplicatesPanel
           tenantId={tenantFilter || undefined}
-          canMerge={user?.role === 'tenant_superadmin'}
-          canDismiss={!isReadOnly}
+          canMerge={can('asset.merge')}
+          canDismiss={can('asset.duplicate.dismiss')}
           onClose={() => setShowDuplicates(false)}
           onMerged={refreshAll}
         />

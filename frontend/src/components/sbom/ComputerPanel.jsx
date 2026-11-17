@@ -61,7 +61,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
             {computer.packages?.open ?? 0} vulnerable package{computer.packages?.open === 1 ? '' : 's'} ({computer.cves.open} CVEs) <ExternalLink className="w-3 h-3" />
           </Link>
         )}
-        {sbom && (
+        {sbom && onDownload && (
           <button onClick={() => onDownload(computer)} className="btn-secondary py-1 px-2.5 inline-flex items-center gap-1.5">
             <Download className="w-3 h-3" /> CycloneDX file
           </button>
@@ -69,7 +69,7 @@ export default function ComputerPanel({ computer, onClose, onDownload }) {
       </div>
 
       {!sbom ? (
-        <p className="text-sm text-dark-400">No SBOM yet. The agent builds one every day; an admin can also start one from the list.</p>
+        <p className="text-sm text-dark-400">No SBOM yet. The agent builds one every day; someone allowed to run SBOM scans can also start one from the list.</p>
       ) : (
         <>
           <dl className="grid grid-cols-2 gap-2 text-xs">

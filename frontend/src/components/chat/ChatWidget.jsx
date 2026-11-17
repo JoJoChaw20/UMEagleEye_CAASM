@@ -352,12 +352,12 @@ function ProposalCard({ proposal, onConfirm, canConfirm }) {
 
 // ── Quick buttons: ordinary questions, answered from the knowledge graph ──
 const QUICK = [
-  { label: 'Status',      icon: Activity,   q: 'What is the overall security status of my environment?', roles: null },
-  { label: 'Posture',     icon: BarChart2,  q: 'What is my security posture score and what drives it?', roles: null },
-  { label: 'Assets',      icon: Server,     q: 'Which of my assets are the most critical?', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
-  { label: 'Alerts',      icon: Bell,       q: 'Which critical and high severity alerts are open?', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
-  { label: 'Advisories',  icon: Shield,     q: 'Which advisories are still open?', roles: ['tenant_superadmin', 'tenant_admin', 'superadmin'] },
-  { label: 'Fix first',   icon: HelpCircle, q: 'What should I fix first?', roles: null },
+  { label: 'Status',      icon: Activity,   q: 'What is the overall security status of my environment?', action: null },
+  { label: 'Posture',     icon: BarChart2,  q: 'What is my security posture score and what drives it?', action: null },
+  { label: 'Assets',      icon: Server,     q: 'Which of my assets are the most critical?', action: 'asset.view' },
+  { label: 'Alerts',      icon: Bell,       q: 'Which critical and high severity alerts are open?', action: 'alert.view' },
+  { label: 'Advisories',  icon: Shield,     q: 'Which advisories are still open?', action: 'advisory.view' },
+  { label: 'Fix first',   icon: HelpCircle, q: 'What should I fix first?', action: null },
 ]
 
 // Reads the answer stream (server-sent events). Calls onUpdate with everything received so far.
@@ -501,9 +501,9 @@ function HeaderButton({ label, onClick, children, className = '' }) {
 // ── The assistant: a bubble in the bottom-right corner that opens a chat panel ──
 // Rendered once by MainLayout, so a chat (and an answer still streaming) survives page changes.
 export default function ChatWidget() {
-  const { user } = useAuth()
-  const isSuperadmin = user?.role === 'superadmin'
-  const canDebugAI   = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const { user, can, isPlatformSuperadmin: isSuperadmin } = useAuth()
+  // Confirming a proposal closes an advisory through POST /chatbot/confirm
+  const canDebugAI   = can('advisory.close_via_chat')
 
   // Sessions, streaming and open state live in ChatbotContext (they persist across page navigation)
   const {
@@ -704,7 +704,7 @@ export default function ChatWidget() {
 
   const selectSession = (id) => { setActiveId(id); setShowSessions(false) }
 
-  const visibleQuick = QUICK.filter(q => !q.roles || q.roles.includes(user?.role))
+  const visibleQuick = QUICK.filter(q => !q.action || can(q.action))
   const messages = activeSession.messages ?? []
   const sessionCount = Object.keys(sessions).length
   const title = activeSession.id === 'general' ? 'Security assistant' : activeSession.name

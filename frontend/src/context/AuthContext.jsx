@@ -118,7 +118,7 @@ export function AuthProvider({ children }) {
   }
 
   const value = useMemo(() => ({
-    user, token, loading, ready, login, verifyMFA, loginWithGoogle, logout, can, catalog, catalogError, retryCatalog, refreshUser,
+    user, token, loading, ready, isPlatformSuperadmin: user?.role === 'superadmin', login, verifyMFA, loginWithGoogle, logout, can, catalog, catalogError, retryCatalog, refreshUser,
   // login/verifyMFA/loginWithGoogle/logout only set state, so they are safe to leave out
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [user, token, loading, ready, can, catalog, catalogError, retryCatalog, refreshUser])

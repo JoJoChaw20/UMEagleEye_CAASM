@@ -60,8 +60,11 @@ function RowMenu({ items }) {
 }
 
 export default function SBOMPage() {
-  const { user } = useAuth()
-  const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const { can } = useAuth()
+  const canRunSbom = can('sbom.scan')
+  const canCancel = can('scan.cancel')
+  const canRemoveSbom = can('sbom.delete')
+  const canDownload = can('sbom.download')
   const { toast, show: showToast } = useToast()
   const [tab, setTab] = useState('computers')
   const [tenantFilter, setTenantFilter] = useState('')
@@ -270,21 +273,21 @@ export default function SBOMPage() {
                         </td>
                         <td onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1">
-                            {canManage && inProgress && c.job?.scan_id && (
+                            {canCancel && inProgress && c.job?.scan_id && (
                               <button onClick={() => cancel(c)} disabled={!!busy[c.asset_id]}
                                 className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-500/40 text-xs text-red-400 hover:bg-red-500/10 disabled:opacity-50">
                                 <XCircle className="w-3.5 h-3.5" /> Cancel
                               </button>
                             )}
-                            {canManage && !inProgress && c.agent && !c.sbom && (
+                            {canRunSbom && !inProgress && c.agent && !c.sbom && (
                               <button onClick={() => runNow(c)} disabled={!!busy[c.asset_id]} className="btn-secondary text-xs py-1 px-2.5 inline-flex items-center gap-1 disabled:opacity-50">
                                 <Play className="w-3.5 h-3.5" /> Run now
                               </button>
                             )}
                             <RowMenu items={[
-                              canManage && c.agent && c.sbom && { label: 'Run now', icon: Play, onClick: () => runNow(c), disabled: inProgress || !!busy[c.asset_id] },
-                              c.sbom && { label: 'Download file', icon: Download, onClick: () => download(c) },
-                              canManage && c.sbom && { label: 'Delete SBOM', icon: Trash2, onClick: () => remove(c), danger: true, disabled: inProgress },
+                              canRunSbom && c.agent && c.sbom && { label: 'Run now', icon: Play, onClick: () => runNow(c), disabled: inProgress || !!busy[c.asset_id] },
+                              canDownload && c.sbom && { label: 'Download file', icon: Download, onClick: () => download(c) },
+                              canRemoveSbom && c.sbom && { label: 'Delete SBOM', icon: Trash2, onClick: () => remove(c), danger: true, disabled: inProgress },
                             ]} />
                           </div>
                         </td>
@@ -298,7 +301,7 @@ export default function SBOMPage() {
         </div>
       )}
 
-      {selected && <ComputerPanel computer={selected} onClose={() => setSelected(null)} onDownload={download} />}
+      {selected && <ComputerPanel computer={selected} onClose={() => setSelected(null)} onDownload={canDownload ? download : undefined} />}
     </div>
   )
 }

@@ -256,7 +256,7 @@ function Modal({ title, onClose, children, wide = false }) {
 }
 
 export default function AgentsPage() {
-  const { user } = useAuth()
+  const { user, can, isPlatformSuperadmin: isSuperadmin } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const [agents, setAgents] = useState([])
   const [loading, setLoading] = useState(true)
@@ -279,8 +279,6 @@ export default function AgentsPage() {
     setSearchParams(next, { replace: true })
   }
 
-  const isSuperadmin = user?.role === 'superadmin'
-  const canManage = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
   const downloads = useDownloads()
 
   const load = useCallback(async () => {
@@ -474,20 +472,20 @@ export default function AgentsPage() {
       )}
 
       {tab === 'install' && (
-        <InstallTab downloads={downloads} canManage={canManage} isSuperadmin={isSuperadmin} onRegister={() => setShowRegister(true)} />
+        <InstallTab downloads={downloads} isSuperadmin={isSuperadmin} onRegister={() => setShowRegister(true)} />
       )}
 
       {tab === 'defaults' && (
         <div className="space-y-6">
           <AgentDefaultsCard tenantId={policyTenant} onSaved={load} />
           {/* Platform superadmin: the policy of the tenant picked in the filter */}
-          <ScanPolicyCard tenantId={policyTenant} canEdit={isSuperadmin || user?.role === 'tenant_superadmin'} />
+          <ScanPolicyCard tenantId={policyTenant} canEdit={can('settings.scan_policy.edit')} />
         </div>
       )}
 
       {opened && (
         <AgentPanel
-          agent={opened} tenantName={isSuperadmin ? tenantName(opened.tenant_id) : null} canManage={canManage}
+          agent={opened} tenantName={isSuperadmin ? tenantName(opened.tenant_id) : null}
           busy={busy === opened.agent_id} onClose={() => setOpenId(null)} onSaved={load}
           onRename={setRenaming} onRotate={rotate} onDelete={remove} onRunNow={runNow}
         />

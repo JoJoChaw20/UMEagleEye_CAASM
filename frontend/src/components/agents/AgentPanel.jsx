@@ -6,9 +6,12 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, KeyRound, Monitor, Pencil, Play, RefreshCw, Trash2, X } from 'lucide-react'
 import client from '../../api/client'
 import { GROUPS, PolicyInput, ROLES, SOURCE_LABEL, helpOf, invalid, labelOf, metaOf, same, show } from './policy'
+import { useAuth } from '../../context/AuthContext'
+import { requiresTitle } from '../../utils/actions'
 import { CopyButton, NetworkBadge, Seen, StatusBadge } from './parts'
 
-export default function AgentPanel({ agent, tenantName, canManage, busy, onClose, onSaved, onRename, onRotate, onDelete, onRunNow }) {
+export default function AgentPanel({ agent, tenantName, busy, onClose, onSaved, onRename, onRotate, onDelete, onRunNow }) {
+  const { can } = useAuth()
   const retired = agent.status === 'retired'
   const network = agent.kind === 'network'
   useEffect(() => {
@@ -70,26 +73,28 @@ export default function AgentPanel({ agent, tenantName, canManage, busy, onClose
             </dd>
           </dl>
 
-          {canManage && (
+          {(can('network.map.run') || can('agent.rename') || can('agent.key.rotate') || can('agent.remove')) && (
             <div className="flex flex-wrap gap-2">
-              {!retired && network && (
+              {!retired && network && can('network.map.run') && (
                 <button onClick={() => onRunNow(agent)} disabled={busy} className="btn-secondary text-sm inline-flex items-center gap-1.5" title="Read the network at the agent's next heartbeat">
                   <Play className="w-4 h-4" /> Run now
                 </button>
               )}
               {!retired && (
                 <>
-                  <button onClick={() => onRename(agent)} className="btn-secondary text-sm inline-flex items-center gap-1.5">
-                    <Pencil className="w-4 h-4" /> Rename
-                  </button>
-                  <button onClick={() => onRotate(agent)} disabled={busy} className="btn-secondary text-sm inline-flex items-center gap-1.5" title="Rotate the API key: the agent disconnects until the new code is pasted">
+                  {can('agent.rename') && (
+                    <button onClick={() => onRename(agent)} className="btn-secondary text-sm inline-flex items-center gap-1.5">
+                      <Pencil className="w-4 h-4" /> Rename
+                    </button>
+                  )}
+                  {can('agent.key.rotate') && <button onClick={() => onRotate(agent)} disabled={busy} className="btn-secondary text-sm inline-flex items-center gap-1.5" title="Rotate the API key: the agent disconnects until the new code is pasted">
                     <KeyRound className="w-4 h-4" /> New connection code
-                  </button>
+                  </button>}
                 </>
               )}
-              <button onClick={() => onDelete(agent)} disabled={busy} className="btn-secondary text-sm inline-flex items-center gap-1.5 hover:!text-red-400 hover:!border-red-500/40">
+              {can('agent.remove') && <button onClick={() => onDelete(agent)} disabled={busy} className="btn-secondary text-sm inline-flex items-center gap-1.5 hover:!text-red-400 hover:!border-red-500/40">
                 <Trash2 className="w-4 h-4" /> Delete
-              </button>
+              </button>}
             </div>
           )}
 
@@ -103,6 +108,9 @@ export default function AgentPanel({ agent, tenantName, canManage, busy, onClose
 }
 
 function AgentSettings({ agent, onSaved }) {
+  const { can, catalog } = useAuth()
+  const canAssignRoles = can('agent.roles.assign')
+  const canSightings = can('agent.sightings.enable')
   const [policy, setPolicy] = useState(null)
   const [draft, setDraft] = useState({})            // setting -> override (null = default)
   const [advanced, setAdvanced] = useState(false)
@@ -129,6 +137,10 @@ function AgentSettings({ agent, onSaved }) {
   const problems = (policy?.settings ?? []).filter((s) => invalid(s.spec, draft[s.key]))
   const roles = ROLES.filter((r) => r.key in (policy?.roles ?? {}))   // a network agent has only Collector
   const canEdit = !!policy?.can_edit
+  // A setting that switches a role needs "Assign agent roles"; sightings needs its own action.
+  const roleKeys = new Set(Object.values(policy?.role_settings ?? {}).flat())
+  const lockOf = (key) => (key === 'sightings' && !canSightings ? 'agent.sightings.enable'
+    : roleKeys.has(key) && !canAssignRoles ? 'agent.roles.assign' : null)
 
   // A setting with the draft: this agent's value, else what it inherits (tenant or built-in default).
   const valueOf = (s) => draft[s.key] ?? s.inherited
@@ -163,7 +175,7 @@ function AgentSettings({ agent, onSaved }) {
       <div>
         <h3 className="text-sm font-semibold text-dark-50">Settings</h3>
         <p className="text-xs text-dark-400 mt-0.5">
-          {canEdit ? 'Leave a setting at its default to follow the tenant default (Defaults tab).' : 'Only a tenant superadmin or admin can change these.'}
+          {canEdit ? 'Leave a setting at its default to follow the tenant default (Defaults tab).' : 'Requires the "Change agent settings" action.'}
           {inSync === false && ' The agent applies the latest change at its next heartbeat.'}
           {policy.applied_version === null && ' This agent is older than 2.4.0 and does not apply these; the server still refuses jobs they rule out.'}
         </p>
@@ -203,7 +215,7 @@ function AgentSettings({ agent, onSaved }) {
           const on = roleOn(r.key)
           return (
             <button
-              key={r.key} type="button" role="switch" aria-checked={on} title={r.help} disabled={!canEdit || saving}
+              key={r.key} type="button" role="switch" aria-checked={on} title={canAssignRoles ? r.help : requiresTitle('agent.roles.assign', catalog)} disabled={!canEdit || !canAssignRoles || saving}
               onClick={() => setRole(r.key, !on)}
               className={`px-3 py-1.5 rounded-full text-xs border transition-colors disabled:cursor-default ${on
                 ? 'border-eagle-500/40 bg-eagle-500/15 text-eagle-300' : 'border-dark-600/60 text-dark-400 hover:text-dark-200'}`}
@@ -230,8 +242,10 @@ function AgentSettings({ agent, onSaved }) {
                       <label htmlFor={`policy-${m.key}`} className="text-sm text-dark-50">{labelOf(m, agent.kind)}</label>
                       {helpOf(m, agent.kind) && <p className="text-xs text-dark-400">{helpOf(m, agent.kind)}</p>}
                     </div>
-                    <PolicyInput key={`${m.key}-${rev}`} meta={m} spec={s.spec} value={draft[s.key] ?? null} disabled={!canEdit || saving}
-                      fallback={fallback(s)} onChange={(v) => setDraft((d) => ({ ...d, [s.key]: v }))} />
+                    <span title={lockOf(m.key) ? requiresTitle(lockOf(m.key), catalog) : undefined}>
+                      <PolicyInput key={`${m.key}-${rev}`} meta={m} spec={s.spec} value={draft[s.key] ?? null} disabled={!canEdit || !!lockOf(m.key) || saving}
+                        fallback={fallback(s)} onChange={(v) => setDraft((d) => ({ ...d, [s.key]: v }))} />
+                    </span>
                   </div>
                   {/* the input shows the value and where it comes from; after a change, what it was */}
                   {!same(draft[s.key], s.override) && (

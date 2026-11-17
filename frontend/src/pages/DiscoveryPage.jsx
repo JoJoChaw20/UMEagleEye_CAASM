@@ -82,7 +82,7 @@ function Coverage({ n, agentName }) {
   )
 }
 
-function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
+function NetworkCard({ n, agentName, canRunScan, onScan, onHosts, onHistory }) {
   // Listening now: heard lately AND a listening agent is checking in on time (its last upload can
   // be minutes old while the agent itself has stopped)
   const heardLately = n.last_heard_at && (Date.now() - new Date(n.last_heard_at).getTime()) < QUIET_MINUTES * 60000
@@ -141,7 +141,7 @@ function NetworkCard({ n, agentName, canScan, onScan, onHosts, onHistory }) {
       <div className="flex flex-wrap gap-2 justify-end">
         <button onClick={onHistory} className="btn-secondary text-xs py-1 px-2.5">Scan history</button>
         {n.last_heard_scan_id && <button onClick={onHosts} className="btn-secondary text-xs py-1 px-2.5">Latest hosts</button>}
-        {canScan && (
+        {canRunScan && (
           <button onClick={onScan} className="btn-primary text-xs py-1 px-2.5 inline-flex items-center gap-1.5">
             <Wifi className="w-3.5 h-3.5" /> Scan this network
           </button>
@@ -155,7 +155,7 @@ const routerCount = (n) => `${n} router${n === 1 ? '' : 's'} and switch${n === 1
 
 // One network agent: its crawls once, with the networks they reached. A network a computer
 // agent is also on keeps its own card (named here); the others are rows in this card.
-function CrawlCard({ c, netsBySubnet, agentName, canScan, onScan, onHosts, onHistory }) {
+function CrawlCard({ c, netsBySubnet, agentName, canRunScan, onScan, onHosts, onHistory }) {
   const reached = c.subnets.map((s) => netsBySubnet.get(s.subnet)
     ?? { subnet: s.subnet, gateway: s.gateway, hosts_24h: 0, new_devices: 0, last_full_scan: null, crawl_only: true })
   const rows = reached.filter((n) => n.crawl_only)
@@ -207,7 +207,7 @@ function CrawlCard({ c, netsBySubnet, agentName, canScan, onScan, onHosts, onHis
                     {n.last_full_scan ? <>{ago(n.last_full_scan.at)} · {n.last_full_scan.hosts} hosts</> : 'Never'}
                   </td>
                   <td>
-                    {canScan && (
+                    {canRunScan && (
                       <button onClick={() => onScan(n.subnet)} title="A full scan by a computer agent that can reach this network"
                         className="btn-secondary text-xs py-1 px-2.5 inline-flex items-center gap-1.5 whitespace-nowrap">
                         <Wifi className="w-3.5 h-3.5" /> Scan
@@ -235,9 +235,8 @@ function CrawlCard({ c, netsBySubnet, agentName, canScan, onScan, onHosts, onHis
 }
 
 export default function DiscoveryPage() {
-  const { user } = useAuth()
-  const isSuperadmin = user?.role === 'superadmin'
-  const canScan = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const { can, isPlatformSuperadmin: isSuperadmin } = useAuth()
+  const canRunScan = can('scan.active.run') || can('scan.passive.run')
   const { toast, show: showToast } = useToast()
   const [tab, setTab] = useState('networks')
   const [tenantFilter, setTenantFilter] = useState('')
@@ -304,9 +303,9 @@ export default function DiscoveryPage() {
 
   const agentName = useCallback((id) => agents.find((a) => a.agent_id === id)?.name ?? (id ? `${id.slice(0, 8)}…` : '—'), [agents])
 
-  const startScan = async ({ subnet, agent_id }) => {
-    await client.post('/scans/active', { subnet, agent_id, scan_type: 'active' })
-    showToast(`Full scan of ${subnet} queued`, 'success')
+  const startScan = async ({ subnet, agent_id, scan_type = 'active' }) => {
+    await client.post('/scans/active', { subnet, agent_id, scan_type })
+    showToast(`${scan_type === 'passive' ? 'Passive scan' : 'Full scan'} of ${subnet} queued`, 'success')
     setKind(''); setStatus(''); setNetworkFilter(''); setPage(1)
     setTab('history')
   }
@@ -336,7 +335,7 @@ export default function DiscoveryPage() {
           <button onClick={load} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
-          {canScan && (
+          {canRunScan && (
             <button onClick={() => setNewScan({})} className="btn-primary flex items-center gap-2 text-sm">
               <Plus className="w-4 h-4" /> New scan
             </button>
@@ -365,13 +364,13 @@ export default function DiscoveryPage() {
               {neverScanned > 0 && <span className="text-amber-400"> {neverScanned} never had a full scan.</span>}
             </p>
             {ownNetworks.map((n) => (
-              <NetworkCard key={n.subnet} n={n} agentName={agentName} canScan={canScan}
+              <NetworkCard key={n.subnet} n={n} agentName={agentName} canRunScan={canRunScan}
                 onScan={() => setNewScan({ subnet: n.subnet, agentId: 'auto' })}
                 onHosts={() => setHostsOf({ scanId: n.last_heard_scan_id, agentName: agentName(n.latest_agent_id) })}
                 onHistory={() => showHistory(n.subnet)} />
             ))}
             {crawls.map((c) => (
-              <CrawlCard key={c.agent_id ?? 'unknown'} c={c} netsBySubnet={netsBySubnet} agentName={agentName} canScan={canScan}
+              <CrawlCard key={c.agent_id ?? 'unknown'} c={c} netsBySubnet={netsBySubnet} agentName={agentName} canRunScan={canRunScan}
                 onScan={(subnet) => setNewScan({ subnet, agentId: 'auto' })}
                 onHosts={() => setHostsOf({ scanId: c.last_crawl.scan_id, agentName: agentName(c.agent_id) })}
                 onHistory={showCrawls} />
@@ -467,7 +466,7 @@ export default function DiscoveryPage() {
 
 
       {hostsOf && (
-        <HostsPanel scanId={hostsOf.scanId} agentName={hostsOf.agentName} canAdopt={!isSuperadmin && user?.role !== 'business_owner'}
+        <HostsPanel scanId={hostsOf.scanId} agentName={hostsOf.agentName} canAdopt={can('asset.edit')}
           onClose={() => setHostsOf(null)} />
       )}
       {newScan && (

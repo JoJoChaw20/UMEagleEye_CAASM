@@ -16,10 +16,11 @@ const REPORT_TYPES = [
 // The PDF itself (storyline and layout): utils/reportPdf.js
 
 export default function ReportsPage() {
-  const { user } = useAuth()
-  const isSuperadmin = user?.role === 'superadmin'
-  const isBusinessOwner = user?.role === 'business_owner'
-  const canDeleteReports = ['tenant_superadmin', 'tenant_admin'].includes(user?.role)
+  const { can } = useAuth()
+  const canSnapshot = can('report.snapshot')
+  const canGenerate = can('report.generate')
+  const canDownload = can('report.download')
+  const canRemoveReports = can('report.delete')
   const [reports,     setReports]     = useState([])
   const [tenantFilter, setTenantFilter] = useState('')
   const [listLoading, setListLoading] = useState(true)
@@ -106,12 +107,12 @@ export default function ReportsPage() {
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           <TenantSelector value={tenantFilter} onChange={setTenantFilter} />
-          {!isSuperadmin && !isBusinessOwner && (
+          {canSnapshot && (
             <button onClick={triggerSnapshot} className="btn-secondary flex items-center gap-2 text-sm">
               <Clock className="w-4 h-4" /> Snapshot Now
             </button>
           )}
-          {!isSuperadmin && !isBusinessOwner && (
+          {canGenerate && (
             <div className="flex items-stretch">
               <div className="relative">
                 <select value={reportType} onChange={e => setReportType(e.target.value)}
@@ -149,12 +150,14 @@ export default function ReportsPage() {
                   <td className="text-dark-400 text-xs">{r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td>
                   <td>
                     <div className="flex items-center gap-2">
-                      <button onClick={() => downloadReport(r.filename)} disabled={downloading===r.filename}
-                        className="btn-secondary text-xs flex items-center gap-1 py-1 px-2">
-                        {downloading===r.filename ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                        Download
-                      </button>
-                      {canDeleteReports && (
+                      {canDownload && (
+                        <button onClick={() => downloadReport(r.filename)} disabled={downloading===r.filename}
+                          className="btn-secondary text-xs flex items-center gap-1 py-1 px-2">
+                          {downloading===r.filename ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                          Download
+                        </button>
+                      )}
+                      {canRemoveReports && (
                         <button onClick={() => deleteReport(r.filename)} disabled={deleting===r.filename}
                           className="text-xs flex items-center gap-1 py-1 px-2 rounded border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50">
                           {deleting===r.filename ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
@@ -171,7 +174,7 @@ export default function ReportsPage() {
           <div className="text-center py-20 text-dark-400">
             <FileText className="w-16 h-16 mx-auto mb-4 opacity-20" />
             <p className="text-lg font-medium mb-2">No reports yet</p>
-            {!isSuperadmin && !isBusinessOwner && (
+            {canGenerate && (
               <>
                 <p className="text-sm mb-4">Select a report type and click Generate PDF</p>
                 <button onClick={generateReport} disabled={generating} className="btn-primary">

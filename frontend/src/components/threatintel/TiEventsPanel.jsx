@@ -6,6 +6,7 @@ import {
   Plus, ArrowLeft, Pencil, Trash2, Send, Undo2, Shield, AlertTriangle, X, Tag, Crosshair, Bug, ExternalLink,
 } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
 import { softwareFor, softwareUrl, techniqueUrl, useAttackCatalog } from './attackCatalog'
 import { alertLabel, SevBadge } from '../common/alertMeta'
 
@@ -33,7 +34,6 @@ const IOC_LIKE = [
   /^([a-z0-9-]+\.)+[a-z]{2,}$/i,
 ]
 const looksLikeIoc = (tag) => IOC_LIKE.some(re => re.test(tag.trim()))
-const WRITE_ROLES = ['superadmin', 'tenant_superadmin', 'tenant_admin']
 
 const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : '—')
 const Badge = ({ cls, children, title }) => (
@@ -94,13 +94,12 @@ function TechniquePicker({ cat, value, onChange }) {
 }
 
 // ── Create / edit dialog ──────────────────────────────────────
-function EventDialog({ user, initial, onClose, onSaved }) {
-  const isSuperadmin = user?.role === 'superadmin'
+function EventDialog({ initial, onClose, onSaved }) {
   const [form, setForm] = useState({
     title: initial?.title ?? '',
     description: initial?.description ?? '',
     threat_level: initial?.threat_level ?? 'medium',
-    distribution: initial?.distribution ?? (isSuperadmin ? 'platform' : 'organisation'),
+    distribution: initial?.distribution ?? 'organisation',
     tags: (initial?.tags ?? []).join(', '),
     malware_family: initial?.malware_family ?? '',
   })
@@ -176,18 +175,12 @@ function EventDialog({ user, initial, onClose, onSaved }) {
             </select>
           </label>
           <label className="block text-sm text-dark-300">Shared with
-            {isSuperadmin ? (
-              <p className="input-field w-full mt-1 text-dark-200">Every tenant (platform event)</p>
-            ) : (
-              <>
-                <select value={form.distribution} onChange={set('distribution')} className="input-field w-full mt-1">
-                  <option value="organisation">Only our organisation</option>
-                  <option value="all_tenants">All tenants</option>
-                </select>
-                {form.distribution === 'all_tenants' && (
-                  <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts only in your organisation.</span>
-                )}
-              </>
+            <select value={form.distribution} onChange={set('distribution')} className="input-field w-full mt-1">
+              <option value="organisation">Only our organisation</option>
+              <option value="all_tenants">All tenants</option>
+            </select>
+            {form.distribution === 'all_tenants' && (
+              <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts only in your organisation.</span>
             )}
           </label>
         </div>
@@ -308,7 +301,8 @@ function AddAttributes({ eventId, onAdded, showToast }) {
 }
 
 // ── One event ─────────────────────────────────────────────────
-function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
+function EventDetail({ eventId, onBack, onChanged, showToast }) {
+  const { can } = useAuth()
   const [ev, setEv] = useState(null)
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -383,13 +377,13 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
               ))}
             </div>
           </div>
-          {ev.can_edit && (
+          {ev.can_edit && (can('ti_event.edit') || can('ti_event.publish') || can('ti_event.delete')) && (
             <div className="flex items-center gap-2 flex-wrap">
-              <button onClick={() => setEditing(true)} disabled={busy} className="btn-secondary text-sm flex items-center gap-2"><Pencil className="w-4 h-4" /> Edit</button>
-              <button onClick={publish} disabled={busy} className={`${ev.status === 'published' ? 'btn-secondary' : 'btn-primary'} text-sm flex items-center gap-2`}>
+              {can('ti_event.edit') && <button onClick={() => setEditing(true)} disabled={busy} className="btn-secondary text-sm flex items-center gap-2"><Pencil className="w-4 h-4" /> Edit</button>}
+              {can('ti_event.publish') && <button onClick={publish} disabled={busy} className={`${ev.status === 'published' ? 'btn-secondary' : 'btn-primary'} text-sm flex items-center gap-2`}>
                 {ev.status === 'published' ? <><Undo2 className="w-4 h-4" /> Unpublish</> : <><Send className="w-4 h-4" /> Publish</>}
-              </button>
-              <button onClick={remove} disabled={busy} className="btn-secondary text-sm flex items-center gap-2 hover:text-red-400"><Trash2 className="w-4 h-4" /> Delete</button>
+              </button>}
+              {can('ti_event.delete') && <button onClick={remove} disabled={busy} className="btn-secondary text-sm flex items-center gap-2 hover:text-red-400"><Trash2 className="w-4 h-4" /> Delete</button>}
             </div>
           )}
         </div>
@@ -451,7 +445,7 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
         </div>
       )}
 
-      {ev.can_edit && <AddAttributes eventId={ev.event_id} showToast={showToast} onAdded={() => { load(); onChanged() }} />}
+      {ev.can_edit && can('ti_event.edit') && <AddAttributes eventId={ev.event_id} showToast={showToast} onAdded={() => { load(); onChanged() }} />}
 
       <div className="glass-card overflow-hidden">
         <div className="p-4 border-b border-dark-700/50">
@@ -506,7 +500,7 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
       </div>
 
       {editing && (
-        <EventDialog user={user} initial={ev} onClose={() => setEditing(false)}
+        <EventDialog initial={ev} onClose={() => setEditing(false)}
           onSaved={(saved, added) => {
             setEditing(false)
             showToast(added?.error ? `Saved, but ${added.error}.` : added ? `Saved. ${added.added} indicator(s) added.` : saved.alerts_updated ? `Saved. ${saved.alerts_updated} alert(s) updated.` : 'Saved.',
@@ -519,8 +513,9 @@ function EventDetail({ user, eventId, onBack, onChanged, showToast }) {
 }
 
 // ── Panel: list ↔ detail ──────────────────────────────────────
-export default function TiEventsPanel({ user, showToast }) {
-  const canWrite = WRITE_ROLES.includes(user?.role)
+export default function TiEventsPanel({ showToast }) {
+  const { can, isPlatformSuperadmin } = useAuth()
+  const canCreate = can('ti_event.create')
   const [events, setEvents] = useState(null)
   const [filter, setFilter] = useState('all')       // all | ours | shared | drafts
   const [openId, setOpenId] = useState(null)
@@ -539,10 +534,10 @@ export default function TiEventsPanel({ user, showToast }) {
   useEffect(() => { load() }, [load])
 
   if (openId) {
-    return <EventDetail user={user} eventId={openId} onBack={() => setOpenId(null)} onChanged={load} showToast={showToast} />
+    return <EventDetail eventId={openId} onBack={() => setOpenId(null)} onChanged={load} showToast={showToast} />
   }
 
-  const isMine = (e) => e.own || (user?.role === 'superadmin' && !e.tenant_id)
+  const isMine = (e) => e.own || (isPlatformSuperadmin && !e.tenant_id)
   const shown = (events || []).filter(e =>
     filter === 'ours' ? isMine(e) : filter === 'shared' ? !isMine(e) : filter === 'drafts' ? e.status === 'draft' : true)
 
@@ -557,7 +552,7 @@ export default function TiEventsPanel({ user, showToast }) {
             </button>
           ))}
         </div>
-        {canWrite && (
+        {canCreate && (
           <button onClick={() => setCreating(true)} className="btn-primary text-sm flex items-center gap-2">
             <Plus className="w-4 h-4" /> New event
           </button>
@@ -572,7 +567,7 @@ export default function TiEventsPanel({ user, showToast }) {
             <Shield className="w-12 h-12 mx-auto mb-3 opacity-20" />
             <p className="font-medium">No events here yet</p>
             <p className="text-sm mt-1">
-              {canWrite ? 'Create one to record a campaign’s indicators (IPs, domains, hashes, CVEs) and share it.' : 'Your analysts have not published any yet.'}
+              {canCreate ? 'Create one to record a campaign’s indicators (IPs, domains, hashes, CVEs) and share it.' : 'Your analysts have not published any yet.'}
             </p>
           </div>
         ) : (
@@ -601,7 +596,7 @@ export default function TiEventsPanel({ user, showToast }) {
       </div>
 
       {creating && (
-        <EventDialog user={user} onClose={() => setCreating(false)}
+        <EventDialog onClose={() => setCreating(false)}
           onSaved={(saved, added) => {
             setCreating(false)
             showToast(added?.error ? `Draft created, but ${added.error}.` : added ? `Draft created with ${added.added} indicator(s). Publish it to use them.` : 'Draft created. Add indicators, then publish.',

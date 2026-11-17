@@ -5,6 +5,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Monitor, Network, Smartphone } from 'lucide-react'
 import client from '../../api/client'
+import { useAuth } from '../../context/AuthContext'
+import { requiresTitle } from '../../utils/actions'
 import { GROUPS, PolicyInput, helpOf, invalid, labelOf, same, show } from './policy'
 
 const KINDS = [
@@ -17,6 +19,7 @@ const KINDS = [
 const slot = (kind, key) => `${kind}.${key}`
 
 export default function AgentDefaultsCard({ tenantId, onSaved }) {
+  const { can, catalog } = useAuth()
   const [data, setData] = useState(null)
   const [draft, setDraft] = useState({})
   const [advanced, setAdvanced] = useState(false)
@@ -44,7 +47,10 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
   if (!data) return null
   const changed = all.filter((s) => !same(draft[slot(s.kind, s.key)], s.value))
   const problems = all.filter((s) => invalid(s.spec, draft[slot(s.kind, s.key)]))
-  const canEdit = data.can_edit
+  const canEdit = data.can_edit && can('settings.agent_defaults.edit')
+  const roleKeys = new Set(Object.values(data.role_settings ?? {}).flat())
+  const lockOf = (key) => (key === 'sightings' && !can('agent.sightings.enable') ? 'agent.sightings.enable'
+    : roleKeys.has(key) && !can('agent.roles.assign') ? 'agent.roles.assign' : null)
 
   const save = async () => {
     setSaving(true); setError(null)
@@ -71,11 +77,13 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
           {helpOf(m, kind) && <p className="text-xs text-dark-400">{helpOf(m, kind)}</p>}
           {problem && <p className="text-[11px] text-red-400">Must be {problem}</p>}
         </div>
-        <PolicyInput
-          key={`${id}-${rev}`} id={`policy-${id}`} meta={m} spec={s.spec} value={draft[id] ?? null} disabled={!canEdit || saving}
-          fallback={`Default: ${show(m, s.spec, s.builtin)}`}
-          onChange={(v) => setDraft((d) => ({ ...d, [id]: v }))}
-        />
+        <span title={lockOf(m.key) ? requiresTitle(lockOf(m.key), catalog) : undefined}>
+          <PolicyInput
+            key={`${id}-${rev}`} id={`policy-${id}`} meta={m} spec={s.spec} value={draft[id] ?? null} disabled={!canEdit || !!lockOf(m.key) || saving}
+            fallback={`Default: ${show(m, s.spec, s.builtin)}`}
+            onChange={(v) => setDraft((d) => ({ ...d, [id]: v }))}
+          />
+        </span>
       </div>
     )
   }
@@ -87,7 +95,7 @@ export default function AgentDefaultsCard({ tenantId, onSaved }) {
         <p className="text-xs text-dark-400 mt-0.5 max-w-3xl">
           {canEdit
             ? 'For every agent of that kind in this tenant without a setting of its own (set in its panel on the Agents tab). Agents apply a change within a minute, between jobs.'
-            : 'Only the tenant superadmin can change these.'}
+            : 'Requires the "Change default agent settings" action.'}
         </p>
       </div>
       {error && (

@@ -10,7 +10,7 @@ import AdvisoryBody from '../components/common/AdvisoryBody'
 const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved']
 
 export default function AdvisoriesPage() {
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const { openAdvisoryChat } = useChatbot()
   const navigate = useNavigate()
   const location = useLocation()
@@ -20,8 +20,7 @@ export default function AdvisoriesPage() {
   const [selectedAdvisory, setSelectedAdvisory] = useState(null)
   const [statusFilter, setStatusFilter] = useState(() => STATUS_OPTIONS.includes(searchParams.get('status')) ? searchParams.get('status') : 'all')
   const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
-  const isSuperadmin = user?.role === 'superadmin'
-  const canManageAdvisories = user?.role === 'tenant_superadmin' || user?.role === 'tenant_admin'
+  const canUpdateAdvisory = can('advisory.update')
 
   // Auto-open advisory when navigated from a notification
   useEffect(() => {
@@ -211,7 +210,7 @@ export default function AdvisoriesPage() {
 
               <div className="flex gap-3 flex-wrap">
                 <button onClick={() => setSelectedAdvisory(null)} className="btn-secondary">Close</button>
-                {!isSuperadmin && (
+                {can('chatbot.use') && (
                   <button
                     onClick={() => {
                       openAdvisoryChat(selectedAdvisory)
@@ -223,7 +222,7 @@ export default function AdvisoriesPage() {
                     Debug with AI
                   </button>
                 )}
-                {canManageAdvisories && selectedAdvisory.status === 'open' && (
+                {canUpdateAdvisory && selectedAdvisory.status === 'open' && (
                   <button
                     onClick={() => handleAssignToMe(selectedAdvisory.advisoryId)}
                     className="btn-primary flex items-center gap-2 bg-eagle-600 hover:bg-eagle-500 text-on-brand"
@@ -232,7 +231,7 @@ export default function AdvisoriesPage() {
                     Assign to Me
                   </button>
                 )}
-                {canManageAdvisories && !['open', 'resolved'].includes(selectedAdvisory.status) && (
+                {canUpdateAdvisory && !['open', 'resolved'].includes(selectedAdvisory.status) && (
                   <button
                     onClick={() => handleStatus(selectedAdvisory.advisoryId, 'resolved')}
                     className="btn-primary flex items-center gap-2"

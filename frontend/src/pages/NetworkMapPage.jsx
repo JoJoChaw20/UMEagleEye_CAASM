@@ -37,9 +37,8 @@ function useMap(tenantId, enabled) {
 const has = (q) => (v) => v && String(v).toLowerCase().includes(q)
 
 export default function NetworkMapPage() {
-  const { user } = useAuth()
-  const isSuperadmin = user?.role === 'superadmin'
-  const canInfer = user?.role === 'tenant_superadmin' || user?.role === 'tenant_admin'
+  const { can, isPlatformSuperadmin: isSuperadmin } = useAuth()
+  const canInfer = can('relationship.manage')
   const [tenantId, setTenantId] = useState('')
   const { data, error, loading, load } = useMap(tenantId, !isSuperadmin || !!tenantId)
   const [searchParams, setSearchParams] = useSearchParams()

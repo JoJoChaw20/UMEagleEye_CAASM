@@ -64,11 +64,9 @@ const OS_FIELDS = [
 export default function AssetDetailPage() {
   const { assetId } = useParams()
   const navigate = useNavigate()
-  const { user } = useAuth()
-  const isSuperadmin = user?.role === 'superadmin'
-  const isBusinessOwner = user?.role === 'business_owner'
-  const isReadOnly = isSuperadmin || isBusinessOwner
-  const canDelete = user?.role === 'tenant_superadmin'
+  const { can } = useAuth()
+  const canEditAsset = can('asset.edit')
+  const canViewGraph = can('relationship.view')
 
   const [asset, setAsset] = useState(null)
   const [status, setStatus] = useState('loading')   // loading | ready | notfound | error
@@ -118,18 +116,18 @@ export default function AssetDetailPage() {
     client.get(`/assets/${assetId}/inventory-job-status`).then(({ data }) => {
       if (data.status === 'pending' || data.status === 'running') setInvJob((cur) => cur ?? { status: data.status })
     }).catch(() => {})
-    if (!isBusinessOwner) {
+    if (canViewGraph) {
       client.get(`/relationships/graph/${assetId}`).then((r) => setGraph(r.data)).catch(() => setGraph({ nodes: [], edges: [] }))
     }
-  }, [assetId, isBusinessOwner])
+  }, [assetId, canViewGraph])
 
   // Duplicates are tenant-wide; scope to the asset's tenant (matters for superadmin).
   const tenantId = asset?.tenantId
   useEffect(() => {
-    if (isBusinessOwner || !tenantId) return
+    if (!tenantId) return
     client.get('/assets/duplicates', { params: { tenant_id: tenantId } })
       .then((r) => setDupGroups(r.data.groups || [])).catch(() => setDupGroups([]))
-  }, [tenantId, isBusinessOwner, asset?.updatedAt])
+  }, [tenantId, asset?.updatedAt])
 
   useEffect(() => {
     // Same component is reused when navigating between assets, so close any open
@@ -370,39 +368,39 @@ export default function AssetDetailPage() {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {!isBusinessOwner && (
+            {canViewGraph && (
               <button onClick={() => setShowBlast(true)} className="btn-secondary text-sm flex items-center gap-2">
                 <Zap className="w-4 h-4 text-yellow-400" /> Blast radius
               </button>
             )}
-            {!isReadOnly && asset.inMyAssets && (
+            {canEditAsset && asset.inMyAssets && (
               <>
                 <button onClick={() => setEditing(true)} className="btn-secondary text-sm flex items-center gap-2"><Pencil className="w-4 h-4" /> Edit</button>
                 <button onClick={handleBaseline} className="btn-secondary text-sm flex items-center gap-2"><Bookmark className="w-4 h-4" /> Set baseline</button>
                 <button onClick={handleRemove} className="btn-secondary text-sm flex items-center gap-2"><MinusCircle className="w-4 h-4" /> Move to Discovered</button>
               </>
             )}
-            {!isReadOnly && !asset.inMyAssets && (
+            {canEditAsset && !asset.inMyAssets && (
               <button onClick={handleAdopt} className="btn-primary text-sm flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Adopt into My Assets</button>
             )}
-            {!isReadOnly && inv && (
+            {can('asset.inventory.collect') && inv && (
               <button onClick={handleCollectInventory} disabled={invActive} className="btn-secondary text-sm flex items-center gap-2"
                 title={invActive ? 'Waiting for the agent on this computer to send its inventory' : 'Ask the EagleEye agent on this computer for a fresh inventory now'}>
                 <ClipboardList className={`w-4 h-4 ${invActive ? 'animate-pulse' : ''}`} /> {invActive ? 'Collecting inventory…' : 'Collect inventory'}
               </button>
             )}
-            {!isReadOnly && inv && !phone && (
+            {can('sbom.scan') && inv && !phone && (
               <button onClick={handleRunSbom} disabled={sbomActive} className="btn-secondary text-sm flex items-center gap-2"
                 title={sbomActive ? sbomBusyText(sbomScan?.mode) : 'The EagleEye agent on this computer lists its packages and checks them for CVEs'}>
                 <Package className={`w-4 h-4 ${sbomActive ? 'animate-pulse' : ''}`} /> {sbomActive ? 'SBOM scan running…' : 'Run SBOM scan'}
               </button>
             )}
-            {!isReadOnly && (asset.endpointInventory || software?.items?.length > 0) && (
+            {can('asset.inventory.clear') && (asset.endpointInventory || software?.items?.length > 0) && (
               <button onClick={handleClearInventory} className="btn-secondary text-sm flex items-center gap-2" title="Remove the inventory the agent reported for this machine">
                 <Eraser className="w-4 h-4" /> Clear inventory
               </button>
             )}
-            {canDelete && (
+            {can('asset.delete') && (
               <button onClick={handleDelete} className="btn-secondary text-sm flex items-center gap-2 hover:text-red-400" title="Delete permanently">
                 <Trash2 className="w-4 h-4" /> Delete
               </button>
@@ -471,11 +469,11 @@ export default function AssetDetailPage() {
             <Field label="Vendor">{asset.hardwareVendor}</Field>
             <NetworkLocationField location={asset.networkLocation} />
             <Field label="Device type">
-              {isReadOnly
+              {!canEditAsset
                 ? deviceMeta.label
                 : <DeviceTypePicker asset={asset} onChanged={async () => { setNotice('Device type updated.'); await refresh() }} />}
               <span className="block text-[11px] text-dark-400">{typeSourceText(asset)}</span>
-              <TypeSuggestion asset={asset} canConfirm={!isReadOnly} onConfirm={handleConfirmType} />
+              <TypeSuggestion asset={asset} canConfirm={canEditAsset} onConfirm={handleConfirmType} />
             </Field>
             <Field label="Owner">{asset.owner}</Field>
             <Field label="Host key">{asset.hostKey}</Field>
@@ -587,7 +585,7 @@ export default function AssetDetailPage() {
         </Section>
 
         {/* Relationships */}
-        {!isBusinessOwner && (
+        {canViewGraph && (
           <Section icon={GitBranch} title="Relationships" className="xl:col-span-2"
             right={graph && <span className="text-xs text-dark-400">{neighbors.length} connected</span>}>
             {!graph ? <Empty>Loading…</Empty> : neighbors.length ? (
@@ -610,7 +608,7 @@ export default function AssetDetailPage() {
         )}
 
         {/* Address history */}
-        <Section icon={History} title="Address history" className={isBusinessOwner ? 'xl:col-span-3' : ''}>
+        <Section icon={History} title="Address history" className={!canViewGraph ? 'xl:col-span-3' : ''}>
           {!addresses ? <Empty>Loading…</Empty> : addresses.length ? (
             <ul className="divide-y divide-dark-700/40">
               {addresses.map((r) => (
@@ -654,8 +652,8 @@ export default function AssetDetailPage() {
         <DuplicatesPanel
           tenantId={asset.tenantId ?? ''}
           centered
-          canMerge={user?.role === 'tenant_superadmin'}
-          canDismiss={!isReadOnly}
+          canMerge={can('asset.merge')}
+          canDismiss={can('asset.duplicate.dismiss')}
           onClose={() => setShowDuplicates(false)}
           onMerged={refresh}
         />

@@ -8,7 +8,7 @@ import client from '../../api/client'
 // Styling follows the existing dark-theme component patterns.
 // centered: vertically centre the panel (auto margins fall back to top-aligned
 // scrolling when the panel is taller than the viewport).
-// canMerge: tenant superadmin (merging deletes rows); canDismiss: anyone who can edit.
+// canMerge: asset.merge (merging deletes rows); canDismiss: asset.duplicate.dismiss.
 export default function DuplicatesPanel({ tenantId, canMerge, canDismiss = canMerge, onClose, onMerged, centered = false }) {
   const [groups, setGroups] = useState([])
   const [dismissed, setDismissed] = useState([])

@@ -38,3 +38,9 @@ const ROLE_LABELS = {
 export function roleLabel(role) {
   return ROLE_LABELS[role] || (role ? role.replace(/_/g, ' ') : '')
 }
+
+/** Tooltip for a control the user may not use: names the missing action by its catalog label. */
+export function requiresTitle(key, catalog) {
+  const label = (catalog?.actions || []).find((a) => a.key === key)?.label || key
+  return `Requires the "${label}" action.`
+}
