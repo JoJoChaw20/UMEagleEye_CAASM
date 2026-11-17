@@ -253,6 +253,13 @@
       "when": 1794912409156,
       "tag": "0035_action_based_access",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794932286689,
+      "tag": "0036_drop_legacy_roles",
+      "breakpoints": true
     }
   ]
 }

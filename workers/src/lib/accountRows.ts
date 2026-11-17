@@ -1,7 +1,7 @@
-// How the routes read a stored users row. Until migration 0036 the table still holds legacy roles,
-// so every role or action list taken from a row goes through normalizeAccount before it is
-// compared, passed to decide, put in an AuthUser, or returned in JSON. Audit logs keep the raw
-// stored values. Pure functions, so they are tested without a database (accountRows.test.ts).
+// How the routes read a stored users row. Every role or action list taken from a row goes through
+// normalizeAccount before it is compared, passed to decide, put in an AuthUser, or returned in JSON,
+// so an unknown role or action key fails closed. Audit logs keep the raw stored values. Pure
+// functions, so they are tested without a database (accountRows.test.ts).
 
 import type { AuthUser } from '../types'
 import { decide, normalizeAccount, type ActionKey, type Role } from './actions'
@@ -19,10 +19,9 @@ export function toAuthUser(
 
 /**
  * A sign-in (password, MFA verify, Google): the JWT claims and the role for the JSON response.
- * The token carries the STORED role, not the normalized one: the previous worker (main) trusts
- * payload.role, so after a rollback a legacy user's token must still name its old role. The new
- * middleware ignores the token's role and reads the row on every request. The response body
- * carries the normalized role.
+ * The token carries the stored role and the response body the normalized one; since migration 0036
+ * they agree for every valid row. The middleware ignores the token's role and reads the row on
+ * every request.
  */
 export function signIn(row: { userId: string; role: string; username: string; tenantId: string | null }) {
   return {
@@ -79,10 +78,8 @@ export function canBeAssignedAlerts(row: (StoredAccount & { tenantId: string | n
 }
 
 /**
- * PUT /tenants/:tenantId/users/:userId/actions: accepted for a tenant user, a legacy-role row
- * included. Only `actions` is written, so a legacy row keeps its stored role and old code still
- * works for it until migration 0036. `previous` is the list the user held (the converted set for
- * a legacy row never edited).
+ * PUT /tenants/:tenantId/users/:userId/actions: accepted for a tenant user only. Only `actions` is
+ * written. `previous` is the list the user held.
  */
 export function planActionsUpdate(
   target: StoredAccount, next: ActionKey[],
@@ -95,13 +92,4 @@ export function planActionsUpdate(
 /** A row's normalized role, for comparisons against 'superadmin' / 'tenant_superadmin'. */
 export function roleOf(row: { role: string }): Role {
   return normalizeAccount(row.role, null).role
-}
-
-/**
- * The actions list to store with a role. A Tenant Superadmin ignores actions, so it is stored NULL:
- * if the previous worker demotes it to a legacy role, NULL reads as the converted set, not as zero
- * actions. A tenant user keeps its explicit list.
- */
-export function storedActionsFor(role: Role, actions: string[]): string[] | null {
-  return role === 'tenant_superadmin' ? null : actions
 }

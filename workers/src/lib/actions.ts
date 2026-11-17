@@ -194,9 +194,10 @@ const TENANT_ADMIN_NOT_GRANTED: readonly string[] = [
 ]
 
 /**
- * Actions given to converted accounts. The spec lists 8 extras for tenant_admin but states 53 in total
- * and names five ungranted actions; Clear software inventory is the ninth extra, so tenant_admin is
- * the whole catalog minus those five.
+ * Actions migration 0036 gave the accounts it converted from the old roles (kept as the reference its
+ * SQL arrays are tested against, and as test fixtures). The spec lists 8 extras for tenant_admin but
+ * states 53 in total and names five ungranted actions; Clear software inventory is the ninth extra,
+ * so tenant_admin is the whole catalog minus those five.
  */
 export const MIGRATION_ACTIONS: { tenant_admin: readonly ActionKey[]; business_owner: readonly ActionKey[] } = {
   tenant_admin: ACTION_KEYS.filter((k) => !TENANT_ADMIN_NOT_GRANTED.includes(k)),
@@ -204,22 +205,17 @@ export const MIGRATION_ACTIONS: { tenant_admin: readonly ActionKey[]; business_o
 }
 
 export type Role = 'superadmin' | 'tenant_superadmin' | 'tenant_user'
-export type LegacyRole = 'tenant_admin' | 'business_owner'
 
 /**
- * Turns a stored user row into the new model. Legacy roles read as tenant_user: stored actions win
- * (even an empty list), otherwise the converted set applies. Unknown roles fail closed to no actions.
+ * Turns a stored user row into the access model: a known role with its known actions. Unknown action
+ * keys are dropped. An unknown role fails closed to a tenant user with no actions.
  */
 export function normalizeAccount(
   role: string,
   actions: readonly string[] | null | undefined,
 ): { role: Role; actions: ActionKey[] } {
-  const stored = actions ? actions.filter(isActionKey) : null
-  if (role === 'tenant_admin' || role === 'business_owner') {
-    return { role: 'tenant_user', actions: stored ?? [...MIGRATION_ACTIONS[role]] }
-  }
   if (role === 'superadmin' || role === 'tenant_superadmin' || role === 'tenant_user') {
-    return { role, actions: stored ?? [] }
+    return { role, actions: actions ? actions.filter(isActionKey) : [] }
   }
   return { role: 'tenant_user', actions: [] }
 }

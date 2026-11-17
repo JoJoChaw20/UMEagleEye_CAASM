@@ -1,15 +1,16 @@
-// Read-only pre-check for migration 0035 (action-based access). SELECT only; writes nothing.
+// Read-only pre-check for migration 0036 (drop the legacy roles). SELECT only; writes nothing.
 //
-//   node scripts/db/check-0035.mjs <staging|production>
+//   node scripts/db/check-0036.mjs <staging|production>
 //
-// Prints users per role, and every tenant with more than one Tenant Superadmin, showing which
+// Prints users per role, the legacy-role users with NULL actions (they get the converted set; the
+// others keep the actions already stored), and every tenant with more than one Tenant Superadmin, showing which
 // account the migration keeps (active first, then oldest, then lowest user_id) and which become full-access users,
 // and flags every tenant whose kept Tenant Superadmin is inactive.
 import { neon } from '@neondatabase/serverless'
 import { die, loadEnvFile, describe } from './lib.mjs'
 
 const target = process.argv[2]
-if (!['staging', 'production'].includes(target)) die('usage: check-0035.mjs <staging|production>')
+if (!['staging', 'production'].includes(target)) die('usage: check-0036.mjs <staging|production>')
 const { DATABASE_URL } = loadEnvFile(target)
 const sql = neon(DATABASE_URL)
 console.log(`Target: ${target} (${describe(DATABASE_URL)})  [read-only]\n`)
@@ -17,6 +18,10 @@ console.log(`Target: ${target} (${describe(DATABASE_URL)})  [read-only]\n`)
 const roles = await sql(`select role::text as role, count(*)::int as n from users group by role order by role`)
 console.log('Users per role:')
 for (const r of roles) console.log(`  ${r.role.padEnd(20)} ${r.n}`)
+
+// role::text: the comparison stays valid if 0036 has already removed these enum values.
+const [{ n: legacyNull }] = await sql(`select count(*)::int as n from users where role::text in ('tenant_admin', 'business_owner') and actions is null`)
+console.log(`\nLegacy-role users with NULL actions (get the converted set): ${legacyNull}`)
 
 const [{ n: orphans }] = await sql(`select count(*)::int as n from users where role = 'tenant_superadmin' and tenant_id is null`)
 console.log(`\nTenant Superadmins with no tenant (become users with no actions): ${orphans}`)

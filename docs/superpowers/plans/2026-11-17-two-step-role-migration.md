@@ -227,7 +227,7 @@ Do Part B on a new branch from main, after Part A is merged.
 
 - [ ] **Step 1:** In the Neon console, create a branch from the current state of the target database, named `pre-0036-<staging|production>`. This is the restore point.
 - [ ] **Step 2:** Run `node scripts/db/check-0036.mjs <env>`. Resolve every tenant it flags with more than one Tenant Superadmin or an inactive kept owner, with the owner, before going on.
-- [ ] **Step 3:** Run `npm run db:status:<env>`. Expected: pending is exactly `0036_drop_legacy_roles`. Then run `npm run db:migrate:<env>`. Part A code is still live and keeps working, because it uses no legacy literal in SQL.
+- [ ] **Step 3:** Run `npm run db:status:<env>`. Expected: pending is exactly `0036_drop_legacy_roles`. Then run `npm run db:migrate:<env>`. Part A code is still live and keeps working, because it uses no legacy literal in SQL. Between applying 0036 and deploying the Task 5 worker (Step 4), make no Tenant Superadmin invites: the Part A worker writes NULL actions for that role, and 0036's NOT NULL refuses them.
 - [ ] **Step 4:** Deploy the Task 5 worker. The frontend does not change.
 - [ ] **Step 5:** Smoke tests: former legacy users keep their actions, including any edited in Part A. A second Tenant Superadmin cannot be created (409).
 - [ ] **Step 6:** Rollback, only if needed: restore the database from `pre-0036-<env>` and redeploy the Part A worker.

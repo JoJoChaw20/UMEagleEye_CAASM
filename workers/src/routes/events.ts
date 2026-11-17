@@ -405,12 +405,11 @@ app.get('/assignees', authMiddleware, requireAction('alert.manage', 'advisory.up
       .where(and(
         eq(users.tenantId, tenantId),
         eq(users.isActive, true),
-        // Any tenant member: valid whatever role values the enum holds (before and after migration 0036).
+        // Any tenant member.
         ne(users.role, 'superadmin'),
       ))
       .orderBy(users.username)
 
-    // A legacy role reads as a tenant user with its converted actions (lib/accountRows.ts).
     return c.json({ items: assignableUsers(rows, tenantId) })
   } catch (err) {
     console.error('events GET assignees error:', err)

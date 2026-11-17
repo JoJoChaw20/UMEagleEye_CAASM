@@ -56,14 +56,6 @@ test('scanActionFor maps scan type to its run action', () => {
   assert.equal(scanActionFor('passive'), 'scan.passive.run')
 })
 
-test('normalizeAccount: legacy roles become tenant_user with converted actions when none stored', () => {
-  assert.deepEqual(normalizeAccount('tenant_admin', null), { role: 'tenant_user', actions: [...MIGRATION_ACTIONS.tenant_admin] })
-  assert.deepEqual(normalizeAccount('business_owner', undefined), { role: 'tenant_user', actions: [...MIGRATION_ACTIONS.business_owner] })
-})
-test('normalizeAccount: stored actions win for legacy roles, including an empty list', () => {
-  assert.deepEqual(normalizeAccount('tenant_admin', ['asset.view']), { role: 'tenant_user', actions: ['asset.view'] })
-  assert.deepEqual(normalizeAccount('business_owner', []), { role: 'tenant_user', actions: [] })
-})
 test('normalizeAccount: new roles keep their role; null actions become []', () => {
   assert.deepEqual(normalizeAccount('superadmin', null), { role: 'superadmin', actions: [] })
   assert.deepEqual(normalizeAccount('tenant_superadmin', null), { role: 'tenant_superadmin', actions: [] })
@@ -72,4 +64,7 @@ test('normalizeAccount: new roles keep their role; null actions become []', () =
 test('normalizeAccount: unknown action keys are dropped; unknown role fails closed', () => {
   assert.deepEqual(normalizeAccount('tenant_user', ['scan.view', 'feeds.refresh']), { role: 'tenant_user', actions: ['scan.view'] })
   assert.deepEqual(normalizeAccount('owner', ['scan.view']), { role: 'tenant_user', actions: [] })
+  // The old role values are gone from the enum (0036); a stray one is just an unknown role.
+  assert.deepEqual(normalizeAccount('tenant' + '_admin', null), { role: 'tenant_user', actions: [] })
+  assert.deepEqual(normalizeAccount('business' + '_owner', ['scan.view']), { role: 'tenant_user', actions: [] })
 })
