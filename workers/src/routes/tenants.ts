@@ -1,19 +1,22 @@
 import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, count, and } from 'drizzle-orm'
+import { eq, count, and, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import {
   authMiddleware, hasAction, requireAction, requireOwnTenant, requirePlatformSuperadmin, requireTenantSuperadmin,
 } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { tenants, users, assets, auditLogs } from '../db/schema'
+import { tenants, users, assets, auditLogs, mfaRecoveryCodes } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
 import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
+import { stepUp } from '../services/mfaStepUp'
+import { sendMail } from '../services/mailer'
+import { resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
 
@@ -537,6 +540,58 @@ router.patch(
     })
 
     return c.json({ ok: true, user_id: userId, is_active })
+  }
+)
+
+// ── POST /:tenantId/users/:userId/mfa-reset — Reset a user's MFA ───
+// The Tenant Superadmin of this tenant, for tenant users. Step-up: their password and current MFA
+// code. MFA turns off and the secret goes with it, in one write; the user's open sessions end and
+// the user sets MFA up again at the next sign-in. Confirm the request in person or by phone first.
+router.post(
+  '/:tenantId/users/:userId/mfa-reset',
+  authMiddleware,
+  requireTenantSuperadmin,
+  zValidator('json', z.object({ password: z.string().optional(), code: z.string() })),
+  async (c) => {
+    try {
+      const db = getDb(c.env.DATABASE_URL)
+      const { tenantId, userId } = c.req.param()
+      const { password, code } = c.req.valid('json')
+      if (!z.string().uuid().safeParse(userId).success) return c.json({ detail: 'User not found in this tenant' }, 404)
+
+      const caller = c.get('user')
+      const [target] = await db.select().from(users)
+        .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId))).limit(1)
+      if (!target || resetTarget(target, caller.userId, tenantId) === 'refused') {
+        return c.json({ detail: 'User not found in this tenant' }, 404)
+      }
+
+      const [me] = await db.select().from(users).where(eq(users.userId, caller.userId)).limit(1)
+      if (!me) return c.json({ detail: 'User not found' }, 404)
+      const refused = await stepUp(c, db, me, { password, code })
+      if (refused) return refused
+
+      // One Neon HTTP transaction (db.batch): MFA off and the secret gone together.
+      await db.batch([
+        db.update(users).set({
+          mfaEnabled: false, totpSecret: null, mfaPendingSecret: null, totpLastStep: null,
+          sessionsValidAfter: sql`now()`,
+        }).where(eq(users.userId, userId)),
+        db.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, userId)),
+      ])
+      await audit(db, c, {
+        userId: caller.userId, tenantId, actionType: 'user.mfa_reset', targetEntity: userId,
+        previousState: { mfa_enabled: target.mfaEnabled },
+      })
+      await sendMail(c.env, {
+        to: target.email, subject: 'Your MFA was reset',
+        text: `Your MFA was reset by ${me.username} on ${new Date().toISOString().slice(0, 10)}. If you did not ask for this, contact them immediately.`,
+      })
+      return c.json({ ok: true })
+    } catch (err) {
+      console.error('mfa-reset error:', err)
+      return c.json({ detail: 'Failed to reset MFA' }, 500)
+    }
   }
 )
 

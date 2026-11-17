@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { authenticator } from 'otplib'
 import {
   CODE_REPLAYED, RECOVERY_CODE_INVALID, WRONG_CODE, parseVerifyBody, pendingSecretPlan, signInOutcome,
-  stepUpOk, tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
+  resetTarget, stepUpOk, tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
 } from './mfaFlow'
 import { generateRecoveryCodes, hashRecoveryCode } from './mfa'
 
@@ -107,4 +107,14 @@ test('lockout message names the remaining minutes', () => {
 test('fixed messages', () => {
   assert.equal(CODE_REPLAYED, 'This code was already used. Wait for the next one.')
   assert.equal(RECOVERY_CODE_INVALID, 'That recovery code is not valid.')
+})
+
+test('resetTarget: a tenant_user of this tenant is ok; self, owner, platform superadmin, other tenant are refused', () => {
+  const t = (over: object) => ({ userId: 'u2', tenantId: 't1', role: 'tenant_user', ...over })
+  assert.equal(resetTarget(t({}), 'u1', 't1'), 'ok')
+  assert.equal(resetTarget(t({ userId: 'u1' }), 'u1', 't1'), 'refused')
+  assert.equal(resetTarget(t({ role: 'tenant_superadmin' }), 'u1', 't1'), 'refused')
+  assert.equal(resetTarget(t({ role: 'superadmin' }), 'u1', 't1'), 'refused')
+  assert.equal(resetTarget(t({ tenantId: 't2' }), 'u1', 't1'), 'refused')
+  assert.equal(resetTarget(t({ tenantId: null }), 'u1', 't1'), 'refused')
 })

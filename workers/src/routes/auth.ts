@@ -17,6 +17,8 @@ import {
 import { authenticator } from 'otplib'
 import { TOO_MANY, clearFailures, minutesLeftInWindow, overLimit, recordFailure } from '../lib/loginLimit'
 import { audit, callerIp } from '../services/audit'
+import { claimStep, codeFailed, codeLimited, stepUp } from '../services/mfaStepUp'
+import { sendMail } from '../services/mailer'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 import { enrolsTwoDevices, signIn, withAccount } from '../lib/accountRows'
 import {
@@ -77,40 +79,6 @@ async function mfaAccount(
   if (!row) return { refused: c.json({ detail: SIGN_IN_AGAIN }, 401) }
   if (!row.isActive) return { refused: c.json({ detail: DEACTIVATED }, 401) }
   return { row }
-}
-
-/** 429 with the real remaining minutes while the account's MFA failure limit blocks it. */
-async function codeLimited(c: Ctx, userId: string) {
-  if (!await overLimit(c.env.KV_CACHE, 'mfa_account', userId)) return null
-  return c.json({ detail: tooManyCodesDetail(minutesLeftInWindow()) }, 429)
-}
-
-/** A refused code, recovery code or step-up: counted against the limit, audited, 401. */
-async function codeFailed(c: Ctx, db: DB, row: UserRow, detail: string, method: string, reason: string) {
-  await recordFailure(c.env.KV_CACHE, 'mfa_account', row.userId)
-  await audit(db, c, {
-    userId: row.userId, tenantId: row.tenantId, actionType: 'auth.mfa_failed', targetEntity: row.userId,
-    newState: { method, reason },
-  })
-  return c.json({ detail }, 401)
-}
-
-/**
- * Replay guard: records the step only if it is later than the last one used, in one statement, so
- * two requests with the same code cannot both pass. `extra` columns are written with it. The
- * account must still have MFA on with the secret the code was checked against, so an MFA reset
- * landing between the read and this write cannot let a code of the old secret through.
- */
-async function claimStep(
-  db: DB, userId: string, secret: string, step: number, extra: Partial<typeof users.$inferInsert> = {},
-) {
-  const rows = await db.update(users).set({ ...extra, totpLastStep: step })
-    .where(and(
-      eq(users.userId, userId), eq(users.mfaEnabled, true), eq(users.totpSecret, secret),
-      or(isNull(users.totpLastStep), lt(users.totpLastStep, step)),
-    ))
-    .returning({ userId: users.userId })
-  return rows.length > 0
 }
 
 /** used_at IS NULL in the WHERE: a code is consumed by exactly one request (mfaFlow.test.ts). */
@@ -249,7 +217,10 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
         userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_recovery_code_used', targetEntity: user.userId,
         newState: { recovery_codes_left },
       })
-      // Task 5: email the user that a recovery code was used.
+      await sendMail(c.env, {
+        to: user.email, subject: 'A recovery code was used',
+        text: `A recovery code was used to sign in to your UMEagleEye account on ${new Date().toISOString().slice(0, 10)}. You have ${recovery_codes_left} recovery code${recovery_codes_left === 1 ? '' : 's'} left. If this was not you, change your password and contact your Tenant Superadmin.`,
+      })
     }
 
     await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
@@ -582,22 +553,8 @@ app.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recoveryCodes
 
     const [user] = await db.select().from(users).where(eq(users.userId, authUser.userId)).limit(1)
     if (!user) return c.json({ detail: 'User not found' }, 404)
-    if (!user.mfaEnabled || !user.totpSecret) return c.json({ detail: 'Set up MFA first.' }, 409)
-
-    const limited = await codeLimited(c, user.userId)
-    if (limited) return limited
-
-    const hasPassword = user.passwordHash !== NO_PASSWORD_HASH
-    const passwordOk = hasPassword && !!password && await verifyPassword(password, user.passwordHash)
-    const digits = code.replace(/\s/g, '')
-    const step = /^\d{6}$/.test(digits) ? matchTotpStep(user.totpSecret, digits) : null
-    if (!stepUpOk({ hasPassword, passwordOk, codeOk: step !== null })) {
-      if (hasPassword && !passwordOk) {
-        return await codeFailed(c, db, user, 'Your password is not correct.', 'step_up', 'wrong_password')
-      }
-      return await codeFailed(c, db, user, wrongCodeDetail(user.totpSecret, digits), 'step_up', 'wrong_code')
-    }
-    if (!await claimStep(db, user.userId, user.totpSecret, step!)) return await codeFailed(c, db, user, CODE_REPLAYED, 'step_up', 'replayed')
+    const refused = await stepUp(c, db, user, { password, code })
+    if (refused) return refused
 
     // Old codes out, new ones in, in one Neon HTTP transaction (db.batch).
     const { codes, hashes } = await newRecoveryCodes()
@@ -606,7 +563,6 @@ app.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recoveryCodes
       db.insert(mfaRecoveryCodes).values(hashes.map((codeHash) => ({ userId: user.userId, codeHash }))),
     ])
 
-    await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
     await audit(db, c, {
       userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_recovery_codes_regenerated', targetEntity: user.userId,
     })

@@ -1,5 +1,6 @@
 // Decisions of the MFA sign-in routes (routes/auth.ts: login, google, mfa/verify, mfa/enrol/*,
 // mfa/recovery-codes). Pure, so they are tested without a database (mfaFlow.test.ts).
+import { roleOf } from './accountRows'
 import { clockSkewMinutes, hashRecoveryCode, normalizeRecoveryCode, type MfaStage } from './mfa'
 
 export const CODE_REPLAYED = 'This code was already used. Wait for the next one.'
@@ -66,4 +67,12 @@ export function wrongCodeDetail(secret: string, code: string, nowMs: number = Da
 /** 429 detail while the MFA failure limit blocks the account. */
 export function tooManyCodesDetail(minutesLeft: number): string {
   return `Too many wrong codes. Try again in ${minutes(minutesLeft)}.`
+}
+
+/** MFA reset by a Tenant Superadmin: only a tenant_user of the caller's own tenant, never the caller. */
+export function resetTarget(
+  target: { userId: string; tenantId: string | null; role: string }, callerId: string, tenantId: string,
+): 'ok' | 'refused' {
+  if (target.userId === callerId || target.tenantId !== tenantId) return 'refused'
+  return roleOf(target) === 'tenant_user' ? 'ok' : 'refused'
 }

@@ -12,12 +12,14 @@ export interface Env {
   NVD_API_KEY?: string     // NVD's CVE search for services identified on devices without an agent (services/serviceCves.ts)
   CF_ACCOUNT_ID?: string   // with CF_ANALYTICS_TOKEN: reads performance history (kg/perf.ts)
   CF_ANALYTICS_TOKEN?: string
+  PLATFORM_MFA_RESET?: string  // one-time break-glass secret for the Platform Superadmin's MFA
   // ── Vars ──
   APP_ENV: string
   OPENROUTER_MODEL: string
   SCAN_DEFAULT_SUBNET: string
   JWT_EXPIRE_MINUTES: string
   FRONTEND_URL: string
+  MAIL_FROM?: string       // sender address; with EMAIL, turns email on (services/mailer.ts)
 
   // ── Bindings ──
   REPORTS_BUCKET: R2Bucket
@@ -25,6 +27,7 @@ export interface Env {
   ADVISORY_QUEUE: Queue
   REPORT_QUEUE: Queue
   AI?: Ai                  // embeddings for the knowledge graph
+  EMAIL?: { send(msg: unknown): Promise<unknown> }  // Cloudflare Email binding; absent = email off
   PERF?: AnalyticsEngineDataset  // request and job timings
 }
 
