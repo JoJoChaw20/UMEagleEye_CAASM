@@ -2,8 +2,9 @@
 //
 //   node scripts/kg/seed-test.mjs            create the test companies, users and records
 //   node scripts/kg/seed-test.mjs --remove   delete all of it and verify nothing is left
+//   node scripts/kg/seed-test.mjs --add-mfa  give already seeded test users MFA (seeded before MFA was required)
 //
-// Every name starts with KGTEST-. Passwords and agent keys are random and live in an OS temp file
+// Every name starts with KGTEST-. Passwords, TOTP secrets and agent keys are random and live in an OS temp file
 // (lib.mjs STATE_DIR), never in the repo or log.txt. Removal deletes only rows that belong to the
 // test tenants and test users, including their graph rows, outbox rows and audit rows.
 import { randomUUID, randomBytes, createHash } from 'node:crypto'
@@ -12,6 +13,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
+import { authenticator } from 'otplib'
 import { assertStagingBranch, clearState, guardTarget, hashPassword, loadCreds, loadSeed, randomPassword, saveCreds, saveSeed } from './lib.mjs'
 
 const { query, db } = guardTarget()
@@ -148,10 +150,11 @@ async function seed() {
   const userRows = []
   const addUser = (key, role, tenantId, actions = []) => {
     const password = randomPassword()
+    const totpSecret = authenticator.generateSecret()   // MFA is required for every account; lib.mjs login() uses it
     const userId = uuid()
     const username = `KGTEST-${key}`
-    users[key] = { userId, username, password, role, tenantId: tenantId ?? null, actions: [...actions] }
-    userRows.push({ user_id: userId, username, email: `${username.toLowerCase()}@kgtest.invalid`, password_hash: hashPassword(password), role, tenant_id: tenantId ?? null, is_active: true, actions: [...actions] })
+    users[key] = { userId, username, password, totpSecret, role, tenantId: tenantId ?? null, actions: [...actions] }
+    userRows.push({ user_id: userId, username, email: `${username.toLowerCase()}@kgtest.invalid`, password_hash: hashPassword(password), role, tenant_id: tenantId ?? null, is_active: true, actions: [...actions], mfa_enabled: true, totp_secret: totpSecret })
   }
   for (const [t, prefix] of [[alpha, 'alpha'], [bravo, 'bravo']]) {
     addUser(`${prefix}-admin`, 'tenant_superadmin', t.tenant_id)
@@ -331,5 +334,26 @@ async function seed() {
   console.log('Credentials are in an OS temp file, not in the repo.')
 }
 
+// Test users seeded before MFA was required: give each a TOTP secret (kept in the creds file only).
+async function addMfa() {
+  const creds = loadCreds()
+  if (!creds?.users) { console.error('No creds file. Run seed-test.mjs first.'); process.exit(1) }
+  let n = 0
+  for (const u of Object.values(creds.users)) {
+    if (u.totpSecret) continue
+    const secret = authenticator.generateSecret()
+    const rows = await query(
+      `UPDATE users SET mfa_enabled = true, totp_secret = $1, mfa_pending_secret = NULL, totp_last_step = NULL
+       WHERE user_id = $2::uuid AND username = $3 AND username LIKE 'KGTEST-%' RETURNING user_id`,
+      [secret, u.userId, u.username])
+    if (!rows.length) { console.error(`Test user ${u.username} not found. Re-seed.`); process.exit(1) }
+    u.totpSecret = secret
+    saveCreds(creds)   // after each user, so a stop part-way loses no secret
+    n++
+  }
+  console.log(`MFA added to ${n} test users. Secrets are in the OS temp creds file, not in the repo.`)
+}
+
 if (process.argv.includes('--remove')) await remove()
+else if (process.argv.includes('--add-mfa')) await addMfa()
 else await seed()

@@ -5,6 +5,7 @@
 // production's. Nothing here can be pointed anywhere else: there is no flag or variable for it.
 // Credentials stay in an OS temp file (see STATE_DIR) and never reach log.txt.
 import { neon } from '@neondatabase/serverless'
+import { authenticator } from 'otplib'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { pbkdf2Sync, randomBytes } from 'node:crypto'
@@ -127,10 +128,38 @@ export async function api(token, method, route, body, extraHeaders = {}) {
   return { status: res.status, json, text, ms }
 }
 
-export async function login(username, password) {
+// Sign-in needs MFA for every account: the password gives an mfa_token (stage "verify"), and a code
+// from the seeded TOTP secret (creds file only) gives the access token. The server takes one code per
+// 30-second step per account and counts a reused step as a failed attempt, so a second sign-in of the
+// same account in this process waits for the next step.
+const STEP_MS = 30_000
+const lastStep = new Map()
+
+/** A fresh TOTP code for `secret`, never in a step this process already used for `username`. */
+export async function nextTotpCode(username, secret) {
+  let step = Math.floor(Date.now() / STEP_MS)
+  if ((lastStep.get(username) ?? -1) >= step) {
+    await sleep((step + 1) * STEP_MS - Date.now() + 250)
+    step = Math.floor(Date.now() / STEP_MS)
+  }
+  // Too close to the end of a step: wait for the next, so the server sees the same step.
+  if ((step + 1) * STEP_MS - Date.now() < 1500) {
+    await sleep((step + 1) * STEP_MS - Date.now() + 250)
+    step = Math.floor(Date.now() / STEP_MS)
+  }
+  lastStep.set(username, step)
+  return authenticator.clone({ epoch: step * STEP_MS }).generate(secret)
+}
+
+export async function login(username, password, totpSecret) {
   const r = await api(null, 'POST', '/auth/login', { username, password })
-  if (r.status !== 200 || !r.json?.access_token) throw new Error(`login failed for ${username}: HTTP ${r.status}`)
-  return r.json.access_token
+  if (r.status !== 200 || r.json?.stage !== 'verify' || !r.json?.mfa_token) {
+    throw new Error(`login failed for ${username}: HTTP ${r.status}, stage ${r.json?.stage ?? 'none'}`)
+  }
+  if (!totpSecret) throw new Error(`no MFA secret for ${username} in the creds file: run seed-test.mjs --add-mfa (or re-seed)`)
+  const v = await api(null, 'POST', '/auth/mfa/verify', { mfa_token: r.json.mfa_token, code: await nextTotpCode(username, totpSecret) })
+  if (v.status !== 200 || !v.json?.access_token) throw new Error(`MFA verify failed for ${username}: HTTP ${v.status}`)
+  return v.json.access_token
 }
 
 /** Upper bound on the model calls one chat made, from its progress events. See agent.ts for the path taken. */
@@ -212,7 +241,7 @@ let knownSecrets = null
 function secrets() {
   if (knownSecrets) return knownSecrets
   const c = loadCreds()
-  knownSecrets = c ? [...Object.values(c.users ?? {}).map(u => u.password), ...Object.values(c.agents ?? {}).map(a => a.apiKey)].filter(Boolean) : []
+  knownSecrets = c ? [...Object.values(c.users ?? {}).flatMap(u => [u.password, u.totpSecret]), ...Object.values(c.agents ?? {}).map(a => a.apiKey)].filter(Boolean) : []
   return knownSecrets
 }
 

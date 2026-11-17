@@ -47,12 +47,21 @@ const [{ n: kept }] = await sql(`select count(*)::int as n from users where lowe
 if (keep.length === 0) die('Set KEEP_EMAILS in .env.staging to the account(s) you will log in with on staging. Otherwise nobody could log in.')
 if (kept === 0) die(`None of KEEP_EMAILS exist in users. Check the spelling. (Looked for: ${keep.join(', ')})`)
 
+// MFA columns and tables of migration 0037; a branch taken before 0037 has none of them.
+const [{ mfa }] = await sql(`select to_regclass('public.mfa_recovery_codes') is not null as mfa`)
+
 const [counts] = await sql(`select
   (select count(*) from users where lower(email) <> all($1))::int as users_scrambled,
   (select count(*) from users where lower(email) = any($1))::int as users_kept,
   (select count(*) from agents)::int as agents,
   (select count(distinct owner) from assets where owner is not null)::int as owners,
   (select count(*) from audit_logs)::int as audit_logs`, [keep])
+if (mfa) {
+  const [m] = await sql(`select
+    (select count(*) from mfa_recovery_codes c join users u on u.user_id = c.user_id where lower(u.email) <> all($1))::int as recovery_codes,
+    (select count(*) from platform_mfa_resets)::int as platform_mfa_resets`, [keep])
+  Object.assign(counts, m)
+}
 console.log('Would change:')
 console.table([counts])
 if (!flags.includes('--apply')) {
@@ -68,6 +77,13 @@ await sql.transaction([
          password_hash = 'google_oauth_no_password',
          google_id = null, totp_secret = null, mfa_enabled = false, telegram_chat_id = null
        where lower(email) <> all($1)`, [keep]),
+  ...(mfa ? [
+    // The rest of their MFA state (0037), and every break-glass reset: production's secret and link
+    // hashes must not act on staging. Kept accounts keep their recovery codes.
+    sql(`update users set mfa_pending_secret = null, totp_last_step = null where lower(email) <> all($1)`, [keep]),
+    sql(`delete from mfa_recovery_codes where user_id in (select user_id from users where lower(email) <> all($1))`, [keep]),
+    sql(`delete from platform_mfa_resets`),
+  ] : []),
   // Kept accounts still log in, but staging must never message real chats.
   sql(`update users set telegram_chat_id = null where lower(email) = any($1)`, [keep]),
   // Production agent keys must not authenticate against staging.

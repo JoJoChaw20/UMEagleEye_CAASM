@@ -29,9 +29,9 @@ const only = onlyArg ? new Set(onlyArg.split(',')) : null
 
 const U = creds.users
 const tok = {}
-async function tokenFor(key) {
-  if (tok[key]) return tok[key]
-  tok[key] = await login(U[key].username, U[key].password)
+// The promise is kept, so concurrent callers share one sign-in (one TOTP step per account).
+function tokenFor(key) {
+  tok[key] ??= login(U[key].username, U[key].password, U[key].totpSecret)
   return tok[key]
 }
 
@@ -244,9 +244,12 @@ async function regression() {
   noAi('regression:assets-cross-tenant', crossGet.status === 403 || crossGet.status === 404 ? 'PASS' : 'FAIL', 'alpha admin reads a Bravo asset', `status ${crossGet.status}`, crossGet.ms)
 
   // Login: each kind of user (the analyst and owner are both tenant_user now), wrong password refused.
+  // MFA is required: the password step answers stage "verify" and no access token. It stops there: a
+  // second code for an account in the same 30-second step is refused and counts toward its lock.
   for (const who of ['alpha-analyst', 'alpha-owner', 'bravo-admin', 'superadmin']) {
     const r = await api(null, 'POST', '/auth/login', { username: U[who].username, password: U[who].password })
-    noAi(`regression:login:${who}`, r.status === 200 && r.json?.access_token ? 'PASS' : 'FAIL', `login ${U[who].username}`, `status ${r.status}, mfa_required=${r.json?.mfa_required}`, r.ms)
+    const ok = r.status === 200 && r.json?.stage === 'verify' && !!r.json?.mfa_token && !r.json?.access_token
+    noAi(`regression:login:${who}`, ok ? 'PASS' : 'FAIL', `login ${U[who].username}`, `status ${r.status}, stage=${r.json?.stage}`, r.ms)
   }
   const bad = await api(null, 'POST', '/auth/login', { username: U['alpha-analyst'].username, password: 'wrong-password-kgtest' })
   noAi('regression:login:bad-password', bad.status === 401 ? 'PASS' : 'FAIL', 'wrong password', `status ${bad.status}`, bad.ms)

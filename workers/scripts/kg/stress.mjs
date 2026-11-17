@@ -64,7 +64,8 @@ function buildUsers(n) {
 }
 
 const tokens = {}
-async function tokenFor(key) { if (!tokens[key]) tokens[key] = await login(creds.users[key].username, creds.users[key].password); return tokens[key] }
+// The promise is kept, so concurrent callers share one sign-in (lib.mjs login: one TOTP step per account).
+function tokenFor(key) { const u = creds.users[key]; tokens[key] ??= login(u.username, u.password, u.totpSecret); return tokens[key] }
 
 async function readOnce(user, s) {
   const route = READS[Math.floor(Math.random() * READS.length)]
