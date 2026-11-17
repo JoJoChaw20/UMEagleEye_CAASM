@@ -28,6 +28,9 @@ This plan replaces Task 11 of docs/superpowers/plans/2026-11-17-action-based-per
 - Worker deploys: `npx wrangler deploy -c wrangler.prod-noperf.toml [--env staging]`. Never run a plain `wrangler deploy`.
 - Frontend deploys: unset the shell's VITE_* variables first: `env $(env | grep -oE '^VITE_[A-Z_]+' | sed 's/^/-u /') npm run deploy:staging`. Afterwards, check that the bundle contains the API host and 0 occurrences of `localhost:8000`.
 - Every database or deploy step needs the project owner's go-ahead in the session. Part B also needs the teammate's agreement.
+- The teammate's scanning must keep working without a break:
+  - Agent-authenticated endpoints (agent polls, job pickup, scan, SBOM and sightings uploads, enrolment by token) must behave exactly as on `main`.
+  - Every Tenant Superadmin must keep every scan action.
 
 ## Review Focus
 
@@ -148,13 +151,14 @@ Rule: wherever a `users` row's `role` or `actions` is compared, passed to `decid
 - [ ] **Step 2:** Run `npm test`. Expected: the new tests FAIL.
 - [ ] **Step 3:** Apply `normalizeAccount` at every site in **Files**. Then grep `from(users)` across `src/` and check each remaining hit against the rule. Put a table of every hit and its verdict in the report.
 - [ ] **Step 4:** Run `npx tsc --noEmit` and `npm test`. Expected: 0 type errors, and all tests pass. Then run `cd ../frontend && npm test && npx vite build`. Expected: pass, because the API now returns only the three new role values.
-- [ ] **Step 5:** Commit `fix(rbac): read legacy-role users as tenant users everywhere`.
+- [ ] **Step 5: Agent endpoint check.** List every route that authenticates an agent, not a user, starting from the mounts in `src/index.ts`. Run `git diff main..HEAD` over those handlers and over the services they call (job pickup, result ingest). Put a table of route → "unchanged" or the changed lines in the report. Any behaviour change on an agent route is a blocker. Report it and do not adjust it.
+- [ ] **Step 6:** Commit `fix(rbac): read legacy-role users as tenant users everywhere`.
 
 ### Task 4: Staging rollout with rollback rehearsal (needs owner go-ahead; the controller runs this, not a subagent)
 
 Run the steps in this order. Stop at the first failure and report it.
 
-- [ ] **Step 1:** Tell the teammate that the staging worker and frontend are about to change. Their local code keeps working on the staging DB.
+- [ ] **Step 1:** Tell the teammate the deploy time, and pick a time when she is not mid-scan. Their local code keeps working on the staging DB. Tell her to scan from her Tenant Superadmin account: the Platform Superadmin (`admin`) becomes view-only and can no longer start scans.
 - [ ] **Step 2:** `cd workers && npm run db:status:staging`. Expected: pending is exactly `0035_action_based_access`. If it is not listed (a migration with a later `when` already ran), stop: the migrator would skip it.
 - [ ] **Step 3:** `npx wrangler deployments list -c wrangler.prod-noperf.toml --env staging`. Record the current version id as the rollback target. Record the current Pages `staging` deployment from the Cloudflare dashboard.
 - [ ] **Step 4:** On the old staging site, sign in as one `tenant_admin`, one `business_owner` and one `tenant_superadmin` account. Note what each can open. This is the baseline.
@@ -166,7 +170,9 @@ Run the steps in this order. Stop at the first failure and report it.
   - the `business_owner` account has 13 actions and no Discovery page;
   - the Tenant Superadmin removes one action from the legacy user. It takes effect on that user's next click. A read-only SELECT shows the stored role unchanged;
   - an alert can be assigned to the legacy `tenant_admin`;
-  - a newly invited user is stored as `tenant_user`.
+  - a newly invited user is stored as `tenant_user`;
+  - **scanning continuity:** for the hour after the deploy, read-only queries show `scan_results` rows still arriving from the same agents. Compare passive, SBOM and SNMP counts per hour with the hour before. Agents keep reporting as online;
+  - **scanning by a Tenant Superadmin:** an active scan started from Discovery is picked up by an agent and completes. Its hosts show in the results, and an SBOM scan request completes too.
 - [ ] **Step 9:** Rollback rehearsal:
   - Run `npx wrangler rollback <version id from Step 3> -c wrangler.prod-noperf.toml --env staging`, and roll Pages `staging` back in the dashboard.
   - Expected: the Step 4 accounts work as in the baseline. The `tenant_user` from Step 8 gets a 403 refusal, not a 500.
