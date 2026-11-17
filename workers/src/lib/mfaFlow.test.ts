@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { authenticator } from 'otplib'
 import {
   CODE_REPLAYED, RECOVERY_CODE_INVALID, WRONG_CODE, parseVerifyBody, pendingSecretPlan, signInOutcome,
-  resetTarget, stepUpOk, tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
+  resetTarget, deleteTarget, confirmMatches, stepUpOk, tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
 } from './mfaFlow'
 import { generateRecoveryCodes, hashRecoveryCode } from './mfa'
 
@@ -117,4 +117,25 @@ test('resetTarget: a tenant_user of this tenant is ok; self, owner, platform sup
   assert.equal(resetTarget(t({ role: 'superadmin' }), 'u1', 't1'), 'refused')
   assert.equal(resetTarget(t({ tenantId: 't2' }), 'u1', 't1'), 'refused')
   assert.equal(resetTarget(t({ tenantId: null }), 'u1', 't1'), 'refused')
+})
+
+test('deleteTarget refuses self, owner, superadmin, other tenant', () => {
+  const t = (over: object) => ({ userId: 'u2', tenantId: 't1', role: 'tenant_user', ...over })
+  const caller = { userId: 'u1' }
+  assert.equal(deleteTarget(caller, t({}), 't1'), 'ok')
+  assert.equal(deleteTarget(caller, t({ userId: 'u1' }), 't1'), 'refused')
+  assert.equal(deleteTarget(caller, t({ role: 'tenant_superadmin' }), 't1'), 'refused')
+  assert.equal(deleteTarget(caller, t({ role: 'superadmin' }), 't1'), 'refused')
+  assert.equal(deleteTarget(caller, t({ tenantId: 't2' }), 't1'), 'refused')
+})
+
+test('confirm_username must match exactly', () => {
+  assert.equal(confirmMatches('alice', 'alice'), true)
+  assert.equal(confirmMatches('Alice', 'alice'), false)
+  assert.equal(confirmMatches(' alice', 'alice'), false)
+  assert.equal(confirmMatches('alice ', 'alice'), false)
+  assert.equal(confirmMatches('', 'alice'), false)
+  assert.equal(confirmMatches(undefined, 'alice'), false)
+  assert.equal(confirmMatches(null, 'alice'), false)
+  assert.equal(confirmMatches(5, 'alice'), false)
 })

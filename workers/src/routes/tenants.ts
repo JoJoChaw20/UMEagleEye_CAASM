@@ -16,7 +16,7 @@ import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
 import { mfaClearStatements, stepUp } from '../services/mfaStepUp'
 import { sendMail } from '../services/mailer'
-import { resetTarget } from '../lib/mfaFlow'
+import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH } from '../lib/auth'
 import { networkTargetErrors } from '../services/scanTargets'
 
@@ -585,6 +585,57 @@ router.post(
     } catch (err) {
       console.error('mfa-reset error:', err)
       return c.json({ detail: 'Failed to reset MFA' }, 500)
+    }
+  }
+)
+
+// ── DELETE /:tenantId/users/:userId — Delete a user ────────────────
+// The Tenant Superadmin of this tenant, for tenant users. Step-up: their password and current MFA
+// code, plus the target's username typed exactly. The audit entry is written first; audit rows of the
+// user stay (user_id becomes NULL). A foreign key that refuses the delete (ownership history) gives 409.
+const OWNERSHIP_HISTORY = "This account is part of the tenant's ownership history and cannot be deleted. Deactivate it instead."
+router.delete(
+  '/:tenantId/users/:userId',
+  authMiddleware,
+  requireTenantSuperadmin,
+  zValidator('json', z.object({ password: z.string().optional(), code: z.string(), confirm_username: z.string() })),
+  async (c) => {
+    try {
+      const db = getDb(c.env.DATABASE_URL)
+      const { tenantId, userId } = c.req.param()
+      const { password, code, confirm_username } = c.req.valid('json')
+      if (!z.string().uuid().safeParse(userId).success) return c.json({ detail: 'User not found in this tenant' }, 404)
+
+      const caller = c.get('user')
+      const [target] = await db.select().from(users)
+        .where(and(eq(users.userId, userId), eq(users.tenantId, tenantId))).limit(1)
+      if (!target || deleteTarget(caller, target, tenantId) === 'refused') {
+        return c.json({ detail: 'User not found in this tenant' }, 404)
+      }
+      if (!confirmMatches(confirm_username, target.username)) {
+        return c.json({ detail: 'Type the username exactly to confirm.' }, 400)
+      }
+
+      const [me] = await db.select().from(users).where(eq(users.userId, caller.userId)).limit(1)
+      if (!me) return c.json({ detail: 'User not found' }, 404)
+      const refused = await stepUp(c, db, me, { password, code })
+      if (refused) return refused
+
+      await audit(db, c, {
+        userId: caller.userId, tenantId, actionType: 'user.delete', targetEntity: userId,
+        previousState: { user_id: target.userId, username: target.username, email: target.email, actions: target.actions },
+      })
+      try {
+        await db.delete(users).where(and(eq(users.userId, userId), eq(users.tenantId, tenantId)))
+      } catch (err) {
+        const e = err as { code?: string; cause?: { code?: string } }
+        if (e?.code === '23503' || e?.cause?.code === '23503') return c.json({ detail: OWNERSHIP_HISTORY }, 409)
+        throw err
+      }
+      return c.json({ ok: true })
+    } catch (err) {
+      console.error('delete user error:', err)
+      return c.json({ detail: 'Failed to delete user' }, 500)
     }
   }
 )

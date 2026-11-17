@@ -76,3 +76,15 @@ export function resetTarget(
   if (target.userId === callerId || target.tenantId !== tenantId) return 'refused'
   return roleOf(target) === 'tenant_user' ? 'ok' : 'refused'
 }
+
+/** Deleting a user: the same rule as the MFA reset (a tenant_user of the caller's tenant, never the caller). */
+export function deleteTarget(
+  caller: { userId: string }, target: { userId: string; tenantId: string | null; role: string }, tenantId: string,
+): 'ok' | 'refused' {
+  return resetTarget(target, caller.userId, tenantId)
+}
+
+/** The typed username must equal the target's username exactly: case-sensitive, no trimming. */
+export function confirmMatches(typed: unknown, username: string): boolean {
+  return typeof typed === 'string' && typed === username
+}

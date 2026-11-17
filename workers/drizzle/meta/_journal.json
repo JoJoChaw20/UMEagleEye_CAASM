@@ -267,6 +267,13 @@
       "when": 1794934048849,
       "tag": "0037_mfa",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794943290303,
+      "tag": "0038_audit_keeps_deleted_users",
+      "breakpoints": true
     }
   ]
 }
