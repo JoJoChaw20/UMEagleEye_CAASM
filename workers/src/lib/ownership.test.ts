@@ -5,6 +5,7 @@ import { getDb } from '../db/client'
 import {
   validateTransfer, validateRecoveryPlan, transferNext, recoveryNext, approverSlot,
   swapStatements, ownershipChangedNotice, restoredNotice, HOURS_72,
+  completionEffects, ownerChecklist, RECOVERY_DISPUTED_NOTICE,
 } from './ownership'
 
 const db = getDb('postgres://u:p@localhost/none')   // builds queries only; nothing connects
@@ -168,4 +169,24 @@ test('swap guard is ANDed into the demote only', () => {
   assert.ok(!q[2].params.includes('tx'))
   const plain = swapStatements(T, 'o', 'n', { mode: 'stay' })[1].build(db).toSQL()
   assert.ok(!/ownership_transfers/.test(plain.sql))
+})
+
+test('completionEffects: every emergency reason suspends, signs out, revokes tokens and flags agent keys', () => {
+  for (const r of ['terminated', 'compromised', 'resigned', 'unreachable']) {
+    const e = completionEffects(r)
+    assert.equal(e.suspendFormerOwner, true)
+    assert.equal(e.signFormerOwnerOut, true)
+    assert.equal(e.deleteUnusedEnrolmentTokens, true)
+    assert.equal(e.checklistHasAgentKeys, true)
+  }
+})
+
+test('owner checklist: agent keys only after an emergency; Path A text unchanged', () => {
+  assert.equal(ownerChecklist(false), "Security checklist for the new Tenant Superadmin: review every user's actions; choose a new successor and recovery approvers; reassign alerts and advisories assigned to the former owner.")
+  assert.ok(ownerChecklist(true).includes('Consider replacing agent keys'))
+  assert.ok(!ownerChecklist(false).includes('agent keys'))
+})
+
+test('dispute notice is verbatim', () => {
+  assert.equal(RECOVERY_DISPUTED_NOTICE, 'Recovery was disputed. Contact platform support for verification.')
 })

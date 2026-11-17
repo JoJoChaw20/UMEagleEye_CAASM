@@ -185,3 +185,25 @@ export function ownershipChangedNotice(a: string, b: string, date: string): stri
 export function restoredNotice(date: string): string {
   return `Ownership of this tenant was restored by platform verification on ${date}.`
 }
+
+/** What an emergency completion (Path B) does to the former owner and the tenant; the service runs all of it in one batch. */
+export function completionEffects(_reason: string) {
+  return {
+    suspendFormerOwner: true, signFormerOwnerOut: true, deleteUnusedEnrolmentTokens: true,
+    clearPlanPositions: true, checklistHasAgentKeys: true,
+  } as const
+}
+
+export const RECOVERY_DISPUTED_NOTICE = 'Recovery was disputed. Contact platform support for verification.'
+export const RECOVERY_CANCELLED_NOTICE = 'Recovery was cancelled by the current owner.'
+
+const CHECKLIST_ITEMS = [
+  "review every user's actions",
+  'choose a new successor and recovery approvers',
+  'reassign alerts and advisories assigned to the former owner',
+]
+/** The new owner's security checklist notice. `emergency` adds "Consider replacing agent keys". */
+export function ownerChecklist(emergency: boolean): string {
+  const items = emergency ? [...CHECKLIST_ITEMS, 'Consider replacing agent keys'] : CHECKLIST_ITEMS
+  return `Security checklist for the new Tenant Superadmin: ${items.join('; ')}.`
+}

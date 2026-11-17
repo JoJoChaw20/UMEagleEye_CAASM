@@ -33,3 +33,18 @@ test('recipient message is verbatim for each choice', () => {
     base + 'Olive will be deactivated on 2027-01-05.')
   assert.equal(transferMessage('Olive', 'Acme', 'deactivate_now', null), base + 'Olive will be deactivated.')
 })
+
+test('open recovery is shown to the owner, successor and approvers only', () => {
+  const recovery = {
+    recoveryId: 'r1', successorId: 's', reason: 'terminated', status: 'awaiting_approval', approver1At: new Date('2026-11-18T01:00:00Z'),
+    approver2At: null, createdAt: new Date('2026-11-18T00:00:00Z'), expiresAt: new Date('2026-11-21T00:00:00Z'), holdUntil: null,
+  }
+  const v = (id: string) => ownershipView({ owner, transfer: null, plan, recovery, names }, id).recovery
+  assert.equal(v('o')?.your_role, 'owner')
+  assert.equal(v('s')?.your_role, 'successor')
+  assert.equal(v('a2')?.your_role, 'approver')
+  assert.equal(v('a1')?.approver1_approved, true)
+  assert.equal(v('a1')?.approver2_approved, false)
+  assert.equal(v('x'), null)
+  assert.equal(ownershipView({ owner, transfer: null, plan, names }, 'o').recovery, null)
+})

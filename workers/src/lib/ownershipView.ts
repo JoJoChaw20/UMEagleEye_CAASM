@@ -4,6 +4,10 @@ export type TransferRow = {
   deactivateOn: Date | null; status: string; createdAt: Date; expiresAt: Date
 }
 export type PlanRow = { successorId: string | null; approver1Id: string | null; approver2Id: string | null }
+export type RecoveryRow = {
+  recoveryId: string; successorId: string; reason: string; status: string
+  approver1At: Date | null; approver2At: Date | null; createdAt: Date; expiresAt: Date; holdUntil: Date | null
+}
 type Person = { user_id: string; username: string }
 
 export function transferMessage(name: string, tenant: string, mode: string, deactivateOn: Date | null): string {
@@ -14,7 +18,7 @@ export function transferMessage(name: string, tenant: string, mode: string, deac
 }
 
 export function ownershipView(
-  i: { owner: { userId: string; username: string }; transfer: TransferRow | null; plan: PlanRow | null; names: Record<string, string> },
+  i: { owner: { userId: string; username: string }; transfer: TransferRow | null; plan: PlanRow | null; recovery?: RecoveryRow | null; names: Record<string, string> },
   viewerId: string,
 ) {
   const person = (id: string | null): Person | null => (id ? { user_id: id, username: i.names[id] ?? '' } : null)
@@ -22,6 +26,9 @@ export function ownershipView(
   const t = i.transfer
   const concerned = t && (viewerId === t.fromUserId || viewerId === t.toUserId)
   const p = i.plan
+  const r = i.recovery ?? null
+  const role = !r ? null : viewerId === i.owner.userId ? 'owner' : viewerId === r.successorId ? 'successor'
+    : viewerId === p?.approver1Id || viewerId === p?.approver2Id ? 'approver' : null
   return {
     owner: { user_id: i.owner.userId, username: i.owner.username },
     ...(t && concerned ? {
@@ -34,7 +41,11 @@ export function ownershipView(
     recovery_plan: isOwner && p
       ? { successor: person(p.successorId), approver1: person(p.approver1Id), approver2: person(p.approver2Id) }
       : null,
-    recovery: null as null,
+    recovery: r && role ? {
+      recovery_id: r.recoveryId, status: r.status, reason: r.reason, your_role: role, successor: person(r.successorId)!,
+      approver1_approved: !!r.approver1At, approver2_approved: !!r.approver2At,
+      created_at: r.createdAt.toISOString(), expires_at: r.expiresAt.toISOString(), hold_until: r.holdUntil?.toISOString() ?? null,
+    } : null,
     plan_complete: !!(p && p.successorId && p.approver1Id && p.approver2Id),
   }
 }

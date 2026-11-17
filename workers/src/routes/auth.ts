@@ -20,6 +20,7 @@ import { audit, callerIp } from '../services/audit'
 import { claimStep, codeFailed, codeLimited, stepUp } from '../services/mfaStepUp'
 import { mailConfigured, sendMail } from '../services/mailer'
 import { applyDueBreakGlass } from '../services/breakGlass'
+import { settleOwnership } from '../services/ownership'
 import { HOLD_HOURS, breakGlassEligible, nextState } from '../lib/breakGlass'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 import { enrolsTwoDevices, signIn, withAccount } from '../lib/accountRows'
@@ -306,6 +307,17 @@ const mfaVerifySchema = z.object({
   recovery_code: z.string().optional(),
 })
 
+// Settles what time decides for the user's tenant (an expired transfer or recovery, an ended hold). Cheap; a
+// failure is logged and never fails the sign-in.
+async function settleAfterSignIn(c: Ctx, db: DB, user: UserRow) {
+  if (!user.tenantId) return
+  try {
+    await settleOwnership(db, user.tenantId, c.env)
+  } catch (err) {
+    console.error('settleOwnership after sign-in failed:', err)
+  }
+}
+
 app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
   try {
     const body = c.req.valid('json')
@@ -349,6 +361,7 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
     }
 
     await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
+    await settleAfterSignIn(c, db, user)
     const access = await accessFor(c, user)
     return c.json(recovery_codes_left === undefined ? access : { ...access, recovery_codes_left })
   } catch (err) {
@@ -453,6 +466,7 @@ app.post('/mfa/enrol/finish', zValidator('json', enrolFinishSchema), async (c) =
 
     await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
     await audit(db, c, { userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_enabled', targetEntity: user.userId })
+    await settleAfterSignIn(c, db, user)
     return c.json({ ...(await accessFor(c, user)), recovery_codes: codes })
   } catch (err) {
     console.error('mfa/enrol/finish error:', err)
