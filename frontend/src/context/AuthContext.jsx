@@ -126,10 +126,11 @@ export function AuthProvider({ children }) {
     return { mfa_token: res.data.mfa_token, stage: res.data.stage }
   }
 
-  // answer: { code } or { recovery_code }. Starts the session on success.
+  // answer: { code } or { recovery_code }. Returns { access_token, role, user_id } (plus
+  // recovery_codes_left after a recovery code) without starting the session: LoginPage first
+  // shows how many recovery codes are left, then calls startSession.
   const verifyMfa = async (mfaToken, answer) => {
     const res = await client.post('/auth/mfa/verify', { mfa_token: mfaToken, ...answer })
-    startSession(res.data)
     return res.data
   }
 

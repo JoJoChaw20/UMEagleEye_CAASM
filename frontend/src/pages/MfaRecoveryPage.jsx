@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { ArrowLeft, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react'
 import client from '../api/client'
@@ -8,8 +8,8 @@ import { readRecoveryLink } from '../utils/mfa.js'
 
 /**
  * Public page for the links in the break-glass email: /mfa-recovery?confirm=… or ?cancel=….
- * Cancel is posted as soon as the page opens. Confirm waits for a click, so a mail scanner that
- * opens links cannot start the reset on its own.
+ * Both links wait for a click before anything is posted, so a mail scanner that opens links
+ * can neither start nor stop the reset on its own.
  */
 export default function MfaRecoveryPage() {
   const { search } = useLocation()
@@ -31,12 +31,6 @@ export default function MfaRecoveryPage() {
     }
     return sent.current
   })
-
-  useEffect(() => {
-    if (link?.action === 'cancel') post()
-    // once, on open
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   const Icon = !link ? ShieldX : link.action === 'cancel' ? ShieldCheck : ShieldAlert
   const title = !link ? 'This link is not complete' : link.action === 'cancel' ? 'Cancel the MFA reset' : 'Confirm the MFA reset'
@@ -68,9 +62,13 @@ export default function MfaRecoveryPage() {
         )}
 
         {link?.action === 'cancel' && !result && (
-          <div className="mt-6 flex items-center gap-2.5 text-sm text-dark-400" role="status">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-eagle-500/30 border-t-eagle-500" />Cancelling…
-          </div>
+          <>
+            <p className="mt-1.5 text-sm text-dark-400">Cancel this MFA reset?</p>
+            <p className="mt-3 text-sm text-dark-400">MFA stays as it is, and the confirm link in the email stops working.</p>
+            <button type="button" onClick={post} disabled={busy} className="btn-primary mt-6 w-full py-2.5" id="mfa-recovery-cancel">
+              {busy ? <><Spin />Cancelling…</> : 'Cancel the MFA reset'}
+            </button>
+          </>
         )}
 
         <FormAlert tone={result?.tone}>{result?.text}</FormAlert>

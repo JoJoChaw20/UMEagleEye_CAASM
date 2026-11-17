@@ -19,6 +19,9 @@ export default function MfaEnrol({ mfaToken, onFinished, onRestart, onBack }) {
   const [setup, setSetup] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [loadingQr, setLoadingQr] = useState(false)
+  // A later enrol/start failed while a QR is on screen: the server may have stored a new secret
+  // whose answer was lost, so the QR shown may no longer match.
+  const [staleQr, setStaleQr] = useState(false)
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -44,10 +47,14 @@ export default function MfaEnrol({ mfaToken, onFinished, onRestart, onBack }) {
     try {
       const data = await startMfaEnrol(mfaToken, newSecret)
       setSetup(data)
+      setStaleQr(false)
       setCode('')
       return true
     } catch (err) {
-      if (!restartFor(err)) setLoadError(errorText(err, 'MFA set-up failed. Try again.'))
+      if (!restartFor(err)) {
+        setLoadError(errorText(err, 'MFA set-up failed. Try again.'))
+        setStaleQr(true)
+      }
       return false
     } finally {
       setLoadingQr(false)
@@ -139,7 +146,7 @@ export default function MfaEnrol({ mfaToken, onFinished, onRestart, onBack }) {
             <FormAlert tone="info" className="mt-2">{TWO_DEVICES}</FormAlert>
           )}
           <div className="mt-3 flex justify-center">
-            <div className={`rounded-lg bg-white p-2.5 shadow ${loadingQr ? 'opacity-40' : ''}`}>
+            <div className={`rounded-lg bg-white p-2.5 shadow ${loadingQr || staleQr ? 'opacity-40' : ''}`}>
               <img src={`data:image/svg+xml;base64,${setup.qr_code_base64}`} alt="QR code for your authenticator app" className="block h-44 w-44" />
             </div>
           </div>
@@ -158,6 +165,11 @@ export default function MfaEnrol({ mfaToken, onFinished, onRestart, onBack }) {
         </li>
       </ol>
 
+      {staleQr && (
+        <FormAlert className="mt-4">
+          {loadError} The QR code above may be out of date. Press &quot;Show a new QR code&quot; again, then scan the new code.
+        </FormAlert>
+      )}
       <FormAlert tone="success" className="mt-4">{notice}</FormAlert>
       <FormAlert className="mt-4">{error}</FormAlert>
 

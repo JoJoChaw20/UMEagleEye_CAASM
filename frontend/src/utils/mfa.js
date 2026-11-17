@@ -60,3 +60,30 @@ export function loginReasonMessage(reason) {
   if (reason === 'deactivated') return DEACTIVATED
   return ''
 }
+
+/** The 401 texts that mean the session itself is over (middleware/auth.ts, lib/sessionGate.ts). */
+const SESSION_ENDED = new Set([
+  'Missing or invalid Authorization header',
+  'Token expired or invalid',
+  'Your session has ended. Sign in again.',
+  DEACTIVATED,
+])
+
+/**
+ * True when a 401 ends the session, so api/client.js signs the user out. Any other 401 (a wrong
+ * step-up password or MFA code) is the screen's to show, and the user stays signed in.
+ */
+export function isSessionEnded(status, detail) {
+  return status === 401 && SESSION_ENDED.has(detail)
+}
+
+const RUNNING_OUT = 'You are running out of recovery codes. Ask your Tenant Superadmin to reset your MFA so you can set up your authenticator again.'
+
+/** The note after a recovery-code sign-in; warning is '' unless 2 or fewer codes are left. */
+export function recoveryCodesLeftText(left) {
+  const n = Number(left)
+  return {
+    message: `Signed in with a recovery code. You have ${n} recovery ${n === 1 ? 'code' : 'codes'} left.`,
+    warning: n <= 2 ? RUNNING_OUT : '',
+  }
+}

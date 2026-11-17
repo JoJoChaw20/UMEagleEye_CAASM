@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Eye, EyeOff, KeyRound, LogIn } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, KeyRound, LifeBuoy, LogIn } from 'lucide-react'
 import { useGoogleLogin } from '@react-oauth/google'
 import { useAuth } from '../context/AuthContext'
 import BrandLogo from '../components/ui/BrandLogo'
@@ -10,7 +10,7 @@ import RecoveryCodes from '../components/auth/RecoveryCodes'
 import LostMfaHelp from '../components/auth/LostMfaHelp'
 import { FormAlert, Spin, TotpField, errorText, useSingleFlight } from '../components/auth/AuthParts'
 import {
-  isMfaTokenExpired, isRecoveryCodeComplete, loginReasonMessage, normalizeRecoveryCode,
+  isMfaTokenExpired, isRecoveryCodeComplete, loginReasonMessage, normalizeRecoveryCode, recoveryCodesLeftText,
   SET_UP_MFA_TO_CONTINUE, SIGN_IN_TOOK_TOO_LONG,
 } from '../utils/mfa.js'
 
@@ -22,13 +22,14 @@ export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [stage, setStage] = useState('password') // password | verify | enrol | codes
+  const [stage, setStage] = useState('password') // password | verify | recovered | enrol | codes
   const [mfaToken, setMfaToken] = useState('')
   const [useRecovery, setUseRecovery] = useState(false)
   const [lostOpen, setLostOpen] = useState(false)
   const [mfaCode, setMfaCode] = useState('')
   const [recoveryCode, setRecoveryCode] = useState('')
   const [enrolled, setEnrolled] = useState(null) // the enrol/finish answer, until the codes are saved
+  const [recovered, setRecovered] = useState(null) // the verify answer after a recovery code, until Continue
   // api/client.js sends a user here with ?reason=deactivated or ?reason=mfa_setup
   const [notice, setNotice] = useState(() => {
     const text = loginReasonMessage(new URLSearchParams(window.location.search).get('reason'))
@@ -52,6 +53,7 @@ export default function LoginPage() {
     setUseRecovery(false)
     setLostOpen(false)
     setEnrolled(null)
+    setRecovered(null)
     setPassword('')
     setNotice(message ? { tone, text: message } : null)
   }, [])
@@ -98,7 +100,16 @@ export default function LoginPage() {
   const submitVerify = (answer) => run(async () => {
     setNotice(null)
     try {
-      await verifyMfa(mfaToken, answer)
+      const data = await verifyMfa(mfaToken, answer)
+      if (data.recovery_codes_left !== undefined && data.recovery_codes_left !== null) {
+        // Say how many recovery codes are left before entering the app
+        setRecovered(data)
+        setMfaToken('')
+        setRecoveryCode('')
+        setStage('recovered')
+        return false
+      }
+      startSession(data)
       navigate('/')
       return true
     } catch (err) {
@@ -146,6 +157,15 @@ export default function LoginPage() {
     setEnrolled(null)
     navigate('/')
   }
+
+  const enterAfterRecovery = () => {
+    if (!recovered) return
+    startSession(recovered)
+    setRecovered(null)
+    navigate('/')
+  }
+
+  const recoveredText = recovered ? recoveryCodesLeftText(recovered.recovery_codes_left) : null
 
   return (
     <div className="flex min-h-screen bg-dark-950 text-dark-100">
@@ -271,6 +291,20 @@ export default function LoginPage() {
 
                 <button type="button" onClick={() => restart('')} className="btn-ghost mt-4 w-full">
                   <ArrowLeft className="h-4 w-4" />Back to sign in
+                </button>
+              </>
+            )}
+
+            {stage === 'recovered' && recoveredText && (
+              <>
+                <span className="flex h-10 w-10 items-center justify-center rounded-md border border-eagle-500/30 bg-eagle-500/10 text-eagle-400">
+                  <LifeBuoy className="h-5 w-5" />
+                </span>
+                <h1 className="mt-4 text-[26px] font-semibold leading-8 text-dark-50">Recovery code used</h1>
+                <FormAlert tone="info">{recoveredText.message}</FormAlert>
+                <FormAlert className="mt-3">{recoveredText.warning}</FormAlert>
+                <button type="button" onClick={enterAfterRecovery} className="btn-primary mt-6 w-full py-2.5" id="recovered-continue" autoFocus>
+                  <LogIn className="h-4 w-4" />Continue
                 </button>
               </>
             )}

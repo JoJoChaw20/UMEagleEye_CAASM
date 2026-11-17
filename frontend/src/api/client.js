@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { isMfaSetupRequired } from '../utils/mfa.js'
+import { isMfaSetupRequired, isSessionEnded } from '../utils/mfa.js'
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1'
 
@@ -22,19 +22,19 @@ client.interceptors.response.use(
   (response) => response,
   (error) => {
     const requestUrl = error.config?.url || ''
-    const isAuthenticationAttempt = /^\/?auth\/(login|register|google)(?:\?|$)/.test(requestUrl)
-      || /^\/?auth\/mfa\//.test(requestUrl)
+    // Sign-in requests carry no session yet: their 401s (wrong password, wrong code, expired
+    // mfa_token, deactivated) are shown on the login screens, never turned into a redirect.
+    const isSignInAttempt = /^\/?auth\/(login|register|google|mfa\/verify|mfa\/enrol\/(start|finish)|mfa\/break-glass\/\w+)(?:\?|$)/.test(requestUrl)
+    const status = error.response?.status
+    const detail = String(error.response?.data?.detail || '')
 
-    // A failed sign-in is expected to return 401. Keep it on the login form so
-    // LoginPage can show the API's "Invalid credentials" message instead of
-    // reloading the page and clearing the form. Every /auth/mfa/ route answers a
-    // wrong code, an expired mfa_token or a wrong step-up password with 401 too:
-    // the screen that asked shows the message.
-    if (error.response?.status === 401 && !isAuthenticationAttempt) {
+    // Only a 401 that ends the session (missing or expired token, signed out everywhere,
+    // deactivated) signs the user out. Any other 401, such as a wrong step-up password or MFA
+    // code on /auth/mfa/recovery-codes or an MFA reset, stays with the screen that asked.
+    if (!isSignInAttempt && isSessionEnded(status, detail)) {
       localStorage.removeItem('access_token')
       localStorage.removeItem('user')
       // A user deactivated mid-session keeps the reason so the login page can say why
-      const detail = String(error.response?.data?.detail || '')
       window.location.href = /deactivated/i.test(detail) ? '/login?reason=deactivated' : '/login'
     }
     // An account without MFA (a session from before MFA became mandatory) is refused
