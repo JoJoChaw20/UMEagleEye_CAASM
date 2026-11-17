@@ -106,6 +106,8 @@ export const users = pgTable('users', {
   totpLastStep: bigint('totp_last_step', { mode: 'number' }),
   // Sign out everywhere: a token issued before this instant is refused.
   sessionsValidAfter: timestamp('sessions_valid_after', { withTimezone: true }),
+  // Set by an ownership transfer with deactivate_on: the account is deactivated at this instant.
+  scheduledDeactivationAt: timestamp('scheduled_deactivation_at', { withTimezone: true }),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   lastLogin: timestamp('last_login', { withTimezone: true }),
@@ -140,6 +142,63 @@ export const platformMfaResets = pgTable('platform_mfa_resets', {
   effectiveAt: timestamp('effective_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
 }, (t) => [uniqueIndex('uq_platform_mfa_resets_secret').on(t.secretHash)])
+
+// ─── Tenant ownership handover ──────────────────────────────────
+// Path A: planned transfer from the current owner to an active user; one pending per tenant.
+export const ownershipTransfers = pgTable('ownership_transfers', {
+  transferId: uuid('transfer_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  fromUserId: uuid('from_user_id').notNull().references(() => users.userId, { onDelete: 'restrict' }),
+  toUserId: uuid('to_user_id').notNull().references(() => users.userId, { onDelete: 'restrict' }),
+  afterMode: varchar('after_mode', { length: 16 }).notNull(),
+  afterActions: text('after_actions').array().notNull().default(sql`'{}'::text[]`),
+  deactivateOn: timestamp('deactivate_on', { withTimezone: true }),
+  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+}, (t) => [
+  uniqueIndex('uq_ownership_transfers_one_pending').on(t.tenantId).where(sql`${t.status} = 'pending'`),
+])
+
+// Path B: the successor and two approvers the owner names in advance.
+export const tenantRecoveryPlans = pgTable('tenant_recovery_plans', {
+  tenantId: uuid('tenant_id').primaryKey().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  successorId: uuid('successor_id').references(() => users.userId, { onDelete: 'set null' }),
+  approver1Id: uuid('approver1_id').references(() => users.userId, { onDelete: 'set null' }),
+  approver2Id: uuid('approver2_id').references(() => users.userId, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
+})
+
+// Path B request: two approvals within 72 hours; one open request per tenant.
+export const ownershipRecoveries = pgTable('ownership_recoveries', {
+  recoveryId: uuid('recovery_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  successorId: uuid('successor_id').notNull().references(() => users.userId, { onDelete: 'restrict' }),
+  formerOwnerId: uuid('former_owner_id').notNull().references(() => users.userId, { onDelete: 'restrict' }),
+  reason: varchar('reason', { length: 16 }).notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('awaiting_approval'),
+  approver1At: timestamp('approver1_at', { withTimezone: true }),
+  approver2At: timestamp('approver2_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  holdUntil: timestamp('hold_until', { withTimezone: true }),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, (t) => [
+  uniqueIndex('uq_ownership_recoveries_one_open').on(t.tenantId).where(sql`${t.status} in ('awaiting_approval', 'on_hold')`),
+])
+
+// In-app notices; a null user_id means every user of the tenant.
+export const tenantNotices = pgTable('tenant_notices', {
+  noticeId: uuid('notice_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  userId: uuid('user_id').references(() => users.userId, { onDelete: 'set null' }),
+  kind: varchar('kind', { length: 32 }).notNull(),
+  body: text('body').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+})
 
 // ─── Table 3: Assets ────────────────────────────────────────────
 export const assets = pgTable('assets', {
