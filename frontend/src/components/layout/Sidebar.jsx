@@ -1,6 +1,7 @@
 import { NavLink, Link } from 'react-router-dom'
 import { ChevronsLeft, ChevronsRight, LogOut } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
+import { roleLabel } from '../../utils/actions'
 import BrandLogo from '../ui/BrandLogo'
 import { buildNavSections } from './navConfig'
 import useAgentPulse from './useAgentPulse'
@@ -62,9 +63,9 @@ function AgentPulse({ collapsed }) {
 }
 
 export default function Sidebar({ collapsed, onToggle, drawer = false, open = false }) {
-  const { logout, user } = useAuth()
-  const sections = buildNavSections(user?.role)
-  const role = user?.role?.replace(/_/g, ' ')
+  const { logout, user, can } = useAuth()
+  const sections = buildNavSections(can, user?.role)
+  const role = roleLabel(user?.role)
 
   return (
     <aside
@@ -123,7 +124,7 @@ export default function Sidebar({ collapsed, onToggle, drawer = false, open = fa
           {!collapsed && (
             <span className="min-w-0 flex-1 leading-tight">
               <span className="block truncate text-sm font-medium text-rail-text">{user?.username || 'User'}</span>
-              <span className="block truncate text-[11px] capitalize text-rail-muted">{role || 'Role'}</span>
+              <span className="block truncate text-[11px] text-rail-muted">{role || 'Role'}</span>
             </span>
           )}
           <button type="button" onClick={logout} title="Log out" aria-label="Log out"

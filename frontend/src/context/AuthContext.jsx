@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import client from '../api/client'
 
 const AuthContext = createContext(null)
@@ -7,6 +7,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(localStorage.getItem('access_token'))
   const [loading, setLoading] = useState(true)
+  const [catalog, setCatalog] = useState(null)
 
   useEffect(() => {
     if (token) {
@@ -24,6 +25,30 @@ export function AuthProvider({ children }) {
       setLoading(false)
     }
   }, [token])
+
+  // The action catalog is fetched once per sign-in; it tells can() which actions are read-only
+  useEffect(() => {
+    if (!token) { setCatalog(null); return undefined }
+    let cancelled = false
+    client.get('/auth/actions')
+      .then(res => { if (!cancelled) setCatalog(res.data) })
+      .catch(() => { if (!cancelled) setCatalog(null) })
+    return () => { cancelled = true }
+  }, [token])
+
+  // Re-read the profile, e.g. after the user's grants changed
+  const refreshUser = useCallback(async () => {
+    const res = await client.get('/auth/me')
+    setUser(res.data)
+  }, [])
+
+  // Mirrors the server decide(): platform superadmin read-only, tenant superadmin everything, others by grant
+  const can = (key) => {
+    if (!user) return false
+    if (user.role === 'superadmin') return !!catalog?.actions?.find(a => a.key === key)?.read_only
+    if (user.role === 'tenant_superadmin') return true
+    return Array.isArray(user.actions) && user.actions.includes(key)
+  }
 
   const login = async (username, password) => {
     const res = await client.post('/auth/login', { username, password })
@@ -50,10 +75,6 @@ export function AuthProvider({ children }) {
     return data
   }
 
-  const register = async (username, email, password, role) => {
-    const res = await client.post('/auth/register', { username, email, password, role })
-    return res.data
-  }
 
   const loginWithGoogle = async (access_token) => {
     const res = await client.post('/auth/google', { access_token })
@@ -76,7 +97,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, verifyMFA, register, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, login, verifyMFA, loginWithGoogle, logout, can, catalog, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )

@@ -18,13 +18,26 @@ import TenantsPage from './pages/TenantsPage'
 import TenantSettingsPage from './pages/TenantSettingsPage'
 import { useEffect } from 'react'
 import { useChatbot } from './context/ChatbotContext'
+import { useAuth } from './context/AuthContext'
 
-// Role groups used by route guards
-const ALL_ROLES        = ['superadmin', 'tenant_superadmin', 'tenant_admin', 'business_owner']
-const OPS_ROLES        = ['superadmin', 'tenant_superadmin', 'tenant_admin']
-const TENANT_MGMT      = ['superadmin']
-const USER_MGMT_ROLES  = ['superadmin', 'tenant_superadmin', 'tenant_admin']
-const SETTINGS_ROLES   = ['superadmin', 'tenant_superadmin', 'tenant_admin']
+// Route guards: pages need a view action; users and tenants are role-only
+const isTenantSuperadmin = (u) => u.role === 'tenant_superadmin'
+const isPlatformSuperadmin = (u) => u.role === 'superadmin'
+
+// A tenant user with no actions yet gets this instead of an empty dashboard.
+function DashboardRoute() {
+  const { can } = useAuth()
+  if (!can('dashboard.view')) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="glass-card p-8 text-center max-w-md">
+          <p className="text-dark-300">You have no access yet. Ask your Tenant Superadmin to grant you actions.</p>
+        </div>
+      </div>
+    )
+  }
+  return <DashboardPage />
+}
 
 // The old /assets (All Assets) and /my-assets pages were retired for /inventory. Old
 // links and bookmarks keep working: a single-asset link opens that asset's page, any
@@ -54,37 +67,37 @@ export default function App() {
       <Route path="/" element={
         <ProtectedRoute><MainLayout /></ProtectedRoute>
       }>
-        {/* OVERVIEW — all roles */}
-        <Route index element={<DashboardPage />} />
+        {/* OVERVIEW */}
+        <Route index element={<DashboardRoute />} />
 
-        {/* ASSETS — all roles can view; write restricted on backend */}
+        {/* ASSETS — each page needs its view action */}
         {/* Merged inventory (My Assets + Discovered) and asset detail. */}
         <Route path="assets"    element={<LegacyAssetsRedirect />} />
         <Route path="my-assets" element={<LegacyAssetsRedirect scope="mine" />} />
-        <Route path="inventory"          element={<ProtectedRoute allowedRoles={ALL_ROLES}><InventoryPage /></ProtectedRoute>} />
-        <Route path="inventory/:assetId" element={<ProtectedRoute allowedRoles={ALL_ROLES}><AssetDetailPage /></ProtectedRoute>} />
+        <Route path="inventory"          element={<ProtectedRoute action="asset.view"><InventoryPage /></ProtectedRoute>} />
+        <Route path="inventory/:assetId" element={<ProtectedRoute action="asset.view"><AssetDetailPage /></ProtectedRoute>} />
 
-        {/* DISCOVERY / NETWORK — business_owner excluded */}
-        <Route path="discovery" element={<ProtectedRoute allowedRoles={OPS_ROLES}><DiscoveryPage /></ProtectedRoute>} />
-        <Route path="network-map" element={<ProtectedRoute allowedRoles={ALL_ROLES}><NetworkMapPage /></ProtectedRoute>} />
+        {/* DISCOVERY / NETWORK */}
+        <Route path="discovery" element={<ProtectedRoute action="scan.view"><DiscoveryPage /></ProtectedRoute>} />
+        <Route path="network-map" element={<ProtectedRoute action="network.view"><NetworkMapPage /></ProtectedRoute>} />
 
-        {/* SECURITY — all roles */}
-        <Route path="alerts"       element={<ProtectedRoute allowedRoles={ALL_ROLES}><AlertsPage /></ProtectedRoute>} />
-        <Route path="advisories"   element={<ProtectedRoute allowedRoles={ALL_ROLES}><AdvisoriesPage /></ProtectedRoute>} />
-        <Route path="threat-intel" element={<ProtectedRoute allowedRoles={ALL_ROLES}><ThreatIntelPage /></ProtectedRoute>} />
-        <Route path="sbom"         element={<ProtectedRoute allowedRoles={ALL_ROLES}><SBOMPage /></ProtectedRoute>} />
+        {/* SECURITY */}
+        <Route path="alerts"       element={<ProtectedRoute action="alert.view"><AlertsPage /></ProtectedRoute>} />
+        <Route path="advisories"   element={<ProtectedRoute action="advisory.view"><AdvisoriesPage /></ProtectedRoute>} />
+        <Route path="threat-intel" element={<ProtectedRoute action="cti.view"><ThreatIntelPage /></ProtectedRoute>} />
+        <Route path="sbom"         element={<ProtectedRoute action="sbom.view"><SBOMPage /></ProtectedRoute>} />
 
-        {/* REPORTS — all roles */}
-        <Route path="reports" element={<ProtectedRoute allowedRoles={ALL_ROLES}><ReportsPage /></ProtectedRoute>} />
+        {/* REPORTS */}
+        <Route path="reports" element={<ProtectedRoute action="report.view"><ReportsPage /></ProtectedRoute>} />
 
         {/* SYSTEM */}
-        <Route path="agents"   element={<ProtectedRoute allowedRoles={ALL_ROLES}><AgentsPage /></ProtectedRoute>} />
+        <Route path="agents"   element={<ProtectedRoute action="agent.view"><AgentsPage /></ProtectedRoute>} />
         <Route path="chatbot"  element={<ChatbotRedirect />} />
-        <Route path="settings" element={<ProtectedRoute allowedRoles={SETTINGS_ROLES}><SettingsPage /></ProtectedRoute>} />
+        <Route path="settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
 
         {/* ADMIN */}
-        <Route path="tenants" element={<ProtectedRoute allowedRoles={TENANT_MGMT}><TenantsPage /></ProtectedRoute>} />
-        <Route path="users"   element={<ProtectedRoute allowedRoles={USER_MGMT_ROLES}><TenantSettingsPage /></ProtectedRoute>} />
+        <Route path="tenants" element={<ProtectedRoute check={isPlatformSuperadmin}><TenantsPage /></ProtectedRoute>} />
+        <Route path="users"   element={<ProtectedRoute check={isTenantSuperadmin}><TenantSettingsPage /></ProtectedRoute>} />
       </Route>
     </Routes>
   )

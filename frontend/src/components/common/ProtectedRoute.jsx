@@ -1,8 +1,9 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 
-export default function ProtectedRoute({ children, allowedRoles }) {
-  const { user, token, loading } = useAuth()
+// `action` needs that action; `check(user)` is for role-only pages (users, tenants).
+export default function ProtectedRoute({ children, action, check }) {
+  const { user, token, loading, can } = useAuth()
 
   if (loading) {
     return (
@@ -14,12 +15,13 @@ export default function ProtectedRoute({ children, allowedRoles }) {
 
   if (!token) return <Navigate to="/login" replace />
 
-  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
+  const denied = user && ((action && !can(action)) || (check && !check(user)))
+  if (denied) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="glass-card p-8 text-center max-w-md">
           <h2 className="text-xl font-bold text-accent-red mb-2">Access Denied</h2>
-          <p className="text-dark-300">Your role does not have permission to access this page.</p>
+          <p className="text-dark-300">You do not have access to this page. Ask your Tenant Superadmin for access.</p>
         </div>
       </div>
     )

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Bell, Search, Sun, Moon, Monitor, PanelLeft, Settings, LogOut, ChevronDown, ArrowRight } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { roleLabel } from '../../utils/actions'
 import { useTheme } from '../../context/ThemeContext'
 import client from '../../api/client'
 import BrandLogo from '../ui/BrandLogo'
@@ -310,7 +311,7 @@ export default function Header({ onToggleSidebar, onOpenPalette }) {
                   </span>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-dark-50">{user?.username}</p>
-                    <p className="text-[11px] capitalize text-dark-400">{user?.role?.replace(/_/g, ' ')}</p>
+                    <p className="text-[11px] text-dark-400">{roleLabel(user?.role)}</p>
                   </div>
                 </div>
                 {user?.tenantName && <p className="mt-1 truncate text-[11px] text-dark-400">{user.tenantName}</p>}

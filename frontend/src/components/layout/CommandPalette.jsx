@@ -23,7 +23,7 @@ const matches = (q, ...fields) => {
 // action, all from the keyboard.
 export default function CommandPalette({ open, onClose }) {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const { theme, setTheme } = useTheme()
   const { setWidgetOpen } = useChatbot()
   const [query, setQuery] = useState('')
@@ -34,7 +34,6 @@ export default function CommandPalette({ open, onClose }) {
   const listRef = useRef(null)
   const restoreRef = useRef(null)
 
-  const canSeeOps = user?.role !== 'business_owner'
   const q = query.trim()
 
   // Reset on open, give focus back on close
@@ -64,14 +63,14 @@ export default function CommandPalette({ open, onClose }) {
 
   const groups = useMemo(() => {
     const go = (to, state) => () => navigate(to, state ? { state } : undefined)
-    const pages = buildNavSections(user?.role)
+    const pages = buildNavSections(can, user?.role)
       .flatMap((s) => s.items.map((item) => ({ ...item, section: s.label })))
       .filter((item) => matches(q, item.label, item.section, item.keywords))
       .map((item) => ({ id: `page:${item.to}`, icon: item.icon, label: item.label, hint: item.section, run: go(item.to) }))
 
     const actions = [
       { id: 'act:priority', icon: Bell, label: 'Open alerts by priority', keywords: 'urgent triage', run: go('/alerts?sort=priority') },
-      ...(canSeeOps ? [{ id: 'act:scan', icon: Radar, label: 'Start a discovery scan', keywords: 'scan network nmap', run: go('/discovery') }] : []),
+      ...(can('scan.view') ? [{ id: 'act:scan', icon: Radar, label: 'Start a discovery scan', keywords: 'scan network nmap', run: go('/discovery') }] : []),
       { id: 'act:chat', icon: MessageCircle, label: 'Ask the security assistant', keywords: 'chatbot ai question', run: () => setWidgetOpen(true) },
       { id: 'theme:dark', icon: Moon, label: 'Switch to dark theme', keywords: 'theme mode appearance', hint: theme === 'dark' ? 'Current' : '', run: () => setTheme('dark') },
       { id: 'theme:light', icon: Sun, label: 'Switch to light theme', keywords: 'theme mode bright appearance', hint: theme === 'light' ? 'Current' : '', run: () => setTheme('light') },
@@ -99,7 +98,7 @@ export default function CommandPalette({ open, onClose }) {
       { title: 'Pages', items: pages },
       { title: 'Actions', items: actions },
     ].filter((g) => g.items.length || (g.title === 'Assets' && q.length >= 2))
-  }, [q, assets, assetState, user?.role, canSeeOps, theme, navigate, setTheme])
+  }, [q, assets, assetState, user, can, theme, navigate, setTheme])
 
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups])
 
