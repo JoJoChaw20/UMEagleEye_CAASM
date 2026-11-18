@@ -38,7 +38,7 @@ export function safeToken(value: unknown): string | null {
   return /^[A-Za-z0-9][A-Za-z0-9._+:@/~-]{0,127}$/.test(s) ? s : null
 }
 
-const cleanVersion = (v: string) => v.trim().replace(/^[^\d]+/, '')
+export const cleanVersion = (v: string) => v.trim().replace(/^[^\d]+/, '')
 
 // ── Commands per package ecosystem (Syft package types) ──────────
 export interface CommandSet { upgrade: string[]; verify: string | null; rollback: string | null; note?: string }
@@ -290,6 +290,7 @@ export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: st
   for (const s of stepsRaw) {
     const isObj = s !== null && typeof s === 'object' && !Array.isArray(s)
     const rawText = isObj ? (s as Record<string, unknown>).text : s
+    if (isObj && typeof rawText !== 'string') continue
     const text = cleanProse(String(rawText ?? '').replace(/^\s*\d+[.)]\s*/, ''), 320)
     if (!text) continue
     const note = isObj ? cleanProse((s as Record<string, unknown>).expert_note, 280) : null

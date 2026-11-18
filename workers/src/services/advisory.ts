@@ -316,7 +316,12 @@ export async function generateAdvisory(
   // Structured content is an extra: any failure here writes the advisory without it.
   let content: AdvisoryContent | null = null
   try {
-    content = buildContent(draft, facts, basis, await deviceInfoFor(db, event.assetId))
+    // the asset row is already loaded: only the agent needs one query
+    const [liveAgent] = await db.select({ id: agents.hostAssetId }).from(agents)
+      .where(and(eq(agents.hostAssetId, event.assetId), eq(agents.kind, 'host'), isNull(agents.retiredAt))).limit(1)
+    content = buildContent(draft, facts, basis, {
+      hasAgent: !!liveAgent, isNetworkDevice: asset?.deviceType === 'network', remediationEnabled: false, capabilities: [],
+    })
   } catch (err) {
     console.error('[advisory] content not built, saving the advisory without it:', err instanceof Error ? err.message : err)
   }

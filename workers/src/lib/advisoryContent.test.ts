@@ -87,14 +87,14 @@ test('port 8080 maps to firewall.block_port', () => {
   assert.equal(out.length, 2)
   assert.deepEqual(out[0]!.action, { key: 'firewall.block_port', params: { port: 8080, protocol: 'tcp', direction: 'inbound' } })
   const dflt = mapSteps(portFacts({ port: 8080 }), T('Rescan.'), dev())
-  assert.equal(dflt[0]!.action!.params.protocol, 'tcp')
+  assert.equal(dflt[1]!.action!.params.protocol, 'tcp')
   assert.equal(dflt.length, 2)
 })
 
 test('port inside a longer number does not attach', () => {
   const out = mapSteps(portFacts({ port: '80' }), T('Close port 18080 at the firewall.'), dev())
   assert.equal(out.length, 2)
-  assert.equal(out[0]!.text, 'Block inbound port 80/tcp at the firewall.')
+  assert.equal(out[1]!.text, 'If the port is not needed, block inbound port 80/tcp at the host firewall.')
 })
 
 test('protected port is never blocked', () => {
@@ -129,7 +129,7 @@ test('risk comes from the catalog', () => {
   const pkg = mapSteps(cveFacts('openssl', '3.0.14'), T('Upgrade openssl to 3.0.14.'), dev())
   assert.equal(pkg[0]!.risk, REMEDIATION_ACTIONS['pkg.upgrade'].risk)
   const fw = mapSteps(portFacts({ port: 8080 }), T('x'), dev())
-  assert.equal(fw[0]!.risk, 'medium')
+  assert.equal(fw[1]!.risk, 'medium')
   const manual = mapSteps(facts(), T('Rescan.', 'Reboot the host.', 'Uninstall the tool.'), dev())
   assert.deepEqual(manual.map(s => s.risk), ['low', 'medium', 'medium'])
 })
@@ -213,7 +213,7 @@ test('attach needs whole-token matches', () => {
   // trailing sentence period still matches
   assert.equal(mapSteps(cveFacts('openssl', '1.0'), T('Upgrade openssl to 1.0.'), dev()).length, 1)
   // KB123 must not match KB1234
-  const kb = mapSteps(facts({ eventType: 'os_patch_missing', other: { kb: 'KB123' } }), T('Install KB1234 now.'), dev())
+  const kb = mapSteps(facts({ eventType: 'os_patch_missing', other: { kb: 'KB123456' } }), T('Install KB1234567 now.'), dev())
   assert.equal(kb.length, 2); assert.equal(kb[1]!.action, undefined)
 })
 
@@ -234,7 +234,7 @@ test('nmap service names of protected services block nothing', () => {
       assert.ok(out.every(s => !s.action), `${key}: ${svc}`)
     }
   }
-  assert.ok(mapSteps(portFacts({ port: 8080, service_on_port: 'http nginx 1.2' }), T('x'), dev())[0]!.action)
+  assert.ok(mapSteps(portFacts({ port: 8080, service_on_port: 'http nginx 1.2' }), T('x'), dev()).some(s => s.action))
 })
 
 test('advisoryView returns null automation for null content', () => {
@@ -263,4 +263,87 @@ test('advisoryView: generated without agent shows Auto-fixable once an agent exi
   const withAgent = buildContent({ summary: 's', whyNow: null, steps: ['Upgrade openssl to 3.0.14.', 'Rescan.'], verify: null, rollback: null, confidence: 'high' } as never, cveFacts('openssl', '3.0.14'), 'b', dev())
   assert.equal(advisoryView({ content: withAgent }, dev()).automation!.label, 'Partly auto-fixable')
   assert.equal(advisoryView({ content: withAgent }, dev({ isNetworkDevice: true })).automation!.label, 'Needs outside support')
+})
+
+test('I2: the block step is appended last and conditional when no step qualifies', () => {
+  const out = mapSteps(portFacts({ port: 8080, protocol: 'tcp' }), T('Identify the process.', 'Rescan.'), dev())
+  assert.equal(out.length, 3)
+  assert.equal(out[2]!.text, 'If the port is not needed, block inbound port 8080/tcp at the host firewall.')
+  assert.equal(out[2]!.kind, 'auto')
+  assert.deepEqual(out[2]!.action, { key: 'firewall.block_port', params: { port: 8080, protocol: 'tcp', direction: 'inbound' } })
+  assert.ok(out.slice(0, 2).every(s => !s.action))
+})
+
+test('I2: rule-based port draft gets the block step last', async () => {
+  const { ruleBasedDraft } = await import('./advisoryKit')
+  const f = portFacts({ port: '8080', protocol: 'tcp' })
+  const out = buildContent(ruleBasedDraft(f), f, 'Rule-based', dev())
+  assert.equal(out.steps.at(-1)!.action!.key, 'firewall.block_port')
+  assert.ok(out.steps.slice(0, -1).every(s => !s.action))
+})
+
+test('I2: restrict/allow/conditional steps never get the block action', () => {
+  for (const txt of [
+    'Restrict port 8080 to trusted IPs with a firewall rule instead of closing it.',
+    'Allow port 8080 only from the office subnet.',
+    'Keep port 8080 open if the service is expected.',
+    'If the port is not needed, close port 8080.',
+  ]) {
+    const out = mapSteps(portFacts({ port: 8080 }), T(txt), dev())
+    assert.equal(out.length, 2, txt)
+    assert.equal(out[0]!.kind, 'manual', txt); assert.equal(out[0]!.action, undefined, txt)
+    assert.equal(out[1]!.text, 'If the port is not needed, block inbound port 8080/tcp at the host firewall.', txt)
+  }
+  const ok = mapSteps(portFacts({ port: 8080 }), T('Add a firewall rule to block port 8080.'), dev())
+  assert.equal(ok.length, 1); assert.ok(ok[0]!.action)
+})
+
+test('I3: strict package and version per manager', () => {
+  const manual = (pkg: string, fix: string, type: string) =>
+    assert.ok(mapSteps(cveFacts(pkg, fix, type), T('x'), dev()).every(s => !s.action), `${type} ${pkg} ${fix}`)
+  manual('x@https://h/x.whl', '1.0', 'python')
+  manual('left-pad', 'https://h/x.tgz', 'npm')
+  manual('github:u/r', '1.0', 'npm')
+  manual('git+foo', '1.0', 'npm')
+  manual('openssl/backports', '1.0', 'deb')
+  manual('openssl', '1:2.0', 'apk')
+  manual('openssl', '1:2.0', 'python')
+  manual('openssl', '1:2.0:3', 'deb')
+  manual('@a/b/c', '1.0', 'npm')
+  manual('pkg', '1.0@x', 'npm')
+  const auto = (pkg: string, fix: string, type: string) =>
+    assert.ok(mapSteps(cveFacts(pkg, fix, type), T('x'), dev()).some(s => s.action), `${type} ${pkg} ${fix}`)
+  auto('@scope/name', '2.0.1', 'npm')
+  auto('openssl', '1:3.0.14-1~deb12u1', 'deb')
+  auto('openssl', '1:3.0.14', 'rpm')
+  auto('libssl3', '3.0.14', 'deb')
+})
+
+test('I3: action version equals the cleaned version the commands use', () => {
+  const out = mapSteps(cveFacts('openssl', 'v3.0.14'), T('x'), dev())
+  assert.equal(out.find(s => s.action)!.action!.params.version, '3.0.14')
+})
+
+test('I3: kb must be KB plus 6 to 8 digits', () => {
+  for (const kb of ['KB12', 'KB123456789', 'kb5034123', 'KB50341x3']) {
+    assert.ok(mapSteps(facts({ eventType: 'os_patch_missing', other: { kb } }), T('x'), dev()).every(s => !s.action), kb)
+  }
+  assert.ok(mapSteps(facts({ eventType: 'os_patch_missing', other: { kb: 'KB5034123' } }), T('x'), dev()).some(s => s.action))
+})
+
+test('M5: WinRM ports are protected', () => {
+  assert.ok(isProtectedPort(5985) && isProtectedPort(5986))
+  for (const port of [5985, 5986]) assert.ok(mapSteps(portFacts({ port }), T('Block the port at the firewall.'), dev()).every(s => !s.action))
+})
+
+test('I1: content carries commands, note and target', () => {
+  const f = cveFacts('openssl', '3.0.14')
+  f.commands = { upgrade: ['sudo apt install openssl'], verify: null, rollback: null, note: 'N' }
+  f.urgency = { level: 'now', window: 'within 72 hours', reasons: [] }
+  const c = buildContent({ summary: 's', steps: ['a'], whyNow: null, verify: null, rollback: null, confidence: { level: 'High', reason: 'r' } }, f, 'b', dev())
+  assert.deepEqual(c.commands, ['sudo apt install openssl'])
+  assert.equal(c.command_note, 'N')
+  assert.equal(c.target, 'within 72 hours')
+  const plain = buildContent({ summary: 's', steps: ['a'], whyNow: null, verify: null, rollback: null, confidence: { level: 'High', reason: 'r' } }, facts(), 'b', dev())
+  assert.deepEqual(plain.commands, []); assert.equal(plain.command_note, null)
 })

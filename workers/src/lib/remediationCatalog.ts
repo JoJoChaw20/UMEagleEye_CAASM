@@ -25,7 +25,7 @@ export const PROTECTED_SERVICES: readonly string[] = [
   'eagleeye', 'EagleEyeAgent', 'MsMpEng', 'WinDefend', 'mpssvc', 'EventLog', 'wuauserv', 'sshd',
   'TermService', 'ufw', 'firewalld', 'auditd', 'rsyslog', 'systemd-journald', 'DNS', 'named', 'dhcpd', 'NTDS',
 ]
-export const PROTECTED_PORTS: readonly number[] = [22, 3389, 53, 67, 68, 88, 389, 636, 443]
+export const PROTECTED_PORTS: readonly number[] = [22, 3389, 53, 67, 68, 88, 389, 636, 443, 5985, 5986]
 export const PROTECTED_APP_PATTERNS: readonly string[] = [
   'defender', 'antivirus', 'eagleeye', 'crowdstrike', 'sentinel', 'sophos', 'malwarebytes',
 ]

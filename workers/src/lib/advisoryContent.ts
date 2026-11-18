@@ -3,7 +3,7 @@
  * kind (auto/manual/external), a risk and, when the rules allow, a catalog action. Only this
  * mapper decides kind, action key and parameters; the model's text is never executed.
  */
-import { safeToken, type AdvisoryDraft, type AdvisoryFacts } from './advisoryKit'
+import { safeToken, cleanVersion, type AdvisoryDraft, type AdvisoryFacts } from './advisoryKit'
 import {
   REMEDIATION_ACTIONS, PACKAGE_MANAGER_FOR, isProtectedPort, isProtectedService, type RemediationActionKey,
 } from './remediationCatalog'
@@ -19,6 +19,8 @@ export type AdvisoryStep = {
 export type AdvisoryContent = {
   summary: string; why_now: string | null; steps: AdvisoryStep[]; verify: string | null; rollback: string | null
   confidence: AdvisoryDraft['confidence']; sources: AdvisoryFacts['sources']; basis: string; version: 1
+  /** added after the first release; older stored content lacks them */
+  commands?: string[]; command_note?: string | null; target?: string
 }
 
 export type DeviceInfo = { hasAgent: boolean; isNetworkDevice: boolean; remediationEnabled: boolean; capabilities: string[] }
@@ -71,7 +73,21 @@ const PROTECTED_SERVICE_ALIASES = new Set([
 const isProtectedServiceName = (w: unknown) =>
   isProtectedService(w) || PROTECTED_SERVICE_ALIASES.has(String(w ?? '').trim().toLowerCase())
 
-type Plan = { action: Action; /** index of the match in the step text, -1 for none */ at: (t: string) => number; verb: RegExp; prepend: string }
+type Plan = {
+  action: Action; /** index of the match in the step text, -1 for none */ at: (t: string) => number; verb: RegExp
+  /** the step added when no step qualifies, and where it goes */
+  extra: string; position: 'first' | 'last'
+}
+
+// Strict shapes of what may reach an action, per package manager.
+const PKG_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+const NPM_NAME = /^(@[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9][A-Za-z0-9._+-]*$/
+const VERSION = /^[0-9][A-Za-z0-9.+~-]*$/
+const EPOCH_VERSION = /^(\d+:)?[0-9][A-Za-z0-9.+~-]*$/
+const UNSAFE_SOURCE = /github:|^git\+|:\/\//i
+const KB_ID = /^KB\d{6,8}$/
+// a step that restricts, allows or keeps the port, or is conditional, is not a "block it" step
+const NOT_A_BLOCK = /restrict|allow|trusted|only from|instead|keep|expected|\bif\b/i
 
 /** The one automatic action the facts allow, with the rule that attaches it to a step. */
 function planAction(facts: AdvisoryFacts): Plan | null {
@@ -79,23 +95,30 @@ function planAction(facts: AdvisoryFacts): Plan | null {
   if (c) {
     const type = (c.packageType ?? '').toLowerCase()
     const manager = Object.hasOwn(PACKAGE_MANAGER_FOR, type) ? PACKAGE_MANAGER_FOR[type] : undefined
-    const pkg = safeToken(c.pkg); const version = safeToken(c.group?.fixTo)
+    // a scoped npm name (@scope/name) starts with "@", which safeToken rejects, so it is checked here
+    const scoped = manager === 'npm' && typeof c.pkg === 'string' && c.pkg.trim().length <= 128 && c.pkg.trim().startsWith('@') ? c.pkg.trim() : null
+    const pkg = scoped ?? safeToken(c.pkg)
+    // the same cleaned version the commands use, so action and command agree
+    const version = safeToken(c.group?.fixTo ? cleanVersion(c.group.fixTo) : null)
     if (typeof manager !== 'string' || !pkg || !version) return null
+    if (UNSAFE_SOURCE.test(pkg) || UNSAFE_SOURCE.test(version)) return null
+    if (!(manager === 'npm' ? NPM_NAME : PKG_NAME).test(pkg)) return null
+    if (!((manager === 'apt' || manager === 'dnf') ? EPOCH_VERSION : VERSION).test(version)) return null
     if (pkg.toLowerCase().includes('eagleeye')) return null   // never self-upgrade the agent mid-run
     return {
       action: { key: 'pkg.upgrade', params: { manager, package: pkg, version } },
       at: t => (tokenAt(t, version) >= 0 ? tokenAt(t, pkg) : -1), verb: /upgrade|update|patch|install/i,
-      prepend: `Upgrade ${pkg} to ${version}.`,
+      extra: `Upgrade ${pkg} to ${version}.`, position: 'first',
     }
   }
   const o = facts.other ?? {}
   if (facts.eventType === 'os_patch_missing') {
     const kb = safeToken(o.kb)
-    if (!kb) return null
+    if (!kb || !KB_ID.test(kb)) return null
     return {
       action: { key: 'os.updates.apply', params: { scope: 'kb', kb } },
       at: t => tokenAt(t, kb), verb: /install|update|patch|apply/i,
-      prepend: `Install Windows update ${kb}.`,
+      extra: `Install Windows update ${kb}.`, position: 'first',
     }
   }
   if (facts.eventType === 'port_opened') {
@@ -110,8 +133,8 @@ function planAction(facts: AdvisoryFacts): Plan | null {
     if (words.some(w => w != null && w !== '' && isProtectedServiceName(w))) return null
     return {
       action: { key: 'firewall.block_port', params: { port, protocol: proto, direction: 'inbound' } },
-      at: t => (/close|block|firewall/i.test(t) ? portAt(t, port) : -1), verb: /close|block|firewall/i,
-      prepend: `Block inbound port ${port}/${proto} at the firewall.`,
+      at: t => (/close|block/i.test(t) && !NOT_A_BLOCK.test(t) ? portAt(t, port) : -1), verb: /close|block/i,
+      extra: `If the port is not needed, block inbound port ${port}/${proto} at the host firewall.`, position: 'last',
     }
   }
   return null
@@ -126,7 +149,8 @@ export function mapSteps(
     const ok = list.filter(s => { const i = plan.at(s.text); return i >= 0 && !negatedBefore(s.text, i) })
     const hit = ok.find(s => plan.verb.test(s.text)) ?? ok[0]
     if (hit) hit.action = plan.action
-    else list.unshift({ text: plan.prepend, action: plan.action })
+    else if (plan.position === 'last') list.push({ text: plan.extra, action: plan.action })
+    else list.unshift({ text: plan.extra, action: plan.action })
   }
   return list.map((s, i): AdvisoryStep => {
     const step: AdvisoryStep = { id: `s${i + 1}`, text: s.text, kind: 'manual', risk: 'low' }
@@ -193,5 +217,8 @@ export function buildContent(
     sources: facts.sources,
     basis,
     version: 1,
+    commands: facts.commands.upgrade,
+    command_note: facts.commands.note ?? null,
+    target: facts.urgency.window,
   }
 }

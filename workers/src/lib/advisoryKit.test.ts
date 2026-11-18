@@ -64,3 +64,8 @@ test('content is built for the rule-based fallback', () => {
   assert.ok(c.steps.length >= draft.steps.length)
   for (const s of c.steps) { assert.equal(typeof s.text, 'string'); assert.ok(s.kind) }
 })
+
+test('M3: an object step whose text is not a string is dropped', () => {
+  const d = parseAiDraft(JSON.stringify({ summary: 'Sum text.', steps: [{ text: 123 }, { text: ['a'] }, { text: 'Real step.' }] }), fallback)!
+  assert.deepEqual(d.steps, ['Real step.'])
+})

@@ -68,3 +68,7 @@ test('normalizeAccount: unknown action keys are dropped; unknown role fails clos
   assert.deepEqual(normalizeAccount('tenant' + '_admin', null), { role: 'tenant_user', actions: [] })
   assert.deepEqual(normalizeAccount('business' + '_owner', ['scan.view']), { role: 'tenant_user', actions: [] })
 })
+
+test('superadmin cannot generate advisories (the runbook relies on it)', () => {
+  assert.deepEqual(decide({ role: 'superadmin', actions: [] }, 'advisory.generate'), { ok: false, reason: 'superadmin_read_only' })
+})

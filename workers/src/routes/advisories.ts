@@ -102,7 +102,8 @@ app.get('/', authMiddleware, requireAction('advisory.view'), async (c) => {
       total: countRows[0]?.count ?? 0,
       page,
       limit,
-      items: rows.map(({ advisory, assignedToUsername, assignedToEmail }) => ({
+      // content is only sent by the detail route; the list carries the label alone
+      items: rows.map(({ advisory: { content: _content, ...advisory }, assignedToUsername, assignedToEmail }) => ({
         ...advisory,
         assignedToName: assignedToUsername ?? assignedToEmail ?? null,
         assignedToEmail: assignedToEmail ?? null,
