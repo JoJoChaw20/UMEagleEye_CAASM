@@ -35,11 +35,17 @@ export interface AdvisoryOptions {
   nvdKey?: string
 }
 
+/** A reply cut off by the token limit is never used; it earns one retry with a bigger budget. */
+export function shouldRetryForLength(finishReason: string | null | undefined): boolean {
+  return finishReason === 'length'
+}
+
 async function callAI(
   messages: AIMessage[],
   deepseekKey: string | undefined,
   openrouterKey: string,
   model: string | undefined,
+  maxTokens = 3000,
 ): Promise<{ content: string; finishReason: string | null }> {
   const useDeepSeek = !!deepseekKey
   if (!useDeepSeek && !openrouterKey) throw new Error('No AI key configured')
@@ -61,7 +67,7 @@ async function callAI(
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: resolvedModel, messages, max_tokens: 3000, temperature: 0.2 }),
+    body: JSON.stringify({ model: resolvedModel, messages, max_tokens: maxTokens, temperature: 0.2 }),
     signal: AbortSignal.timeout(45_000),
   })
   if (!res.ok) throw new Error(`AI API error: ${res.status}`)
@@ -296,16 +302,38 @@ export async function generateAdvisory(
   let basis = 'Rule-based (no AI)'
   const enriched = [facts.cve?.nvd ? 'NVD' : '', facts.cve?.osv ? 'OSV' : ''].filter(Boolean)
   try {
-    const { content: raw, finishReason } = await callAI([
+    const aiMessages: AIMessage[] = [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: JSON.stringify({
         eventType: facts.eventType, severity: facts.severity, asset: facts.asset, neighbours: facts.neighbours,
         cve: facts.cve, otherDetails: facts.other, urgency: facts.urgency,
       }) },
-    ], deepseekKey, openrouterKey, model)
-    const { draft: parsed, reason } = parseAiDraftWithReason(raw, fallback, groundedCves(facts))
-    if (!parsed) console.warn('[advisory] AI reply not used:', reason, 'finish_reason=' + finishReason)
-    else if (finishReason === 'length') console.warn('[advisory] AI reply hit the token limit but parsed:', 'finish_reason=' + finishReason)
+    ]
+    let { content: raw, finishReason } = await callAI(aiMessages, deepseekKey, openrouterKey, model)
+    let retried = false
+    let truncatedAfterRetry = false
+    if (shouldRetryForLength(finishReason)) {
+      console.warn('[advisory] AI reply hit the token limit, retrying with a larger budget')
+      retried = true
+      try {
+        ;({ content: raw, finishReason } = await callAI(aiMessages, deepseekKey, openrouterKey, model, 6000))
+      } catch (err) {
+        console.error('[advisory] AI retry failed:', err instanceof Error ? err.message : err)
+        truncatedAfterRetry = true
+      }
+      if (shouldRetryForLength(finishReason)) truncatedAfterRetry = true
+    }
+    let parsed: AdvisoryDraft | null = null
+    if (truncatedAfterRetry) {
+      console.warn('[advisory] AI reply too long after retry, using rule-based advisory')
+    } else {
+      const r = parseAiDraftWithReason(raw, fallback, groundedCves(facts))
+      parsed = r.draft
+      if (!parsed) {
+        console.warn('[advisory] AI reply not used:', r.reason, 'finish_reason=' + finishReason)
+        if (retried) console.warn('[advisory] AI reply too long after retry, using rule-based advisory')
+      }
+    }
     if (parsed) {
       draft = parsed
       basis = `AI-written from scanner data${enriched.length ? ` + ${enriched.join(', ')}` : ''}; versions and commands set by rules`
