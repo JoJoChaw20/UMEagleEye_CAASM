@@ -3,12 +3,13 @@ import {
   Bot, Send, User, Loader2, RotateCcw,
   Activity, Server, Bell, Shield, BarChart2, HelpCircle,
   CheckCircle2, Sparkles, ChevronDown, Maximize2, Minimize2, X,
-  Trash2, Plus, MessageCircle, FileSearch, Wrench, XCircle,
+  Trash2, Plus, MessageCircle, FileSearch, Wrench, XCircle, ShieldAlert,
 } from 'lucide-react'
 import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
 import { useChatbot, makeWelcome, MAX_MSG } from '../../context/ChatbotContext'
 import { useTheme } from '../../context/ThemeContext'
+import { checkWithOf, confidenceOf, isSafeRefusal, parseCitations, safeSourceUrl, sourcesByRef } from '../../utils/chatAnswer'
 
 // Sessions keep their stored emoji for compatibility, but the page draws icons:
 // a speech bubble for chats, the Advisories icon for advisory debug sessions.
@@ -43,8 +44,32 @@ function Bubble({ msg, onConfirm, canConfirm }) {
   )
 }
 
-// ── Inline markdown parser (bold + code — no dangerouslySetInnerHTML) ────
-function parseInline(text, keyPrefix, isLight) {
+// ── Inline markdown parser (citations, bold, code — no dangerouslySetInnerHTML) ────
+function parseInline(text, keyPrefix, isLight, refs) {
+  return parseCitations(text).flatMap((part, pi) => (part.type === 'cite'
+    ? [<Citation key={`${keyPrefix}-r${pi}`} refs={part.refs} sources={refs} />]
+    : formatInline(part.text, `${keyPrefix}-${pi}`, isLight)))
+}
+
+// A citation such as [S1] or [K2, L1]: S is this company's data; K (knowledge base) and L (live lookup)
+// open their public source in a new tab. Only https links are made; anything else stays plain text.
+function Citation({ refs, sources }) {
+  return (
+    <span className="inline-flex gap-0.5 align-baseline mx-0.5">
+      {refs.map(ref => {
+        const src = sources?.get(ref)
+        const url = ref[0] !== 'S' ? safeSourceUrl(src?.url) : null
+        const label = src?.title ? `${ref}: ${src.title}` : ref
+        const cls = `rounded px-1 text-[10px] font-semibold leading-4 ${ref[0] === 'S' ? 'bg-dark-700/60 text-dark-200' : 'bg-eagle-500/15 text-eagle-400'}`
+        return url
+          ? <a key={ref} href={url} target="_blank" rel="noopener noreferrer" title={label} className={`${cls} hover:underline`}>{ref}</a>
+          : <span key={ref} title={label} className={cls}>{ref}</span>
+      })}
+    </span>
+  )
+}
+
+function formatInline(text, keyPrefix, isLight) {
   const codeClass = isLight
     ? 'inline-flex items-center bg-eagle-700/15 border border-eagle-700/60 text-eagle-800 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold mx-0.5 leading-none'
     : 'inline-flex items-center bg-eagle-500/25 border border-eagle-500/70 text-eagle-200 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold mx-0.5 leading-none'
@@ -122,6 +147,11 @@ function parseBlocks(text) {
       continue
     }
 
+    const conf = confidenceOf(t)
+    if (conf) { blocks.push({ kind: 'confidence', ...conf }); i++; continue }
+    const checkWith = checkWithOf(t)
+    if (checkWith) { blocks.push({ kind: 'checkwith', text: checkWith }); i++; continue }
+
     const num = t.match(/^(\d+)[.)]\s+(.*)$/)
     if (num) {
       const items = []
@@ -147,7 +177,7 @@ function parseBlocks(text) {
     }
 
     const para = []
-    while (i < lines.length && lines[i].trim() && !/^\s*(#{1,6}\s|[-*•]\s|\d+[.)]\s|>|\||`{3}|~{3})/.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !/^\s*(#{1,6}\s|[-*•]\s|\d+[.)]\s|>|\||`{3}|~{3})/.test(lines[i]) && !confidenceOf(lines[i]) && !checkWithOf(lines[i])) {
       para.push(lines[i].trim()); i++
     }
     if (para.length) blocks.push({ kind: 'para', text: para.join(' ') })
@@ -172,11 +202,18 @@ function CodeBox({ lang, code }) {
   )
 }
 
-function MarkdownBody({ text }) {
+const CONFIDENCE_TONE = {
+  High: 'border-accent-green/40 bg-accent-green/10 text-accent-green',
+  Medium: 'border-accent-amber/40 bg-accent-amber/10 text-accent-amber',
+  Low: 'border-accent-red/40 bg-accent-red/10 text-accent-red',
+}
+
+function MarkdownBody({ text, sources }) {
   const { theme } = useTheme()
   const isLight = theme === 'light' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: dark)').matches)
   if (!text) return null
-  const inline = (s, k) => parseInline(s, k, isLight)
+  const refs = sourcesByRef(sources)
+  const inline = (s, k) => parseInline(s, k, isLight, refs)
   const blocks = parseBlocks(text)
 
   return (
@@ -210,6 +247,15 @@ function MarkdownBody({ text }) {
             )
           case 'code':
             return <CodeBox key={bi} lang={b.lang} code={b.code} />
+          case 'confidence':
+            return (
+              <p key={bi} className="flex flex-wrap items-center gap-2 text-xs">
+                <span className={`rounded-full border px-2 py-0.5 font-semibold ${CONFIDENCE_TONE[b.level]}`}>Confidence: {b.level}</span>
+                {b.reason && <span className="text-dark-300">{inline(b.reason, `cf${bi}`)}</span>}
+              </p>
+            )
+          case 'checkwith':
+            return <p key={bi} className="text-xs text-dark-300"><span className="font-semibold text-dark-100">Check with:</span> {inline(b.text, `cw${bi}`)}</p>
           case 'note':
             return (
               <div key={bi} className="rounded-lg border border-accent-amber/30 bg-accent-amber/10 px-3 py-2 text-dark-100">
@@ -265,7 +311,14 @@ function BotContent({ msg, onConfirm, canConfirm }) {
   return (
     <div className="space-y-2">
       {tools?.length > 0 && <ToolSteps tools={tools} />}
-      <MarkdownBody text={content ?? ''} />
+      {isSafeRefusal(content)
+        ? (
+          <div role="note" className="flex gap-2 rounded-lg border border-accent-amber/40 bg-accent-amber/10 px-3 py-2 text-dark-100">
+            <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-accent-amber" aria-hidden="true" />
+            <span>{content}</span>
+          </div>
+        )
+        : <MarkdownBody text={content ?? ''} sources={sources} />}
       {error && (
         <div role="alert" className="rounded-lg border border-accent-red/40 bg-accent-red/10 px-3 py-2 text-xs text-dark-100">{error}</div>
       )}
@@ -285,7 +338,10 @@ function Sources({ sources }) {
       <ul className="flex flex-wrap gap-1.5">
         {sources.map((s, i) => (
           <li key={`${s.key ?? s.ref ?? i}-${i}`} className="inline-flex max-w-full items-center gap-1 rounded-md border border-dark-700/60 bg-dark-900/50 px-1.5 py-0.5 text-[11px] text-dark-300">
-            <span className="truncate">{String(s.title ?? s.key ?? '')}</span>
+            {s.ref && <span className="font-semibold text-dark-400 flex-shrink-0">{String(s.ref)}</span>}
+            {safeSourceUrl(s.url) && String(s.ref ?? '')[0] !== 'S'
+              ? <a href={safeSourceUrl(s.url)} target="_blank" rel="noopener noreferrer" className="truncate text-eagle-400 hover:underline">{String(s.title ?? s.key ?? '')}</a>
+              : <span className="truncate">{String(s.title ?? s.key ?? '')}</span>}
             {s.type && <span className="text-dark-500 flex-shrink-0">· {String(s.type)}</span>}
           </li>
         ))}
@@ -406,6 +462,7 @@ async function failureText(res) {
     const body = await res.json()
     if (typeof body?.content === 'string' && body.content) return body.content
     if (typeof body?.error === 'string' && body.error) return body.error
+    if (typeof body?.detail === 'string' && body.detail) return body.detail
   } catch { /* not JSON */ }
   return `The assistant could not answer (HTTP ${res.status}). Please try again.`
 }
@@ -503,7 +560,7 @@ function HeaderButton({ label, onClick, children, className = '' }) {
 export default function ChatWidget() {
   const { user, can, isPlatformSuperadmin: isSuperadmin } = useAuth()
   // Confirming a proposal closes an advisory through POST /chatbot/confirm
-  const canDebugAI   = can('advisory.close_via_chat')
+  const canConfirm = can('advisory.close_via_chat')
 
   // Sessions, streaming and open state live in ChatbotContext (they persist across page navigation)
   const {
@@ -570,7 +627,7 @@ export default function ChatWidget() {
 
   // Asks one question and streams the answer into the session. Used by the input box, the
   // quick buttons and the advisory sessions, so background generation survives navigation.
-  const streamAnswer = useCallback(async (sessionId, message, history, tenantId) => {
+  const streamAnswer = useCallback(async (sessionId, message, history, tenantId, advisoryId) => {
     const placeholderTs = Date.now() + 1
     const patchBot = (patch) => setSessions(prev => {
       const s = prev[sessionId]
@@ -592,7 +649,7 @@ export default function ChatWidget() {
       const res = await fetch(`${apiBase}/chatbot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ message, history, stream: true, ...(tenantId ? { tenant_id: tenantId } : {}) }),
+        body: JSON.stringify({ message, history, stream: true, ...(tenantId ? { tenant_id: tenantId } : {}), ...(advisoryId ? { advisory_id: advisoryId } : {}) }),
       })
       if (!res.ok) { patchBot({ error: await failureText(res) }); return }
       await readChatStream(res, patchBot)
@@ -613,7 +670,8 @@ export default function ChatWidget() {
       .filter(m => (m.role === 'user' || m.role === 'bot') && m.content && !m.error)
       .slice(-6)
       .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content.slice(0, 6000) }))
-    await streamAnswer(activeId, trimmed, history, isSuperadmin ? pickedTenant : null)
+    // A chat opened from an advisory sends its advisory with every question; the server checks access.
+    await streamAnswer(activeId, trimmed, history, isSuperadmin ? pickedTenant : null, sessions[activeId]?.advisoryId ?? null)
   }, [input, loading, activeId, sessions, updateSession, streamAnswer, isSuperadmin, pickedTenant])
 
   // The Confirm button: the server re-checks the person, role and company, then closes the advisory.
@@ -656,7 +714,7 @@ export default function ChatWidget() {
         updatedAt: Date.now(),
       },
     }))
-    await streamAnswer(sessionId, prompt, [], null)
+    await streamAnswer(sessionId, prompt, [], null, advisory.advisoryId)
   }, [sessions, setSessions, setActiveId, streamAnswer])
 
   // Picks up an advisory handed over by the Advisories page, once
@@ -812,7 +870,7 @@ export default function ChatWidget() {
                     </div>
                   )}
                   {messages.map((msg, i) => (
-                    <Bubble key={i} msg={msg} onConfirm={confirmProposal} canConfirm={canDebugAI} />
+                    <Bubble key={i} msg={msg} onConfirm={confirmProposal} canConfirm={canConfirm} />
                   ))}
                   {loading && <Typing />}
                   <div ref={bottomRef} />

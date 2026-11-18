@@ -11,7 +11,9 @@ import { labelTone, chipTitle } from '../utils/advisoryView'
 const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved']
 
 export default function AdvisoriesPage() {
-  const { user, can } = useAuth()
+  const { user, can, isPlatformSuperadmin } = useAuth()
+  // Whoever may generate advisories works them through with the assistant; the Platform Superadmin never does.
+  const canDebugAI = can('advisory.generate') && can('chatbot.use') && !isPlatformSuperadmin
   const { openAdvisoryChat } = useChatbot()
   const navigate = useNavigate()
   const location = useLocation()
@@ -236,7 +238,7 @@ export default function AdvisoriesPage() {
 
               <div className="flex gap-3 flex-wrap">
                 <button onClick={() => setSelectedAdvisory(null)} className="btn-secondary">Close</button>
-                {can('chatbot.use') && (
+                {canDebugAI && (
                   <button
                     onClick={() => {
                       openAdvisoryChat(selectedAdvisory)
