@@ -275,7 +275,7 @@ export function cveIdsIn(text: string): string[] {
  *  not usable, including when it names a CVE that is not in the facts it was given: an
  *  invented id is worse than no AI text. Confidence always comes from the rules, which know
  *  whether a fix version was computed; the model's own rating is ignored. */
-export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): AdvisoryDraft | null {
+export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): (AdvisoryDraft & { stepNotes: string[] }) | null {
   let obj: Record<string, unknown>
   try {
     const body = raw.replace(/```json\s*/gi, '').replace(/```/g, '').trim()
@@ -284,16 +284,29 @@ export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: st
   } catch { return null }
   const summary = cleanProse(obj.summary, 700)
   const stepsRaw = Array.isArray(obj.steps) ? obj.steps : typeof obj.recommended_action === 'string' ? String(obj.recommended_action).split('\n') : []
-  const steps = stepsRaw.map(s => cleanProse(String(s).replace(/^\s*\d+[.)]\s*/, ''), 320)).filter((s): s is string => !!s).slice(0, 6)
+  // A step is a string or {text, expert_note}. A step that fails is dropped (with its note);
+  // a note that fails is dropped alone. Notes go through the same cleaning as steps.
+  const pairs: Array<{ text: string; note: string }> = []
+  for (const s of stepsRaw) {
+    const isObj = s !== null && typeof s === 'object' && !Array.isArray(s)
+    const rawText = isObj ? (s as Record<string, unknown>).text : s
+    const text = cleanProse(String(rawText ?? '').replace(/^\s*\d+[.)]\s*/, ''), 320)
+    if (!text) continue
+    const note = isObj ? cleanProse((s as Record<string, unknown>).expert_note, 280) : null
+    pairs.push({ text, note: note ?? '' })
+  }
+  const kept = pairs.slice(0, 6)
+  const steps = kept.map(p => p.text)
   if (!summary || steps.length === 0) return null
-  const draft: AdvisoryDraft = {
-    summary, steps,
+  const known = new Set(knownCves.map(s => s.toUpperCase()))
+  const stepNotes = kept.map(p => (p.note && !cveIdsIn(p.note).some(id => !known.has(id)) ? p.note : ''))
+  const draft: AdvisoryDraft & { stepNotes: string[] } = {
+    summary, steps, stepNotes,
     whyNow: cleanProse(obj.why_now, 300) ?? fallback.whyNow,
     verify: cleanProse(obj.verify, 300) ?? fallback.verify,
     rollback: cleanProse(obj.rollback, 300) ?? fallback.rollback,
     confidence: fallback.confidence,
   }
-  const known = new Set(knownCves.map(s => s.toUpperCase()))
   const prose = [draft.summary, ...draft.steps, draft.whyNow, draft.verify, draft.rollback].filter(Boolean).join(' ')
   if (cveIdsIn(prose).some(id => !known.has(id))) return null
   return draft

@@ -1,8 +1,10 @@
 import type { KVNamespace } from '@cloudflare/workers-types'
 import type { DB } from '../db/client'
-import { advisories, events, assets, assetRelationships, cveFindings } from '../db/schema'
+import { advisories, events, assets, assetRelationships, cveFindings, agents } from '../db/schema'
 import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm'
 import { isPackageAlert } from '../lib/packageAlerts'
+import { buildContent, type DeviceInfo, type AdvisoryContent } from '../lib/advisoryContent'
+import { techniqueIds, techniqueName } from '../lib/attack'
 
 import { CLOSED_STATUSES, OPEN_STATUSES } from '../lib/eventStatus'
 import { insertAdvisoryIfNoneSql, liveAdvisoryOf } from '../lib/advisoryScope'
@@ -198,6 +200,19 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
   for (const [k, v] of Object.entries(d).slice(0, 12)) {
     other[sanitizeText(k, 40)] = typeof v === 'object' ? sanitizeText(JSON.stringify(v), 160) : sanitizeText(v, 160)
   }
+  // A threat-intel match: the ATT&CK technique when the alert's details carry one
+  if (event.eventType === 'cti_match') {
+    const tech = techniqueIds([...(Array.isArray(d.attack_techniques) ? d.attack_techniques : []), d.attack_technique, d.technique_id]
+      .filter((x): x is string => typeof x === 'string'))[0]
+    const tname = tech ? techniqueName(tech) : null
+    if (tech && tname) other.technique = sanitizeText(`${tech} ${tname}`, 120)
+  }
+  // A missing Windows patch: the KB id and title
+  if (event.eventType === 'os_patch_missing') {
+    if (d.kb != null) other.kb = sanitizeText(d.kb, 40)
+    const title = d.kb_title ?? d.kbTitle
+    if (title != null) other.kbTitle = sanitizeText(title, 160)
+  }
   // A new port: what the last active scan saw listening on it (Nmap service, product, version)
   if (event.eventType === 'port_opened' && d.port != null) {
     const svc = (Array.isArray(osInfo.services) ? osInfo.services as Array<Record<string, unknown>> : [])
@@ -228,8 +243,18 @@ Write for an admin who must act today. Rules:
 - If cve.group.fixTo is set, the fix is "upgrade to that version"; if null, say no fix is published and give a mitigation.
 - Mention exposure (internetFacing), asset criticality and neighbours only when they change the advice.
 - Steps must be concrete and ordered, max 5, each under 300 characters.
+Each step is an object {"text": "...", "expert_note": "..."}. expert_note explains, from general security practice, what the step changes, what it can break, prerequisites and how to undo it (max 280 characters). Never put environment facts in expert_note that are not in the facts given.
 Reply with JSON only:
-{"summary":"2-3 sentences: what is wrong, where, and why it matters here","steps":["..."],"why_now":"one sentence","verify":"how to confirm the fix worked","rollback":"how to undo it safely","confidence":"high|medium|low"}`
+{"summary":"2-3 sentences: what is wrong, where, and why it matters here","steps":[{"text":"...","expert_note":"..."}],"why_now":"one sentence","verify":"how to confirm the fix worked","rollback":"how to undo it safely","confidence":"high|medium|low"}`
+
+/** What the advisory's automation label needs to know about the device. Network devices are
+ *  assets of type 'network'; an agent counts only when it is a live host agent on the asset. */
+export async function deviceInfoFor(db: DB, assetId: string): Promise<DeviceInfo> {
+  const [agent] = await db.select({ agentId: agents.agentId }).from(agents)
+    .where(and(eq(agents.hostAssetId, assetId), eq(agents.kind, 'host'), isNull(agents.retiredAt))).limit(1)
+  const [a] = await db.select({ t: assets.deviceType }).from(assets).where(eq(assets.assetId, assetId)).limit(1)
+  return { hasAgent: !!agent, isNetworkDevice: a?.t === 'network', remediationEnabled: false, capabilities: [] }
+}
 
 export async function generateAdvisory(
   db: DB,
@@ -252,7 +277,7 @@ export async function generateAdvisory(
   const fallback: AdvisoryDraft = ruleBasedDraft(facts)
 
   // The model only gets the facts; its output is validated and stripped of links.
-  let draft = fallback
+  let draft: AdvisoryDraft & { stepNotes?: string[] } = fallback
   let basis = 'Rule-based (no AI)'
   const enriched = [facts.cve?.nvd ? 'NVD' : '', facts.cve?.osv ? 'OSV' : ''].filter(Boolean)
   try {
@@ -273,6 +298,13 @@ export async function generateAdvisory(
   }
 
   const recommendedAction = formatAdvisoryText(draft, facts, basis)
+  // Structured content is an extra: any failure here writes the advisory without it.
+  let content: AdvisoryContent | null = null
+  try {
+    content = buildContent(draft, facts, basis, await deviceInfoFor(db, event.assetId))
+  } catch (err) {
+    console.error('[advisory] content not built, saving the advisory without it:', err instanceof Error ? err.message : err)
+  }
   // One live advisory per alert: generating again refreshes its text (keeping status,
   // assignee and created_at, which the 72-hour SLA counts from) instead of adding a
   // second. The insert only happens when no live one exists, in one statement.
@@ -281,10 +313,10 @@ export async function generateAdvisory(
     .where(active).orderBy(desc(advisories.createdAt)).limit(1)
   let inserted: typeof advisories.$inferSelect | undefined
   if (current) {
-    [inserted] = await db.update(advisories).set({ summary: draft.summary, recommendedAction })
+    [inserted] = await db.update(advisories).set({ summary: draft.summary, recommendedAction, content })
       .where(eq(advisories.advisoryId, current.advisoryId)).returning()
   } else {
-    const res = await db.execute(insertAdvisoryIfNoneSql(eventId, draft.summary, recommendedAction, null))
+    const res = await db.execute(insertAdvisoryIfNoneSql(eventId, draft.summary, recommendedAction, content))
     const id = (res.rows[0] as { advisory_id?: string } | undefined)?.advisory_id
     // Lost a race with a parallel job for the same alert: that job's advisory stands.
     if (!id) return null
