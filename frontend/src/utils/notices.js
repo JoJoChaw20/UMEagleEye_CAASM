@@ -13,29 +13,23 @@ export function visibleNotices(data) {
   return Array.isArray(data) ? data.filter((n) => n && typeof n === 'object' && n.notice_id && typeof n.body === 'string') : []
 }
 
-// The checklist arrives as one sentence: "<intro>: item; item; item." Each item gets the page that helps with it.
-const LINKS = [
-  [/review every user/i, '/users'],
-  [/successor|recovery approvers/i, '/users#ownership'],
-  [/reassign alerts/i, '/alerts'],
-  [/agent keys/i, '/agents'],
+// The new owner's checklist: fixed items (the plan's verbatim texts), each with the page that helps.
+const BASE_ITEMS = [
+  { label: "Review every user's actions", to: '/users' },
+  { label: 'Choose a new successor and recovery approvers', to: '/users#ownership' },
+  { label: 'Reassign alerts and advisories assigned to the former owner', to: '/alerts' },
 ]
+const AGENT_KEYS_ITEM = { label: 'Consider replacing agent keys', to: '/agents' }
 
+/** Items for an owner_checklist notice; [] when anything is off (the caller then shows a plain, dismissable card). */
 export function checklistItems(notice) {
-  if (!notice || notice.kind !== 'owner_checklist' || typeof notice.body !== 'string') return []
-  const i = notice.body.indexOf(':')
-  if (i < 0) return []
-  return notice.body.slice(i + 1).replace(/\.\s*$/, '').split(';')
-    .map((s) => s.trim()).filter(Boolean)
-    .map((s) => {
-      const label = s.charAt(0).toUpperCase() + s.slice(1)
-      const hit = LINKS.find(([re]) => re.test(s))
-      return { label, to: hit ? hit[1] : null }
-    })
+  if (!notice || notice.kind !== 'owner_checklist' || typeof notice.body !== 'string' || !/checklist/i.test(notice.body)) return []
+  return /agent keys/i.test(notice.body) ? [...BASE_ITEMS, AGENT_KEYS_ITEM] : [...BASE_ITEMS]
 }
 
-export function restoreReady(email) {
-  return String(email ?? '').trim().length > 0
+export function restoreReady(email, username = '') {
+  const u = String(username ?? '').trim()
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email ?? '').trim()) && (u === '' || u.length >= 3)
 }
 
 /** Request body for POST /tenants/:id/ownership/restore: the new owner plus the step-up fields. */

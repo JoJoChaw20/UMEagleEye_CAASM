@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Info, X } from 'lucide-react'
 import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
-import { canDismiss, visibleNotices } from '../../utils/notices'
+import { canDismiss, checklistItems, visibleNotices } from '../../utils/notices'
 import OwnerChecklist from '../ownership/OwnerChecklist'
 
 const REFRESH_MS = 60_000
@@ -13,6 +13,7 @@ export default function NoticeBar() {
   const { token } = useAuth()
   const [notices, setNotices] = useState([])
   const [busyId, setBusyId] = useState(null)
+  const [dismissError, setDismissError] = useState('')
   const last = useRef(0)
 
   const load = useCallback(async () => {
@@ -33,20 +34,21 @@ export default function NoticeBar() {
 
   const dismiss = async (id) => {
     setBusyId(id)
+    setDismissError('')
     try {
       await client.post(`/notices/${id}/dismiss`)
       setNotices((cur) => cur.filter((n) => n.notice_id !== id))
     } catch (err) {
       if (err?.response?.status === 404) setNotices((cur) => cur.filter((n) => n.notice_id !== id))
+      else setDismissError('Could not dismiss the notice. Try again.')
     } finally {
       setBusyId(null)
     }
   }
 
-  if (!notices.length) return null
   return (
-    <div role="status" aria-live="polite" className="space-y-2 px-4 pt-4 lg:px-6">
-      {notices.map((n) => n.kind === 'owner_checklist' && canDismiss(n) ? (
+    <div role="status" aria-live="polite" className={notices.length ? 'space-y-2 px-4 pt-4 lg:px-6' : undefined}>
+      {notices.map((n) => n.kind === 'owner_checklist' && canDismiss(n) && checklistItems(n).length ? (
         <OwnerChecklist key={n.notice_id} notice={n} busy={busyId === n.notice_id} onDone={() => dismiss(n.notice_id)} />
       ) : (
         <div key={n.notice_id} className="flex items-start gap-3 rounded-lg border border-eagle-500/30 bg-eagle-500/5 p-3 text-sm text-dark-100">
@@ -60,6 +62,7 @@ export default function NoticeBar() {
           )}
         </div>
       ))}
+      {dismissError && <p className="text-xs text-red-400">{dismissError}</p>}
     </div>
   )
 }

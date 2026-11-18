@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Crown, AlertTriangle } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
 import ActionPicker from '../users/ActionPicker'
@@ -64,11 +65,12 @@ export default function OwnershipSection({ tenantId, users, onChanged }) {
   const [loadError, setLoadError] = useState('')
   const [dialog, setDialog] = useState(null) // { kind, body? }
   const [flash, setFlash] = useState('')
+  const { hash } = useLocation()
 
   // The checklist links here (/users#ownership): scroll once the section has loaded
   useEffect(() => {
-    if (res && window.location.hash === '#ownership') document.getElementById('ownership')?.scrollIntoView?.({ block: 'start' })
-  }, [res !== null]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (res && hash === '#ownership') document.getElementById('ownership')?.scrollIntoView?.({ block: 'start' })
+  }, [res !== null, hash]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const base = `/tenants/${tenantId}/ownership`
   const load = useCallback(async () => {

@@ -174,8 +174,9 @@ function RestoreOwnershipDialog({ tenant, onClose, onDone }) {
   }
   return (
     <StepUpDialog title={`Restore tenant ownership: ${tenant.name}`} confirmLabel="Restore ownership" danger idPrefix="restore"
-      onSubmit={submit} onCancel={onClose} isReady={(s) => restoreReady(email) && stepUpReady(s)}>
+      onSubmit={submit} onCancel={onClose} isReady={(s) => restoreReady(email, username) && stepUpReady(s)}>
       <p className="text-sm text-dark-300">{RESTORE_VERIFICATION}</p>
+      <p className="mt-2 text-sm text-dark-300">The current Tenant Superadmin will be suspended and signed out.</p>
       <div className="mt-4 space-y-3">
         <div>
           <label htmlFor="restore-email" className="mb-1.5 block text-sm font-medium text-dark-200">New owner email</label>
