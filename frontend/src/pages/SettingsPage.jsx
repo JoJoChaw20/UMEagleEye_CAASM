@@ -3,7 +3,7 @@ import { Users, Shield, Clock, Eye, EyeOff, Lock, Check, LifeBuoy } from 'lucide
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 import { roleLabel } from '../utils/actions'
-import { lostMfaAdvice, recoveryCodesLeftLabel } from '../utils/mfa'
+import { isMfaExemptUser, lostMfaAdvice, recoveryCodesLeftLabel } from '../utils/mfa'
 import { FormAlert, errorText } from '../components/auth/AuthParts'
 import StepUpDialog from '../components/auth/StepUpDialog'
 import RecoveryCodes from '../components/auth/RecoveryCodes'
@@ -246,10 +246,10 @@ export default function SettingsPage() {
           <Shield className="w-5 h-5 text-accent-green" />
           <h2 className="text-lg font-semibold text-dark-50">Multi-Factor Authentication</h2>
         </div>
-        {user?.mfa_exempt && <p className="text-sm text-dark-400">MFA is not required for this account on this environment.</p>}
-        {!user?.mfa_exempt && mfaStatusError && <FormAlert className="mb-3">{mfaStatusError}</FormAlert>}
-        {!user?.mfa_exempt && !mfaStatus && !mfaStatusError && <p className="text-sm text-dark-400">Loading…</p>}
-        {!user?.mfa_exempt && mfaStatus && (
+        {isMfaExemptUser(user) && <p className="text-sm text-dark-400">MFA is not required for this account on this environment.</p>}
+        {!isMfaExemptUser(user) && mfaStatusError && <FormAlert className="mb-3">{mfaStatusError}</FormAlert>}
+        {!isMfaExemptUser(user) && !mfaStatus && !mfaStatusError && <p className="text-sm text-dark-400">Loading…</p>}
+        {!isMfaExemptUser(user) && mfaStatus && (
           <div className="space-y-3">
             <p className="text-sm text-dark-50">
               <span className="font-medium">{mfaStatus.mfa_enabled ? 'MFA is on' : 'MFA is off'}</span>

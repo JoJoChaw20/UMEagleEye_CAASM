@@ -114,9 +114,9 @@ export function needsPasswordForStepUp(user) {
   return user?.hasPassword !== false
 }
 
-/** An MFA-exempt account (/auth/me mfa_exempt, staging only) confirms with the password alone. */
+/** An MFA-exempt account with MFA off (/auth/me mfa_exempt + mfaEnabled, staging only) confirms with the password alone. */
 export function isMfaExemptUser(user) {
-  return user?.mfa_exempt === true
+  return user?.mfa_exempt === true && user?.mfaEnabled !== true
 }
 
 export function stepUpReady({ hasPassword, password, code, mfaExempt }) {

@@ -174,7 +174,9 @@ test('mfaResetToast and guidance are verbatim', () => {
 
 test('exempt account: password only, no code sent', async () => {
   const { isMfaExemptUser } = await import('./mfa.js')
-  assert.equal(isMfaExemptUser({ mfa_exempt: true }), true)
+  assert.equal(isMfaExemptUser({ mfa_exempt: true, mfaEnabled: false }), true)
+  assert.equal(isMfaExemptUser({ mfa_exempt: true, mfaEnabled: true }), false)
+  assert.equal(isMfaExemptUser({ mfa_exempt: false, mfaEnabled: false }), false)
   assert.equal(isMfaExemptUser({}), false)
   assert.equal(stepUpReady({ hasPassword: true, password: 'x', code: '', mfaExempt: true }), true)
   assert.equal(stepUpReady({ hasPassword: true, password: '', code: '123456', mfaExempt: true }), false)
