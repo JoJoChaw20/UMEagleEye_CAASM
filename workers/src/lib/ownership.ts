@@ -1,5 +1,5 @@
 // Tenant ownership handover rules. Pure logic: no DB calls, no clock reads (callers pass `now`).
-import { and, eq, exists, inArray, notExists, sql, type SQL } from 'drizzle-orm'
+import { and, eq, inArray, notExists, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { users } from '../db/schema'
 import { isDeactivated } from './sessionGate'
@@ -33,6 +33,7 @@ export function validateTransfer(i: {
   if (toUser.tenantId !== i.tenantId) return 'The recipient must belong to this tenant'
   if (toUser.role !== 'tenant_user') return 'The recipient must be a Tenant user'
   if (isDeactivated(toUser, i.now)) return 'The recipient must be an active user'
+  if (toUser.scheduledDeactivationAt) return 'The recipient is scheduled to leave and cannot receive ownership'
   if (!(AFTER_MODES as readonly string[]).includes(after.mode)) return 'Unknown choice for your own account'
   if (after.mode === 'deactivate_on') {
     if (!after.deactivateOn || after.deactivateOn.getTime() <= i.now.getTime()) return 'deactivate_on must be in the future'
@@ -54,6 +55,7 @@ export function validateRecoveryPlan(i: {
     if (u.tenantId !== i.tenantId) return 'Everyone in the plan must belong to this tenant'
     if (isDeactivated(u, i.now)) return 'Everyone in the plan must be an active user'
     if (u.role !== 'tenant_user') return 'Everyone in the plan must be a Tenant user'
+    if (u.scheduledDeactivationAt) return 'Nobody in the plan can be scheduled to leave'
   }
   return null
 }
@@ -114,8 +116,22 @@ export function approverSlot(
   return null
 }
 
-/** SQL: no scheduled deactivation that has come due. */
-const notDue = (col: any): SQL => sql`(${col} is null or ${col} > now())`
+/**
+ * SQL: the user is an eligible new owner right now: still a tenant_user of the tenant, active, and no scheduled
+ * deactivation that has come due. The ONE fragment behind every flip guard and swap guard (accept, recovery, swap),
+ * so a flip can never commit while its swap no-ops.
+ */
+export function eligibleTenantUser(userId: string, tenantId: string): SQL {
+  return sql`exists (select 1 from users where user_id = ${userId}::uuid and tenant_id = ${tenantId}::uuid
+    and role = 'tenant_user' and is_active = true
+    and (scheduled_deactivation_at is null or scheduled_deactivation_at > now()))`
+}
+
+/** SQL: the user is still the tenant's owner. */
+export function stillOwner(userId: string, tenantId: string): SQL {
+  return sql`exists (select 1 from users where user_id = ${userId}::uuid and tenant_id = ${tenantId}::uuid
+    and role = 'tenant_superadmin')`
+}
 
 export type SwapUpdate = {
   label: 'lock' | 'demote' | 'promote'
@@ -132,8 +148,8 @@ export type SwapUpdate = {
  * concurrent deactivate or role change of either user waits, and the guards below see a stable
  * recipient. Its result is not an update result; check only demote and promote.
  * All-or-nothing at the SQL level (a 0-row statement does not abort a batch):
- *  - demote runs only if the sender is still the owner AND the recipient is still an active tenant_user;
- *  - promote runs only if the recipient is still an active tenant_user AND the tenant has no owner
+ *  - demote runs only if the sender is still the owner AND the recipient is still eligible (eligibleTenantUser);
+ *  - promote runs only if the recipient is still eligible AND the tenant has no owner
  *    (so it is a no-op when the demote was a no-op).
  * An optional `guard` (SQL) is ANDed into the demote's WHERE, so the caller can make the swap depend on another
  * statement of the same batch (e.g. a transfer flipped by this transaction); promote then no-ops with it.
@@ -153,23 +169,21 @@ export function swapStatements(
     isActive: mode !== 'deactivate_now',
     scheduledDeactivationAt: mode === 'deactivate_on' ? (after.deactivateOn ?? null) : null,
   }
-  const promoteSet = { role: 'tenant_superadmin', actions: [] as string[] }
-  const r = alias(users, 'r')
+  // A future scheduled deactivation must not survive the promotion, or the new owner would be locked out later.
+  const promoteSet = { role: 'tenant_superadmin', actions: [] as string[], scheduledDeactivationAt: null }
   const o = alias(users, 'o')
   const demote: SwapUpdate = {
     label: 'demote', userId: fromId, tenantId, set: demoteSet,
     build: (db) => db.update(users).set(demoteSet).where(and(
       eq(users.userId, fromId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'),
-      exists(db.select({ one: sql`1` }).from(r).where(and(
-        eq(r.userId, toId), eq(r.tenantId, tenantId), eq(r.role, 'tenant_user'), eq(r.isActive, true), notDue(r.scheduledDeactivationAt),
-      ))),
+      eligibleTenantUser(toId, tenantId),
       guard,
     )).returning({ userId: users.userId }),
   }
   const promote: SwapUpdate = {
     label: 'promote', userId: toId, tenantId, set: promoteSet,
     build: (db) => db.update(users).set(promoteSet).where(and(
-      eq(users.userId, toId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_user'), eq(users.isActive, true), notDue(users.scheduledDeactivationAt),
+      eq(users.userId, toId), eligibleTenantUser(toId, tenantId),
       notExists(db.select({ one: sql`1` }).from(o).where(and(
         eq(o.tenantId, tenantId), eq(o.role, 'tenant_superadmin'),
       ))),

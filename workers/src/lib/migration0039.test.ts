@@ -23,8 +23,15 @@ test('0039 has both partial unique indexes', () => {
   assert.match(code, /CREATE UNIQUE INDEX "[^"]+" ON "ownership_recoveries" USING btree \("tenant_id"\) WHERE [^;]*'awaiting_approval'[^;]*'on_hold'/)
 })
 
-test('0039 never deletes users', () => {
-  assert.doesNotMatch(code, /REFERENCES "users"[^,;]*ON DELETE cascade/i)
+test('0039 never deletes users: only personal notices cascade from users', () => {
+  const cascades = code.match(/ADD CONSTRAINT "[^"]+" FOREIGN KEY[^;]*REFERENCES "public"\."users"[^;]*ON DELETE cascade/gi) ?? []
+  assert.equal(cascades.length, 1)
+  assert.match(cascades[0]!, /ADD CONSTRAINT "tenant_notices_user_id_users_user_id_fk"/)
+})
+
+test('0039 tenant_notices.user_id cascades: null means every user, so set null would widen a notice', () => {
+  assert.match(code, /"tenant_notices_user_id_users_user_id_fk"[^;]*ON DELETE cascade/)
+  assert.doesNotMatch(code, /"tenant_notices_user_id_users_user_id_fk"[^;]*ON DELETE set null/)
 })
 
 test('0039 is additive only', () => {

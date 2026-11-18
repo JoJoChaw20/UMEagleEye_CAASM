@@ -2,10 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
+import { users } from '../db/schema'
 import {
   validateTransfer, validateRecoveryPlan, transferNext, recoveryNext, approverSlot,
   swapStatements, ownershipChangedNotice, restoredNotice, HOURS_72,
-  completionEffects, ownerChecklist, RECOVERY_DISPUTED_NOTICE, ownershipNoticeExpiry,
+  completionEffects, eligibleTenantUser, stillOwner, ownerChecklist, RECOVERY_DISPUTED_NOTICE, ownershipNoticeExpiry,
 } from './ownership'
 
 const db = getDb('postgres://u:p@localhost/none')   // builds queries only; nothing connects
@@ -126,7 +127,7 @@ test('swap runs demote before promote in one transaction (statement order)', () 
   assert.deepEqual(s.map((x) => x.label), ['lock', 'demote', 'promote'])
   assert.deepEqual(s[1].set, { role: 'tenant_user', actions: ['a'], isActive: true, scheduledDeactivationAt: d })
   assert.equal(s[1].userId, 'o')
-  assert.deepEqual(s[2].set, { role: 'tenant_superadmin', actions: [] })
+  assert.deepEqual(s[2].set, { role: 'tenant_superadmin', actions: [], scheduledDeactivationAt: null })
   assert.equal(s[2].userId, 'n')
   const gone = swapStatements(T, 'o', 'n', { mode: 'deactivate_now' })
   assert.equal(gone[1].set.isActive, false)
@@ -145,11 +146,11 @@ test('swap runs demote before promote in one transaction (statement order)', () 
     assert.match(sql, /returning "user_id"/)
   }
   assert.ok(q[0].params.includes('o') && q[0].params.includes('tenant_superadmin') && q[0].params.includes(T))
-  assert.ok(q[1].params.includes('n') && q[1].params.includes('tenant_user') && q[1].params.includes(T))
-  assert.match(q[0].sql, /exists \(select 1 from "users" "r" where/)
-  assert.match(q[0].sql, /"r"\."is_active" = \$\d+/)
-  assert.ok(q[0].params.includes('n') && q[0].params.includes('tenant_user') && q[0].params.includes(true))
-  assert.match(q[1].sql, /"is_active" = \$\d+/)
+  assert.ok(q[1].params.includes('n') && q[1].params.includes(T))
+  for (const x of [q[0], q[1]]) {
+    assert.match(x.sql, /exists \(select 1 from users where user_id = \$\d+::uuid and tenant_id = \$\d+::uuid\s+and role = 'tenant_user' and is_active = true\s+and \(scheduled_deactivation_at is null or scheduled_deactivation_at > now\(\)\)\)/)
+    assert.ok(x.params.includes('n'))
+  }
   assert.match(q[1].sql, /not exists \(select 1 from "users" "o" where/)
   assert.ok(q[1].params.includes('tenant_superadmin'))
   assert.throws(() => swapStatements(T, 'o', 'n', { mode: 'bogus' }), /Unknown after mode/)
@@ -191,7 +192,6 @@ test('a due scheduled deactivation makes a recipient or plan member ineligible',
   const due = { ...to, scheduledDeactivationAt: plus(-1000) }
   const later = { ...to, scheduledDeactivationAt: plus(1000) }
   assert.equal(validateTransfer({ ...base, toUser: due }), 'The recipient must be an active user')
-  assert.equal(validateTransfer({ ...base, toUser: later }), null)
   const m = (id: string, x = {}) => ({ ...to, userId: id, ...x })
   const plan = { ownerId: 'o', tenantId: T, now }
   assert.equal(validateRecoveryPlan({ ...plan, successor: m('a'), approvers: [m('b'), m('c')] }), null)
@@ -204,4 +204,31 @@ test('a due scheduled deactivation makes a recipient or plan member ineligible',
 
 test('tenant-wide ownership notices expire after 30 days', () => {
   assert.equal(ownershipNoticeExpiry(now).getTime(), now.getTime() + 30 * 24 * 60 * 60 * 1000)
+})
+
+test('promote clears a future scheduled deactivation (the new owner is never locked out later)', () => {
+  const q = swapStatements(T, 'o', 'n', { mode: 'stay' })[2].build(db).toSQL()
+  assert.match(q.sql, /"scheduled_deactivation_at" = \$\d+/)
+  assert.ok(q.params.includes(null))
+})
+
+test('eligibleTenantUser / stillOwner are the shared guard fragments', () => {
+  const dq = db.select().from(users).where(eligibleTenantUser('n', T)).toSQL()
+  assert.match(dq.sql, /role = 'tenant_user' and is_active = true/)
+  assert.match(dq.sql, /scheduled_deactivation_at is null or scheduled_deactivation_at > now\(\)/)
+  assert.deepEqual(dq.params, ['n', T])
+  const oq = db.select().from(users).where(stillOwner('o', T)).toSQL()
+  assert.match(oq.sql, /role = 'tenant_superadmin'/)
+})
+
+test('anyone with a scheduled deactivation date cannot receive ownership or sit in the plan', () => {
+  const later = { ...to, scheduledDeactivationAt: plus(1000) }
+  assert.equal(validateTransfer({ ...base, toUser: later }), 'The recipient is scheduled to leave and cannot receive ownership')
+  const m = (id: string, x = {}) => ({ ...to, userId: id, ...x })
+  const plan = { ownerId: 'o', tenantId: T, now }
+  for (const slot of [0, 1, 2]) {
+    const ms = [m('a'), m('b'), m('c')]
+    ms[slot] = m(['a', 'b', 'c'][slot]!, { scheduledDeactivationAt: plus(1000) })
+    assert.equal(validateRecoveryPlan({ ...plan, successor: ms[0]!, approvers: [ms[1]!, ms[2]!] }), 'Nobody in the plan can be scheduled to leave')
+  }
 })

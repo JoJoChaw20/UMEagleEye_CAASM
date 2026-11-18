@@ -7,7 +7,7 @@ import {
   enrolmentTokens, ownershipRecoveries, ownershipTransfers, tenantNotices, tenantRecoveryPlans, users,
 } from '../db/schema'
 import {
-  completionEffects, ownerChecklist, ownershipChangedNotice, ownershipNoticeExpiry, recoveryNext, restoredNotice, swapStatements, type AfterChoice,
+  completionEffects, eligibleTenantUser, ownerChecklist, ownershipChangedNotice, ownershipNoticeExpiry, recoveryNext, restoredNotice, stillOwner, swapStatements, type AfterChoice,
 } from '../lib/ownership'
 import { auditOwnerInvite, candidateEligible, ownerInviteStatement, type OwnerInvitePlan } from './ownerInvite'
 import { audit } from './audit'
@@ -24,12 +24,37 @@ export async function settleOwnership(db: DB, tenantId: string, env?: Env): Prom
   } catch (err) {
     console.error('settling recovery failed:', err)   // never blocks transfer settling or the calling route
   }
-  const expired = await db.update(ownershipTransfers).set({ status: 'expired', decidedAt: sql`now()` })
-    .where(and(
-      eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'),
-      lte(ownershipTransfers.expiresAt, sql`now()`),
-    )).returning({ toUserId: ownershipTransfers.toUserId, createdAt: ownershipTransfers.createdAt })
-  for (const t of expired) await closeRequestNotice(db, tenantId, t.toUserId, t.createdAt)
+  try {
+    const expired = await db.update(ownershipTransfers).set({ status: 'expired', decidedAt: sql`now()` })
+      .where(and(
+        eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'),
+        lte(ownershipTransfers.expiresAt, sql`now()`),
+      )).returning({ toUserId: ownershipTransfers.toUserId, createdAt: ownershipTransfers.createdAt })
+    for (const t of expired) await closeRequestNotice(db, tenantId, t.toUserId, t.createdAt)
+  } catch (err) {
+    console.error('expiring transfers failed:', err)   // never blocks the calling route
+  }
+}
+
+/** Notice kinds that ask someone to act on a transfer or recovery. */
+const REQUEST_KINDS = ['transfer_request', 'recovery_request', 'recovery_hold', 'recovery_started']
+const RECOVERY_KINDS = ['recovery_request', 'recovery_hold', 'recovery_started']
+
+/** Ends the tenant's open notices of these kinds, only where `guard` holds (for a db.batch entry). */
+export function closeNoticesStatement(db: DB, tenantId: string, kinds: string[], guard?: SQL) {
+  return db.update(tenantNotices).set({ expiresAt: sql`now()` }).where(and(
+    eq(tenantNotices.tenantId, tenantId), inArray(tenantNotices.kind, kinds),
+    or(isNull(tenantNotices.expiresAt), gt(tenantNotices.expiresAt, sql`now()`)), guard,
+  ))
+}
+
+/** Ends the tenant's open recovery request, hold and started notices (a recovery was disputed, expired or closed). */
+export async function closeRecoveryNotices(db: DB, tenantId: string) {
+  try {
+    await closeNoticesStatement(db, tenantId, RECOVERY_KINDS)
+  } catch (err) {
+    console.error('closing recovery notices failed:', err)
+  }
 }
 
 /** Ends the recipient's open 'transfer_request' notice (created at or after the transfer) once the transfer is no longer pending. */
@@ -68,7 +93,8 @@ export async function postNotice(
  *     commits without the swap);
  *  3. demote, guarded by "this transaction made the flip" (decided_at = now());
  *  4. promote (no-ops unless the tenant has no owner, i.e. unless the demote happened);
- *  5. clear both users from the recovery plan, same guard.
+ *  5. clear both users from the recovery plan, same guard;
+ *  6. close an open recovery (it would block the new owner's plan edits) and end its notices, same guard.
  * done = the flip, demote and promote each returned 1 row; otherwise nothing changed.
  */
 export async function acceptTransfer(
@@ -78,10 +104,7 @@ export async function acceptTransfer(
   const flipped = sql`exists (select 1 from ownership_transfers where transfer_id = ${transferId}
     and status = 'accepted' and decided_at = now())`
   const [lock, demote, promote] = swapStatements(tenantId, fromUserId, toUserId, after, flipped)
-  const stateOk = sql`exists (select 1 from users where user_id = ${fromUserId} and tenant_id = ${tenantId}
-      and role = 'tenant_superadmin')
-    and exists (select 1 from users where user_id = ${toUserId} and tenant_id = ${tenantId}
-      and role = 'tenant_user' and is_active = true)`
+  const stateOk = sql`${stillOwner(fromUserId, tenantId)} and ${eligibleTenantUser(toUserId, tenantId)}`
   const flip = db.update(ownershipTransfers).set({ status: 'accepted', decidedAt: sql`now()` })
     .where(and(
       eq(ownershipTransfers.transferId, transferId), eq(ownershipTransfers.status, 'pending'),
@@ -90,8 +113,13 @@ export async function acceptTransfer(
   const clearPlan = clearPlanStatement(db, tenantId, fromUserId, toUserId, flipped)
   const closeNotice = db.update(tenantNotices).set({ expiresAt: sql`now()` })
     .where(and(requestNoticeWhere(tenantId, toUserId, t.createdAt), flipped))
+  const closeRecovery = db.update(ownershipRecoveries).set({ status: 'cancelled' })
+    .where(and(
+      eq(ownershipRecoveries.tenantId, tenantId), inArray(ownershipRecoveries.status, ['awaiting_approval', 'on_hold']), flipped,
+    ))
   const res = await db.batch([
-    lock.build(db), flip, demote.build(db), promote.build(db), clearPlan, closeNotice,
+    lock.build(db), flip, demote.build(db), promote.build(db), clearPlan, closeNotice, closeRecovery,
+    closeNoticesStatement(db, tenantId, RECOVERY_KINDS, flipped),
   ] as any) as unknown as unknown[][]
   const [, f, d, p] = res
   return { done: f!.length === 1 && d!.length === 1 && p!.length === 1 }
@@ -116,12 +144,9 @@ export async function openRecovery(db: DB, tenantId: string): Promise<OpenRecove
   return r
 }
 
-/** Former owner still owner and successor still an active tenant_user: what a completion needs. */
+/** Former owner still owner and successor still an eligible tenant_user (same fragment as the swap): what a completion needs. */
 function recoveryStateOk(r: OpenRecovery) {
-  return sql`exists (select 1 from users where user_id = ${r.formerOwnerId} and tenant_id = ${r.tenantId}
-      and role = 'tenant_superadmin')
-    and exists (select 1 from users where user_id = ${r.successorId} and tenant_id = ${r.tenantId}
-      and role = 'tenant_user' and is_active = true)`
+  return sql`${stillOwner(r.formerOwnerId, r.tenantId)} and ${eligibleTenantUser(r.successorId, r.tenantId)}`
 }
 
 /**
@@ -133,7 +158,8 @@ function recoveryStateOk(r: OpenRecovery) {
  *  3. every other statement is guarded by "this transaction made the flip" (completed_at = now(); now() is the
  *     transaction start): demote with deactivate_now (former owner suspended), promote, sessions_valid_after = now()
  *     for the former owner, delete unused enrolment tokens (uses = 0), clear both users from the plan, cancel a
- *     transfer still pending in the tenant (it would block the new owner, who cannot cancel it).
+ *     transfer still pending in the tenant (it would block the new owner, who cannot cancel it), end the request,
+ *     hold and started notices.
  * done = flip, demote and promote each returned 1 row; otherwise nothing changed. On success the notices, audit
  * and emails follow outside the batch.
  */
@@ -156,8 +182,9 @@ export async function completeRecovery(db: DB, r: OpenRecovery, env?: Env, c: Co
   const clearPlan = clearPlanStatement(db, tenantId, formerOwnerId, successorId, flipped)
   const dropTransfer = db.update(ownershipTransfers).set({ status: 'cancelled', decidedAt: sql`now()` })
     .where(and(eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'), flipped))
+  const closeNotices = closeNoticesStatement(db, tenantId, REQUEST_KINDS, flipped)
   const res = await db.batch([
-    lock.build(db), flip, demote.build(db), promote.build(db), signOut, revokeTokens, clearPlan, dropTransfer,
+    lock.build(db), flip, demote.build(db), promote.build(db), signOut, revokeTokens, clearPlan, dropTransfer, closeNotices,
   ] as any) as unknown as unknown[][]
   const [, f, d, p] = res
   const done = f!.length === 1 && d!.length === 1 && p!.length === 1
@@ -195,11 +222,12 @@ async function afterRecovery(db: DB, r: OpenRecovery, env: Env | undefined, c: C
 
 /** A recovery that can no longer complete (owner or successor changed) is closed as 'cancelled' so a new one can start. */
 export async function closeStaleRecovery(db: DB, r: OpenRecovery) {
-  await db.update(ownershipRecoveries).set({ status: 'cancelled' })
+  const closed = await db.update(ownershipRecoveries).set({ status: 'cancelled' })
     .where(and(
       eq(ownershipRecoveries.recoveryId, r.recoveryId), inArray(ownershipRecoveries.status, ['awaiting_approval', 'on_hold']),
       sql`not (${recoveryStateOk(r)})`,
-    ))
+    )).returning({ recoveryId: ownershipRecoveries.recoveryId })
+  if (closed.length) await closeRecoveryNotices(db, r.tenantId)
 }
 
 async function settleRecovery(db: DB, tenantId: string, env?: Env) {
@@ -207,10 +235,11 @@ async function settleRecovery(db: DB, tenantId: string, env?: Env) {
   if (!r) return
   const next = recoveryNext(r, 'settle', new Date())
   if (next?.status === 'expired') {
-    await db.update(ownershipRecoveries).set({ status: 'expired' }).where(and(
+    const expired = await db.update(ownershipRecoveries).set({ status: 'expired' }).where(and(
       eq(ownershipRecoveries.recoveryId, r.recoveryId), eq(ownershipRecoveries.status, 'awaiting_approval'),
       lte(ownershipRecoveries.expiresAt, sql`now()`),
-    ))
+    )).returning({ recoveryId: ownershipRecoveries.recoveryId })
+    if (expired.length) await closeRecoveryNotices(db, tenantId)
     return
   }
   // complete_now: the hold ended. Or both approvals are in for an immediate reason but completion did not finish.
@@ -275,13 +304,17 @@ export async function restoreOwnership(
       .where(and(eq(ownershipTransfers.tenantId, tenantId), eq(ownershipTransfers.status, 'pending'), demoted)))
     stmts.push(db.update(ownershipRecoveries).set({ status: 'cancelled' })
       .where(and(eq(ownershipRecoveries.tenantId, tenantId), inArray(ownershipRecoveries.status, ['awaiting_approval', 'on_hold']), demoted)))
-    stmts.push(db.update(tenantNotices).set({ expiresAt: sql`now()` }).where(and(
-      eq(tenantNotices.tenantId, tenantId), inArray(tenantNotices.kind, ['transfer_request', 'recovery_request', 'recovery_hold']),
-      or(isNull(tenantNotices.expiresAt), gt(tenantNotices.expiresAt, sql`now()`)), demoted,
-    )))
+    stmts.push(closeNoticesStatement(db, tenantId, REQUEST_KINDS, demoted))
   }
   const ownerAt = stmts.length
   stmts.push(ownerInviteStatement(db, plan, tenantId, email, demoted))
+  if (!oldId) {
+    // No owner to demote: the unused enrolment tokens still go, once this transaction made the new owner.
+    stmts.push(db.delete(enrolmentTokens).where(and(
+      eq(enrolmentTokens.tenantId, tenantId), eq(enrolmentTokens.uses, 0),
+      sql`exists (select 1 from users where email = ${email} and tenant_id = ${tenantId}::uuid and role = 'tenant_superadmin')`,
+    )))
+  }
   const res = await db.batch(stmts as any) as unknown as unknown[][]
   const added = res[ownerAt]![0] as Person | undefined
   const done = (!oldId || res[demoteAt]!.length === 1) && !!added

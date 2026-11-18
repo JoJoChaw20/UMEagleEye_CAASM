@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { ownerInviteStatement } from './ownerInvite'
+import { users } from '../db/schema'
+import { candidateEligible, ownerInviteStatement } from './ownerInvite'
 
 const db = getDb('postgres://u:p@localhost/none')   // builds queries only; nothing connects
 const T = '11111111-1111-1111-1111-111111111111'
@@ -18,4 +19,13 @@ test('promoting an existing account also clears its scheduled deactivation', () 
   const q = (ownerInviteStatement(db, { ok: true, existing, username: 'x' }, T, 'b@x') as any).toSQL()
   assert.match(q.sql, /"scheduled_deactivation_at" = \$\d+/)
   assert.ok(q.params.includes(null))
+})
+
+test('promoting an existing account requires it active and not due (interim invite and restore)', () => {
+  const existing = { userId: 'u1', tenantId: null, role: 'tenant_user', actions: [] } as any
+  const q = (ownerInviteStatement(db, { ok: true, existing, username: 'x' }, T, 'b@x') as any).toSQL()
+  assert.match(q.sql, /"is_active" = \$\d+/)
+  assert.match(q.sql, /"scheduled_deactivation_at" is null or "users"."scheduled_deactivation_at" > now\(\)/)
+  const c = db.select().from(users).where(candidateEligible('u1', T)).toSQL()
+  assert.match(c.sql, /is_active = true and \(scheduled_deactivation_at is null or scheduled_deactivation_at > now\(\)\)/)
 })

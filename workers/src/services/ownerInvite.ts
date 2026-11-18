@@ -52,11 +52,12 @@ export async function planOwnerInvite(
   return { ok: true, existing: existing ?? null, username: usernameFor(email, username) }
 }
 
-/** SQL: the existing account may still be promoted (still in this tenant or in none, and not a superadmin of any kind). */
+/** SQL: the existing account may still be promoted (in this tenant or in none, not a superadmin of any kind, active, no due scheduled deactivation). */
 export function candidateEligible(userId: string, tenantId: string): SQL {
   return sql`exists (select 1 from users where user_id = ${userId}::uuid
     and (tenant_id is null or tenant_id = ${tenantId}::uuid)
-    and role not in ('superadmin', 'tenant_superadmin'))`
+    and role not in ('superadmin', 'tenant_superadmin')
+    and is_active = true and (scheduled_deactivation_at is null or scheduled_deactivation_at > now()))`
 }
 
 /**
@@ -71,6 +72,7 @@ export function ownerInviteStatement(db: any, plan: Extract<OwnerInvitePlan, { o
     return db.update(users).set({ tenantId, role: 'tenant_superadmin', actions: [] as string[], scheduledDeactivationAt: null }).where(and(
       eq(users.userId, plan.existing.userId), notInArray(users.role, ['superadmin', 'tenant_superadmin']),
       or(isNull(users.tenantId), eq(users.tenantId, tenantId)),
+      eq(users.isActive, true), or(isNull(users.scheduledDeactivationAt), sql`${users.scheduledDeactivationAt} > now()`),
       notExists(db.select({ one: sql`1` }).from(o).where(and(eq(o.tenantId, tenantId), eq(o.role, 'tenant_superadmin')))),
       guard,
     )).returning({ userId: users.userId, username: users.username, email: users.email })

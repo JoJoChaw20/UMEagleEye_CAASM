@@ -192,7 +192,8 @@ export const ownershipRecoveries = pgTable('ownership_recoveries', {
 export const tenantNotices = pgTable('tenant_notices', {
   noticeId: uuid('notice_id').primaryKey().default(newUuid()),
   tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
-  userId: uuid('user_id').references(() => users.userId, { onDelete: 'set null' }),
+  // null = every user of the tenant, so deleting a user deletes their personal notices (never set null).
+  userId: uuid('user_id').references(() => users.userId, { onDelete: 'cascade' }),
   kind: varchar('kind', { length: 32 }).notNull(),
   body: text('body').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),

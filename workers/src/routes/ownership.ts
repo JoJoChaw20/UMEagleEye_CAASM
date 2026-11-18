@@ -14,11 +14,12 @@ import {
 import { ownershipView, transferMessage } from '../lib/ownershipView'
 import { isNotNullViolation, isOwnerIndexViolation, isUniqueViolation } from '../lib/fkViolation'
 import { isDeactivated } from '../lib/sessionGate'
+import { actionChanges, parseActionList } from '../lib/userAdmin'
 import { audit } from '../services/audit'
 import { stepUp } from '../services/mfaStepUp'
 import { sendMail } from '../services/mailer'
 import {
-  acceptTransfer, closeRequestNotice, closeStaleRecovery, completeRecovery, openRecovery, postNotice, restoreOwnership, settleOwnership,
+  acceptTransfer, closeRecoveryNotices, closeRequestNotice, closeStaleRecovery, completeRecovery, openRecovery, postNotice, restoreOwnership, settleOwnership,
 } from '../services/ownership'
 import { planOwnerInvite } from '../services/ownerInvite'
 
@@ -91,7 +92,9 @@ router.post(
         .where(and(eq(users.userId, body.to_user_id), eq(users.tenantId, tenantId))).limit(1)
       if (!to) return c.json({ detail: 'User not found in this tenant' }, 404)
       const now = new Date()
-      const after = { mode: body.after.mode, actions: body.after.actions, deactivateOn: body.after.deactivate_on ? new Date(body.after.deactivate_on) : null }
+      // Store the parsed list (closed over its requirements), not the raw one: the swap applies it as is.
+      const parsedActions = body.after.actions === undefined ? undefined : parseActionList(body.after.actions)
+      const after = { mode: body.after.mode, actions: parsedActions?.ok ? parsedActions.actions : body.after.actions, deactivateOn: body.after.deactivate_on ? new Date(body.after.deactivate_on) : null }
       const bad = validateTransfer({ ownerId: caller.userId, toUser: to, tenantId, after, now })
       if (bad) return c.json({ detail: bad }, 400)
       if (await pendingTransfer(db, tenantId)) return c.json({ detail: 'A transfer is already pending. Cancel it first.' }, 409)
@@ -194,6 +197,15 @@ router.post(
         userId: caller.userId, tenantId, actionType: 'ownership.transferred', targetEntity: t.fromUserId,
         previousState: { owner: t.fromUserId }, newState: { owner: me.userId, transfer_id: t.transferId, after_mode: t.afterMode },
       })
+      // The swap gave the former owner the chosen actions (an owner holds none): audit it like any actions change.
+      const applied = t.afterMode === 'deactivate_now' ? [] : (t.afterActions ?? [])
+      if (applied.length) {
+        const { added, removed } = actionChanges([], applied)
+        await audit(db, c, {
+          userId: caller.userId, tenantId, actionType: 'user.actions', targetEntity: t.fromUserId,
+          previousState: { actions: [] }, newState: { actions: applied, added, removed },
+        })
+      }
       for (const to of [former?.email, me.email]) {
         if (to) await sendMail(c.env, { to, subject: 'Tenant ownership changed', text: note })
       }
@@ -460,6 +472,7 @@ router.post(
         .where(and(eq(ownershipRecoveries.recoveryId, r.recoveryId), eq(ownershipRecoveries.status, r.status)))
         .returning({ recoveryId: ownershipRecoveries.recoveryId })
       if (!moved) return c.json({ detail: NOT_OPEN }, 409)
+      await closeRecoveryNotices(db, tenantId)
       const text = RECOVERY_DISPUTED_NOTICE
       const [plan] = await db.select().from(tenantRecoveryPlans).where(eq(tenantRecoveryPlans.tenantId, tenantId)).limit(1)
       const targets = [r.successorId, plan?.approver1Id, plan?.approver2Id].filter((x): x is string => !!x)

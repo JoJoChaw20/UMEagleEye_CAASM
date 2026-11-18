@@ -61,7 +61,7 @@ ALTER TABLE "ownership_transfers" ADD CONSTRAINT "ownership_transfers_to_user_id
 --> statement-breakpoint
 ALTER TABLE "tenant_notices" ADD CONSTRAINT "tenant_notices_tenant_id_tenants_tenant_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("tenant_id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
-ALTER TABLE "tenant_notices" ADD CONSTRAINT "tenant_notices_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;
+ALTER TABLE "tenant_notices" ADD CONSTRAINT "tenant_notices_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "tenant_recovery_plans" ADD CONSTRAINT "tenant_recovery_plans_tenant_id_tenants_tenant_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("tenant_id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint

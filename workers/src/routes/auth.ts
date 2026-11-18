@@ -324,6 +324,18 @@ async function settleAfterSignIn(c: Ctx, db: DB, user: UserRow) {
   }
 }
 
+/**
+ * Settles, then re-reads the account: a just-suspended former owner is refused and a just-promoted successor gets
+ * the settled role, never the row read before the settle.
+ */
+async function settledAccount(c: Ctx, db: DB, user: UserRow): Promise<{ row: UserRow; refused?: undefined } | { refused: Response }> {
+  await settleAfterSignIn(c, db, user)
+  const [fresh] = await db.select().from(users).where(eq(users.userId, user.userId)).limit(1)
+  if (!fresh) return { refused: c.json({ detail: SIGN_IN_AGAIN }, 401) }
+  if (isDeactivated(fresh)) return { refused: c.json({ detail: DEACTIVATED }, 401) }
+  return { row: fresh }
+}
+
 app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
   try {
     const body = c.req.valid('json')
@@ -367,8 +379,9 @@ app.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
     }
 
     await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
-    await settleAfterSignIn(c, db, user)
-    const access = await accessFor(c, user)
+    const settled = await settledAccount(c, db, user)
+    if (settled.refused) return settled.refused
+    const access = await accessFor(c, settled.row)
     return c.json(recovery_codes_left === undefined ? access : { ...access, recovery_codes_left })
   } catch (err) {
     console.error('mfa/verify error:', err)
@@ -472,8 +485,9 @@ app.post('/mfa/enrol/finish', zValidator('json', enrolFinishSchema), async (c) =
 
     await clearFailures(c.env.KV_CACHE, 'mfa_account', user.userId)
     await audit(db, c, { userId: user.userId, tenantId: user.tenantId, actionType: 'auth.mfa_enabled', targetEntity: user.userId })
-    await settleAfterSignIn(c, db, user)
-    return c.json({ ...(await accessFor(c, user)), recovery_codes: codes })
+    const settled = await settledAccount(c, db, user)
+    if (settled.refused) return settled.refused
+    return c.json({ ...(await accessFor(c, settled.row)), recovery_codes: codes })
   } catch (err) {
     console.error('mfa/enrol/finish error:', err)
     return c.json({ detail: 'MFA set-up failed' }, 500)

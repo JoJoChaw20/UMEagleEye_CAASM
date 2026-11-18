@@ -16,8 +16,10 @@ import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
 import { mfaClearStatements, stepUp } from '../services/mfaStepUp'
-import { deleteUserStatements } from '../services/userDelete'
+import { ACCOUNT_CHANGED, deleteUserStatements } from '../services/userDelete'
 import { sendMail } from '../services/mailer'
+import { stillOwner } from '../lib/ownership'
+import { isDeactivated } from '../lib/sessionGate'
 import { ALREADY_OWNED, OWNERSHIP_ONLY, auditOwnerInvite, ownerInviteStatement, planOwnerInvite } from '../services/ownerInvite'
 import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH } from '../lib/auth'
@@ -405,6 +407,9 @@ router.post(
       // The shared owner-invite path (services/ownerInvite.ts), also used by the platform restore.
       const plan = await planOwnerInvite(db, caller, tenantId, email, username, false)
       if (!plan.ok) return c.json({ detail: plan.error.detail }, plan.error.status)
+      if (plan.existing && isDeactivated(plan.existing)) {
+        return c.json({ detail: 'That account is deactivated. Choose an active account or a new email.' }, 409)
+      }
       try {
         const [added] = await ownerInviteStatement(db, plan, tenantId, email)
         if (!added) return c.json(ALREADY_OWNED, 409)
@@ -547,7 +552,10 @@ router.patch(
     if (targetRole === 'superadmin') return c.json({ detail: 'The platform superadmin cannot be deactivated here' }, 403)
     if (target.userId === caller.userId || targetRole === 'tenant_superadmin') return c.json({ detail: OWNERSHIP_ONLY }, 403)
 
-    await db.update(users).set({ isActive: is_active, scheduledDeactivationAt: null }).where(eq(users.userId, userId))
+    const [changed] = await db.update(users).set({ isActive: is_active, scheduledDeactivationAt: null }).where(and(
+      eq(users.userId, userId), eq(users.tenantId, tenantId), eq(users.role, 'tenant_user'), stillOwner(caller.userId, tenantId),
+    )).returning({ userId: users.userId })
+    if (!changed) return c.json({ detail: ACCOUNT_CHANGED }, 409)
     await audit(db, c, {
       userId: caller.userId, tenantId, actionType: is_active ? 'user.activate' : 'user.deactivate', targetEntity: userId,
       previousState: { is_active: target.isActive },
@@ -639,7 +647,8 @@ router.delete(
       const previousState = { user_id: target.userId, username: target.username, email: target.email, actions: target.actions }
       try {
         // One Neon HTTP transaction (db.batch): the audit rows keep the username, then the user goes.
-        await db.batch([...deleteUserStatements(db, tenantId, userId, target.username)])
+        const res = await db.batch([...deleteUserStatements(db, tenantId, userId, target.username, caller.userId)]) as unknown as unknown[][]
+        if (res[1]!.length !== 1) return c.json({ detail: ACCOUNT_CHANGED }, 409)
       } catch (err) {
         if (isFkViolation(err)) {
           await audit(db, c, {
