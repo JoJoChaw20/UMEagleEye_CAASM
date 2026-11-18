@@ -66,6 +66,20 @@ const CONTINUE_SUBREQUESTS = 1
 const CHAT_DRAIN_LIMIT = 100
 // A whole (non-streamed) long answer from a reasoning model can take over 60 s (staging, 18 Nov).
 const ROUND_TIMEOUT_MS = 100_000
+/**
+ * The whole answer's time limit. Each model call gets at most the time left, and none starts after it;
+ * running out ends in "I don't know" (or a long answer's last full sentence with the note), never in an
+ * unverified or unreviewed answer. Eval v5 saw one answer chain run past 5 minutes; of 184 staging
+ * answers on 18 Nov, the median took 29 s and 3 took longer than 180 s.
+ */
+export const ANSWER_DEADLINE_MS = 180_000
+/** A model call is not started with less than this left: it could not finish in time. */
+const MIN_CALL_MS = 5_000
+
+/** The answer's time limit was reached. */
+export class AnswerDeadline extends Error {
+  constructor() { super('The answer time limit was reached.') }
+}
 const MAX_OUTPUT_TOKENS = 4096
 const HISTORY_TURNS = 6
 const HISTORY_CHARS = 1000
@@ -116,6 +130,8 @@ export interface GraphCtx {
   /** The dashboard's overall status for the caller's scope (kg/overview.ts), set by the route. Counts only when
    *  the caller may not see individual devices. Without it, get_overview is not offered. */
   overview?: () => Promise<unknown>
+  /** The clock for the answer's time limit (tests). Defaults to Date.now. */
+  now?: () => number
 }
 
 export type IntelToolName = 'lookup_cve' | 'lookup_attack_technique' | 'lookup_cwe'
@@ -637,7 +653,8 @@ function counted<T extends object>(binding: T, budget: Budget): T {
  * The chat's context with every database, KV, AI binding, queue, model and fetch call counted, plus
  * the removal of a refused proposal, which may use the answer's held-back share.
  */
-function metered(ctx: GraphCtx, budget: Budget): { ctx: GraphCtx; fetchFn: typeof fetch; dropProposal: (key: string) => Promise<void> } {
+function metered(ctx: GraphCtx, budget: Budget, deadline: number): { ctx: GraphCtx; fetchFn: typeof fetch; dropProposal: (key: string) => Promise<void> } {
+  const now = ctx.now ?? Date.now
   const query: Q = async (text, params) => { budget.take(); return ctx.query(text, params) }
   const batch = ctx.query.batch
   if (batch) query.batch = async stmts => { budget.take(); return batch(stmts) }
@@ -647,7 +664,19 @@ function metered(ctx: GraphCtx, budget: Budget): { ctx: GraphCtx; fetchFn: typeo
     if (b) bindings.set(name, counted(b, budget))
   }
   const env = new Proxy(ctx.env, { get: (target, p) => (bindings.has(p) ? bindings.get(p) : Reflect.get(target, p)) })
-  const ai: ModelCall = async (messages, tools, opts) => { budget.take(true); return ctx.ai(messages, tools, opts) }
+  // Every model call fits in the answer's time limit: none starts after it, each may use only the time left.
+  const ai: ModelCall = async (messages, tools, opts) => {
+    const left = deadline - now()
+    if (left < MIN_CALL_MS) throw new AnswerDeadline()
+    budget.take(true)
+    try {
+      return await ctx.ai(messages, tools, { ...opts, timeoutMs: Math.min(opts?.timeoutMs ?? ROUND_TIMEOUT_MS, left) })
+    } catch (err) {
+      // A call cut short by the time left is the answer's time limit, not a model failure.
+      if (deadline - now() < MIN_CALL_MS) throw new AnswerDeadline()
+      throw err
+    }
+  }
   // The global is read at call time, so a test that replaces fetch is still counted.
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => { budget.take(); return globalThis.fetch(input, init) }) as typeof fetch
   const dropProposal = async (key: string) => { budget.take(true); await ctx.env.KV_CACHE.delete(key) }
@@ -870,6 +899,8 @@ async function finishAnswer(ai: ModelCall, budget: Budget, emit: Emit, messages:
     } catch (err) {
       console.warn('[kg-agent] continuation failed:', err instanceof Error ? err.message : err)
       await emit({ tool: { ...CONTINUE_STEP, status: 'done', ok: false } })
+      // Out of time: end like a too-long answer, on its last full sentence with the note.
+      if (err instanceof AnswerDeadline) return { text: joinContinuation(parts, true), toolCalls: [], truncated: false }
       return { text: joinContinuation(parts, false), toolCalls: [], truncated: true }
     }
     await emit({ tool: { ...CONTINUE_STEP, status: 'done', ok: true } })
@@ -977,7 +1008,11 @@ function generalCorrection(problems: string[]): string {
 export async function runGraphAgent(unmetered: GraphCtx, question: string, history: ChatTurn[], emit: Emit): Promise<GraphResult> {
   const result: GraphResult = { kind: 'system', content: '', sources: [], proposal: null, tools: [], catchingUp: false, failed: false }
   const budget = new Budget(ROUTE_SUBREQUESTS + (unmetered.advisoryContext ? ADVISORY_CONTEXT_SUBREQUESTS : 0))
-  const { ctx, fetchFn, dropProposal } = metered(unmetered, budget)
+  const clock = unmetered.now ?? Date.now
+  const deadline = clock() + ANSWER_DEADLINE_MS
+  const { ctx, fetchFn, dropProposal } = metered(unmetered, budget, deadline)
+  // Set once the run has its state, so a time-out can still remove a close proposal it made.
+  let state: RunState | null = null
 
   const release = async (body: string, notes: string[] = []): Promise<GraphResult> => {
     result.content = [...notes.map(n => `> ${n}`), body].join('\n\n')
@@ -1060,6 +1095,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     const canPropose = asksToClose && roleCanClose
     const countsOnly = ctx.user.role === 'superadmin'
     const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook('S'), kbook: new SourceBook('K'), lbook: new SourceBook('L'), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
+    state = s
     // Values the server computed (current UTC time, recorded range, gaps, the time asked in UTC+8 and UTC) may be
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
     s.evidence.push(...perfFacts)
@@ -1111,6 +1147,17 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (reply.truncated) notes.push(CUT_OFF)
     return await release(kind === 'fix' ? labelSuggestedSteps(reply.text) : reply.text, notes)
   } catch (err) {
+    // Out of time (a call refused, or one cut by the time left): "I don't know", never an unchecked answer.
+    if (err instanceof AnswerDeadline) {
+      console.warn(`[kg-agent] answer time limit reached (${Math.round(ANSWER_DEADLINE_MS / 1000)} s): ${err instanceof Error ? err.message : err}`)
+      try {
+        if (state) await discardProposal(state)
+        result.proposal = null
+        result.sources = []
+        return await release(IDK)
+      } catch { /* the client went away */ }
+      return result
+    }
     console.error('[kg-agent] failed:', err instanceof Error ? err.message : err)
     result.failed = true
     try { await emit({ error: FAILED }) } catch { /* the client went away */ }
@@ -1149,7 +1196,7 @@ export function modelFor(env: Env): ModelCall | null {
         model: ai.model, messages, stream: false, max_tokens: opts.maxTokens ?? MAX_OUTPUT_TOKENS, temperature: opts.temperature ?? 0.2,
         ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
       }),
-      signal: AbortSignal.timeout(ROUND_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? ROUND_TIMEOUT_MS),
     })
     if (!res.ok) throw new Error(`AI API error: ${res.status}`)
     return readModelReply(await res.json())

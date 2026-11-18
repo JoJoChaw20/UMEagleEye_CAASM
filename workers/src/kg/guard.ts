@@ -16,7 +16,8 @@ export type ChatMessage =
   | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string }
 export interface ModelReply { text: string; toolCalls: ToolCall[]; truncated: boolean }
-export interface ModelOptions { maxTokens?: number; temperature?: number }
+/** timeoutMs: how long this one call may take (the agent sets it from the time left for the answer). */
+export interface ModelOptions { maxTokens?: number; temperature?: number; timeoutMs?: number }
 /** One call to the language model. Injected, so the agent can be tested without one. */
 export type ModelCall = (messages: ChatMessage[], tools?: unknown[], opts?: ModelOptions) => Promise<ModelReply>
 

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { valueShape, readModelReply, problemKinds, recordIdsOf, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { ANSWER_DEADLINE_MS, valueShape, readModelReply, problemKinds, recordIdsOf, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -489,6 +489,52 @@ test('continuation: after 3 parts still unfinished, the answer ends on its last 
   assert.equal(r.content, 'web-01 has 5 open ports [S1]. It is at 10.0.0.5 [S1].\n\nThis answer was too long to finish. Ask about one step at a time.')
   // 4096 + 4096 + 3808 output tokens reach the 12 000 cap: two continuations, not three
   assert.equal(s.events.filter(e => (e.tool as { name?: string; status?: string } | undefined)?.name === 'continue_answer' && (e.tool as { status: string }).status === 'running').length, 2)
+})
+
+// ── Answer time limit (eval v5: one answer took over 5 minutes) ──
+
+/** A fake clock: every model call takes `perCall` ms. Records the timeout each call was given. */
+function clocked(s: ReturnType<typeof setup>, perCall: number) {
+  let t = 0
+  const timeouts: Array<number | undefined> = []
+  const inner = s.ctx.ai
+  s.ctx.now = () => t
+  s.ctx.ai = async (m, tl, o) => { timeouts.push(o?.timeoutMs); t += perCall; return inner(m, tl, o) }
+  return { timeouts }
+}
+
+test('time limit: no model call starts after the deadline; the answer is I don\'t know, not a failure', async () => {
+  const s = setup({ replies: [tools(search), text('web-01 has 9 open ports at 10.9.9.9 [S1].'), text('web-01 has 5 open ports at 10.0.0.5 [S1].')] })
+  clocked(s, 70_000) // classify ends at 70 s, the lookup round at 140 s, the answer at 210 s
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, IDK)
+  assert.equal(r.failed, false)
+  assert.equal(s.m.calls(), 2, 'the rewrite of the rejected answer was not started')
+})
+
+test('time limit: each model call may only use the time left, at most the per-call limit', async () => {
+  const s = setup({ replies: [tools(search), text('web-01 has 5 open ports at 10.0.0.5 [S1].')] })
+  const c = clocked(s, 70_000)
+  await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.deepEqual(c.timeouts, [100_000, 100_000, ANSWER_DEADLINE_MS - 140_000])
+})
+
+test('time limit: a long answer cut by the deadline ends on its last full sentence with the note', async () => {
+  const cut = (t: string): ModelReply => ({ text: t, toolCalls: [], truncated: true })
+  const s = setup({ replies: [tools(search), cut('web-01 has 5 open ports [S1]. It is at'), cut(' 10.0.0.5 [S1].')] })
+  clocked(s, 70_000)
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports [S1].\n\nThis answer was too long to finish. Ask about one step at a time.')
+})
+
+test('time limit: a fix answer is never released without its safety review', async () => {
+  const answer = '## What we found\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Suggested steps\n1. Upgrade openssl.\n\nConfidence: High - cited from the results.'
+  const s = setup({ kind: 'general', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  clocked(s, 90_000) // the answer ends at 180 s: no time is left for the reviewer
+  const r = await runGraphAgent(s.ctx, 'what is the safest way to patch?', [], s.emit)
+  assert.equal(r.content, IDK)
+  assert.doesNotMatch(r.content, /Upgrade openssl/)
 })
 
 // ── Fix round 1: one test per review probe ──
