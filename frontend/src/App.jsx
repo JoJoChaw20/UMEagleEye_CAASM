@@ -17,6 +17,7 @@ import SettingsPage from './pages/SettingsPage'
 import AgentsPage from './pages/AgentsPage'
 import TenantsPage from './pages/TenantsPage'
 import TenantSettingsPage from './pages/TenantSettingsPage'
+import OwnershipPage from './pages/OwnershipPage'
 import { useEffect } from 'react'
 import { useChatbot } from './context/ChatbotContext'
 import { useAuth } from './context/AuthContext'
@@ -26,6 +27,7 @@ import { buildNavSections } from './components/layout/navConfig'
 // Route guards: pages need a view action; users and tenants are role-only
 const isTenantSuperadmin = (u) => u.role === 'tenant_superadmin'
 const isPlatformSuperadmin = (u) => u.role === 'superadmin'
+const isTenantMember = (u) => u.role === 'tenant_user' || u.role === 'tenant_superadmin'
 
 // Without dashboard.view the user is sent to their first page; a tenant user with no
 // page at all gets this instead of an empty dashboard.
@@ -116,6 +118,7 @@ export default function App() {
         <Route path="agents"   element={<ProtectedRoute action="agent.view"><AgentsPage /></ProtectedRoute>} />
         <Route path="chatbot"  element={<ChatbotRedirect />} />
         <Route path="settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+        <Route path="ownership" element={<ProtectedRoute check={isTenantMember}><OwnershipPage /></ProtectedRoute>} />
 
         {/* ADMIN */}
         <Route path="tenants" element={<ProtectedRoute check={isPlatformSuperadmin}><TenantsPage /></ProtectedRoute>} />

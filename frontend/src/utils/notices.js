@@ -8,6 +8,15 @@ export function canDismiss(notice) {
   return !!notice && notice.personal === true
 }
 
+/** Where a member of the tenant handles ownership: every tenant member can open it, not only the owner. */
+export const OWNERSHIP_ROUTE = '/ownership'
+const OWNERSHIP_ACTION_KINDS = ['transfer_request', 'recovery_request', 'recovery_hold', 'recovery_started', 'recovery_disputed']
+
+/** The page a notice asks the reader to open (the ownership page for transfer and recovery notices), or null. */
+export function noticeLink(notice) {
+  return notice && OWNERSHIP_ACTION_KINDS.includes(notice.kind) ? OWNERSHIP_ROUTE : null
+}
+
 /** The API's rows, ignoring anything malformed (a bad response must never break the layout). */
 export function visibleNotices(data) {
   return Array.isArray(data) ? data.filter((n) => n && typeof n === 'object' && n.notice_id && typeof n.body === 'string') : []
@@ -16,7 +25,7 @@ export function visibleNotices(data) {
 // The new owner's checklist: fixed items (the plan's verbatim texts), each with the page that helps.
 const BASE_ITEMS = [
   { label: "Review every user's actions", to: '/users' },
-  { label: 'Choose a new successor and recovery approvers', to: '/users#ownership' },
+  { label: 'Choose a new successor and recovery approvers', to: OWNERSHIP_ROUTE },
   { label: 'Reassign alerts and advisories assigned to the former owner', to: '/alerts' },
 ]
 const AGENT_KEYS_ITEM = { label: 'Consider replacing agent keys', to: '/agents' }

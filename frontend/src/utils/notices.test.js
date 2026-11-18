@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canDismiss, checklistItems, visibleNotices, RESTORE_VERIFICATION, restoreReady, restoreBody } from './notices.js'
+import { OWNERSHIP_ROUTE, canDismiss, checklistItems, noticeLink, visibleNotices, RESTORE_VERIFICATION, restoreReady, restoreBody } from './notices.js'
 
 const body = 'Security checklist for the new Tenant Superadmin: review every user\'s actions; choose a new successor and recovery approvers; reassign alerts and advisories assigned to the former owner; Consider replacing agent keys.'
 
@@ -12,7 +12,7 @@ test('canDismiss: only own (personal) notices', () => {
 
 test('checklistItems: four items with links when the body mentions agent keys', () => {
   const items = checklistItems({ kind: 'owner_checklist', body })
-  assert.deepEqual(items.map((i) => i.to), ['/users', '/users#ownership', '/alerts', '/agents'])
+  assert.deepEqual(items.map((i) => i.to), ['/users', '/ownership', '/alerts', '/agents'])
   assert.equal(items[0].label, "Review every user's actions")
   assert.equal(items[3].label, 'Consider replacing agent keys')
 })
@@ -45,4 +45,13 @@ test('restore: verbatim text, readiness and body', () => {
   assert.equal(restoreReady('  '), false)
   assert.deepEqual(restoreBody({ email: ' a@b.co ', username: ' ', stepUp: { password: 'p', code: '123456' } }), { email: 'a@b.co', password: 'p', code: '123456' })
   assert.deepEqual(restoreBody({ email: 'a@b.co', username: ' bob ', stepUp: { code: '1' } }), { email: 'a@b.co', username: 'bob', code: '1' })
+})
+
+test('noticeLink: transfer and recovery notices open the ownership page; others have no link', () => {
+  assert.equal(OWNERSHIP_ROUTE, '/ownership')
+  for (const kind of ['transfer_request', 'recovery_request', 'recovery_hold', 'recovery_started', 'recovery_disputed']) {
+    assert.equal(noticeLink({ kind }), '/ownership')
+  }
+  for (const kind of ['ownership_changed', 'ownership_restored', 'owner_checklist', 'other']) assert.equal(noticeLink({ kind }), null)
+  assert.equal(noticeLink(null), null)
 })

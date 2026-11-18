@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Bell, FileSearch, Globe, FileText,
-  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2,
+  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown,
 } from 'lucide-react'
 
 // One source for the sidebar and the command palette. Items are filtered by the same
@@ -30,6 +30,10 @@ export function buildNavSections(can, role) {
       ...item('agent.view', { to: '/agents', icon: Bot, label: 'Agents', keywords: 'eagleeye agent heartbeat connection code' }),
       // Settings is for every signed-in user (profile, password, MFA)
       { to: '/settings', icon: Settings, label: 'Settings', keywords: 'profile mfa password' },
+      // Every tenant member: the recipient, successor and approvers are Tenant users
+      ...(role === 'tenant_user' || role === 'tenant_superadmin'
+        ? [{ to: '/ownership', icon: Crown, label: 'Ownership', keywords: 'transfer owner recovery successor approver handover' }]
+        : []),
     ]},
   ]
 
