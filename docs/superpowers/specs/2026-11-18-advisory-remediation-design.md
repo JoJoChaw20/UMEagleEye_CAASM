@@ -208,6 +208,18 @@ Four projects, built and released in this order. Each is usable on its own.
 
 ## Decisions settled after the builder check
 
+- **Accuracy and complete replies (owner).** Replies must be accurate and must never be cut off,
+  long or short. Advisory generation retries once with double the token budget when the model
+  stops for length, and otherwise uses the complete rule-based advisory; a truncated reply is never
+  shown. Project 2 adds: (a) a curated security knowledge base — researched, sourced guidance on
+  CAASM, CWE, MITRE ATT&CK, CIS Benchmarks, NIST (e.g. SP 800-40 patch management, SP 800-53
+  controls), OWASP and vendor remediation guidance — stored with source links and retrieved for
+  advisory questions; expert-guidance statements cite the knowledge base entry they rely on, and
+  the safety review rejects unsupported claims; (b) streaming continuation: when the assistant's
+  reply stops for length, it continues automatically until finished (with a hard overall cap and an
+  honest "the answer was too long; ask about one step at a time" message only if that cap is hit),
+  never ending mid-sentence; (c) the hallucination evaluation set scores accuracy against the
+  knowledge base.
 - **Executor rule (from the Project 1 review).** Stored content may keep a validated `action` on a
   step that is external only because of the device (`device_blocked: true`), so the label can
   recompute when an agent is installed. Project 4's executor and any "Apply" UI must run a step
