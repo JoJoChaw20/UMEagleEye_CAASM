@@ -935,6 +935,8 @@ function correction(problems: string[], kind: Kind): string {
     'Rewrite the whole answer using only values from the tool results, cite each fact like [S1], and write "I don\'t know" for anything the results do not show.',
     'Every paragraph under "## Expert guidance" must cite a knowledge-base entry like [K1] or a live lookup like [L1] that you were given; drop advice you cannot cite.',
     kind === 'fix' ? 'Keep the two sections "## From your environment" and "## Expert guidance", and end with the Confidence line.' : '',
+    // The rewrite is asked without tools; asked for one anyway, the model wrote tool-call markup (eval v5).
+    'Do not request any tool: write the finished answer from the tool results above.',
   ].filter(Boolean).join(' ')
 }
 

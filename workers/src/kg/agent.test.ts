@@ -1087,6 +1087,17 @@ test('advisory context: an invented value is still refused', async () => {
   assert.equal((await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)).content, IDK)
 })
 
+test('the rewrite after a rejected answer is offered no tools and told not to request one (eval v5: markup on retry)', async () => {
+  const bad = '## What we found\nFixed in 3.0.99 [S2].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.99.'
+  const s = setup({ kind: 'fix', replies: [text(bad), text(bad)] })
+  s.ctx.advisoryContext = ADV_CTX
+  await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)
+  const retry = s.m.seen.find(c => c.messages.some(m => m.role === 'user' && String(m.content).startsWith('That answer was rejected')))
+  assert.ok(retry, 'a rewrite was asked for')
+  assert.equal(retry!.tools, undefined)
+  assert.match(String(retry!.messages[retry!.messages.length - 1]?.content), /do not request any tool/i)
+})
+
 test('advisory context: a question sorted as general is answered as a fix from the advisory', async () => {
   const answer = '## What we found\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Suggested steps\n1. Upgrade openssl.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'general', replies: [text(answer)] })
