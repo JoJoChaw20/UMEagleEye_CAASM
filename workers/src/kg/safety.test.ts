@@ -53,6 +53,8 @@ test('0.0.0.0/0 rejected', () => {
   assert.ok(!unsafe('The current rule allows 3389 from anywhere [S1].'))
   assert.ok(!unsafe('Verify the port is not open to the internet with Test-NetConnection from outside.'))
   assert.ok(!unsafe('Delete the rule that allows 3389 from any address.'))
+  assert.ok(!unsafe('If the vendor needs access, open a VPN rather than exposing 3389 to the internet.'))
+  assert.ok(unsafe('Open a VPN for staff, and also allow 3389 from any address for the vendor.'))
   assert.ok(!unsafe('Allow 22 only from 10.0.5.0/24.'))
   assert.ok(!unsafe('Rather than allowing 3389 from 0.0.0.0/0, put it behind the VPN.'))
 })
