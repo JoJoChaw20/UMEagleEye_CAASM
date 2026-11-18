@@ -65,6 +65,11 @@ export default function OwnershipSection({ tenantId, users, onChanged }) {
   const [dialog, setDialog] = useState(null) // { kind, body? }
   const [flash, setFlash] = useState('')
 
+  // The checklist links here (/users#ownership): scroll once the section has loaded
+  useEffect(() => {
+    if (res && window.location.hash === '#ownership') document.getElementById('ownership')?.scrollIntoView?.({ block: 'start' })
+  }, [res !== null]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const base = `/tenants/${tenantId}/ownership`
   const load = useCallback(async () => {
     try {
@@ -95,7 +100,7 @@ export default function OwnershipSection({ tenantId, users, onChanged }) {
   const r = v.recovery
 
   return (
-    <div className="glass-card p-6 space-y-5">
+    <div id="ownership" className="glass-card p-6 space-y-5">
       <h2 className="font-semibold text-dark-50 flex items-center gap-2 text-base">
         <Crown className="w-4 h-4 text-accent-cyan" />
         Tenant ownership

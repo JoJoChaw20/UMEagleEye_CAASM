@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Users, X, Check, Shield, ToggleLeft, ToggleRight, RefreshCw, Building2, UserPlus } from 'lucide-react'
+import { Plus, Users, KeyRound, X, Check, Shield, ToggleLeft, ToggleRight, RefreshCw, Building2, UserPlus } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { SidePanel, Toast, useToast, Spinner } from '../components/common/PageParts'
 import { accessSummary, countActions } from '../utils/actions'
+import StepUpDialog from '../components/auth/StepUpDialog'
+import { stepUpReady } from '../utils/mfa.js'
+import { RESTORE_VERIFICATION, restoreReady, restoreBody } from '../utils/notices'
 
 // ── Status badge ──────────────────────────────────────────────────
 function ActiveBadge({ active }) {
@@ -159,6 +162,34 @@ function InviteOwner({ tenantId, onInvited }) {
   )
 }
 
+// ── Restore tenant ownership (Platform Superadmin, step-up) ───────
+// Suspends the former Tenant Superadmin and invites the named person as the new one. The Platform
+// Superadmin gains no access to the tenant.
+function RestoreOwnershipDialog({ tenant, onClose, onDone }) {
+  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
+  const submit = async (stepUp) => {
+    const res = await client.post(`/tenants/${tenant.tenant_id}/ownership/restore`, restoreBody({ email, username, stepUp }))
+    await onDone(res.data)
+  }
+  return (
+    <StepUpDialog title={`Restore tenant ownership: ${tenant.name}`} confirmLabel="Restore ownership" danger idPrefix="restore"
+      onSubmit={submit} onCancel={onClose} isReady={(s) => restoreReady(email) && stepUpReady(s)}>
+      <p className="text-sm text-dark-300">{RESTORE_VERIFICATION}</p>
+      <div className="mt-4 space-y-3">
+        <div>
+          <label htmlFor="restore-email" className="mb-1.5 block text-sm font-medium text-dark-200">New owner email</label>
+          <input id="restore-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input-field w-full" autoComplete="off" required />
+        </div>
+        <div>
+          <label htmlFor="restore-username" className="mb-1.5 block text-sm font-medium text-dark-200">Username (optional)</label>
+          <input id="restore-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="input-field w-full" autoComplete="off" />
+        </div>
+      </div>
+    </StepUpDialog>
+  )
+}
+
 function UsersPanel({ tenant, onClose, onAssigned }) {
   const { catalog } = useAuth()
   const { toast, show: showToast } = useToast()
@@ -250,6 +281,8 @@ export default function TenantsPage() {
   const [error, setError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
   const [usersTenant, setUsersTenant] = useState(null)
+  const [restoreTenant, setRestoreTenant] = useState(null)
+  const { toast, show: showToast } = useToast()
 
   const loadTenants = useCallback(async () => {
     setLoading(true)
@@ -382,6 +415,13 @@ export default function TenantsPage() {
                           <Users className="w-4 h-4" />
                         </button>
                         <button
+                          onClick={() => setRestoreTenant(t)}
+                          className="p-1.5 hover:bg-accent-purple/10 rounded text-dark-400 hover:text-accent-purple transition-colors"
+                          title="Restore tenant ownership" aria-label={`Restore tenant ownership: ${t.name}`}
+                        >
+                          <KeyRound className="w-4 h-4" />
+                        </button>
+                        <button
                           onClick={() => handleDeactivate(t.tenant_id, t.is_active)}
                           className={`p-1.5 rounded transition-colors ${t.is_active ? 'text-dark-400 hover:text-yellow-400 hover:bg-yellow-500/10' : 'text-dark-400 hover:text-green-400 hover:bg-green-500/10'}`}
                           title={t.is_active ? 'Deactivate' : 'Activate'}
@@ -413,6 +453,19 @@ export default function TenantsPage() {
         <CreateTenantModal
           onClose={() => setShowCreate(false)}
           onSubmit={handleCreate}
+        />
+      )}
+
+      <Toast toast={toast} />
+      {restoreTenant && (
+        <RestoreOwnershipDialog
+          tenant={restoreTenant}
+          onClose={() => setRestoreTenant(null)}
+          onDone={async (d) => {
+            setRestoreTenant(null)
+            showToast(`Ownership restored. ${d?.email || 'The new owner'} is the Tenant Superadmin.`)
+            await loadTenants()
+          }}
         />
       )}
 

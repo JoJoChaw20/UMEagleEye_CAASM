@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Header from './Header'
 import CommandPalette from './CommandPalette'
+import NoticeBar from './NoticeBar'
 import ChatWidget from '../chat/ChatWidget'
 import { useChatbot } from '../../context/ChatbotContext'
 import { useAuth } from '../../context/AuthContext'
@@ -83,6 +84,7 @@ export default function MainLayout() {
         className={`min-w-0 flex-1 transition-[margin] duration-300 ease-out ${isDesktop ? (collapsed ? 'ml-16' : 'ml-64') : 'ml-0'} ${isWide && widgetOpen ? 'mr-[420px]' : ''}`}
       >
         <Header onToggleSidebar={toggle} onOpenPalette={() => setPaletteOpen(true)} />
+        <NoticeBar />
         {/* Bottom padding keeps the end of every page clear of the assistant bubble */}
         <main id="main" key={location.pathname} className="p-4 pb-24 animate-[page-in_240ms_cubic-bezier(0.16,1,0.3,1)] lg:p-6 lg:pb-24">
           <Outlet />
