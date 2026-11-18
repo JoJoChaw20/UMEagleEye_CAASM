@@ -307,6 +307,7 @@ Run this plan after that one.
 
 ### Task 8: Staging rollout (controller; needs owner go-ahead)
 
+- [ ] **Step 0:** Tell the teammate before migrating: `0039` is taken, and her journal must include it before any `db:generate` or `db:push`.
 - [ ] **Step 1:** `npm run db:status:staging`. Expected: pending exactly `0039_ownership`. Then migrate.
 - [ ] **Step 2:** Deploy the worker, the system graph and the frontend (VITE_* unset). Check the bundle.
 - [ ] **Step 3:** API smoke test in a temporary test tenant with 5 users (owner, recipient, successor, 2 approvers; all with MFA set up through the API):
@@ -315,5 +316,12 @@ Run this plan after that one.
   - **Path B, resigned:** hold → the former owner cancels → `disputed`.
   - **Path C:** restore by the platform. Only if the owner provides a test platform login; otherwise mark it for a browser check.
   - **Notices:** they appear and are dismissable.
-  - Remove the test data afterwards.
+  - **Concurrency:** two parallel accepts of one transfer, and an accept racing a cancel. Exactly one call returns 200 and the tenant has exactly one owner. This also proves the `FOR UPDATE` lock statement runs on staging.
+  - **Path B, resigned, completion:** set `hold_until` in the past by SQL on the test row, then call `GET /ownership`. Check the swap, a 401 for the former owner's old token, and that the test tenant's unused enrolment tokens are gone.
+  - **Recovery expiry:** set `expires_at` in the past on an open recovery; `GET /ownership` marks it `expired` and its notices end.
+  - **Scheduled deactivation:** set `scheduled_deactivation_at` in the past for a test user. Their token gets 401, sign-in is refused, and `is_active` flips.
+  - **Non-owner UI (browser):** sign in as the recipient, then as an approver. Each reaches `/ownership` from the nav and from the notice link, and sees Accept, Decline or Approve.
+  - Run every smoke step only in the temporary tenant. Restore and Path B revoke only that tenant's unused enrolment tokens, so existing agents are unaffected.
+  - **Cleanup order:** delete the test tenant first. It cascades the ownership tables and notices, and the users' `tenant_id` becomes null. Then delete the test users. Or delete the ownership rows first.
+- [ ] **Rollback:** the previous worker is compatible with `0039` but ignores `scheduled_deactivation_at`. Roll the frontend back together with the worker.
 - [ ] **Step 4:** Agents still online, the GET sweep shows no 5xx, and the user counts are unchanged. Record in the ledger. Stop.
