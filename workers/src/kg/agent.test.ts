@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { problemKinds, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -1056,6 +1056,23 @@ test('advisory context: its facts are S1.. and an answer citing them passes with
   assert.equal(sent[1].role, 'system')
   assert.match(String(sent[1].content), /UNTRUSTED DATA/)
   assert.match(String(sent[1].content), /CVE-2024-0001/)
+})
+
+test('advisory context: the facts carry graph keys for the advisory, alert and device only', async () => {
+  const ctx = { advisoryId: ADV, sources: [...ADV_CTX.sources, { key: 'asset:55555555-5555-5555-5555-555555555555', title: 'web-01', type: 'asset', text: 'Device: web-01' }] }
+  const s = setup({ kind: 'fix', replies: [text("I don't know.")] })
+  s.ctx.advisoryContext = ctx
+  await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)
+  const facts = String(s.m.seen[0]!.messages[1]!.content)
+  assert.match(facts, new RegExp(`"key":"advisory:${ADV}"`))
+  assert.match(facts, /"key":"asset:55555555-5555-5555-5555-555555555555"/)
+  assert.doesNotMatch(facts, /"key":"cve:/, 'a CVE finding has no graph record, so no key to guess with')
+})
+
+test('problemKinds logs categories, never values', () => {
+  const out = problemKinds(['10.9.9.9', '[K7]', 'missing section: Expert guidance', 'expert guidance without a [K#] or [L#] reference: "x"', 'missing line: Confidence: High, Medium or Low, with a reason', 'the answer cites no source'])
+  assert.equal(out, 'unsupported-valuex1 unknown-refx1 structurex1 expert-uncitedx1 confidencex1 no-citationx1')
+  assert.doesNotMatch(out, /10\.9\.9\.9/)
 })
 
 test('advisory context: an invented value is still refused', async () => {

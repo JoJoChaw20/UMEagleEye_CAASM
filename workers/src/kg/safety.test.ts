@@ -71,7 +71,13 @@ test('reviewAnswer treats unparsable output as not ok', async () => {
   assert.deepEqual(await reviewAnswer(ai('{"ok": true, "reasons": []}'), 'q', 'a'), { ok: true, reasons: [] })
   assert.deepEqual(await reviewAnswer(ai('```json\n{"ok": false, "reasons": ["no rollback for the kernel upgrade"]}\n```'), 'q', 'a'), { ok: false, reasons: ['no rollback for the kernel upgrade'] })
   assert.deepEqual(parseReview('{"ok": false}'), { ok: false, reasons: ['the reviewer gave no reason'] })
-  assert.deepEqual(parseReview('prefix {"ok": true}'), { ok: false, reasons: ['review unavailable'] })
+  // prose around the JSON is ignored, but a fail anywhere wins and junk shapes do not count
+  assert.deepEqual(parseReview('Here is my review: {"ok": true, "reasons": []} Hope that helps.'), { ok: true, reasons: [] })
+  assert.deepEqual(parseReview('{"ok": true, "reasons": []} {"ok": false, "reasons": ["widens exposure"]}'), { ok: false, reasons: ['widens exposure'] })
+  assert.deepEqual(parseReview('{"verdict": "fine"}'), { ok: false, reasons: ['review unavailable'] })
+  assert.deepEqual(parseReview('{"ok": true, "reasons": ["a } inside a string"]}'), { ok: true, reasons: [] })
+  // a cut-off reply that already holds a complete fail is still a fail
+  assert.deepEqual(await reviewAnswer(ai('{"ok": false, "reasons": ["no backup"]} and more', true), 'q', 'a'), { ok: false, reasons: ['no backup'] })
 })
 
 test('reviewAnswer wraps the answer as untrusted data and asks for JSON only', async () => {

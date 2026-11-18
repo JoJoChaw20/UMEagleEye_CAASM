@@ -88,15 +88,32 @@ const ReviewShape = z.object({ ok: z.boolean(), reasons: z.array(z.string()).max
 const UNAVAILABLE: Review = { ok: false, reasons: ['review unavailable'] }
 
 /** PURE. The review in a model's reply, or a fail when it is not exactly the expected JSON. */
+/** The top-level {...} objects in a text, string-aware, so prose or a code fence around the JSON is ignored. */
+function jsonObjects(text: string): string[] {
+  const out: string[] = []
+  let depth = 0, start = -1, inStr = false, esc = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue }
+    if (c === '"' && depth > 0) { inStr = true; continue }
+    if (c === '{') { if (depth === 0) start = i; depth++ }
+    else if (c === '}' && depth > 0) { depth--; if (depth === 0) out.push(text.slice(start, i + 1)) }
+  }
+  return out
+}
+
+/**
+ * PURE. The review in a model's reply. Every JSON object of the expected shape counts, and any fail wins,
+ * so text around the JSON cannot turn a fail into a pass. No valid object at all is a fail.
+ */
 export function parseReview(raw: string): Review {
-  const t = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  if (!t.startsWith('{') || !t.endsWith('}')) return UNAVAILABLE
-  let parsed: unknown
-  try { parsed = JSON.parse(t) } catch { return UNAVAILABLE }
-  const v = ReviewShape.safeParse(parsed)
-  if (!v.success) return UNAVAILABLE
-  const reasons = v.data.reasons.map(r => r.replace(/\s+/g, ' ').trim().slice(0, 160)).filter(Boolean).slice(0, 5)
-  if (v.data.ok) return { ok: true, reasons: [] }
+  const reviews = jsonObjects(raw).flatMap(o => {
+    try { const v = ReviewShape.safeParse(JSON.parse(o)); return v.success ? [v.data] : [] } catch { return [] }
+  })
+  if (reviews.length === 0) return UNAVAILABLE
+  const failed = reviews.filter(r => !r.ok)
+  if (failed.length === 0) return { ok: true, reasons: [] }
+  const reasons = failed.flatMap(r => r.reasons).map(r => r.replace(/\s+/g, ' ').trim().slice(0, 160)).filter(Boolean).slice(0, 5)
   return { ok: false, reasons: reasons.length ? reasons : ['the reviewer gave no reason'] }
 }
 
@@ -104,9 +121,14 @@ export function parseReview(raw: string): Review {
 export async function reviewAnswer(ai: ModelCall, question: string, answer: string, advisoryText?: string): Promise<Review> {
   const data = JSON.stringify({ question: question.slice(0, 1000), answer: answer.slice(0, 12000), ...(advisoryText ? { advisory_steps: advisoryText.slice(0, 4000) } : {}) })
   try {
-    const reply = await ai([{ role: 'system', content: REVIEW_PROMPT }, { role: 'user', content: wrapUntrusted(data) }], undefined, { maxTokens: 400, temperature: 0 })
-    if (reply.truncated) return UNAVAILABLE
-    return parseReview(reply.text)
+    const reply = await ai([{ role: 'system', content: REVIEW_PROMPT }, { role: 'user', content: wrapUntrusted(data) }], undefined, { maxTokens: 800, temperature: 0 })
+    const review = parseReview(reply.text)
+    // A cut-off reply is only trusted when what arrived is already a complete review.
+    if (review === UNAVAILABLE || (reply.truncated && review.ok)) {
+      console.warn(`[kg-safety] review reply unusable (truncated=${reply.truncated}, ${reply.text.length} chars): ${reply.text.replace(/\s+/g, ' ').slice(0, 160)}`)
+      return UNAVAILABLE
+    }
+    return review
   } catch (err) {
     console.warn('[kg-safety] review failed:', err instanceof Error ? err.message : err)
     return UNAVAILABLE

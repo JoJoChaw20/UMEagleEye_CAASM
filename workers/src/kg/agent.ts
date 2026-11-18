@@ -720,9 +720,29 @@ async function performanceNotes(ctx: GraphCtx, access: Access, question: string,
 
 // ── The run ────────────────────────────────────────────────────────
 
+/** Which checks an answer failed, by category only: the log never holds the values themselves. */
+export function problemKinds(problems: string[]): string {
+  const kind = (p: string) =>
+    /^\[[SKL]\d+\]$/.test(p) ? 'unknown-ref'
+      : p.startsWith('missing section') || p.includes('must come first') || p.endsWith('is empty') ? 'structure'
+        : p.startsWith('expert guidance without') ? 'expert-uncited'
+          : /confidence|check with/i.test(p) ? 'confidence'
+            : p === 'the answer cites no source' ? 'no-citation'
+              : p.includes('tool-call markup') ? 'markup'
+                : p.includes('advisory was closed') ? 'closure'
+                  : p === 'the answer was empty' ? 'empty'
+                    : 'unsupported-value'
+  const counts = new Map<string, number>()
+  for (const p of problems) counts.set(kind(p), (counts.get(kind(p)) ?? 0) + 1)
+  return [...counts].map(([k, n]) => `${k}x${n}`).join(' ')
+}
+
 /** The advisory's facts as the first sources (S1..), cited like tool results and checked the same way. */
 function advisoryMessage(s: RunState, advisory: AdvisoryContext): ChatMessage {
-  const facts = advisory.sources.map(src => ({ ref: s.book.add(src.key, src.title, src.type), title: src.title, facts: src.text }))
+  // The graph key (advisory, alert, device) lets get_node and follow_links open the same record instead of
+  // guessing one. CVE findings and steps have no graph record, so they get no key.
+  const graphKey = (key: string) => (/^(?:advisory|event|asset):[0-9a-f-]{36}$/i.test(key) ? { key } : {})
+  const facts = advisory.sources.map(src => ({ ref: s.book.add(src.key, src.title, src.type), ...graphKey(src.key), title: src.title, facts: src.text }))
   const out = JSON.stringify(facts)
   s.evidence.push(out)
   return {
@@ -964,13 +984,14 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     }
     let problems = problemsWith(reply.text, s, kind)
     if (problems.length > 0) {
+      console.warn(`[kg-agent] answer rejected (${kind}, ${result.tools.map(t => t.name).join(',') || 'no tools'}): ${problemKinds(problems)}`)
       messages.push({ role: 'assistant', content: reply.text || '(empty)' })
       messages.push({ role: 'user', content: correction(problems, kind) })
       reply = tidy(await finish(messages, await ctx.ai(messages), afterAnswer - 1))
       problems = problemsWith(reply.text, s, kind)
     }
     if (problems.length > 0) {
-      console.warn(`[kg-agent] answer refused after one retry: ${problems.length} unsupported item(s)`)
+      console.warn(`[kg-agent] answer refused after one retry: ${problems.length} unsupported item(s): ${problemKinds(problems)}`)
       await discardProposal(s)
       return await release(IDK, notes)
     }
