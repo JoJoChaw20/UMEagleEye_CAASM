@@ -6,7 +6,7 @@ import { authMiddleware, requireAction } from '../middleware/auth'
 import { graphReply, graphStream, modelFor } from '../kg/agent'
 import { kgQuery } from '../kg/store'
 import { loadAdvisoryContext } from '../kg/advisoryContext'
-import { intelRunner } from '../kg/intelRunner'
+import { intelRunner, overviewRunner } from '../kg/intelRunner'
 import { SUPERADMIN_ADVISORY_REFUSAL } from '../kg/guard'
 import { getDb } from '../db/client'
 import { confirmAdvisory } from '../kg/confirm'
@@ -154,7 +154,7 @@ app.post(
       const advisoryContext = advisory_id ? await loadAdvisoryContext(getDb(c.env.DATABASE_URL), chatUser, advisory_id) : null
       if (advisory_id && !advisoryContext) return c.json({ detail: 'Advisory not found' }, 404)
       // The company comes from the signed-in user; accessFor honours tenant_id for a superadmin only.
-      const ctx = { query: kgQuery(c.env), env: c.env, ai, user: chatUser, pickedTenant: tenant_id ?? null, advisoryContext, intel: intelRunner(c.env, chatUser, tenant_id) }
+      const ctx = { query: kgQuery(c.env), env: c.env, ai, user: chatUser, pickedTenant: tenant_id ?? null, advisoryContext, intel: intelRunner(c.env, chatUser, tenant_id), overview: overviewRunner(c.env, chatUser, tenant_id) }
       if (wantStream) return graphStream(ctx, message, history)
       const { body, status } = await graphReply(ctx, message, history)
       return c.json(body, status)

@@ -9,6 +9,8 @@ import type { Env } from '../types'
 import { INTEL_TOOLS } from '../mcp/intel'
 import { canUse, type ToolContext, type ToolUser } from '../mcp/tools'
 import type { GraphCtx, IntelToolName } from './agent'
+import { analystAccess } from './access'
+import { loadOverview } from './overview'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -35,6 +37,22 @@ export function intelRunner(env: Env, user: ToolUser, pickedTenant: string | nul
     } catch (err) {
       console.error(`[kg-intel] ${name} failed:`, err instanceof Error ? err.message : err)
       return { error: 'The lookup failed; answer without it.' }
+    }
+  }
+}
+
+/**
+ * The overall status for the chat (get_overview). Scope from the signed-in user: the user's own tenant; the
+ * Platform Superadmin the picked tenant or all, always counts only; a role limited to status and score, counts only.
+ */
+export function overviewRunner(env: Env, user: ToolUser, pickedTenant: string | null | undefined): NonNullable<GraphCtx['overview']> {
+  return async () => {
+    if (user.role !== 'superadmin' && !user.tenantId) return { error: 'No organisation.' }
+    try {
+      return await loadOverview(getDb(env.DATABASE_URL), { tenantId: intelTenant(user, pickedTenant), detail: user.role !== 'superadmin' && analystAccess(user) })
+    } catch (err) {
+      console.error('[kg-overview] failed:', err instanceof Error ? err.message : err)
+      return { error: 'The overview failed; answer without it.' }
     }
   }
 }

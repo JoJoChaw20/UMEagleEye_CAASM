@@ -25,6 +25,14 @@ export const IDK = "I don't know. The knowledge graph does not hold enough to an
 /** The Platform Superadmin's answer to any request to debug an advisory (spec, Project 2). */
 export const SUPERADMIN_ADVISORY_REFUSAL = 'The Platform Superadmin can view overall statistics and ask general security questions, but cannot debug advisories.'
 
+// "How are we doing", "what's going on", "summarise", "what should we fix first": the overall situation.
+const OVERVIEW_Q = /\b(?:overall|overview|summar(?:y|ise|ize)|big picture|situation|how\s+(?:are|is)\s+(?:we|it|things|everything|my|our)\b[^?]{0,30}\b(?:doing|going|looking)|what(?:'|’)?s\s+(?:going\s+on|happening|the\s+status)|(?:current|security|overall|scan(?:ning)?)\s+status|status\s+of\s+(?:my|our|the|current)|is\s+(?:it|everything)\s+(?:all\s+)?(?:good|ok|okay|fine)|priorit(?:y|ies|ise|ize|ising|izing)|what\s+should\s+(?:we|i)\s+(?:fix|do|focus|handle|look\s+at|work\s+on|solve)|where\s+(?:should\s+)?(?:do\s+)?(?:we|i)\s+start|fix\s+first)\b/i
+
+/** PURE. True when the question asks about the overall situation or what to do first. */
+export function isOverviewQuestion(question: string): boolean {
+  return OVERVIEW_Q.test(question)
+}
+
 /** PURE. For the Platform Superadmin only: a question about an advisory, or one sorted as fix, is refused. */
 export function superadminRefusal(kind: Kind, hasAdvisory: boolean): string | null {
   return hasAdvisory || kind === 'fix' ? SUPERADMIN_ADVISORY_REFUSAL : null

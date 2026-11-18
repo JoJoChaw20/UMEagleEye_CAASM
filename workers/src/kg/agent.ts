@@ -21,7 +21,7 @@ import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope
 import { decide, refusalMessage } from '../lib/actions'
 import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
-import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, isPlainRefusal, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
+import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, isOverviewQuestion, isPlainRefusal, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
 import { refreshIfStale, refreshPlatformProblems } from './problems'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import { PERF_LIMITS_NOTE, askedTimeNote, gapRanges, refreshPerf } from './perf'
@@ -31,6 +31,7 @@ import type { Q } from './store'
 import type { AdvisoryContext } from './advisoryContext'
 import { searchKnowledge } from './knowledge'
 import { SAFE_REFUSAL, reviewAnswer, safetyCorrection, unsafeRecommendations } from './safety'
+import { OVERVIEW_SUBREQUESTS } from './overview'
 import { CONTINUE_PROMPT, MAX_ANSWER_TOKENS, MAX_CONTINUATIONS, joinContinuation } from './continuation'
 import { CHAT_DRAIN_REQUESTS, drainOutbox, signalKgSyncSafe } from './sync'
 
@@ -111,6 +112,9 @@ export interface GraphCtx {
   /** Runs one live intel tool (lookup_cve, lookup_attack_technique, lookup_cwe) with the caller's own access.
    *  Set by the route; without it those tools are not offered. Only a public id or a short phrase is sent. */
   intel?: (name: IntelToolName, args: Record<string, unknown>) => Promise<unknown>
+  /** The dashboard's overall status for the caller's scope (kg/overview.ts), set by the route. Counts only when
+   *  the caller may not see individual devices. Without it, get_overview is not offered. */
+  overview?: () => Promise<unknown>
 }
 
 export type IntelToolName = 'lookup_cve' | 'lookup_attack_technique' | 'lookup_cwe'
@@ -187,6 +191,14 @@ function groundedPrompt(kind: Kind, access: Access, restricted: boolean, canProp
   return lines.join('\n')
 }
 
+/** How an overview answer is laid out: the dashboard's numbers per area, then what to fix first. */
+const OVERVIEW_RULE = [
+  'This question is about the overall situation. Call get_overview first.',
+  'Answer with "## Overall status": one line per area with its exact numbers (posture score; assets: total, critical, internet-facing; agents: online, offline; scans in the last 7 days: total, failed; open alerts: critical, high, medium, low, new this week; advisories active; priority tiers P0, P1, P2, P3), each cited.',
+  'Then "## What to fix first": the P0 items, then the P1 items from top_priorities, each with its device, what it is about and its advisory ID if it has one, cited. If there are no P0 or P1 items, say so and list the P2 items. If the overview gives counts only, give the tier counts and say individual items are not shown for this role.',
+  'Then one or two sentences on what stands out, using only these numbers. Never call this an all-clear while alerts are open.',
+].join('\n')
+
 /** The Platform Superadmin sees companies as statistics: counts and totals, never one record. */
 const COUNTS_ONLY_RULE = 'This user is the Platform Superadmin. Company records can only be counted with count_nodes (totals and groups). The other tools return shared and platform knowledge only. Never describe, list or debug an individual company record or advisory.'
 
@@ -262,8 +274,10 @@ interface ToolSpec {
   run: (args: never, s: RunState) => Promise<unknown>
   /** The most subrequests one call can make. Default TOOL_SUBREQUESTS. */
   cost?: number
-  /** A live lookup: its subrequests happen outside the metered context, so its cost is taken before it runs. */
+  /** Runs outside the metered context, so its cost is taken before it runs. */
   live?: boolean
+  /** The route-provided runner it needs; without it the tool is not offered. */
+  needs?: 'intel' | 'overview'
 }
 
 const withRef = (s: RunState, n: NodeView) => ({ ref: s.book.add(n.key, n.title, n.type), ...n })
@@ -454,6 +468,21 @@ const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: 'get_overview', title: 'Reading the overall status',
+    description: 'The overall status as the dashboard shows it, with exact numbers: posture score, assets, agents online and offline, scans in the last 7 days, open alerts by severity, advisories, priority tiers (P0 investigate, P1 urgent, P2 high, P3 routine), and the top open alerts to fix first. Call it first for "how are we doing", "what is going on", "summarise", "status" or "what should we fix first".',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    args: z.object({}).strict(),
+    cost: OVERVIEW_SUBREQUESTS,
+    live: true,
+    needs: 'overview',
+    run: async (_args: Record<string, never>, s) => {
+      if (!s.ctx.overview) return { error: 'The overview is not available here.' }
+      const result = await s.ctx.overview()
+      if (!result || typeof result !== 'object' || 'error' in result) return result ?? { error: 'No result.' }
+      return { ref: s.book.add(`overview:${s.countAccess.tenantId ?? 'all'}`, 'Overall status (dashboard)', 'overview'), ...(result as Record<string, unknown>) }
+    },
+  },
+  {
     name: 'search_knowledge', title: 'Checking security guidance',
     description: 'The curated security knowledge base (NIST, CISA, MITRE, CIS, OWASP, FIRST, vendor docs): how to fix, harden, restrict, patch, roll back or verify. Search with general words such as "port 22 exposed" or "rollback apt update", never with company names, hosts or addresses. Each entry has a ref such as K2 to cite under Expert guidance.',
     parameters: { type: 'object', additionalProperties: false, required: ['query'], properties: {
@@ -475,6 +504,7 @@ const TOOLS: ToolSpec[] = [
     args: CveArgs,
     cost: LIVE_CVE_SUBREQUESTS,
     live: true,
+    needs: 'intel',
     run: async (args: z.infer<typeof CveArgs>, s) => runLive('lookup_cve', args, s),
   },
   {
@@ -484,6 +514,7 @@ const TOOLS: ToolSpec[] = [
     args: AttackArgs,
     cost: 0,
     live: true,
+    needs: 'intel',
     run: async (args: z.infer<typeof AttackArgs>, s) => runLive('lookup_attack_technique', args, s),
   },
   {
@@ -493,6 +524,7 @@ const TOOLS: ToolSpec[] = [
     args: CweArgs,
     cost: 0,
     live: true,
+    needs: 'intel',
     run: async (args: z.infer<typeof CweArgs>, s) => runLive('lookup_cwe', args, s),
   },
   {
@@ -508,11 +540,15 @@ const TOOLS: ToolSpec[] = [
 
 const BY_NAME = new Map(TOOLS.map(t => [t.name, t]))
 const OPENAI_TOOLS = TOOLS.map(t => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.parameters } }))
-const LIVE_NAMES = new Set(TOOLS.filter(t => t.live).map(t => t.name))
+const NEEDS = new Map(TOOLS.filter(t => t.needs).map(t => [t.name, t.needs!]))
 
-/** The tools offered this round: the close tool only when a close may be proposed, live lookups only when the route wired them. */
+/** The tools offered this round: the close tool only when a close may be proposed, route-backed tools only when wired. */
 function offeredTools(s: RunState) {
-  return OPENAI_TOOLS.filter(t => (t.function.name !== 'propose_resolve_advisory' || s.canPropose) && (!LIVE_NAMES.has(t.function.name) || Boolean(s.ctx.intel)))
+  return OPENAI_TOOLS.filter(t => {
+    if (t.function.name === 'propose_resolve_advisory' && !s.canPropose) return false
+    const needs = NEEDS.get(t.function.name)
+    return !needs || Boolean(s.ctx[needs])
+  })
 }
 
 async function executeTool(spec: ToolSpec, rawArgs: string, s: RunState): Promise<unknown> {
@@ -539,8 +575,8 @@ async function handleToolCall(call: ToolCall, s: RunState, tools: ToolStep[], em
     result = { error: 'Tool call limit reached for this question; answer with what you have.' }
   } else if (!s.budget.fits(spec.cost ?? TOOL_SUBREQUESTS)) {
     result = { error: 'No more lookups fit in this question; answer with what you have.' }
-  } else if (spec.live && !s.ctx.intel) {
-    result = { error: 'Live lookups are not available here.' }
+  } else if (spec.needs && !s.ctx[spec.needs]) {
+    result = { error: 'That lookup is not available here.' }
   } else {
     // A live lookup spends outside the metered context, so its most is counted before it runs.
     if (spec.live) for (let i = 0; i < (spec.cost ?? 0); i++) s.budget.take()
@@ -903,6 +939,9 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     // The user's own words decide this, not the model: a question about "our servers" needs company
     // data, so it takes the grounded path, where an invented count cannot pass verification.
     if (kind === 'general' && refersToOwnOrganisation(question)) kind = 'system'
+    // "How are we doing / what should we fix first" is answered from the dashboard's numbers, not as a fix answer.
+    const overviewQuestion = !ctx.advisoryContext && isOverviewQuestion(question)
+    if (overviewQuestion && kind !== 'neither') kind = 'system'
     // A question asked from an advisory is about fixing that advisory, so it is answered from its facts.
     const advisory = ctx.advisoryContext ?? null
     if (advisory && kind === 'general') kind = 'fix'
@@ -965,7 +1004,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
     s.evidence.push(...perfFacts)
     const messages: ChatMessage[] = [
-      { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose, countsOnly) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') },
+      { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose, countsOnly) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') + (overviewQuestion && ctx.overview ? `\n${OVERVIEW_RULE}` : '') },
       ...(advisory ? [advisoryMessage(s, advisory)] : []),
       ...historyMessages(history),
       { role: 'user', content: question },
