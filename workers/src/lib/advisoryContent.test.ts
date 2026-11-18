@@ -115,7 +115,8 @@ test('device without agent makes auto steps external with the reason', () => {
   const out = mapSteps(cveFacts('openssl', '3.0.14'), T('Upgrade openssl to 3.0.14.'), dev({ hasAgent: false }))
   assert.equal(out[0]!.kind, 'external')
   assert.equal(out[0]!.reason, 'This device has no EagleEye agent.')
-  assert.equal(out[0]!.action, undefined)
+  assert.equal(out[0]!.device_blocked, true)
+  assert.deepEqual(out[0]!.action, { key: 'pkg.upgrade', params: { manager: 'apt', package: 'openssl', version: '3.0.14' } })
 })
 
 test('network device makes auto steps external', () => {
@@ -249,4 +250,17 @@ test('advisoryView recomputes the label from current device info', () => {
   const row = { content: content as unknown as import('./advisoryContent').AdvisoryContent }
   assert.equal(advisoryView(row, dev({ hasAgent: false }))!.automation!.label, 'Needs outside support')
   assert.equal(advisoryView(row, dev())!.automation!.label, 'Auto-fixable')
+})
+
+test('advisoryView: generated without agent shows Auto-fixable once an agent exists, and the reverse', () => {
+  const noAgent = buildContent({ summary: 's', whyNow: null, steps: ['Upgrade openssl to 3.0.14.'], verify: null, rollback: null, confidence: 'high' } as never, cveFacts('openssl', '3.0.14'), 'b', dev({ hasAgent: false }))
+  assert.equal(noAgent.steps[0]!.kind, 'external')
+  assert.equal(advisoryView({ content: noAgent }, dev({ hasAgent: false })).automation!.label, 'Needs outside support')
+  const v = advisoryView({ content: noAgent }, dev())
+  assert.equal(v.automation!.label, 'Auto-fixable')
+  assert.equal(v.content!.steps[0]!.kind, 'auto')
+  assert.equal(v.content!.steps[0]!.reason, undefined)
+  const withAgent = buildContent({ summary: 's', whyNow: null, steps: ['Upgrade openssl to 3.0.14.', 'Rescan.'], verify: null, rollback: null, confidence: 'high' } as never, cveFacts('openssl', '3.0.14'), 'b', dev())
+  assert.equal(advisoryView({ content: withAgent }, dev()).automation!.label, 'Partly auto-fixable')
+  assert.equal(advisoryView({ content: withAgent }, dev({ isNetworkDevice: true })).automation!.label, 'Needs outside support')
 })

@@ -12,6 +12,8 @@ export type AdvisoryStep = {
   id: string; text: string; kind: 'auto' | 'manual' | 'external'
   action?: { key: RemediationActionKey; params: Record<string, string | number> }
   risk: 'low' | 'medium' | 'high'; needs_reboot?: boolean; expert_note?: string; reason?: string
+  /** external only because of the device (no agent / network device); the validated action is kept so the label can follow the device */
+  device_blocked?: boolean
 }
 
 export type AdvisoryContent = {
@@ -130,8 +132,8 @@ export function mapSteps(
     const step: AdvisoryStep = { id: `s${i + 1}`, text: s.text, kind: 'manual', risk: 'low' }
     if (s.expert_note) step.expert_note = s.expert_note
     if (s.action) {
-      if (!device.hasAgent) { step.kind = 'external'; step.reason = NO_AGENT }
-      else if (device.isNetworkDevice) { step.kind = 'external'; step.reason = NETWORK_DEVICE }
+      if (!device.hasAgent) { step.kind = 'external'; step.reason = NO_AGENT; step.action = s.action; step.device_blocked = true }
+      else if (device.isNetworkDevice) { step.kind = 'external'; step.reason = NETWORK_DEVICE; step.action = s.action; step.device_blocked = true }
       else {
         const def = REMEDIATION_ACTIONS[s.action.key]
         step.kind = 'auto'; step.action = s.action; step.risk = def.risk
@@ -161,18 +163,18 @@ export function automationLabel(steps: AdvisoryStep[], device: DeviceInfo): {
 }
 
 /** API view of stored content: the automation label is recomputed from the device as it is now.
- *  A step that carries an action follows the current device (no agent or network device -> external,
- *  otherwise auto); steps without an action keep their stored kind. */
+ *  Steps that were auto or device-blocked follow the current device (no agent or network device ->
+ *  external, otherwise auto); all other steps keep their stored kind. */
 export function advisoryView(row: { content: AdvisoryContent | null }, device: DeviceInfo): {
   content: AdvisoryContent | null; automation: ReturnType<typeof automationLabel> | null
 } {
   const content = row.content ?? null
   if (!content || !Array.isArray(content.steps)) return { content, automation: null }
   const steps = content.steps.map((s): AdvisoryStep => {
-    if (!s.action) return s
-    const { reason: _drop, ...rest } = s
-    if (!device.hasAgent) return { ...rest, kind: 'external', reason: NO_AGENT }
-    if (device.isNetworkDevice) return { ...rest, kind: 'external', reason: NETWORK_DEVICE }
+    if (!s.action || !(s.kind === 'auto' || s.device_blocked)) return s
+    const { reason: _drop, device_blocked: _db, ...rest } = s
+    if (!device.hasAgent) return { ...rest, kind: 'external', reason: NO_AGENT, device_blocked: true }
+    if (device.isNetworkDevice) return { ...rest, kind: 'external', reason: NETWORK_DEVICE, device_blocked: true }
     return { ...rest, kind: 'auto' }
   })
   return { content: { ...content, steps }, automation: automationLabel(steps, device) }
