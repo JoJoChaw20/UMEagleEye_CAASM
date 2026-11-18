@@ -53,3 +53,12 @@ test('plannedActionText describes known actions in plain words', async () => {
   assert.equal(plannedActionText({ key: 'nope', params: {} }), null)
   assert.equal(plannedActionText(undefined), null)
 })
+
+test('planned action line is hidden unless automation is available', async () => {
+  const { plannedActionForStep } = await import('./advisoryView.js')
+  const step = { kind: 'auto', action: { key: 'pkg.upgrade', params: { package: 'openssl' } } }
+  assert.equal(plannedActionForStep(step, { available: false }), null)
+  assert.equal(plannedActionForStep(step, null), null)
+  assert.match(plannedActionForStep(step, { available: true }), /^Planned automatic action/)
+  assert.equal(plannedActionForStep({ ...step, kind: 'manual' }, { available: true }), null)
+})

@@ -57,3 +57,9 @@ export function plannedActionText(action) {
   const vals = Object.values(action.params ?? {}).map(String).filter(Boolean)
   return `Planned automatic action: ${ACTION_LABELS[action.key]}${vals.length ? ` (${vals.join(', ')})` : ''}`
 }
+
+// The planned-action line only shows once automatic fixing is available.
+export function plannedActionForStep(step, automation) {
+  if (!step || step.kind !== 'auto' || automation?.available !== true) return null
+  return plannedActionText(step.action)
+}

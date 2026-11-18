@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Check, Copy, ExternalLink, ShieldCheck, Undo2, Clock } from 'lucide-react'
 import { parseAdvisory } from '../../utils/advisoryText'
-import { advisoryDisplay, kindBadge, plannedActionText, RISK_STYLE, REGENERATE_HINT } from '../../utils/advisoryView'
+import { advisoryDisplay, kindBadge, plannedActionForStep, RISK_STYLE, REGENERATE_HINT } from '../../utils/advisoryView'
 
 const CONFIDENCE_STYLE = {
   High: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
@@ -30,12 +30,12 @@ function CommandLine({ command }) {
 // their steps only. compact = the Alerts drawer.
 export default function AdvisoryBody({ text, content, automation, compact = false }) {
   const view = advisoryDisplay({ content, automation, recommendedAction: text })
-  if (view.mode === 'structured') return <StructuredBody content={view.content} compact={compact} />
+  if (view.mode === 'structured') return <StructuredBody content={view.content} automation={view.automation} compact={compact} />
   return <TextBody text={text} compact={compact} />
 }
 
 // Structured advisories (content from the API). Everything is rendered as plain text.
-function StructuredBody({ content: c, compact }) {
+function StructuredBody({ content: c, automation, compact }) {
   const sources = (c.sources ?? []).filter((s) => s && typeof s.url === 'string' && /^https?:\/\//i.test(s.url))
   const level = c.confidence?.level
   return (
@@ -47,7 +47,7 @@ function StructuredBody({ content: c, compact }) {
       )}
 
       <ol className="space-y-3">
-        {c.steps.map((step, i) => {
+        {c.steps.filter(Boolean).map((step, i) => {
           const badge = kindBadge(step.kind)
           return (
             <li key={step.id ?? i} className="flex items-start gap-3">
@@ -66,7 +66,7 @@ function StructuredBody({ content: c, compact }) {
                     <p className="text-xs leading-relaxed text-dark-300">{step.expert_note}</p>
                   </div>
                 )}
-                {step.kind === 'auto' && plannedActionText(step.action) && <p className="text-[11px] text-dark-500">{plannedActionText(step.action)}</p>}
+                {plannedActionForStep(step, automation) && <p className="text-[11px] text-dark-500">{plannedActionForStep(step, automation)}</p>}
               </div>
             </li>
           )
@@ -106,7 +106,7 @@ function StructuredBody({ content: c, compact }) {
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-dark-400">
             {level && <span className={`rounded-md border px-2 py-0.5 font-semibold ${CONFIDENCE_STYLE[level] ?? CONFIDENCE_STYLE.Low}`}>{level} confidence</span>}
             {c.confidence?.reason && <span>{c.confidence.reason}</span>}
-            {c.basis && <span className="text-dark-500">· {c.basis}</span>}
+            {c.basis && <span className="text-dark-500">Â· {c.basis}</span>}
           </div>
         </div>
       )}
