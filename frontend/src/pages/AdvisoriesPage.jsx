@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import { useChatbot } from '../context/ChatbotContext'
 import TenantSelector from '../components/common/TenantSelector'
 import AdvisoryBody from '../components/common/AdvisoryBody'
-import { labelTone } from '../utils/advisoryView'
+import { labelTone, chipTitle } from '../utils/advisoryView'
 
 const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved']
 
@@ -19,6 +19,8 @@ export default function AdvisoriesPage() {
   const [advisories, setAdvisories] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedAdvisory, setSelectedAdvisory] = useState(null)
+  // 'loading' until the detail (the only response that carries structured content) arrives; 'error' falls back to the text view
+  const [detailState, setDetailState] = useState({ id: null, state: 'done' })
   const [statusFilter, setStatusFilter] = useState(() => STATUS_OPTIONS.includes(searchParams.get('status')) ? searchParams.get('status') : 'all')
   const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
   const canUpdateAdvisory = can('advisory.update')
@@ -83,9 +85,13 @@ export default function AdvisoriesPage() {
   // Show the row at once, then load the detail (it carries the current automation label).
   const openAdvisory = (a) => {
     setSelectedAdvisory(a)
+    setDetailState({ id: a.advisoryId, state: 'loading' })
     client.get(`/advisories/${a.advisoryId}`)
-      .then(res => setSelectedAdvisory(cur => (cur?.advisoryId === a.advisoryId ? { ...cur, ...res.data } : cur)))
-      .catch(console.error)
+      .then(res => {
+        setSelectedAdvisory(cur => (cur?.advisoryId === a.advisoryId ? { ...cur, ...res.data } : cur))
+        setDetailState(cur => (cur.id === a.advisoryId ? { id: a.advisoryId, state: 'done' } : cur))
+      })
+      .catch(err => { console.error(err); setDetailState(cur => (cur.id === a.advisoryId ? { id: a.advisoryId, state: 'error' } : cur)) })
   }
 
   const statusBadgeClass = (s) => {
@@ -155,7 +161,7 @@ export default function AdvisoriesPage() {
                 >
                   <td className="max-w-md truncate text-dark-200 font-medium">
                     {a.summary}
-                    {a.automation_label && <span className={`ml-2 rounded-md border px-1.5 py-0.5 align-middle text-[10px] font-semibold ${labelTone(a.automation_label).className}`}>{a.automation_label}</span>}
+                    {a.automation_label && <span title={chipTitle(a.automation_label)} className={`ml-2 rounded-md border px-1.5 py-0.5 align-middle text-[10px] font-semibold ${labelTone(a.automation_label).className}`}>{a.automation_label}</span>}
                   </td>
                   <td><span className={statusBadgeClass(a.status)}>{a.status?.replace('_', ' ')}</span></td>
                   <td className="text-dark-300 text-xs">{a.assignedToName || (a.assignedTo ? a.assignedTo.slice(0, 8) + '...' : 'Unassigned')}</td>
@@ -207,7 +213,9 @@ export default function AdvisoriesPage() {
                     {selectedAdvisory.automation.reason && <p className="mt-1 text-xs text-dark-400">{selectedAdvisory.automation.reason}</p>}
                   </div>
                 )}
-                <AdvisoryBody text={selectedAdvisory.recommendedAction} content={selectedAdvisory.content} />
+                {detailState.id === selectedAdvisory.advisoryId && detailState.state === 'loading'
+                  ? <p className="text-sm text-dark-400">Loading advisory...</p>
+                  : <AdvisoryBody text={selectedAdvisory.recommendedAction} content={selectedAdvisory.content} automation={selectedAdvisory.automation} />}
               </div>
             </div>
 

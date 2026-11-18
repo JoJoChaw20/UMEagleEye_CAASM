@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Check, Copy, ExternalLink, ShieldCheck, Undo2, Clock } from 'lucide-react'
 import { parseAdvisory } from '../../utils/advisoryText'
-import { advisoryDisplay, kindBadge, plannedActionForStep, RISK_STYLE, REGENERATE_HINT } from '../../utils/advisoryView'
+import { advisoryDisplay, kindBadge, plannedActionForStep, whyNowText, commandsOf, RISK_STYLE, REGENERATE_HINT } from '../../utils/advisoryView'
 
 const CONFIDENCE_STYLE = {
   High: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
@@ -38,11 +38,13 @@ export default function AdvisoryBody({ text, content, automation, compact = fals
 function StructuredBody({ content: c, automation, compact }) {
   const sources = (c.sources ?? []).filter((s) => s && typeof s.url === 'string' && /^https?:\/\//i.test(s.url))
   const level = c.confidence?.level
+  const whyNow = whyNowText(c)
+  const { commands, note } = commandsOf(c)
   return (
     <div className="space-y-4">
-      {c.why_now && (
+      {whyNow && (
         <div className="flex items-start gap-2.5 rounded-md border border-eagle-500/30 bg-eagle-500/[0.07] px-3 py-2.5 text-sm text-dark-100">
-          <Clock className="mt-0.5 h-4 w-4 flex-shrink-0 text-eagle-400" /><span>{c.why_now}</span>
+          <Clock className="mt-0.5 h-4 w-4 flex-shrink-0 text-eagle-400" /><span>{whyNow}</span>
         </div>
       )}
 
@@ -72,6 +74,16 @@ function StructuredBody({ content: c, automation, compact }) {
           )
         })}
       </ol>
+
+      {note && <p className="text-xs leading-relaxed text-dark-300">{note}</p>}
+
+      {commands.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-dark-300">Run</p>
+          {commands.map((cmd) => <CommandLine key={cmd} command={cmd} />)}
+          <p className="text-[11px] text-dark-500">Review before running; take a backup or snapshot first.</p>
+        </div>
+      )}
 
       {(c.verify || c.rollback) && (
         <div className={`grid gap-3 ${compact ? '' : 'md:grid-cols-2'}`}>

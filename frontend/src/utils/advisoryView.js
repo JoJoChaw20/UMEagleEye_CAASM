@@ -63,3 +63,26 @@ export function plannedActionForStep(step, automation) {
   if (!step || step.kind !== 'auto' || automation?.available !== true) return null
   return plannedActionText(step.action)
 }
+
+// The "why now" box text: the reason and the target window, as in the text view.
+export function whyNowText(content) {
+  const why = typeof content?.why_now === 'string' && content.why_now ? content.why_now : null
+  const target = typeof content?.target === 'string' && content.target ? content.target : null
+  if (why && target) return `${why} Target: ${target}.`
+  if (why) return why
+  if (target) return `Target ${target}.`
+  return null
+}
+
+// Ready-to-copy commands, and the command note unless a step already says it.
+export function commandsOf(content) {
+  const commands = Array.isArray(content?.commands) ? content.commands.filter((c) => typeof c === 'string' && c) : []
+  const note = typeof content?.command_note === 'string' && content.command_note ? content.command_note : null
+  const steps = Array.isArray(content?.steps) ? content.steps : []
+  return { commands, note: note && !steps.some((s) => s?.text === note) ? note : null }
+}
+
+// Hover text for list chips that promise automatic fixing.
+export function chipTitle(label) {
+  return label === 'Auto-fixable' || label === 'Partly auto-fixable' ? NOT_ON_TEXT : undefined
+}

@@ -62,3 +62,27 @@ test('planned action line is hidden unless automation is available', async () =>
   assert.match(plannedActionForStep(step, { available: true }), /^Planned automatic action/)
   assert.equal(plannedActionForStep({ ...step, kind: 'manual' }, { available: true }), null)
 })
+
+test('whyNowText joins why now and the target like the text view', async () => {
+  const { whyNowText } = await import('./advisoryView.js')
+  assert.equal(whyNowText({ why_now: 'On KEV.', target: 'within 72 hours' }), 'On KEV. Target: within 72 hours.')
+  assert.equal(whyNowText({ why_now: null, target: 'within 7 days' }), 'Target within 7 days.')
+  assert.equal(whyNowText({ why_now: 'On KEV.' }), 'On KEV.')
+  assert.equal(whyNowText({}), null)
+})
+
+test('commandsOf keeps only string commands and the note when no step repeats it', async () => {
+  const { commandsOf } = await import('./advisoryView.js')
+  assert.deepEqual(commandsOf({ commands: ['a', 5, '', 'b'], command_note: 'N', steps: [{ text: 'x' }] }), { commands: ['a', 'b'], note: 'N' })
+  assert.deepEqual(commandsOf({ command_note: 'N', steps: [{ text: 'N' }] }), { commands: [], note: null })
+  assert.deepEqual(commandsOf({ steps: [] }), { commands: [], note: null })
+  assert.deepEqual(commandsOf({ commands: 'rm -rf', steps: [] }), { commands: [], note: null })
+});
+
+test('chipTitle explains list chips that promise automatic fixing', async () => {
+  const { chipTitle, NOT_ON_TEXT } = await import('./advisoryView.js')
+  assert.equal(chipTitle('Auto-fixable'), NOT_ON_TEXT)
+  assert.equal(chipTitle('Partly auto-fixable'), NOT_ON_TEXT)
+  assert.equal(chipTitle('Guided fix'), undefined)
+  assert.equal(chipTitle('Needs outside support'), undefined)
+})
