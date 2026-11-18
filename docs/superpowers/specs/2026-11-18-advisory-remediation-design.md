@@ -208,6 +208,11 @@ Four projects, built and released in this order. Each is usable on its own.
 
 ## Decisions settled after the builder check
 
+- **Executor rule (from the Project 1 review).** Stored content may keep a validated `action` on a
+  step that is external only because of the device (`device_blocked: true`), so the label can
+  recompute when an agent is installed. Project 4's executor and any "Apply" UI must run a step
+  only when its kind — re-derived on the server from the current device at run time — is `auto`,
+  never because an `action` is present, and must re-validate the action against the catalog.
 - **Who runs the workflow (owner).** The person who can generate an advisory can carry the whole
   workflow for it. `advisory.generate` (with `chatbot.use` for the assistant) is the permission
   for: viewing structured steps and labels, the advisory-scoped assistant ("Debug with AI" — today
