@@ -182,3 +182,56 @@ test('buildContent copies draft and facts and maps steps', () => {
   assert.equal(c.steps[0]!.expert_note, 'n1'); assert.equal(c.steps[1]!.expert_note, undefined)
   assert.equal(c.steps[0]!.kind, 'auto'); assert.deepEqual(c.sources, f.sources)
 })
+
+test('package named eagleeye is never upgraded automatically', () => {
+  for (const pkg of ['eagleeye-agent', 'EagleEye']) {
+    const out = mapSteps(cveFacts(pkg, '2.0'), T(`Upgrade ${pkg} to 2.0.`), dev())
+    assert.ok(out.every(s => !s.action && s.kind === 'manual'), pkg)
+  }
+  assert.equal(mapSteps(cveFacts('sophos-av', '2.0'), T('x'), dev())[0]!.kind, 'auto')
+})
+
+test('inherited object keys as packageType stay manual', () => {
+  for (const t of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    assert.ok(mapSteps(cveFacts('openssl', '3.0.14', t), T('Upgrade openssl to 3.0.14.'), dev()).every(s => !s.action), t)
+  }
+})
+
+test('attach needs whole-token matches', () => {
+  // package "ssl" must not match "openssl"
+  let out = mapSteps(cveFacts('ssl', '1.2'), T('Upgrade openssl to 1.2.'), dev())
+  assert.equal(out.length, 2); assert.equal(out[0]!.text, 'Upgrade ssl to 1.2.'); assert.equal(out[1]!.action, undefined)
+  // package "go" must not match "google"
+  out = mapSteps(cveFacts('go', '1.2'), T('Update google chrome to 1.2.'), dev())
+  assert.equal(out.length, 2); assert.equal(out[1]!.action, undefined)
+  // version 1.0 must not match 11.0 or 1.0.2
+  for (const txt of ['Upgrade openssl to 11.0.', 'Upgrade openssl to 1.0.2.']) {
+    out = mapSteps(cveFacts('openssl', '1.0'), T(txt), dev())
+    assert.equal(out.length, 2, txt); assert.equal(out[1]!.action, undefined, txt)
+  }
+  // trailing sentence period still matches
+  assert.equal(mapSteps(cveFacts('openssl', '1.0'), T('Upgrade openssl to 1.0.'), dev()).length, 1)
+  // KB123 must not match KB1234
+  const kb = mapSteps(facts({ eventType: 'os_patch_missing', other: { kb: 'KB123' } }), T('Install KB1234 now.'), dev())
+  assert.equal(kb.length, 2); assert.equal(kb[1]!.action, undefined)
+})
+
+test('attach prefers an upgrade-verb step and skips negated steps', () => {
+  const f = cveFacts('openssl', '3.0.14')
+  let out = mapSteps(f, T('Note the openssl 3.0.14 release notes.', 'Upgrade openssl to 3.0.14.'), dev())
+  assert.equal(out.length, 2); assert.equal(out[0]!.action, undefined); assert.ok(out[1]!.action)
+  out = mapSteps(f, T('Do not upgrade openssl to 3.0.14 before testing.'), dev())
+  assert.equal(out.length, 2); assert.equal(out[0]!.text, 'Upgrade openssl to 3.0.14.'); assert.equal(out[1]!.action, undefined)
+})
+
+test('nmap service names of protected services block nothing', () => {
+  for (const svc of ['ssh OpenSSH 9.0', 'ms-wbt-server Microsoft Terminal Services', 'domain ISC BIND 9.16',
+                     'ldap Microsoft Windows Active Directory LDAP', 'kerberos-sec Microsoft Windows Kerberos',
+                     'microsoft-ds', 'msrpc Microsoft Windows RPC', 'winrm', 'bootps']) {
+    for (const key of ['service_on_port', 'service']) {
+      const out = mapSteps(portFacts({ port: 2222, [key]: svc }), T('Block the port at the firewall.'), dev())
+      assert.ok(out.every(s => !s.action), `${key}: ${svc}`)
+    }
+  }
+  assert.ok(mapSteps(portFacts({ port: 8080, service_on_port: 'http nginx 1.2' }), T('x'), dev())[0]!.action)
+})
