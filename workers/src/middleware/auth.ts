@@ -2,6 +2,7 @@ import { createMiddleware } from 'hono/factory'
 import type { Env, AuthUser } from '../types'
 import { verifyToken } from '../lib/auth'
 import { toAuthUser } from '../lib/accountRows'
+import { isMfaExempt } from '../lib/mfaFlow'
 import { isDeactivated, sessionGate } from '../lib/sessionGate'
 import { flipIfDue } from '../services/deactivation'
 import { getDb } from '../db/client'
@@ -31,7 +32,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   const db = getDb(c.env.DATABASE_URL)
   const [row] = await db
     .select({ role: users.role, tenantId: users.tenantId, isActive: users.isActive, actions: users.actions,
-      mfaEnabled: users.mfaEnabled, sessionsValidAfter: users.sessionsValidAfter,
+      username: users.username, mfaEnabled: users.mfaEnabled, sessionsValidAfter: users.sessionsValidAfter,
       scheduledDeactivationAt: users.scheduledDeactivationAt })
     .from(users)
     .where(eq(users.userId, payload.sub))
@@ -39,7 +40,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   if (!row) {
     return c.json({ detail: 'Your account is deactivated. Contact your Tenant Superadmin.' }, 401)
   }
-  const refused = sessionGate(payload, row, c.req.path)
+  const refused = sessionGate(payload, row, c.req.path, new Date(), isMfaExempt(c.env, row.username))
   if (refused) {
     if (isDeactivated(row)) await flipIfDue(db, payload.sub)
     return c.json(refused.body, refused.status)

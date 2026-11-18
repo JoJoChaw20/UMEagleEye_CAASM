@@ -114,12 +114,20 @@ export function needsPasswordForStepUp(user) {
   return user?.hasPassword !== false
 }
 
-export function stepUpReady({ hasPassword, password, code }) {
-  return cleanTotpInput(code).length === 6 && (!hasPassword || String(password ?? '').length > 0)
+/** An MFA-exempt account (/auth/me mfa_exempt, staging only) confirms with the password alone. */
+export function isMfaExemptUser(user) {
+  return user?.mfa_exempt === true
 }
 
-/** The request body for a step-up route: { password?, code }. */
-export function stepUpBody({ hasPassword, password, code }) {
+export function stepUpReady({ hasPassword, password, code, mfaExempt }) {
+  const passwordOk = !hasPassword || String(password ?? '').length > 0
+  if (mfaExempt) return hasPassword && passwordOk
+  return cleanTotpInput(code).length === 6 && passwordOk
+}
+
+/** The request body for a step-up route: { password?, code? } (no code for an exempt account). */
+export function stepUpBody({ hasPassword, password, code, mfaExempt }) {
+  if (mfaExempt) return { password }
   return hasPassword ? { password, code } : { code }
 }
 

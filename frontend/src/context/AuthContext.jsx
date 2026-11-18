@@ -114,16 +114,17 @@ export function AuthProvider({ children }) {
     setSession(n => n + 1)
   }
 
-  // Password and Google sign-in answer { mfa_token, stage }: 'verify' asks for a code,
+  // An MFA-exempt account (staging only) gets { access_token, role, user_id } straight away.
+  // Password and Google sign-in otherwise answer { mfa_token, stage }: 'verify' asks for a code,
   // 'enrol' sets MFA up first. The mfa_token stays in LoginPage's memory only.
   const login = async (username, password) => {
     const res = await client.post('/auth/login', { username, password })
-    return { mfa_token: res.data.mfa_token, stage: res.data.stage }
+    return res.data.access_token ? res.data : { mfa_token: res.data.mfa_token, stage: res.data.stage }
   }
 
   const loginWithGoogle = async (access_token) => {
     const res = await client.post('/auth/google', { access_token })
-    return { mfa_token: res.data.mfa_token, stage: res.data.stage }
+    return res.data.access_token ? res.data : { mfa_token: res.data.mfa_token, stage: res.data.stage }
   }
 
   // answer: { code } or { recovery_code }. Returns { access_token, role, user_id } (plus

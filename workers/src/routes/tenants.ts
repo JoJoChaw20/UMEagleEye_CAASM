@@ -573,7 +573,7 @@ router.post(
   '/:tenantId/users/:userId/mfa-reset',
   authMiddleware,
   requireTenantSuperadmin,
-  zValidator('json', z.object({ password: z.string().optional(), code: z.string() })),
+  zValidator('json', z.object({ password: z.string().optional(), code: z.string().optional() })),
   async (c) => {
     try {
       const db = getDb(c.env.DATABASE_URL)
@@ -621,7 +621,7 @@ router.delete(
   '/:tenantId/users/:userId',
   authMiddleware,
   requireTenantSuperadmin,
-  zValidator('json', z.object({ password: z.string().optional(), code: z.string(), confirm_username: z.string() })),
+  zValidator('json', z.object({ password: z.string().optional(), code: z.string().optional(), confirm_username: z.string() })),
   async (c) => {
     try {
       const db = getDb(c.env.DATABASE_URL)

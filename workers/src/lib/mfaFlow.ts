@@ -14,6 +14,18 @@ export function signInOutcome(mfaEnabled: boolean): MfaStage {
   return mfaEnabled ? 'verify' : 'enrol'
 }
 
+/**
+ * Staging-only exception to mandatory MFA: usernames in MFA_EXEMPT_USERNAMES (comma list, exact
+ * match) sign in with the password alone. Ignored when APP_ENV is production, even if the variable
+ * leaks into that config.
+ */
+export function isMfaExempt(env: { MFA_EXEMPT_USERNAMES?: string; APP_ENV?: string }, username: string): boolean {
+  if (env.APP_ENV === 'production') return false
+  const name = username.trim()
+  if (!name) return false
+  return (env.MFA_EXEMPT_USERNAMES ?? '').split(',').some((n) => n.trim() === name)
+}
+
 export type VerifyInput = { kind: 'code'; code: string } | { kind: 'recovery'; recoveryCode: string }
 
 /** POST /auth/mfa/verify body: exactly one of `code` (6 digits) and `recovery_code`. Blank counts as absent. */
@@ -33,7 +45,11 @@ export function parseVerifyBody(
  * Step-up confirmation (regenerating recovery codes, MFA reset): the password and the current MFA
  * code. An account with no password (Google-only, NO_PASSWORD_HASH) gives the code alone.
  */
-export function stepUpOk(s: { hasPassword: boolean; passwordOk: boolean; codeOk: boolean }): boolean {
+export function stepUpOk(
+  s: { hasPassword: boolean; passwordOk: boolean; codeOk: boolean; passwordOnly?: boolean },
+): boolean {
+  // An MFA-exempt account with MFA off: the password alone (an account with no password cannot confirm).
+  if (s.passwordOnly) return s.hasPassword && s.passwordOk
   return s.codeOk && (!s.hasPassword || s.passwordOk)
 }
 

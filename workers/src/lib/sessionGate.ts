@@ -18,6 +18,7 @@ export function sessionGate(
   row: { isActive: boolean; mfaEnabled: boolean; sessionsValidAfter: Date | null; scheduledDeactivationAt?: Date | null },
   path: string,
   now: Date = new Date(),
+  mfaExempt = false,
 ): GateResult {
   // An MFA step token (purpose claim) is never an access token.
   if (payload.purpose !== undefined) return { status: 401, body: { detail: 'Token expired or invalid' } }
@@ -25,7 +26,7 @@ export function sessionGate(
   if (row.sessionsValidAfter && (payload.iat ?? 0) < Math.floor(row.sessionsValidAfter.getTime() / 1000)) {
     return { status: 401, body: { detail: 'Your session has ended. Sign in again.' } }
   }
-  if (!row.mfaEnabled && !path.startsWith('/api/v1/auth/')) {
+  if (!row.mfaEnabled && !mfaExempt && !path.startsWith('/api/v1/auth/')) {
     return { status: 403, body: { detail: 'Set up MFA to continue.', mfa_setup_required: true } }
   }
   return null

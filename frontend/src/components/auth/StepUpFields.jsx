@@ -6,7 +6,7 @@ import { TotpField } from './AuthParts'
  * Google-only) and the current 6-digit authenticator code. Used for new recovery codes, MFA reset,
  * and any later action that asks the same (body from stepUpBody in utils/mfa.js).
  */
-export default function StepUpFields({ idPrefix = 'stepup', hasPassword, password, onPassword, code, onCode, busy, onSubmit }) {
+export default function StepUpFields({ idPrefix = 'stepup', hasPassword, password, onPassword, code, onCode, busy, onSubmit, mfaExempt = false }) {
   return (
     <div className="mt-4 space-y-3" onKeyDown={(e) => { if (e.key === 'Enter' && onSubmit) { e.preventDefault(); onSubmit() } }}>
       {hasPassword && (
@@ -16,7 +16,7 @@ export default function StepUpFields({ idPrefix = 'stepup', hasPassword, passwor
             readOnly={busy} onChange={(e) => onPassword(e.target.value)} className="input-field w-full" />
         </div>
       )}
-      <TotpField id={`${idPrefix}-code`} value={code} onChange={(v) => onCode(cleanTotpInput(v))} busy={busy} />
+      {!mfaExempt && <TotpField id={`${idPrefix}-code`} value={code} onChange={(v) => onCode(cleanTotpInput(v))} busy={busy} />}
     </div>
   )
 }

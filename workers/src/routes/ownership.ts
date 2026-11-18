@@ -78,7 +78,7 @@ router.post(
   authMiddleware,
   requireTenantSuperadmin,
   zValidator('json', z.object({
-    to_user_id: z.string().uuid(), after: afterSchema, password: z.string().optional(), code: z.string(),
+    to_user_id: z.string().uuid(), after: afterSchema, password: z.string().optional(), code: z.string().optional(),
   })),
   async (c) => {
     try {
@@ -166,7 +166,7 @@ router.delete(
 router.post(
   '/:tenantId/ownership/transfer/accept',
   authMiddleware,
-  zValidator('json', z.object({ password: z.string().optional(), code: z.string() })),
+  zValidator('json', z.object({ password: z.string().optional(), code: z.string().optional() })),
   async (c) => {
     try {
       const { tenantId } = c.req.param()
@@ -255,7 +255,7 @@ const own = (c: any, tenantId: string) => {
   return u.tenantId && u.tenantId === tenantId ? u : null
 }
 const WRONG_TENANT = 'You can only access your own tenant.'
-const stepSchema = { password: z.string().optional(), code: z.string() }
+const stepSchema = { password: z.string().optional(), code: z.string().optional() }
 
 async function loadMe(db: ReturnType<typeof getDb>, userId: string) {
   const [me] = await db.select().from(users).where(eq(users.userId, userId)).limit(1)
@@ -503,7 +503,7 @@ router.post(
   requirePlatformSuperadmin,
   zValidator('json', z.object({
     email: z.string().email(), username: z.string().min(3).max(100).optional(),
-    password: z.string().optional(), code: z.string(),
+    password: z.string().optional(), code: z.string().optional(),
   })),
   async (c) => {
     try {

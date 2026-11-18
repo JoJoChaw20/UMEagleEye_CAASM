@@ -30,7 +30,7 @@ import {
   acceptStep, createMfaToken, generateRecoveryCodes, hashRecoveryCode, matchTotpStep, sha256Hex, timingSafeEqualStr, verifyMfaToken, type MfaStage,
 } from '../lib/mfa'
 import {
-  CODE_REPLAYED, RECOVERY_CODE_INVALID, parseVerifyBody, pendingSecretPlan, signInOutcome,
+  CODE_REPLAYED, RECOVERY_CODE_INVALID, isMfaExempt, parseVerifyBody, pendingSecretPlan, signInOutcome,
   useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
 } from '../lib/mfaFlow'
 
@@ -65,6 +65,15 @@ async function mfaStep(c: Ctx, row: UserRow) {
   // A break-glass reset whose hold is over is applied first: the account then sets MFA up again.
   // The stage comes from the account as it is after that, never from the row read before it.
   const db = getDb(c.env.DATABASE_URL)
+  // Staging only: an exempt account signs in with the password alone (lib/mfaFlow.ts isMfaExempt).
+  if (isMfaExempt(c.env, row.username)) {
+    const settled = await settledAccount(c, db, row)
+    if (settled.refused) return settled.refused
+    await db.update(users).set({ lastLogin: new Date() }).where(eq(users.userId, row.userId))
+    await clearFailures(c.env.KV_CACHE, 'mfa_account', row.userId)
+    await audit(db, c, { userId: row.userId, tenantId: row.tenantId, actionType: 'auth.login_mfa_exempt', targetEntity: row.userId })
+    return c.json(await accessFor(c, settled.row))
+  }
   await applyDueBreakGlass(db, row.userId)
   const [fresh] = await db.select({ mfaEnabled: users.mfaEnabled }).from(users).where(eq(users.userId, row.userId)).limit(1)
   const stage = signInOutcome(fresh?.mfaEnabled ?? row.mfaEnabled)
@@ -665,7 +674,7 @@ app.get('/me', authMiddleware, async (c) => {
 
     // Role and actions as normalized (a legacy role reads as a tenant user): lib/accountRows.ts
     const { passwordHash, ...profile } = withAccount(row)
-    return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH })
+    return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH, mfa_exempt: isMfaExempt(c.env, row.username) })
   } catch (err) {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)
@@ -689,8 +698,8 @@ app.get('/mfa/status', authMiddleware, async (c) => {
   try {
     const authUser = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
-    const [row] = await db.select({ mfaEnabled: users.mfaEnabled }).from(users).where(eq(users.userId, authUser.userId)).limit(1)
-    return c.json({ mfa_enabled: row?.mfaEnabled === true, recovery_codes_left: await recoveryCodesLeft(db, authUser.userId) })
+    const [row] = await db.select({ mfaEnabled: users.mfaEnabled, username: users.username }).from(users).where(eq(users.userId, authUser.userId)).limit(1)
+    return c.json({ mfa_enabled: row?.mfaEnabled === true, mfa_exempt: isMfaExempt(c.env, row?.username ?? ''), recovery_codes_left: await recoveryCodesLeft(db, authUser.userId) })
   } catch (err) {
     console.error('mfa/status error:', err)
     return c.json({ detail: 'Failed to read MFA status' }, 500)
@@ -702,7 +711,7 @@ app.get('/mfa/status', authMiddleware, async (c) => {
 // account with no password (Google-only) gives the code alone.
 const recoveryCodesSchema = z.object({
   password: z.string().optional(),
-  code: z.string(),
+  code: z.string().optional(),
 })
 
 app.post('/mfa/recovery-codes', authMiddleware, zValidator('json', recoveryCodesSchema), async (c) => {

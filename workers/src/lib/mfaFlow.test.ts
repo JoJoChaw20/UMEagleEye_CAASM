@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { authenticator } from 'otplib'
 import {
   CODE_REPLAYED, RECOVERY_CODE_INVALID, WRONG_CODE, parseVerifyBody, pendingSecretPlan, signInOutcome,
-  resetTarget, deleteTarget, confirmMatches, stepUpOk, tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
+  resetTarget, deleteTarget, confirmMatches, stepUpOk, isMfaExempt, tooManyCodesDetail, useRecoveryCode, wrongCodeDetail, type RecoveryCodeStore,
 } from './mfaFlow'
 import { generateRecoveryCodes, hashRecoveryCode } from './mfa'
 
@@ -138,4 +138,34 @@ test('confirm_username must match exactly', () => {
   assert.equal(confirmMatches(undefined, 'alice'), false)
   assert.equal(confirmMatches(null, 'alice'), false)
   assert.equal(confirmMatches(5, 'alice'), false)
+})
+
+test('isMfaExempt: listed name on staging', () => {
+  const env = { MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'staging' }
+  assert.equal(isMfaExempt(env, 'admin'), true)
+  assert.equal(isMfaExempt(env, 'other'), false)
+  assert.equal(isMfaExempt(env, 'Admin'), false)
+})
+
+test('isMfaExempt: empty or missing var is false', () => {
+  assert.equal(isMfaExempt({ APP_ENV: 'staging' }, 'admin'), false)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: '', APP_ENV: 'staging' }, 'admin'), false)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'staging' }, ''), false)
+})
+
+test('isMfaExempt: production ignores the list', () => {
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'production' }, 'admin'), false)
+})
+
+test('isMfaExempt: whitespace around names tolerated', () => {
+  const env = { MFA_EXEMPT_USERNAMES: ' alice , admin ', APP_ENV: 'staging' }
+  assert.equal(isMfaExempt(env, 'admin'), true)
+  assert.equal(isMfaExempt(env, ' alice '), true)
+})
+
+test('stepUpOk: password-only for an exempt account with MFA off', () => {
+  assert.equal(stepUpOk({ hasPassword: true, passwordOk: true, codeOk: false, passwordOnly: true }), true)
+  assert.equal(stepUpOk({ hasPassword: true, passwordOk: false, codeOk: true, passwordOnly: true }), false)
+  assert.equal(stepUpOk({ hasPassword: false, passwordOk: false, codeOk: true, passwordOnly: true }), false)
+  assert.equal(stepUpOk({ hasPassword: true, passwordOk: true, codeOk: false }), false)
 })

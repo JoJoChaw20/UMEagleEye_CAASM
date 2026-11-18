@@ -246,9 +246,10 @@ export default function SettingsPage() {
           <Shield className="w-5 h-5 text-accent-green" />
           <h2 className="text-lg font-semibold text-dark-50">Multi-Factor Authentication</h2>
         </div>
-        {mfaStatusError && <FormAlert className="mb-3">{mfaStatusError}</FormAlert>}
-        {!mfaStatus && !mfaStatusError && <p className="text-sm text-dark-400">Loading…</p>}
-        {mfaStatus && (
+        {user?.mfa_exempt && <p className="text-sm text-dark-400">MFA is not required for this account on this environment.</p>}
+        {!user?.mfa_exempt && mfaStatusError && <FormAlert className="mb-3">{mfaStatusError}</FormAlert>}
+        {!user?.mfa_exempt && !mfaStatus && !mfaStatusError && <p className="text-sm text-dark-400">Loading…</p>}
+        {!user?.mfa_exempt && mfaStatus && (
           <div className="space-y-3">
             <p className="text-sm text-dark-50">
               <span className="font-medium">{mfaStatus.mfa_enabled ? 'MFA is on' : 'MFA is off'}</span>

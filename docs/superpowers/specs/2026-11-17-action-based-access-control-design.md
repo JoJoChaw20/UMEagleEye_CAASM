@@ -426,6 +426,10 @@ Only when Path B cannot work: no successor or approvers remain, or the change is
 - When MFA is set up, the user receives 10 one-time recovery codes, shown once. A recovery code
   can be used instead of the MFA code if the device is lost.
 
+Staging-only exception: accounts listed in `MFA_EXEMPT_USERNAMES` (comma-separated) on staging sign in
+with the password only, with no MFA set-up or code, and confirm step-up actions with the password
+alone. The setting is ignored when `APP_ENV` is `production`, so production keeps mandatory MFA.
+
 ### Reset a user's MFA (Tenant Superadmin only)
 
 | | |

@@ -79,7 +79,9 @@ export default function LoginPage() {
     run(async () => {
       setNotice(null)
       try {
-        beginMfa(await login(username, password))
+        const result = await login(username, password)
+        if (result.access_token) { startSession(result); navigate('/') }
+        else beginMfa(result)
       } catch (err) {
         showError(errorText(err, 'Login failed'))
       }
@@ -89,7 +91,9 @@ export default function LoginPage() {
   const handleGoogleLogin = (credential) => run(async () => {
     setNotice(null)
     try {
-      beginMfa(await loginWithGoogle(credential))
+      const result = await loginWithGoogle(credential)
+      if (result.access_token) { startSession(result); navigate('/') }
+      else beginMfa(result)
     } catch (err) {
       showError(errorText(err, 'Google login failed'))
     }

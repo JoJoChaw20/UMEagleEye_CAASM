@@ -15,6 +15,7 @@ export interface Env {
   PLATFORM_MFA_RESET?: string  // one-time break-glass secret for the Platform Superadmin's MFA
   // ── Vars ──
   APP_ENV: string
+  MFA_EXEMPT_USERNAMES?: string
   OPENROUTER_MODEL: string
   SCAN_DEFAULT_SUBNET: string
   JWT_EXPIRE_MINUTES: string

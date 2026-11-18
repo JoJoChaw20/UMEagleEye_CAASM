@@ -93,6 +93,7 @@ enabled = true
 
 [env.staging.vars]
 APP_ENV = "staging"
+MFA_EXEMPT_USERNAMES = "admin"
 OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
 SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
 JWT_EXPIRE_MINUTES = "1440"

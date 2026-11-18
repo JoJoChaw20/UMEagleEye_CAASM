@@ -58,3 +58,16 @@ test('isDeactivated: inactive, or scheduled time reached', () => {
   assert.equal(isDeactivated({ isActive: true, scheduledDeactivationAt: new Date(1000) }, now), true)
   assert.equal(isDeactivated({ isActive: null, scheduledDeactivationAt: undefined }, now), true)
 })
+
+test('exempt account without MFA passes outside /auth; non-exempt is still refused', () => {
+  const row = { ...ROW, mfaEnabled: false }
+  assert.equal(sessionGate({ iat: 1 }, row, DATA, new Date(), true), null)
+  assert.equal(sessionGate({ iat: 1 }, row, DATA, new Date(), false)?.status, 403)
+})
+
+test('exempt account is still refused when deactivated or session ended', () => {
+  const row = { ...ROW, mfaEnabled: false }
+  assert.equal(sessionGate({ iat: 1 }, { ...row, isActive: false }, DATA, new Date(), true)?.status, 401)
+  assert.equal(sessionGate({ iat: 1 }, { ...row, sessionsValidAfter: new Date(5000) }, DATA, new Date(), true)?.status, 401)
+  assert.equal(sessionGate({ iat: 1, purpose: 'mfa' }, row, DATA, new Date(), true)?.status, 401)
+})
