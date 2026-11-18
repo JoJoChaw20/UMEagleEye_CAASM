@@ -413,6 +413,14 @@ async function main() {
     pageRoutes.set(f.path, hit)
     for (const [k, via] of hit) routes.find(r => r.key === k)?.callers.add(via === f.path ? f.path : `${f.path} (via ${via})`)
   }
+  // A component no page imports (the chat widget, mounted by the layout) still calls its routes: name it
+  // directly, so a route it calls is never described as "No frontend file calls this route".
+  for (const [file, keys] of directApi) {
+    for (const k of keys) {
+      const r = routes.find(x => x.key === k)
+      if (r && ![...r.callers].some(c => c === file || c.endsWith(`(via ${file})`))) r.callers.add(file)
+    }
+  }
   const routeByKey = new Map(routes.map(r => [r.key, r]))
 
   // Importers for hotspots: distinct non-test source files

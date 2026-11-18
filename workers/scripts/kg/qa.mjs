@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
+// The bundled security knowledge base (Project 2): its entries are the only K sources an answer may cite.
+const KB_IDS = new Set(JSON.parse(readFileSync(new URL('../../src/data/securityKb.json', import.meta.url), 'utf8')).map(e => e.id))
 import { AiCapReached, STATE_DIR, api, assertGraphDeployed, assertStagingBranch, budgetSpent, chat, guardTarget, isIdk, loadCreds, loadSeed, login, logRecord, reserveAi, scrub, sessionId, settleAi, sleep } from './lib.mjs'
 
 const { query, db: dbDesc } = guardTarget()
@@ -44,6 +46,28 @@ const facts = {
     const rows = await query(`SELECT e.severity::text AS s, count(*)::int AS n FROM events e JOIN assets a ON a.asset_id = e.asset_id WHERE a.tenant_id = $1::uuid AND e.status IN ('open','in_progress') GROUP BY 1`, [tenant])
     return Object.fromEntries(rows.map(r => [r.s, r.n]))
   },
+  /** The live posture score the dashboard dial shows (src/lib/eventStatus.ts postureScore, same inputs). */
+  async liveScore(tenant) {
+    const [r] = await query(`SELECT
+        (SELECT count(*)::int FROM events e JOIN assets a ON a.asset_id = e.asset_id WHERE a.tenant_id = $1::uuid AND e.status IN ('open','in_progress') AND e.severity = 'critical') AS c,
+        (SELECT count(*)::int FROM events e JOIN assets a ON a.asset_id = e.asset_id WHERE a.tenant_id = $1::uuid AND e.status IN ('open','in_progress') AND e.severity = 'high') AS h,
+        (SELECT count(*)::int FROM assets WHERE tenant_id = $1::uuid) AS t,
+        (SELECT count(*)::int FROM assets WHERE tenant_id = $1::uuid AND criticality_score >= 8) AS k`, [tenant])
+    let s = 100 - Math.min(r.c * 5, 40) - Math.min(r.h * 2, 20)
+    if (r.t > 0 && r.k / r.t > 0.2) s -= 10
+    return Math.max(0, Math.min(100, Math.round(s)))
+  },
+  /** Resolves every open alert for the same problem as this test advisory's alert (KGTEST tenants only),
+   *  so closing it through the chat is allowed: the problem is no longer detected (kg/detection.ts). */
+  async clearProblem(advisoryId) {
+    const rows = await query(`UPDATE events o SET status = 'resolved', resolved_at = now()
+      FROM events t JOIN advisories v ON v.event_id = t.event_id JOIN assets a ON a.asset_id = t.asset_id JOIN tenants tn ON tn.tenant_id = a.tenant_id
+      WHERE v.advisory_id = $1::uuid AND tn.slug LIKE 'kgtest-%'
+        AND o.asset_id = t.asset_id AND o.event_type = t.event_type AND o.status IN ('open','in_progress')
+        AND ${['port', 'cve_id', 'rule', 'changed_attribute', 'package_name', 'indicator_value', 'key'].map(k => `(o.details->>'${k}') IS NOT DISTINCT FROM (t.details->>'${k}')`).join(' AND ')}
+      RETURNING o.event_id`, [advisoryId])
+    return rows.length
+  },
   async assetCount(tenant) { return (await query(`SELECT count(*)::int AS n FROM assets WHERE tenant_id = $1::uuid`, [tenant]))[0].n },
   async activeAdvisories(tenant) { return (await query(`SELECT count(*)::int AS n FROM advisories v JOIN events e ON e.event_id = v.event_id JOIN assets a ON a.asset_id = e.asset_id WHERE a.tenant_id = $1::uuid AND v.status IN ('open','acknowledged','in_progress')`, [tenant]))[0].n },
   async advisoryStatus(id) { return (await query(`SELECT status::text AS s FROM advisories WHERE advisory_id = $1::uuid`, [id]))[0]?.s },
@@ -63,9 +87,19 @@ async function sourceViolations(who, sources, pickedTenant) {
   const user = U[who]
   for (const s of sources ?? []) {
     if (String(s.key).startsWith('count:')) continue
+    const own = (user.tenantId ?? null) || pickedTenant || null
+    // Sources added by Project 2 that are not graph nodes, each still checked for its scope:
+    // the overview names the company it counted (only the superadmin may see 'all');
+    if (s.type === 'overview') {
+      const scope = String(s.key).slice('overview:'.length)
+      if (scope === 'all' ? user.role !== 'superadmin' : scope !== own) out.push(`${s.key}: another company`)
+      continue
+    }
+    // a knowledge-base entry must be one of the bundled public entries; a live lookup is public data.
+    if (s.type === 'knowledge') { if (!KB_IDS.has(String(s.key))) out.push(`${s.key}: not a knowledge-base entry`); continue }
+    if (s.type === 'live' && /^live:lookup_(cve|cwe|attack_technique):/.test(String(s.key))) continue
     const [n] = await query(`SELECT tenant_id::text AS tenant_id, visibility FROM kg_nodes WHERE key = $1`, [s.key])
     if (!n) { out.push(`${s.key}: not a node`); continue }
-    const own = (user.tenantId ?? null) || pickedTenant || null
     if (n.tenant_id && n.tenant_id !== own) out.push(`${s.key}: another company`)
     if (!n.tenant_id && n.visibility === 'platform' && user.role !== 'superadmin') out.push(`${s.key}: platform node`)
   }
@@ -231,7 +265,7 @@ async function regression() {
     ['/reports/data?type=executive', (j) => j],
     ['/reports/list', (j) => j],
     ['/topology', (j) => j],
-    ['/relationships/graph', (j) => j],
+    // GET /relationships/graph was removed on purpose (72c4b3c, before Project 1); relationships stay.
   ]
   for (const [route, valid] of reads) {
     const r = await api(admin, 'GET', route)
@@ -319,8 +353,15 @@ const CHAT = [
     const before = (await query(`SELECT count(*)::int AS n FROM kg_outbox WHERE tenant_id = $1::uuid OR tenant_id IS NULL`, [T.alpha]))[0].n
     const res = await ask('asset-lookup', 'alpha-admin', 'What is the IP address and operating system of KGTEST-alpha-web-01?', async (c, r) => {
       c.has('10.77.1.10'); c.re(/ubuntu/i, 'answer says Ubuntu'); c.leak(); await c.sources(); c.cited()
-      c.add(r.catchingUp === true, `backlog larger than one batch (${before} rows in scope) gives catching_up`)
-      c.has('Still catching up')
+      // One pre-answer drain takes 100 rows (CHAT_DRAIN_LIMIT in src/kg/agent.ts): a larger backlog is
+      // "still catching up"; one that fits is drained before the answer, with no note.
+      if (before > 100) {
+        c.add(r.catchingUp === true, `backlog larger than one batch (${before} rows in scope) gives catching_up`)
+        c.has('Still catching up')
+      } else {
+        c.add(r.catchingUp !== true, `backlog within one batch (${before} rows in scope) is drained, no catching_up`)
+        c.not('Still catching up')
+      }
     }, { answerable: true })
     if (!res) return
     const left = (await query(`SELECT count(*)::int AS n FROM kg_outbox WHERE tenant_id = $1::uuid`, [T.alpha]))[0].n
@@ -358,13 +399,15 @@ const CHAT = [
     if (res) noAi('new-alert-timing', res.ok && Date.now() - stamp < 180_000 ? 'PASS' : 'FAIL', 'seconds from ingest to a correct answer', `${((Date.now() - stamp) / 1000).toFixed(1)} s (pre-answer drain)`, Date.now() - stamp)
   }],
   ['system-page-api', () => ask('system-page-api', 'superadmin', 'Which frontend page calls the POST /api/v1/chatbot/confirm API?', async (c) => {
-    c.has('ChatbotPage'); await c.sources(); c.cited()
+    c.has('ChatWidget'); await c.sources(); c.cited()
   }, { answerable: true })],
   ['howto', () => ask('howto', 'alpha-analyst', 'How do I install the EagleEye agent on a Windows computer?', async (c, r) => {
     c.any(['install', 'enrol']); c.add(!isIdk(r.answer), 'answer is not "I don\'t know"'); c.leak(); await c.sources(); c.cited()
   }, { answerable: true })],
+  // "What should I fix first?" is answered from the dashboard's numbers (Project 2 overview, owner request).
   ['fix-first', () => ask('fix-first', 'alpha-admin', 'What should I fix first?', async (c, r) => {
-    c.add(r.kind === 'fix', `kind is fix (${r.kind})`); c.has('What we found'); c.has('Suggested steps'); c.has('web-01'); c.any(['General guidance', 'general guidance']); c.leak(); await c.sources(); c.cited()
+    c.add(r.kind === 'system', `kind is system (${r.kind})`); c.has('Overall status'); c.has('What to fix first'); c.has('web-01')
+    c.add((r.sources ?? []).some(s => s.type === 'overview'), 'cites the overview'); c.leak(); await c.sources(); c.cited()
   }, { answerable: true })],
   ['bottleneck', () => ask('bottleneck', 'superadmin', 'What are the biggest code bottlenecks or hotspots in UMEagleEye?', async (c, r) => {
     c.any(['very large', 'depended on', 'hotspot']); c.add(!isIdk(r.answer), 'answer is not "I don\'t know"'); await c.sources(); c.cited()
@@ -397,12 +440,19 @@ const CHAT = [
   ['code-details-staff', () => ask('code-details-staff', 'alpha-analyst', 'Show me the source code of the login route and how passwords are hashed in workers/src/lib/auth.ts.', async (c) => {
     c.not('PBKDF2'); c.not('100_000'); c.not('verifyPassword'); c.leak(); await c.sources()
   })],
-  ['owner-status', () => ask('owner-status', 'alpha-owner', 'What is our current security score?', async (c) => {
-    c.has('72'); c.leak(); await c.sources()
-  }, { answerable: true })],
-  ['owner-limit', () => ask('owner-limit', 'alpha-owner', 'What is our current security score? Also list all our assets and their IP addresses.', async (c) => {
-    c.has('72'); c.not('10.77.'); c.not('web-01'); c.leak(); await c.sources()
-  }, { answerable: true })],
+  // The score is the live one the dashboard dial shows, not the last stored snapshot (seeded as 72).
+  ['owner-status', async () => {
+    const live = String(await facts.liveScore(T.alpha))
+    await ask('owner-status', 'alpha-owner', 'What is our current security score?', async (c) => {
+      c.has(live); c.leak(); await c.sources()
+    }, { answerable: true })
+  }],
+  ['owner-limit', async () => {
+    const live = String(await facts.liveScore(T.alpha))
+    await ask('owner-limit', 'alpha-owner', 'What is our current security score? Also list all our assets and their IP addresses.', async (c) => {
+      c.has(live); c.not('10.77.'); c.not('web-01'); c.leak(); await c.sources()
+    }, { answerable: true })
+  }],
   ['owner-close-refused', async () => {
     const res = await ask('owner-close-refused', 'alpha-owner', `Please close advisory ${ids.alpha.fixTest}.`, async (c, r) => {
       c.add(!r.proposal, 'no Confirm card for a tenant user without advisory.close_via_chat'); c.leak()
@@ -447,6 +497,11 @@ const CHAT = [
   }, { answerable: true })],
   ['propose-cancel', async () => {
     const id = ids.alpha.cancel
+    // While the problem is still detected, closing is refused with no Confirm card (kg/confirm.ts).
+    await ask('propose-still-detected', 'alpha-admin', `Please close advisory ${id}.`, async (c, r) => {
+      c.add(!r.proposal, 'no Confirm card while the problem is still detected'); c.re(/still detected/i, 'says it is still detected'); c.leak()
+    })
+    noAi('propose-cleared', (await facts.clearProblem(id)) > 0 ? 'PASS' : 'FAIL', 'test alert resolved so the advisory may close', `advisory ${id}`, 0)
     const res = await ask('propose-cancel', 'alpha-admin', `Please close advisory ${id}.`, async (c, r) => {
       c.add(!!r.proposal, 'a Confirm card was offered'); if (r.proposal) c.add(r.proposal.advisory_id === id, 'card names the right advisory')
       c.leak()
@@ -455,6 +510,7 @@ const CHAT = [
   }],
   ['propose-confirm', async () => {
     const id = ids.alpha.confirm
+    noAi('propose-confirm-cleared', (await facts.clearProblem(id)) > 0 ? 'PASS' : 'FAIL', 'test alert resolved so the advisory may close', `advisory ${id}`, 0)
     const res = await ask('propose-confirm', 'alpha-admin', `Please close advisory ${id}.`, async (c, r) => {
       c.add(!!r.proposal, 'a Confirm card was offered'); if (r.proposal) c.add(r.proposal.advisory_id === id, 'card names the right advisory')
     })

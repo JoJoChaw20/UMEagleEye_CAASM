@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { CORS_HEADERS, CORS_METHODS, corsOrigins } from './lib/cors'
 import { secureHeaders } from 'hono/secure-headers'
 import type { Env } from './types'
 
@@ -47,15 +48,9 @@ app.use('*', secureHeaders({ crossOriginResourcePolicy: false, crossOriginEmbedd
 
 app.use('*', async (c, next) => {
   const corsHandler = cors({
-    origin: [
-      'https://umeagleeye.csnet.my',
-      'https://umeagleeye.pages.dev',
-      c.env.FRONTEND_URL ?? '',
-      // A local dev server only outside production (a page on localhost could be anything)
-      ...(c.env.APP_ENV === 'production' ? [] : ['http://localhost:5173', 'http://localhost:3000']),
-    ].filter(Boolean),
-    allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID'],
+    origin: corsOrigins(c.env),
+    allowMethods: [...CORS_METHODS],
+    allowHeaders: CORS_HEADERS,
     maxAge: 86400,
   })
   return corsHandler(c, next)
