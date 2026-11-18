@@ -1003,3 +1003,50 @@ test('a refused close inside a longer question is a note on the answer', async (
   assert.match(r.content, /^> Not closed: Port 445 is still detected on web-01\./)
   assert.match(r.content, /Device web-01 has 5 open ports \[S1\]\.$/)
 })
+
+// ── Project 2 Task 1: a chat opened from one advisory ──
+const ADV_CTX = {
+  advisoryId: ADV,
+  sources: [
+    { key: `advisory:${ADV}`, title: 'Advisory 7c9e6679', type: 'advisory', text: 'Status: open\nSummary: OpenSSL 3.0.2 on web-01 is known exploited.' },
+    { key: 'cve:CVE-2024-0001:openssl:3.0.2', title: 'CVE-2024-0001 in openssl', type: 'cve', text: 'CVE: CVE-2024-0001\nFixed in: 3.0.15' },
+  ],
+}
+
+test('advisory context: its facts are S1.. and an answer citing them passes without any tool call', async () => {
+  const answer = '## What we found\nOpenSSL 3.0.2 on `web-01` has CVE-2024-0001 [S2], fixed in 3.0.15 [S2]. The advisory is open [S1].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.15.'
+  const s = setup({ kind: 'fix', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)
+  assert.notEqual(r.content, IDK)
+  assert.deepEqual(finalOf(s.events)?.sources.map(x => x.ref), ['S1', 'S2'])
+  assert.equal(finalOf(s.events)?.sources[1].type, 'cve')
+  // the facts went to the model as untrusted data, after the system prompt
+  const sent = s.m.seen[0].messages
+  assert.equal(sent[1].role, 'system')
+  assert.match(String(sent[1].content), /UNTRUSTED DATA/)
+  assert.match(String(sent[1].content), /CVE-2024-0001/)
+})
+
+test('advisory context: an invented value is still refused', async () => {
+  const bad = '## What we found\nFixed in 3.0.99 [S2].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.99.'
+  const s = setup({ kind: 'fix', replies: [text(bad), text(bad)] })
+  s.ctx.advisoryContext = ADV_CTX
+  assert.equal((await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)).content, IDK)
+})
+
+test('advisory context: a question sorted as general is answered as a fix from the advisory', async () => {
+  const answer = '## What we found\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Suggested steps\n1. Upgrade openssl.'
+  const s = setup({ kind: 'general', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'what is the safest way to patch?', [], s.emit)
+  assert.equal(finalOf(s.events)?.kind, 'fix')
+  assert.match(r.content, /## Suggested steps/)
+})
+
+test('advisory context: without it, behaviour is unchanged (general stays general)', async () => {
+  const s = setup({ kind: 'general', replies: [text('Patch promptly and verify the version.')] })
+  const r = await runGraphAgent(s.ctx, 'what is patch management?', [], s.emit)
+  assert.equal(finalOf(s.events)?.kind, 'general')
+  assert.doesNotMatch(r.content, /What we found/)
+})

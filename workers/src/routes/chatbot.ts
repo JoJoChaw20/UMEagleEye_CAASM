@@ -5,6 +5,9 @@ import type { Env } from '../types'
 import { authMiddleware, requireAction } from '../middleware/auth'
 import { graphReply, graphStream, modelFor } from '../kg/agent'
 import { kgQuery } from '../kg/store'
+import { loadAdvisoryContext } from '../kg/advisoryContext'
+import { SUPERADMIN_ADVISORY_REFUSAL } from '../kg/guard'
+import { getDb } from '../db/client'
 import { confirmAdvisory } from '../kg/confirm'
 import { signalKgSyncSafe } from '../kg/sync'
 
@@ -121,10 +124,16 @@ app.post(
     })).max(10).optional(),
     tenant_id: z.string().optional(),
     stream: z.boolean().optional(),
+    advisory_id: z.string().uuid().optional(),
   })),
   async (c) => {
-    const { message, history = [], tenant_id, stream: wantStream = false } = c.req.valid('json')
+    const { message, history = [], tenant_id, stream: wantStream = false, advisory_id } = c.req.valid('json')
     const user = c.get('user')
+
+    // The Platform Superadmin never debugs an advisory: refused in fixed words, with no model call.
+    if (advisory_id && user.role === 'superadmin') {
+      return wantStream ? sseError(SUPERADMIN_ADVISORY_REFUSAL) : c.json({ type: 'text', content: SUPERADMIN_ADVISORY_REFUSAL }, 403)
+    }
 
     const ai = modelFor(c.env)
     if (!ai) {
@@ -138,8 +147,13 @@ app.post(
     }
 
     try {
+      const chatUser = { userId: user.userId, role: user.role, tenantId: user.tenantId, actions: user.actions }
+      // A chat opened from an advisory: only its own tenant, and only for whoever may generate advisories.
+      // Anything else is "not found", so the answer does not reveal that the advisory exists.
+      const advisoryContext = advisory_id ? await loadAdvisoryContext(getDb(c.env.DATABASE_URL), chatUser, advisory_id) : null
+      if (advisory_id && !advisoryContext) return c.json({ detail: 'Advisory not found' }, 404)
       // The company comes from the signed-in user; accessFor honours tenant_id for a superadmin only.
-      const ctx = { query: kgQuery(c.env), env: c.env, ai, user: { userId: user.userId, role: user.role, tenantId: user.tenantId, actions: user.actions }, pickedTenant: tenant_id ?? null }
+      const ctx = { query: kgQuery(c.env), env: c.env, ai, user: chatUser, pickedTenant: tenant_id ?? null, advisoryContext }
       if (wantStream) return graphStream(ctx, message, history)
       const { body, status } = await graphReply(ctx, message, history)
       return c.json(body, status)

@@ -20,6 +20,9 @@ export type ModelCall = (messages: ChatMessage[], tools?: unknown[], opts?: Mode
 
 export const IDK = "I don't know. The knowledge graph does not hold enough to answer that reliably."
 
+/** The Platform Superadmin's answer to any request to debug an advisory (spec, Project 2). */
+export const SUPERADMIN_ADVISORY_REFUSAL = 'The Platform Superadmin can view overall statistics and ask general security questions, but cannot debug advisories.'
+
 const KINDS: Kind[] = ['system', 'fix', 'general', 'neither']
 
 /** Marks text as data. A `<` inside is escaped, so the text cannot close the tag around it. */
