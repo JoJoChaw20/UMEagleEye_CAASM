@@ -253,7 +253,7 @@ test('a classify failure takes the grounded path', async () => {
 })
 
 test('fix answers need both labelled parts and get the steps label', async () => {
-  const good = '## What we found\nPort 5 on web-01 [S1].\n\n## Suggested steps\n1. Move it to port 9443.'
+  const good = '## What we found\nPort 5 on web-01 [S1].\n\n## Suggested steps\n1. Move it to port 9443.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [tools(search), text(good)] })
   const r = await runGraphAgent(s.ctx, 'fix web-01', [], s.emit)
   assert.match(r.content, /## Suggested steps\n> General guidance/)
@@ -590,7 +590,7 @@ test('I10: only stop and tool_calls count as a finished reply', async () => {
 })
 
 test('normal: a fix answer with real values in its steps is released', async () => {
-  const answer = '## What we found\nPort 5 on `web-01` at 10.0.0.5 [S1].\n\n## Suggested steps\n1. On `web-01`, close port 5 at 10.0.0.5.\n2. Restart the device after patching.'
+  const answer = '## What we found\nPort 5 on `web-01` at 10.0.0.5 [S1].\n\n## Suggested steps\n1. On `web-01`, close port 5 at 10.0.0.5.\n2. Restart the device after patching.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [tools(search), text(answer)] })
   const r = await runGraphAgent(s.ctx, 'how do I fix web-01?', [], s.emit)
   assert.notEqual(r.content, IDK)
@@ -897,7 +897,7 @@ test('final review normal: a company user still counts its own problems, and a s
 // ── Seen on staging, 2026-11-10 ──
 
 test('a fix answer that copies the section instructions into its headings is released without them', async () => {
-  const echoed = '## What we found: facts about this company from the tool results only, each cited.\nPort 5 on web-01 [S1].\n\n## Suggested steps: numbered steps from general security practice for this asset\'s operating system only.\n1. Move it to port 9443.'
+  const echoed = '## What we found: facts about this company from the tool results only, each cited.\nPort 5 on web-01 [S1].\n\n## Suggested steps: numbered steps from general security practice for this asset\'s operating system only.\n1. Move it to port 9443.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [tools(search), text(echoed)] })
   const r = await runGraphAgent(s.ctx, 'fix web-01', [], s.emit)
   assert.doesNotMatch(r.content, /facts about this company|general security practice for this asset/)
@@ -1014,7 +1014,7 @@ const ADV_CTX = {
 }
 
 test('advisory context: its facts are S1.. and an answer citing them passes without any tool call', async () => {
-  const answer = '## What we found\nOpenSSL 3.0.2 on `web-01` has CVE-2024-0001 [S2], fixed in 3.0.15 [S2]. The advisory is open [S1].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.15.'
+  const answer = '## What we found\nOpenSSL 3.0.2 on `web-01` has CVE-2024-0001 [S2], fixed in 3.0.15 [S2]. The advisory is open [S1].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.15.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [text(answer)] })
   s.ctx.advisoryContext = ADV_CTX
   const r = await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)
@@ -1036,7 +1036,7 @@ test('advisory context: an invented value is still refused', async () => {
 })
 
 test('advisory context: a question sorted as general is answered as a fix from the advisory', async () => {
-  const answer = '## What we found\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Suggested steps\n1. Upgrade openssl.'
+  const answer = '## What we found\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Suggested steps\n1. Upgrade openssl.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'general', replies: [text(answer)] })
   s.ctx.advisoryContext = ADV_CTX
   const r = await runGraphAgent(s.ctx, 'what is the safest way to patch?', [], s.emit)

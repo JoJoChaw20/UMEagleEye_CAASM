@@ -75,7 +75,8 @@ type ValueClass = 'literal' | 'id' | 'number' | 'date' | 'time'
 type ValueTag = 'ip' | 'version' | 'cve' | 'fqdn' | 'host' | 'named' | 'caps' | 'code'
 interface Value { raw: string; cls: ValueClass; norm: string; tag?: ValueTag }
 
-const CITATION = /\[\s*S\d+(?:\s*,\s*S\d+)*\s*\]/gi
+// S = this company's data, K = knowledge-base entry, L = live lookup (NVD, OSV, EPSS, CWE, ATT&CK).
+const CITATION = /\[\s*[SKL]\d+(?:\s*,\s*[SKL]\d+)*\s*\]/gi
 const LIST_MARKER = /^[ \t>#]*(?:[-*•+][ \t]+)?(?:\*\*)?(?:step[ \t]+\d+[.):]|\d+[.)])(?:\*\*)?(?=\s|$)/gim
 const BACKTICK = /`([^`\s]+)`/g
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
@@ -270,13 +271,17 @@ function extractValues(rawInput: string, stripMarkers: boolean): Value[] {
 
 // ── Which part of a fix answer is checked ──────────────────────────
 
+// The facts part and the guidance part. "From your environment" and "Expert guidance" are the
+// current headings; "What we found" and "Suggested steps" are the earlier ones, still understood.
 const FOUND = 'what we found', STEPS = 'suggested steps'
-const LABEL = /^\s*(#{1,6}\s+)?(?:\*\*|__)?\s*(what we found|suggested steps)\s*(?::|(?=\*\*|__|\s*$))/i
+const LABEL = /^\s*(#{1,6}\s+)?(?:\*\*|__)?\s*(what we found|suggested steps|from your environment|expert guidance)\s*(?::|(?=\*\*|__|\s*$))/i
+const LABEL_KEY: Record<string, string> = { 'what we found': FOUND, 'from your environment': FOUND, 'suggested steps': STEPS, 'expert guidance': STEPS }
 
-function labelOf(line: string): { label: string; level: number } | null {
+function labelOf(line: string): { label: string; level: number; name: string } | null {
   const m = line.match(LABEL)
   if (!m) return null
-  return { label: (m[2] ?? '').toLowerCase(), level: m[1]?.trim().length ?? 7 }
+  const name = (m[2] ?? '').toLowerCase()
+  return { label: LABEL_KEY[name] ?? name, level: m[1]?.trim().length ?? 7, name }
 }
 
 /** Calls `each` for every line, saying whether it sits inside a fenced code block. */
@@ -565,27 +570,86 @@ export function toolMarkupProblems(text: string, evidence: string | string[] = [
 }
 
 const STEPS_NOTE = '> General guidance, not checked against your data.'
+const EXPERT_NOTE = '> General guidance from the cited references (K: knowledge base, L: live lookup), not checked against your data.'
 
-/** Adds the general-guidance label under the first "Suggested steps" heading. */
+/** Adds the general-guidance label under the first "Suggested steps" or "Expert guidance" heading. */
 export function labelSuggestedSteps(text: string): string {
   const out: string[] = []
   let done = false
   eachLine(text, (line, fenced) => {
     out.push(line)
-    if (!done && !fenced && labelOf(line)?.label === STEPS) { out.push(STEPS_NOTE); done = true }
+    const lab = fenced ? null : labelOf(line)
+    if (!done && lab?.label === STEPS) { out.push(lab.name === 'expert guidance' ? EXPERT_NOTE : STEPS_NOTE); done = true }
   })
   return out.join('\n')
+}
+
+// ── Expert guidance must cite its references ──────────────────────
+
+/** The references of one kind an answer cites, such as K1 or L2. */
+export function citedRefsOf(text: string, kind: 'S' | 'K' | 'L'): string[] {
+  const one = new RegExp(`${kind}\\d+`, 'gi')
+  return [...new Set((text.match(CITATION) ?? []).flatMap(c => (c.match(one) ?? []).map(r => r.toUpperCase())))]
+}
+
+const CONFIDENCE_LINE = /^\s*(?:[-*>]\s*)?(?:\*\*|__)?\s*confidence\s*(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(high|medium|low)\b/i
+const CHECK_WITH_LINE = /^\s*(?:[-*>]\s*)?(?:\*\*|__)?\s*check with\s*(?:\*\*|__)?\s*:\s*\S/i
+
+/** The paragraphs under "Expert guidance": blocks split by blank lines, without code, notes and the confidence lines. */
+function guidanceParagraphs(text: string): string[] {
+  const paragraphs: string[] = []
+  let inGuidance = false, level = 7, block: string[] = []
+  const flush = () => { const t = block.join('\n').trim(); if (t) paragraphs.push(t); block = [] }
+  eachLine(text, (line, fenced) => {
+    if (!fenced) {
+      const lab = labelOf(line)
+      if (lab) { flush(); inGuidance = lab.name === 'expert guidance'; level = lab.level; return }
+      if (inGuidance && (line.match(/^\s*(#{1,6})\s/)?.[1]?.length ?? 8) <= level) { flush(); inGuidance = false; return }
+    }
+    if (!inGuidance) return
+    if (fenced || !line.trim() || /^\s*>/.test(line) || CONFIDENCE_LINE.test(line) || CHECK_WITH_LINE.test(line)) { flush(); return }
+    block.push(line)
+  })
+  flush()
+  return paragraphs.filter(p => /[\p{L}\p{N}]/u.test(p.replace(CITATION, ' ')))
+}
+
+/**
+ * Every paragraph under "## Expert guidance" cites a knowledge-base entry [K#] or live lookup [L#] that
+ * was actually given, and no K or L reference anywhere in the answer is unknown.
+ */
+export function expertCitationProblems(text: string, knownK: Set<string>, knownL: Set<string>): string[] {
+  const problems = [...citedRefsOf(text, 'K').filter(r => !knownK.has(r)), ...citedRefsOf(text, 'L').filter(r => !knownL.has(r))].map(r => `[${r}]`)
+  for (const p of guidanceParagraphs(text)) {
+    const cites = [...citedRefsOf(p, 'K').filter(r => knownK.has(r)), ...citedRefsOf(p, 'L').filter(r => knownL.has(r))]
+    if (cites.length === 0) problems.push(`expert guidance without a [K#] or [L#] reference: "${p.replace(/\s+/g, ' ').slice(0, 60)}"`)
+  }
+  return problems
+}
+
+/** A fix answer has "Confidence: High|Medium|Low" with a reason; Low also names who to check with. */
+export function confidenceProblems(text: string, kind: Kind): string[] {
+  if (kind !== 'fix' || isPlainRefusal(text)) return []
+  const lines = text.split(/\r?\n/)
+  const line = lines.find(l => CONFIDENCE_LINE.test(l))
+  if (!line) return ['missing line: Confidence: High, Medium or Low, with a reason']
+  const level = line.match(CONFIDENCE_LINE)?.[1]?.toLowerCase()
+  const reason = line.replace(CONFIDENCE_LINE, '').replace(/[-–—:.,*_()\s]/g, '')
+  const problems: string[] = []
+  if (!reason) problems.push('the confidence line gives no reason')
+  if (level === 'low' && !lines.some(l => CHECK_WITH_LINE.test(l))) problems.push('low confidence without a "Check with:" line')
+  return problems
 }
 
 // ── A heading that repeats the prompt's instruction ────────────────
 
 /** What each fix section holds, as the prompt words it (agent.ts FIX_FORMAT). */
 export const FOUND_HINT = 'State only facts about this company from the tool results, and cite each one.'
-export const STEPS_HINT = 'Give numbered steps from general security practice for this asset\'s operating system only.'
+export const STEPS_HINT = 'Give numbered steps for this asset\'s operating system, each paragraph citing the knowledge-base entry [K#] or live lookup [L#] it follows.'
 
 // The opening words of each instruction, current and earlier wording, up to the end of its sentence.
-const ECHO = /^(?:state only facts about this company|facts about this company from the tool results|give numbered steps from general security practice|numbered steps from general security practice)[^.\n]*\.?\s*/i
-const LABEL_WITH_TEXT = /^\s*(#{1,6}\s+)?(?:\*\*|__)?\s*(what we found|suggested steps)\s*:?\s*(?:\*\*|__)?\s*:?\s*(.*)$/i
+const ECHO = /^(?:state only facts about this company|facts about this company from the tool results|give numbered steps from general security practice|numbered steps from general security practice|give numbered steps for this asset|numbered steps for this asset)[^.\n]*\.?\s*/i
+const LABEL_WITH_TEXT = /^\s*(#{1,6}\s+)?(?:\*\*|__)?\s*(what we found|suggested steps|from your environment|expert guidance)\s*:?\s*(?:\*\*|__)?\s*:?\s*(.*)$/i
 
 /**
  * A model sometimes copies the section instruction into its heading ("## What we found: facts about

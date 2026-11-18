@@ -21,7 +21,7 @@ import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope
 import { decide, refusalMessage } from '../lib/actions'
 import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
-import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, superadminRefusal, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
+import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
 import { refreshIfStale, refreshPlatformProblems } from './problems'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import { PERF_LIMITS_NOTE, askedTimeNote, gapRanges, refreshPerf } from './perf'
@@ -29,6 +29,7 @@ import { PLATFORM_RULES } from './rules'
 import { countNodes, followLinks, getNode, searchGraph, type NodeView } from './retrieve'
 import type { Q } from './store'
 import type { AdvisoryContext } from './advisoryContext'
+import { searchKnowledge } from './knowledge'
 import { CHAT_DRAIN_REQUESTS, drainOutbox, signalKgSyncSafe } from './sync'
 
 export const MAX_ROUNDS = 4
@@ -101,9 +102,14 @@ export interface GraphCtx {
   perfDeadlineMs?: number // tests: the cut-off for the pre-answer performance refresh
   /** Set when the chat was opened from one advisory: the route checked tenant and advisory.generate. */
   advisoryContext?: AdvisoryContext | null
+  /** Runs one live intel tool (lookup_cve, lookup_attack_technique, lookup_cwe) with the caller's own access.
+   *  Set by the route; without it those tools are not offered. Only a public id or a short phrase is sent. */
+  intel?: (name: IntelToolName, args: Record<string, unknown>) => Promise<unknown>
 }
 
-export interface Source { ref: string; key: string; title: string; type: string }
+export type IntelToolName = 'lookup_cve' | 'lookup_attack_technique' | 'lookup_cwe'
+
+export interface Source { ref: string; key: string; title: string; type: string; url?: string }
 export interface ToolStep { name: string; title: string; status: 'done'; ok: boolean }
 
 export interface GraphResult {
@@ -146,6 +152,7 @@ const GROUNDED = [
   'Every tool result carries a ref such as S3. After each fact, cite the result it came from as [S3]. Cite only refs you were given.',
   'Every IP address, CVE ID, hostname, advisory ID, date, time and number you write must appear in the tool results exactly, or the answer is rejected. Write numbers as digits, and dates and times as the results give them. Write hostnames in backticks. Refer to advisories by the first 8 characters of their ID.',
   'Nothing closes an advisory until a person presses Confirm, so never say an advisory was closed or resolved by you.',
+  'For how to fix, harden, patch, restrict or roll back something, use search_knowledge and put that advice under "## Expert guidance", each paragraph citing its [K#] or [L#] ref. Search it with general words only, never with this company\'s names or addresses.',
 ]
 
 const PROPOSE_RULE = 'The user asked to close an advisory: call propose_resolve_advisory. It only proposes: tell the user to press Confirm. If it answers that the problem is still detected, nothing was proposed: tell the user that, with the device and last scan time it gives, and do not mention Confirm.'
@@ -153,9 +160,10 @@ const PROPOSE_RULE = 'The user asked to close an advisory: call propose_resolve_
 // The headings and what goes under them are on separate lines: with "## What we found: <instruction>"
 // on one line the model copied the instruction into its heading (staging, 2026-11-10).
 const FIX_FORMAT = [
-  'Write the answer in exactly two sections, in this order. Each section starts with its heading alone on its own line, written exactly as "## What we found" and "## Suggested steps", with nothing after the heading on that line. Never copy these instructions into the answer.',
+  'Write the answer in exactly two sections, in this order. Each section starts with its heading alone on its own line, written exactly as "## From your environment" and "## Expert guidance", with nothing after the heading on that line. Never copy these instructions into the answer.',
   `Under the first heading: ${FOUND_HINT}`,
-  `Under the second heading: ${STEPS_HINT} Where a step names this company's asset, port or version, use the real value from What we found, never a placeholder or an invented example. Name no IP address, CVE ID, hostname or advisory ID that is not in the tool results.`,
+  `Under the second heading: ${STEPS_HINT} Call search_knowledge first (and lookup_cve for a CVE when offered). Advice you cannot cite to a [K#] or [L#] ref is left out. Where a step names this company's asset, port or version, use the real value from From your environment, never a placeholder or an invented example. Name no IP address, CVE ID, hostname or advisory ID that is not in the tool results. Prefer the least risky change; say when a backup, a maintenance window or a rollback plan is needed.`,
+  'End with one line "Confidence: High", "Confidence: Medium" or "Confidence: Low", then a dash and the reason. With Low, add a line "Check with: <who>", such as the system owner or the vendor.',
 ]
 
 const GENERAL_PROMPT = [
@@ -202,21 +210,24 @@ export function resultText(result: unknown): string {
 // ── Tools ──────────────────────────────────────────────────────────
 
 /** Gives each retrieved node one short reference the model can cite. */
+/** Numbers the sources one answer may cite: S for this company's data, K for the knowledge base, L for live lookups. */
 class SourceBook {
   private byKey = new Map<string, Source>()
 
-  add(key: string, title: string, type: string): string {
+  constructor(private prefix: 'S' | 'K' | 'L' = 'S') {}
+
+  add(key: string, title: string, type: string, url?: string): string {
     const known = this.byKey.get(key)
     if (known) return known.ref
-    const ref = `S${this.byKey.size + 1}`
-    this.byKey.set(key, { ref, key, title: clip(title, 120), type })
+    const ref = `${this.prefix}${this.byKey.size + 1}`
+    this.byKey.set(key, { ref, key, title: clip(title, 120), type, ...(url ? { url } : {}) })
     return ref
   }
 
   refs(): Set<string> { return new Set([...this.byKey.values()].map(s => s.ref)) }
 
   cited(text: string): Source[] {
-    const refs = new Set(citedRefs(text))
+    const refs = new Set(this.prefix === 'S' ? citedRefs(text) : citedRefsOf(text, this.prefix))
     return [...this.byKey.values()].filter(s => refs.has(s.ref))
   }
 }
@@ -224,7 +235,7 @@ class SourceBook {
 interface RunState {
   /** access: what the record tools read. countAccess: what count_nodes reads. They differ only for the
    *  Platform Superadmin, whose record tools never see a company's records (counts only). */
-  ctx: GraphCtx; access: Access; countAccess: Access; countsOnly: boolean; book: SourceBook; calls: number; evidence: string[]; proposal: AdvisoryProposal | null; canPropose: boolean
+  ctx: GraphCtx; access: Access; countAccess: Access; countsOnly: boolean; book: SourceBook; kbook: SourceBook; lbook: SourceBook; calls: number; evidence: string[]; proposal: AdvisoryProposal | null; canPropose: boolean
   budget: Budget; dropProposal: (key: string) => Promise<void>
   /** Why a requested close was refused, in the server's words. Released as the answer when no proposal was made. */
   closeRefusal: string | null
@@ -243,6 +254,10 @@ interface ToolSpec {
   parameters: Record<string, unknown>
   args: z.ZodTypeAny
   run: (args: never, s: RunState) => Promise<unknown>
+  /** The most subrequests one call can make. Default TOOL_SUBREQUESTS. */
+  cost?: number
+  /** A live lookup: its subrequests happen outside the metered context, so its cost is taken before it runs. */
+  live?: boolean
 }
 
 const withRef = (s: RunState, n: NodeView) => ({ ref: s.book.add(n.key, n.title, n.type), ...n })
@@ -251,6 +266,30 @@ const stringProp = (description: string) => ({ type: 'string', description })
 
 const SearchArgs = z.object({ query: z.string().min(1).max(500), types: z.array(z.string().max(40)).max(10).optional(), limit: z.number().int().min(1).max(25).optional() }).strict()
 const KeyArgs = z.object({ key: z.string().min(1).max(200) }).strict()
+const KnowledgeArgs = z.object({ query: z.string().min(1).max(300), tags: z.array(z.string().max(30)).max(5).optional() }).strict()
+const CveArgs = z.object({ cve_id: z.string().trim().max(20).regex(/^CVE-\d{4}-\d{4,}$/i) }).strict()
+const AttackArgs = z.object({ query: z.string().trim().min(2).max(60) }).strict()
+const CweArgs = z.object({ cwe_id: z.string().trim().max(9).regex(/^(CWE-)?\d{1,5}$/i) }).strict()
+
+/** What lookup_cve can spend outside the metered context: NVD+OSV (KV read, 2 fetches, KV write), EPSS (KV read, fetch, KV write), 2 database reads. */
+export const LIVE_CVE_SUBREQUESTS = 9
+
+/** A live lookup's source link: the public page of what was looked up. */
+function liveUrl(name: IntelToolName, args: Record<string, unknown>, result: Record<string, unknown>): string | undefined {
+  if (name === 'lookup_cve') return `https://nvd.nist.gov/vuln/detail/${String(args.cve_id).toUpperCase()}`
+  const url = typeof result.url === 'string' ? result.url : undefined
+  return url && /^https:\/\/(attack|cwe)\.mitre\.org\//.test(url) ? url : undefined
+}
+
+async function runLive(name: IntelToolName, args: Record<string, unknown>, s: RunState): Promise<unknown> {
+  if (!s.ctx.intel) return { error: 'Live lookups are not available here.' }
+  const result = await s.ctx.intel(name, args)
+  if (!result || typeof result !== 'object' || 'error' in result) return result ?? { error: 'No result.' }
+  const r = result as Record<string, unknown>
+  const id = name === 'lookup_cve' ? String(args.cve_id).toUpperCase() : name === 'lookup_cwe' ? String(args.cwe_id).toUpperCase() : String(args.query)
+  const title = name === 'lookup_cve' ? `${id} (NVD, OSV, KEV, EPSS)` : name === 'lookup_cwe' ? `${id} (MITRE CWE)` : `ATT&CK: ${id}`
+  return { ref: s.lbook.add(`live:${name}:${id.toLowerCase()}`, title, 'live', liveUrl(name, args, r)), ...r }
+}
 const LinkArgs = z.object({ key: z.string().min(1).max(200), depth: z.number().int().min(1).max(2).optional() }).strict()
 const ProblemArgs = z.object({ severity: z.enum(['critical', 'high', 'medium', 'low']).optional(), limit: z.number().int().min(1).max(PROBLEM_LIST_MAX).optional() }).strict()
 const CountArgs = z.object({ type: z.string().min(1).max(40), where: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(), group_by: z.string().max(40).optional() }).strict()
@@ -409,6 +448,48 @@ const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: 'search_knowledge', title: 'Checking security guidance',
+    description: 'The curated security knowledge base (NIST, CISA, MITRE, CIS, OWASP, FIRST, vendor docs): how to fix, harden, restrict, patch, roll back or verify. Search with general words such as "port 22 exposed" or "rollback apt update", never with company names, hosts or addresses. Each entry has a ref such as K2 to cite under Expert guidance.',
+    parameters: { type: 'object', additionalProperties: false, required: ['query'], properties: {
+      query: stringProp('General words about the security topic.'),
+      tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags such as ssh, rdp, windows, ubuntu, rhel, firewall, kev, rollback.' },
+    } },
+    args: KnowledgeArgs,
+    cost: 0,
+    run: async (args: z.infer<typeof KnowledgeArgs>, s) => {
+      const hits = searchKnowledge(args.query, args.tags ?? [], 4)
+      if (hits.length === 0) return { results: [], note: 'No knowledge-base entry matched. Try other general words.' }
+      return { results: hits.map(e => ({ ref: s.kbook.add(e.id, e.title, 'knowledge', e.source.url), title: e.title, guidance: e.guidance, source: e.source.name })) }
+    },
+  },
+  {
+    name: 'lookup_cve', title: 'Looking up the CVE',
+    description: 'Live public facts about one CVE: CVSS (NVD), summary and aliases (OSV), CISA KEV status, EPSS probability, patch links. Only the CVE id is sent out. Its ref is L-numbered: cite it under Expert guidance.',
+    parameters: { type: 'object', additionalProperties: false, required: ['cve_id'], properties: { cve_id: stringProp('A CVE id such as CVE-2024-3094.') } },
+    args: CveArgs,
+    cost: LIVE_CVE_SUBREQUESTS,
+    live: true,
+    run: async (args: z.infer<typeof CveArgs>, s) => runLive('lookup_cve', args, s),
+  },
+  {
+    name: 'lookup_attack_technique', title: 'Checking MITRE ATT&CK',
+    description: 'A MITRE ATT&CK technique by id (T1190) or by words in its name, from bundled data. Nothing is sent out. Its ref is L-numbered.',
+    parameters: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: stringProp('A technique id or words in its name.') } },
+    args: AttackArgs,
+    cost: 0,
+    live: true,
+    run: async (args: z.infer<typeof AttackArgs>, s) => runLive('lookup_attack_technique', args, s),
+  },
+  {
+    name: 'lookup_cwe', title: 'Checking MITRE CWE',
+    description: 'The name and link of a CWE weakness (CWE-79) from bundled data. Nothing is sent out. Its ref is L-numbered.',
+    parameters: { type: 'object', additionalProperties: false, required: ['cwe_id'], properties: { cwe_id: stringProp('A CWE id such as CWE-79.') } },
+    args: CweArgs,
+    cost: 0,
+    live: true,
+    run: async (args: z.infer<typeof CweArgs>, s) => runLive('lookup_cwe', args, s),
+  },
+  {
     name: 'propose_resolve_advisory', title: 'Preparing a proposal',
     description: 'Proposes closing one advisory. It does not close it: the user must press Confirm.',
     parameters: { type: 'object', additionalProperties: false, required: ['advisory_id'], properties: {
@@ -421,7 +502,12 @@ const TOOLS: ToolSpec[] = [
 
 const BY_NAME = new Map(TOOLS.map(t => [t.name, t]))
 const OPENAI_TOOLS = TOOLS.map(t => ({ type: 'function' as const, function: { name: t.name, description: t.description, parameters: t.parameters } }))
-const READ_ONLY_TOOLS = OPENAI_TOOLS.filter(t => t.function.name !== 'propose_resolve_advisory')
+const LIVE_NAMES = new Set(TOOLS.filter(t => t.live).map(t => t.name))
+
+/** The tools offered this round: the close tool only when a close may be proposed, live lookups only when the route wired them. */
+function offeredTools(s: RunState) {
+  return OPENAI_TOOLS.filter(t => (t.function.name !== 'propose_resolve_advisory' || s.canPropose) && (!LIVE_NAMES.has(t.function.name) || Boolean(s.ctx.intel)))
+}
 
 async function executeTool(spec: ToolSpec, rawArgs: string, s: RunState): Promise<unknown> {
   let parsed: unknown
@@ -445,9 +531,13 @@ async function handleToolCall(call: ToolCall, s: RunState, tools: ToolStep[], em
     result = { error: `Unknown tool ${clip(call.function.name, 40)}.` }
   } else if (s.calls >= MAX_TOOL_CALLS) {
     result = { error: 'Tool call limit reached for this question; answer with what you have.' }
-  } else if (!s.budget.fits(TOOL_SUBREQUESTS)) {
+  } else if (!s.budget.fits(spec.cost ?? TOOL_SUBREQUESTS)) {
     result = { error: 'No more lookups fit in this question; answer with what you have.' }
+  } else if (spec.live && !s.ctx.intel) {
+    result = { error: 'Live lookups are not available here.' }
   } else {
+    // A live lookup spends outside the metered context, so its most is counted before it runs.
+    if (spec.live) for (let i = 0; i < (spec.cost ?? 0); i++) s.budget.take()
     s.calls++
     await emit({ tool: { name: spec.name, title: spec.title, status: 'running' } })
     result = await executeTool(spec, call.function.arguments, s)
@@ -633,7 +723,11 @@ function advisoryMessage(s: RunState, advisory: AdvisoryContext): ChatMessage {
 
 function problemsWith(text: string, s: RunState, kind: Kind): string[] {
   if (!text.trim()) return ['the answer was empty']
-  return [...toolMarkupProblems(text, s.evidence), ...verifyAnswer(text, s.evidence, kind), ...citationProblems(text, s.book.refs(), kind), ...structureProblems(text, kind), ...closureClaimProblems(text)]
+  return [
+    ...toolMarkupProblems(text, s.evidence), ...verifyAnswer(text, s.evidence, kind), ...citationProblems(text, s.book.refs(), kind),
+    ...structureProblems(text, kind), ...closureClaimProblems(text),
+    ...expertCitationProblems(text, s.kbook.refs(), s.lbook.refs()), ...confidenceProblems(text, kind),
+  ]
 }
 
 function correction(problems: string[], kind: Kind): string {
@@ -641,7 +735,8 @@ function correction(problems: string[], kind: Kind): string {
   return [
     `That answer was rejected. These values or parts are not supported by the tool results: ${list}.`,
     'Rewrite the whole answer using only values from the tool results, cite each fact like [S1], and write "I don\'t know" for anything the results do not show.',
-    kind === 'fix' ? 'Keep the two sections "## What we found" and "## Suggested steps".' : '',
+    'Every paragraph under "## Expert guidance" must cite a knowledge-base entry like [K1] or a live lookup like [L1] that you were given; drop advice you cannot cite.',
+    kind === 'fix' ? 'Keep the two sections "## From your environment" and "## Expert guidance", and end with the Confidence line.' : '',
   ].filter(Boolean).join(' ')
 }
 
@@ -654,7 +749,7 @@ async function retrieve(s: RunState, messages: ChatMessage[], tools: ToolStep[],
     const allowTools = round < MAX_ROUNDS - 1 && s.calls < MAX_TOOL_CALLS && s.budget.fits(1 + TOOL_SUBREQUESTS)
     // Without this the model carries on looking things up, writing the tool call out as text.
     if (!allowTools) messages.push({ role: 'user', content: NO_MORE_LOOKUPS })
-    const reply = await s.ctx.ai(messages, allowTools ? (s.canPropose ? OPENAI_TOOLS : READ_ONLY_TOOLS) : undefined)
+    const reply = await s.ctx.ai(messages, allowTools ? offeredTools(s) : undefined)
     if (!allowTools || reply.toolCalls.length === 0) return reply
     messages.push({ role: 'assistant', content: reply.text || null, tool_calls: reply.toolCalls })
     for (const call of reply.toolCalls) messages.push(await handleToolCall(call, s, tools, emit))
@@ -754,7 +849,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (asksToClose && !roleCanClose) notes.push(cannotClose(ctx.user))
     const canPropose = asksToClose && roleCanClose
     const countsOnly = ctx.user.role === 'superadmin'
-    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook(), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
+    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook('S'), kbook: new SourceBook('K'), lbook: new SourceBook('L'), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
     // Values the server computed (current UTC time, recorded range, gaps, the time asked in UTC+8 and UTC) may be
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
     s.evidence.push(...perfFacts)
@@ -787,7 +882,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
       return await release(IDK, notes)
     }
 
-    result.sources = s.book.cited(reply.text)
+    result.sources = [...s.book.cited(reply.text), ...s.kbook.cited(reply.text), ...s.lbook.cited(reply.text)]
     result.proposal = s.proposal
     if (reply.truncated) notes.push(CUT_OFF)
     return await release(kind === 'fix' ? labelSuggestedSteps(reply.text) : reply.text, notes)
