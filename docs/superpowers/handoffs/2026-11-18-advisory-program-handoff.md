@@ -125,12 +125,12 @@ Date: 2026-11-18. Repo: `c:\FYP\UMEagleEye_CAASM-1` (Windows, Git Bash and Power
 | v2 | stopped early | old build |
 | v3 | facts 89%, safety 92%, 5 errors | CPU limit (streaming), exposure false positives |
 | v4 | facts 95.7%, citations 95.7%, safety 100%, cross-tenant 100% | (d) failed on 2 timeouts; useful answers 59%; overview 0/4 (the "7 days" value) |
-| v5 | **running when this was written** | see section 6 |
+| v5 | **stopped at 19/46 for the handoff; must be re-run in full.** Partial: 13/14 non-trap questions answered (only Q11 IDK), 5/5 unsafe requests refused or IDK, all cross-tenant checks pass. Staging cleaned (0 rows left). | none yet |
 
 ## 6. What to do next (in order)
 
 1. **Get the eval v5 result.**
-   - Output: `C:\Users\HP\AppData\Local\Temp\claude\b59652f459863f6c\e774247e-06bf-4c38-bfad-af3b3295746c\scratchpad\eval5.out`. Logs: `...\scratchpad\tail5.json`.
+   - v5 was stopped at 19/46 for the handoff: re-run it in full.
    - If that run is gone or incomplete, re-run: `cd workers && node scripts/kg/advisory-eval.mjs staging`. It takes 25-30 minutes, creates temporary tenants `ADVEVAL-a` and `ADVEVAL-b`, and cleans up after itself.
    - If a run is interrupted, clean up with `node scripts/smoke/eval-clean.mjs`: audit rows first, then users, then tenants.
    - Pass means every check passes (section 5 thresholds). If it fails, read the `[kg-safety]` and `[kg-agent]` lines in the tail. They log categories, value shapes and matched phrases only. Fix, add tests, deploy, re-run.
