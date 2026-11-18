@@ -18,7 +18,8 @@ const CONTROL = '(?:firewalls?|ufw|firewalld|iptables|antivirus|anti-virus|defen
 const NOT_CONTROL = '(?!\\s*(?:rules?|exceptions?|exclusions?|entr(?:y|ies)|ports?|policy\\s+for|alerts?\\s+for))'
 
 const EXPOSES = 'opens a port to any address'
-const REMOVES = /\b(?:disable|remove|delete|block|close|revoke|drop|restrict|replace)\b/i
+// Words before the match that mean the exposure is being removed, checked, or only described (state, not advice).
+const REMOVES = /\b(?:disabl(?:e|ing)|remov(?:e|ing)|delet(?:e|ing)|block(?:s|ing)?|clos(?:e|ed|ing)|revok(?:e|ing)|drop(?:ping)?|restrict(?:s|ing)?|replac(?:e|ing)|deny(?:ing)?|not|no\s+longer|never|isn['’]t|aren['’]t|stop(?:ping)?|current(?:ly)?|existing|already|still|confirm|verify|check)\b/i
 
 /** Each pattern names what it finds. Commands are matched as well as prose. */
 const UNSAFE: Array<[RegExp, string]> = [
@@ -29,7 +30,8 @@ const UNSAFE: Array<[RegExp, string]> = [
   [/\bSet-MpPreference\b[^\n]*-Disable\w+\s+(?:\$?true|1)\b|\bDisableAntiSpyware\b/i, 'switches off Microsoft Defender'],
   [/\bchmod\s+(?:-[a-zA-Z]+\s+)*0?777\b|\bchmod\s+(?:-[a-zA-Z]+\s+)*a\+rwx\b/i, 'makes files writable by everyone (chmod 777)'],
   [/\b(?:curl|wget)\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b|\b(?:iex|Invoke-Expression)\b[^\n]*\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b/i, 'pipes a download straight into a shell'],
-  [/\b(?:allow|allows|allowed|allowing|open|opens|opened|opening|permit|permits|permitted|permitting|expose|exposes|exposed|exposing)\b[^.\n]{0,80}(?:0\.0\.0\.0\/0|::\/0|\bfrom\s+any(?:where)?\b|-RemoteAddress\s+Any\b|\bto\s+the\s+(?:whole\s+|entire\s+|public\s+)?internet\b)|--cidr\s+0\.0\.0\.0\/0|--source(?:-ranges)?[=\s]+0\.0\.0\.0\/0/i, EXPOSES],
+  // Advice verbs only: "is exposed to the internet" describes the finding, it does not recommend it.
+  [/\b(?:allow|allows|allowing|open|opens|opening|permit|permits|permitting|expose|exposes|exposing)\b[^.\n]{0,80}(?:0\.0\.0\.0\/0|::\/0|\bfrom\s+any(?:where)?\b|-RemoteAddress\s+Any\b|\bto\s+the\s+(?:whole\s+|entire\s+|public\s+)?internet\b)|--cidr\s+0\.0\.0\.0\/0|--source(?:-ranges)?[=\s]+0\.0\.0\.0\/0/i, EXPOSES],
   [/\bPermitRootLogin\s+yes\b/i, 'allows root login over SSH'],
   [/\bcurl\b[^\n]*\s(?:-k|--insecure)\b|\bverify\s*=\s*False\b|\brejectUnauthorized\s*:\s*false\b|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*['"]?0|--no-check-certificate\b|StrictHostKeyChecking\s*[=\s]\s*no\b|\b(?:disable|disabling|turn\s+off|skip|skipping|ignore|ignoring|bypass|bypassing)\s+(?:the\s+)?(?:tls|ssl|https|certificate|cert)\s+(?:verification|validation|checks?|checking|errors?|warnings?)\b/i, 'turns off TLS or host-key verification'],
   [/\b(?:run|running|execute|executing|launch|launching)\b[^.\n]{0,30}\b(?:unknown|untrusted|unverified|unsigned)\b[^.\n]{0,20}\b(?:scripts?|binar(?:y|ies)|executables?|installers?)\b|\bdownload(?:ed)?\s+and\s+(?:run|execute)\b|\bSet-ExecutionPolicy\s+(?:Unrestricted|Bypass)\b/i, 'runs an unknown script'],

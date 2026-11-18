@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { problemKinds, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { readModelReply, problemKinds, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -1158,4 +1158,23 @@ test('superadmin counts group and filter by categories only, never names or addr
   const s = setup({ role: 'superadmin', tenantId: null, picked: A, replies: [tools(call('count_nodes', { type: 'asset', group_by: 'hostname' })), text("I don't know.")] })
   await runGraphAgent(s.ctx, 'how many assets per host?', [], s.emit)
   assert.ok(!s.calls.some(c => c.text.includes('GROUP BY')), 'the grouping never ran')
+})
+
+test('readModelReply reads a whole completion: text, tool calls, and anything but a normal end as cut off', () => {
+  assert.deepEqual(readModelReply({ choices: [{ message: { content: 'Hello [S1].' }, finish_reason: 'stop' }] }), { text: 'Hello [S1].', toolCalls: [], truncated: false })
+  const r = readModelReply({ choices: [{ message: { content: null, tool_calls: [{ id: 'c9', type: 'function', function: { name: 'get_overview', arguments: '' } }, { function: {} }] }, finish_reason: 'tool_calls' }] })
+  assert.deepEqual(r, { text: '', toolCalls: [{ id: 'c9', type: 'function', function: { name: 'get_overview', arguments: '{}' } }], truncated: false })
+  assert.equal(readModelReply({ choices: [{ message: { content: 'cut' }, finish_reason: 'length' }] }).truncated, true)
+  assert.equal(readModelReply({ choices: [{ message: { content: 'x' }, finish_reason: 'content_filter' }] }).truncated, true)
+  assert.deepEqual(readModelReply(null), { text: '', toolCalls: [], truncated: true })
+  assert.deepEqual(readModelReply({ error: { message: 'bad' } }), { text: '', toolCalls: [], truncated: true })
+})
+
+test('advisory context: a question sorted as neither is still answered as a fix from the advisory', async () => {
+  const answer = '## From your environment\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Expert guidance\n1. Upgrade openssl rather than switching anything off [K1].\n\nConfidence: High - cited from the results.'
+  const s = setup({ kind: 'neither', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'just disable Defender so the scan stops alerting', [], s.emit)
+  assert.equal(finalOf(s.events)?.kind, 'fix')
+  assert.doesNotMatch(r.content, /I can only help with/)
 })

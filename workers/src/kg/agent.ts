@@ -196,7 +196,7 @@ const OVERVIEW_RULE = [
   'This question is about the overall situation. Call get_overview first.',
   'Answer with "## Overall status": one line per area with its exact numbers (posture score; assets: total, critical, internet-facing; agents: online, offline; scans in the last 7 days: total, failed; open alerts: critical, high, medium, low, new this week; advisories active; priority tiers P0, P1, P2, P3), each cited.',
   'Then "## What to fix first": the P0 items, then the P1 items from top_priorities, each with its device, what it is about and its advisory ID if it has one, cited. If there are no P0 or P1 items, say so and list the P2 items. If the overview gives counts only, give the tier counts and say individual items are not shown for this role.',
-  'Then one or two sentences on what stands out, using only these numbers. Never call this an all-clear while alerts are open.',
+  'Then one or two sentences on what stands out, using only these numbers. Copy every number exactly as given: never calculate percentages, sums or differences. Never call this an all-clear while alerts are open.',
 ].join('\n')
 
 /** The Platform Superadmin sees companies as statistics: counts and totals, never one record. */
@@ -962,7 +962,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (overviewQuestion && kind !== 'neither') kind = 'system'
     // A question asked from an advisory is about fixing that advisory, so it is answered from its facts.
     const advisory = ctx.advisoryContext ?? null
-    if (advisory && kind === 'general') kind = 'fix'
+    if (advisory && (kind === 'general' || kind === 'neither')) kind = 'fix'
     result.kind = kind
     // The Platform Superadmin views statistics and asks general questions; it never debugs an advisory.
     const superRefusal = ctx.user.role === 'superadmin' ? superadminRefusal(kind, Boolean(advisory)) : null
@@ -1024,7 +1024,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     const messages: ChatMessage[] = [
       { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose, countsOnly) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') + (overviewQuestion && ctx.overview ? `\n${OVERVIEW_RULE}` : '') },
       ...(advisory ? [advisoryMessage(s, advisory)] : []),
-      ...(kind === 'fix' ? knowledgeMessage(s, question, advisory) : []),
+      ...(kind === 'fix' || advisory ? knowledgeMessage(s, question, advisory) : []),
       ...historyMessages(history),
       { role: 'user', content: question },
     ]
@@ -1099,15 +1099,28 @@ export function modelFor(env: Env): ModelCall | null {
     const res = await fetch(ai.url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json', ...ai.headers },
+      // Not streamed: nothing reaches the user before verification, and parsing a reasoning model's
+      // stream (a JSON chunk per token, thinking included) cost ~100 ms of CPU per question on staging,
+      // which the Free plan's CPU allowance shares with the agents' heartbeats (18 Nov).
       body: JSON.stringify({
-        model: ai.model, messages, stream: true, max_tokens: opts.maxTokens ?? MAX_OUTPUT_TOKENS, temperature: opts.temperature ?? 0.2,
+        model: ai.model, messages, stream: false, max_tokens: opts.maxTokens ?? MAX_OUTPUT_TOKENS, temperature: opts.temperature ?? 0.2,
         ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
       }),
       signal: AbortSignal.timeout(ROUND_TIMEOUT_MS),
     })
-    if (!res.ok || !res.body) throw new Error(`AI API error: ${res.status}`)
-    return readModelStream(res.body)
+    if (!res.ok) throw new Error(`AI API error: ${res.status}`)
+    return readModelReply(await res.json())
   }
+}
+
+/** A whole (non-streamed) chat completion as a ModelReply. Anything but a normal end is treated as cut off. */
+export function readModelReply(body: unknown): ModelReply {
+  const choice = (body as { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }> })?.choices?.[0]
+  const toolCalls = (choice?.message?.tool_calls ?? []).filter(tc => tc?.function?.name).map((tc, i): ToolCall => ({
+    id: tc.id || `call_${i}`, type: 'function', function: { name: String(tc.function!.name), arguments: tc.function!.arguments || '{}' },
+  }))
+  const finish = choice?.finish_reason ?? ''
+  return { text: typeof choice?.message?.content === 'string' ? choice.message.content : '', toolCalls, truncated: finish !== 'stop' && finish !== 'tool_calls' }
 }
 
 /** Assembles a streamed model reply. Nothing is forwarded: text is released after verification. */
