@@ -23,6 +23,11 @@ export const IDK = "I don't know. The knowledge graph does not hold enough to an
 /** The Platform Superadmin's answer to any request to debug an advisory (spec, Project 2). */
 export const SUPERADMIN_ADVISORY_REFUSAL = 'The Platform Superadmin can view overall statistics and ask general security questions, but cannot debug advisories.'
 
+/** PURE. For the Platform Superadmin only: a question about an advisory, or one sorted as fix, is refused. */
+export function superadminRefusal(kind: Kind, hasAdvisory: boolean): string | null {
+  return hasAdvisory || kind === 'fix' ? SUPERADMIN_ADVISORY_REFUSAL : null
+}
+
 const KINDS: Kind[] = ['system', 'fix', 'general', 'neither']
 
 /** Marks text as data. A `<` inside is escaped, so the text cannot close the tag around it. */

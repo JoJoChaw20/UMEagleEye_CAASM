@@ -114,7 +114,7 @@ export interface CountResult {
 }
 
 /** Exact count of nodes of one type, with property filters; optionally grouped or listed. */
-export async function countNodes(q: Q, a: Access, input: { type: string; where?: Record<string, string | number | boolean>; groupBy?: string }): Promise<CountResult | { error: string }> {
+export async function countNodes(q: Q, a: Access, input: { type: string; where?: Record<string, string | number | boolean>; groupBy?: string; list?: boolean }): Promise<CountResult | { error: string }> {
   const entries = Object.entries(input.where ?? {})
   // Dropping a filter would inflate a count reported as exact, so too many is an error.
   if (entries.length > MAX_FILTERS) return { error: `At most ${MAX_FILTERS} filters are allowed.` }
@@ -130,6 +130,8 @@ export async function countNodes(q: Q, a: Access, input: { type: string; where?:
     result.groups = rows.map(r => ({ value: r.value, count: r.count as number }))
     return result
   }
+  // list: false gives the total only (the Platform Superadmin never sees record names).
+  if (input.list === false) return result
   const items = await q(`SELECT n.key, n.title FROM kg_nodes n WHERE ${where} ORDER BY n.title LIMIT ${MAX_LIST}`, params)
   result.items = items.map(r => ({ key: r.key, title: clip(r.title, 90) }))
   result.shown = result.items.length

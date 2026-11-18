@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -1049,4 +1049,66 @@ test('advisory context: without it, behaviour is unchanged (general stays genera
   const r = await runGraphAgent(s.ctx, 'what is patch management?', [], s.emit)
   assert.equal(finalOf(s.events)?.kind, 'general')
   assert.doesNotMatch(r.content, /What we found/)
+})
+
+// ── Project 2 Task 2: the Platform Superadmin views statistics and asks general questions only ──
+const SUPER_REFUSAL = 'The Platform Superadmin can view overall statistics and ask general security questions, but cannot debug advisories.'
+
+test('superadmin fix question refused', async () => {
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, kind: 'fix', replies: [text('## What we found\nx [S1]\n\n## Suggested steps\n1. y')] })
+  const r = await runGraphAgent(s.ctx, 'how do I fix the openssl advisory on web-01?', [], s.emit)
+  assert.equal(r.content, SUPER_REFUSAL)
+  assert.equal(s.m.seen.length, 0, 'no model call after the classifier')
+  assert.ok(!s.calls.some(c => c.text.includes('kg_outbox')), 'nothing synced')
+})
+
+test('superadmin with advisory_id refused', async () => {
+  // The route refuses first; the agent refuses too if a context ever reaches it.
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, kind: 'system' })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'what does this advisory mean?', [], s.emit)
+  assert.equal(r.content, SUPER_REFUSAL)
+  assert.equal(s.m.seen.length, 0)
+})
+
+test('superadmin general allowed', async () => {
+  const s = setup({ role: 'superadmin', tenantId: null, kind: 'general', replies: [text('Patch management means applying vendor fixes on a schedule.')] })
+  const r = await runGraphAgent(s.ctx, 'what is patch management?', [], s.emit)
+  assert.notEqual(r.content, SUPER_REFUSAL)
+  assert.match(r.content, /vendor fixes/)
+})
+
+test('superadmin system question limited to counts', async () => {
+  const s = setup({
+    role: 'superadmin', tenantId: null, picked: A, q: { total: 7 },
+    replies: [tools(call('count_nodes', { type: 'asset' }, 'c1'), call('search_graph', { query: 'web' }, 'c2'), call('get_node', { key: 'asset:1' }, 'c3'), call('follow_links', { key: 'asset:1' }, 'c4')), text('The company has 7 assets [S1].')],
+  })
+  const r = await runGraphAgent(s.ctx, 'how many assets does this company have?', [], s.emit)
+  assert.match(r.content, /7 assets \[S1\]/)
+  // the count reads the picked company, but gives totals only, no record names
+  const countSql = s.calls.find(c => c.text.includes('count(*)::int AS total FROM kg_nodes'))
+  assert.ok(countSql?.params.includes(A), 'the count is scoped to the picked company')
+  assert.ok(!s.calls.some(c => c.text.includes('SELECT n.key, n.title FROM kg_nodes')), 'no record list for the superadmin')
+  const countResult = String(s.m.seen[1].messages.find(m => m.role === 'tool' && (m as { tool_call_id?: string }).tool_call_id === 'c1')?.content)
+  assert.doesNotMatch(countResult, /"items"/)
+  // search, get_node and follow_links never read the company's records
+  const recordReads = s.calls.filter(c => c.text.includes('ts_rank') || c.text.includes('n.key = $1') || c.text.includes('FROM kg_edges'))
+  assert.ok(recordReads.every(c => !c.params.includes(A)), 'record tools see shared and platform knowledge only')
+  assert.match(String(s.m.seen[0].messages[0].content), /Platform Superadmin\. Company records can only be counted/)
+})
+
+test('superadmin: a tenant user keeps record lists in counts', async () => {
+  const s = setup({ q: { total: 2 }, replies: [tools(call('count_nodes', { type: 'asset' })), text('There are 2 assets [S1].')] })
+  await runGraphAgent(s.ctx, 'how many assets?', [], s.emit)
+  assert.ok(s.calls.some(c => c.text.includes('SELECT n.key, n.title FROM kg_nodes')))
+})
+
+test('superadmin counts group and filter by categories only, never names or addresses', async () => {
+  assert.equal(statisticRefusal({ severity: 'high' }, 'deviceType'), null)
+  assert.match(String(statisticRefusal(undefined, 'hostname')), /statistics only/)
+  assert.match(String(statisticRefusal({ ip: '10.0.0.5' })), /statistics only/)
+  assert.ok(!STATISTIC_FIELDS.has('title') && !STATISTIC_FIELDS.has('hostname'))
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, replies: [tools(call('count_nodes', { type: 'asset', group_by: 'hostname' })), text("I don't know.")] })
+  await runGraphAgent(s.ctx, 'how many assets per host?', [], s.emit)
+  assert.ok(!s.calls.some(c => c.text.includes('GROUP BY')), 'the grouping never ran')
 })

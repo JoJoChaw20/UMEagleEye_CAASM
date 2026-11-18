@@ -21,7 +21,7 @@ import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope
 import { decide, refusalMessage } from '../lib/actions'
 import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
-import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
+import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, superadminRefusal, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
 import { refreshIfStale, refreshPlatformProblems } from './problems'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import { PERF_LIMITS_NOTE, askedTimeNote, gapRanges, refreshPerf } from './perf'
@@ -163,14 +163,18 @@ const GENERAL_PROMPT = [
   'Answer this general security question from your own knowledge. You have no company data, so never state or imply anything about this company, its assets or its settings.',
 ].join('\n')
 
-function groundedPrompt(kind: Kind, access: Access, restricted: boolean, canPropose: boolean): string {
+function groundedPrompt(kind: Kind, access: Access, restricted: boolean, canPropose: boolean, countsOnly = false): string {
   const lines = [...SAFETY, ...GROUNDED]
+  if (countsOnly) lines.push(COUNTS_ONLY_RULE)
   if (canPropose) lines.push(PROPOSE_RULE)
   if (kind === 'fix') lines.push(...FIX_FORMAT)
   if (!access.tenantId) lines.push('No company is selected, so only shared knowledge is visible. If the question needs company data, say a company must be picked.')
   if (restricted) lines.push('This user may only see overall status and security score. Decline anything else.')
   return lines.join('\n')
 }
+
+/** The Platform Superadmin sees companies as statistics: counts and totals, never one record. */
+const COUNTS_ONLY_RULE = 'This user is the Platform Superadmin. Company records can only be counted with count_nodes (totals and groups). The other tools return shared and platform knowledge only. Never describe, list or debug an individual company record or advisory.'
 
 function historyMessages(history: ChatTurn[]): ChatMessage[] {
   const turns = history.slice(-HISTORY_TURNS).map(h => ({ role: h.role, content: h.content.slice(0, HISTORY_CHARS) }))
@@ -218,7 +222,9 @@ class SourceBook {
 }
 
 interface RunState {
-  ctx: GraphCtx; access: Access; book: SourceBook; calls: number; evidence: string[]; proposal: AdvisoryProposal | null; canPropose: boolean
+  /** access: what the record tools read. countAccess: what count_nodes reads. They differ only for the
+   *  Platform Superadmin, whose record tools never see a company's records (counts only). */
+  ctx: GraphCtx; access: Access; countAccess: Access; countsOnly: boolean; book: SourceBook; calls: number; evidence: string[]; proposal: AdvisoryProposal | null; canPropose: boolean
   budget: Budget; dropProposal: (key: string) => Promise<void>
   /** Why a requested close was refused, in the server's words. Released as the answer when no proposal was made. */
   closeRefusal: string | null
@@ -262,6 +268,17 @@ const PLATFORM_TYPES = new Set(['performance_window', 'route', 'table', 'queue',
 // Problems about UMEagleEye itself: its speed, feeds and graph sync (rules.ts), and code hotspots (systemGraph.ts).
 const isPlatformProblem = (where: Record<string, unknown> = {}): boolean =>
   (PLATFORM_RULES as readonly string[]).includes(String(where.rule)) || /^code_hotspot_/.test(String(where.rule ?? '')) || where.system === true
+
+/** The fields the Platform Superadmin may filter or group a count by: categories, never names or addresses. */
+export const STATISTIC_FIELDS: ReadonlySet<string> = new Set([
+  'severity', 'status', 'deviceType', 'eventType', 'internetFacing', 'inMyAssets', 'criticality', 'active', 'open', 'kind', 'retired', 'scanType',
+])
+
+/** PURE. Why a superadmin count may not use these filters or this grouping, or null. */
+export function statisticRefusal(where?: Record<string, unknown>, groupBy?: string): string | null {
+  const bad = [...Object.keys(where ?? {}), ...(groupBy ? [groupBy] : [])].filter(k => !STATISTIC_FIELDS.has(k))
+  return bad.length ? `The Platform Superadmin sees statistics only, so a count cannot use ${bad.slice(0, 3).map(k => clip(k, 30)).join(', ')}. Use categories such as severity, status or deviceType.` : null
+}
 
 function countRefusal(type: string, access: Access, where?: Record<string, unknown>): string | null {
   if (!access.analyst && !STATUS_TYPES.has(type)) return 'This user\'s role only covers overall status and security score, so that cannot be counted.'
@@ -381,11 +398,14 @@ const TOOLS: ToolSpec[] = [
     } },
     args: CountArgs,
     run: async (args: z.infer<typeof CountArgs>, s) => {
-      const refusal = countRefusal(args.type, s.access, args.where)
+      const refusal = countRefusal(args.type, s.countAccess, args.where) ?? (s.countsOnly ? statisticRefusal(args.where, args.group_by) : null)
       if (refusal) return { error: refusal }
-      const result = await countNodes(s.ctx.query, s.access, { type: args.type, where: args.where, groupBy: args.group_by })
+      const result = await countNodes(s.ctx.query, s.countAccess, { type: args.type, where: args.where, groupBy: args.group_by, list: !s.countsOnly })
       if ('error' in result) return result
-      return { ref: s.book.add(`count:${args.type}`, `Exact count of ${args.type} records`, 'count'), ...result }
+      const ref = s.book.add(`count:${args.type}`, `Exact count of ${args.type} records`, 'count')
+      // Totals and groups only: the record names stay out.
+      if (s.countsOnly) return { ref, total: result.total, ...(result.groups ? { groups: result.groups } : {}) }
+      return { ref, ...result }
     },
   },
   {
@@ -688,6 +708,9 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     const advisory = ctx.advisoryContext ?? null
     if (advisory && kind === 'general') kind = 'fix'
     result.kind = kind
+    // The Platform Superadmin views statistics and asks general questions; it never debugs an advisory.
+    const superRefusal = ctx.user.role === 'superadmin' ? superadminRefusal(kind, Boolean(advisory)) : null
+    if (superRefusal) return await release(superRefusal)
     if (kind === 'neither') return await release(NEITHER)
     // The route already checked advisory.generate (which needs advisory.view and alert.view) for this advisory.
     if (!analystAccess(ctx.user) && kind !== 'system' && !advisory) return await release(RESTRICTED)
@@ -730,12 +753,13 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     const asksToClose = wantsAdvisoryClosed(question)
     if (asksToClose && !roleCanClose) notes.push(cannotClose(ctx.user))
     const canPropose = asksToClose && roleCanClose
-    const s: RunState = { ctx, access, book: new SourceBook(), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
+    const countsOnly = ctx.user.role === 'superadmin'
+    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook(), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
     // Values the server computed (current UTC time, recorded range, gaps, the time asked in UTC+8 and UTC) may be
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
     s.evidence.push(...perfFacts)
     const messages: ChatMessage[] = [
-      { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') },
+      { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose, countsOnly) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') },
       ...(advisory ? [advisoryMessage(s, advisory)] : []),
       ...historyMessages(history),
       { role: 'user', content: question },
