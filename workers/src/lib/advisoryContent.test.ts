@@ -84,8 +84,9 @@ test('os patch with kb maps to os.updates.apply and needs reboot', () => {
 
 test('port 8080 maps to firewall.block_port', () => {
   const out = mapSteps(portFacts({ port: '8080', protocol: 'tcp' }), T('Block port 8080 at the firewall.', 'Rescan.'), dev())
-  assert.equal(out.length, 2)
-  assert.deepEqual(out[0]!.action, { key: 'firewall.block_port', params: { port: 8080, protocol: 'tcp', direction: 'inbound' } })
+  assert.equal(out.length, 3)
+  assert.equal(out[0]!.action, undefined)
+  assert.deepEqual(out[2]!.action, { key: 'firewall.block_port', params: { port: 8080, protocol: 'tcp', direction: 'inbound' } })
   const dflt = mapSteps(portFacts({ port: 8080 }), T('Rescan.'), dev())
   assert.equal(dflt[1]!.action!.params.protocol, 'tcp')
   assert.equal(dflt.length, 2)
@@ -294,8 +295,15 @@ test('I2: restrict/allow/conditional steps never get the block action', () => {
     assert.equal(out[0]!.kind, 'manual', txt); assert.equal(out[0]!.action, undefined, txt)
     assert.equal(out[1]!.text, 'If the port is not needed, block inbound port 8080/tcp at the host firewall.', txt)
   }
-  const ok = mapSteps(portFacts({ port: 8080 }), T('Add a firewall rule to block port 8080.'), dev())
-  assert.equal(ok.length, 1); assert.ok(ok[0]!.action)
+})
+
+test('block action is never attached to an existing step, only appended last', () => {
+  const out = mapSteps(portFacts({ port: 8080 }), T('Add a firewall rule to block port 8080.', 'Rescan.'), dev())
+  assert.equal(out.length, 3)
+  assert.equal(out[0]!.kind, 'manual'); assert.equal(out[0]!.action, undefined)
+  assert.equal(out[1]!.action, undefined)
+  assert.equal(out[2]!.text, 'If the port is not needed, block inbound port 8080/tcp at the host firewall.')
+  assert.equal(out[2]!.action!.key, 'firewall.block_port')
 })
 
 test('I3: strict package and version per manager', () => {

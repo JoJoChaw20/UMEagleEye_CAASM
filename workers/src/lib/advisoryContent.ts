@@ -53,18 +53,6 @@ function tokenAt(text: string, token: string): number {
 }
 const negatedBefore = (text: string, idx: number) => NEGATION.test(text.slice(0, idx))
 
-/** Whole-number port in the text (not inside 18080 or 80800). */
-function portAt(text: string, port: number): number {
-  const s = String(port)
-  let i = text.indexOf(s)
-  while (i >= 0) {
-    const before = text[i - 1]; const after = text[i + s.length]
-    if (!(before && /\d/.test(before)) && !(after && /\d/.test(after))) return i
-    i = text.indexOf(s, i + 1)
-  }
-  return -1
-}
-
 // nmap names and Windows/Unix aliases of protected services, used only for the port check
 const PROTECTED_SERVICE_ALIASES = new Set([
   'ssh', 'ms-wbt-server', 'rdp', 'domain', 'dns', 'ldap', 'ldaps', 'kerberos', 'kerberos-sec', 'dhcp', 'dhcps',
@@ -74,8 +62,10 @@ const isProtectedServiceName = (w: unknown) =>
   isProtectedService(w) || PROTECTED_SERVICE_ALIASES.has(String(w ?? '').trim().toLowerCase())
 
 type Plan = {
-  action: Action; /** index of the match in the step text, -1 for none */ at: (t: string) => number; verb: RegExp
-  /** the step added when no step qualifies, and where it goes */
+  action: Action
+  /** index of the match in the step text, -1 for none; absent for a last-step action, which never attaches */
+  at?: (t: string) => number; verb?: RegExp
+  /** the step added when no step qualifies, and where it goes ('last' is always appended, never attached) */
   extra: string; position: 'first' | 'last'
 }
 
@@ -86,9 +76,6 @@ const VERSION = /^[0-9][A-Za-z0-9.+~-]*$/
 const EPOCH_VERSION = /^(\d+:)?[0-9][A-Za-z0-9.+~-]*$/
 const UNSAFE_SOURCE = /github:|^git\+|:\/\//i
 const KB_ID = /^KB\d{6,8}$/
-// a step that restricts, allows or keeps the port, or is conditional, is not a "block it" step
-const NOT_A_BLOCK = /restrict|allow|trusted|only from|instead|keep|expected|\bif\b/i
-
 /** The one automatic action the facts allow, with the rule that attaches it to a step. */
 function planAction(facts: AdvisoryFacts): Plan | null {
   const c = facts.cve
@@ -133,7 +120,6 @@ function planAction(facts: AdvisoryFacts): Plan | null {
     if (words.some(w => w != null && w !== '' && isProtectedServiceName(w))) return null
     return {
       action: { key: 'firewall.block_port', params: { port, protocol: proto, direction: 'inbound' } },
-      at: t => (/close|block/i.test(t) && !NOT_A_BLOCK.test(t) ? portAt(t, port) : -1), verb: /close|block/i,
       extra: `If the port is not needed, block inbound port ${port}/${proto} at the host firewall.`, position: 'last',
     }
   }
@@ -146,11 +132,15 @@ export function mapSteps(
   const list: Draftish[] = steps.map(s => ({ text: s.text, expert_note: s.expert_note }))
   const plan = planAction(facts)
   if (plan) {
-    const ok = list.filter(s => { const i = plan.at(s.text); return i >= 0 && !negatedBefore(s.text, i) })
-    const hit = ok.find(s => plan.verb.test(s.text)) ?? ok[0]
-    if (hit) hit.action = plan.action
-    else if (plan.position === 'last') list.push({ text: plan.extra, action: plan.action })
-    else list.unshift({ text: plan.extra, action: plan.action })
+    // a disruptive last-step action is never attached to an existing step: it is appended, conditional, deterministic
+    if (plan.position === 'last' || !plan.at || !plan.verb) list.push({ text: plan.extra, action: plan.action })
+    else {
+      const { at, verb } = plan
+      const ok = list.filter(s => { const i = at(s.text); return i >= 0 && !negatedBefore(s.text, i) })
+      const hit = ok.find(s => verb.test(s.text)) ?? ok[0]
+      if (hit) hit.action = plan.action
+      else list.unshift({ text: plan.extra, action: plan.action })
+    }
   }
   return list.map((s, i): AdvisoryStep => {
     const step: AdvisoryStep = { id: `s${i + 1}`, text: s.text, kind: 'manual', risk: 'low' }
