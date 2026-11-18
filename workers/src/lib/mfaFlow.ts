@@ -16,14 +16,14 @@ export function signInOutcome(mfaEnabled: boolean): MfaStage {
 
 /**
  * Staging-only exception to mandatory MFA: usernames in MFA_EXEMPT_USERNAMES (comma list, exact
- * match) sign in with the password alone. Ignored when APP_ENV is production, even if the variable
- * leaks into that config.
+ * match) sign in with the password alone. Active only when APP_ENV is exactly 'staging' (fail closed: production,
+ * unset or anything else is never exempt).
  */
 export function isMfaExempt(env: { MFA_EXEMPT_USERNAMES?: string; APP_ENV?: string }, username: string): boolean {
-  if (env.APP_ENV === 'production') return false
-  const name = username.trim()
-  if (!name) return false
-  return (env.MFA_EXEMPT_USERNAMES ?? '').split(',').some((n) => n.trim() === name)
+  if (env.APP_ENV !== 'staging') return false
+  if (!username) return false
+  // The username is compared exactly; only the list entries are trimmed.
+  return (env.MFA_EXEMPT_USERNAMES ?? '').split(',').map((s) => s.trim()).filter(Boolean).some((n) => n === username)
 }
 
 export type VerifyInput = { kind: 'code'; code: string } | { kind: 'recovery'; recoveryCode: string }

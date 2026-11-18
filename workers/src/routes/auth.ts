@@ -65,8 +65,9 @@ async function mfaStep(c: Ctx, row: UserRow) {
   // A break-glass reset whose hold is over is applied first: the account then sets MFA up again.
   // The stage comes from the account as it is after that, never from the row read before it.
   const db = getDb(c.env.DATABASE_URL)
-  // Staging only: an exempt account signs in with the password alone (lib/mfaFlow.ts isMfaExempt).
-  if (isMfaExempt(c.env, row.username)) {
+  // Staging only: an exempt account with MFA off signs in with the password alone (lib/mfaFlow.ts isMfaExempt);
+  // one that set MFA up signs in with its code like everyone else.
+  if (!row.mfaEnabled && isMfaExempt(c.env, row.username)) {
     const settled = await settledAccount(c, db, row)
     if (settled.refused) return settled.refused
     await db.update(users).set({ lastLogin: new Date() }).where(eq(users.userId, row.userId))

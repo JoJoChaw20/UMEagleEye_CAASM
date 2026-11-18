@@ -153,14 +153,20 @@ test('isMfaExempt: empty or missing var is false', () => {
   assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'staging' }, ''), false)
 })
 
-test('isMfaExempt: production ignores the list', () => {
+test('isMfaExempt: only APP_ENV staging', () => {
   assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'production' }, 'admin'), false)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin' }, 'admin'), false)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'staging' }, 'admin'), true)
 })
 
 test('isMfaExempt: whitespace around names tolerated', () => {
   const env = { MFA_EXEMPT_USERNAMES: ' alice , admin ', APP_ENV: 'staging' }
   assert.equal(isMfaExempt(env, 'admin'), true)
-  assert.equal(isMfaExempt(env, ' alice '), true)
+  assert.equal(isMfaExempt(env, ' alice '), false)
+  assert.equal(isMfaExempt(env, 'admin '), false)
+  assert.equal(isMfaExempt(env, ' admin'), false)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin,', APP_ENV: 'staging' }, 'admin'), true)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: ',admin', APP_ENV: 'staging' }, 'admin'), true)
 })
 
 test('stepUpOk: password-only for an exempt account with MFA off', () => {
