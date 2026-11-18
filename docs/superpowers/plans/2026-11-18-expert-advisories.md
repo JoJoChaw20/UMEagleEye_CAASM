@@ -39,7 +39,7 @@
 - A device without an EagleEye host agent turns every would-be `auto` step into `external`, with the reason "This device has no EagleEye agent." A network device (asset type `network`) turns them `external` with the reason "Network devices are changed by an engineer or the vendor."
 - **Protected lists** (static, one module):
   - **services:** `eagleeye`, `EagleEyeAgent`, `MsMpEng`, `WinDefend`, `mpssvc`, `EventLog`, `wuauserv`, `sshd`, `TermService`, `ufw`, `firewalld`, `auditd`, `rsyslog`, `systemd-journald`, `DNS`, `named`, `dhcpd`, `NTDS`.
-  - **ports:** `22`, `3389`, `53`, `67`, `68`, `88`, `389`, `636`, `443`.
+  - **ports:** `22`, `3389`, `53`, `67`, `68`, `88`, `389`, `636`, `443`, `5985`, `5986` (WinRM).
   - **apps:** names containing `defender`, `antivirus`, `eagleeye`, `crowdstrike`, `sentinel`, `sophos`, `malwarebytes`.
 - No backfill. Advisories without `content` render as today, plus the line, verbatim: "Regenerate to get structured steps and automation labels."
 - Staging only. Shared DB: the migration is additive and its number is announced (0040). `.superpowers` is gitignored.
@@ -224,17 +224,21 @@ Keep every existing rule. Facts for non-CVE alerts:
 ### Task 6: Staging rollout (controller; staging only)
 
 - [ ] **Step 1:** Tell the owner that migration number `0040` is taken (for the teammate). Run `npm run db:status:staging`. Expected: pending exactly `0040_advisory_content`. Then migrate.
+  - **Column gate (before any deploy):** `select 1 from information_schema.columns where table_name='advisories' and column_name='content'` must return a row. `db.mjs` skips a migration whose `when` is older than the last applied one, so a silent skip is possible. If no row comes back, stop and do not deploy the worker.
 - [ ] **Step 2:** Deploy the worker with `npx wrangler deploy -c wrangler.prod-noperf.toml --env staging`, then immediately the frontend (VITE_* unset), then `node scripts/kg/build-system-graph.mjs staging`. Check the bundle.
 - [ ] **Step 3:** Smoke test in a temporary tenant (prefix `ADVTEST-`). Create by SQL:
-  - an asset with an agent row (`host_asset_id` set) and one without;
-  - a package-CVE alert with a fix version;
-  - a `port_opened` alert for 8080, and one for 22.
+  - an asset with an agent row (`host_asset_id` set, `kind` host, `retired_at` null) and one without. The fake agent row may trigger agent-offline notices in the temp tenant; that is expected and the tenant cascade removes them;
+  - a package-CVE alert with a fix version. Event `details`: `shape` `package`, `package_name`, `package_version`, `package_type` (`deb`, `rpm`, `apk`, `python` or `npm`), `fix_to`. Add `cve_findings` rows for the event (`event_id`, `cve_id`, `fix_versions`, `fixed_at` null, `dismissed` false). `gatherFacts` reads the CVE group from these rows;
+  - a `port_opened` alert for 8080 with `details` `{port: 8080, protocol: 'tcp'}`, one for 22, and one for 5985.
 
   Then `POST /events/:id/advisory` as a Tenant Superadmin (MFA through the API), wait for the queue, and `GET /advisories/:id`. Expected:
   - `content` is present;
   - the CVE advisory with an agent is labelled Auto-fixable or Partly auto-fixable, with the "not switched on" reason, and the same without an agent is labelled Needs outside support;
-  - the port 22 advisory has no automatic step;
-  - an older advisory without `content` still loads.
+  - the port 22 and port 5985 advisories have no automatic step (5985 is protected);
+  - the 8080 advisory's block step is the last step and is conditional ("If the port is not needed, ...");
+  - an older advisory with `content` NULL still loads;
+  - the label flips both ways: set the agent's `retired_at`, `GET` again and it reads Needs outside support; clear it and it flips back;
+  - `GET /advisories` (the list) carries `automation_label` and no `content`.
 
   Cleanup order: audit rows by tenant, then advisories and events (by cascade via the tenant), then the tenant, then users.
 
@@ -243,4 +247,11 @@ Keep every existing rule. Facts for non-CVE alerts:
   - one with `advisory.generate` gets 202 or 200;
   - `GET /advisories/:id` still works with `advisory.view` only;
   - the Platform Superadmin cannot generate. The refusal comes from the existing `decide()` rule; there's no platform test login, so confirm it with the unit test `decide(superadmin, 'advisory.generate')` refusing, or as a browser check.
-- [ ] **Step 4:** Run the GET sweep (no 5xx) and the agent check. Record the results. Stop.
+- [ ] **Step 4:** Run the GET sweep (no 5xx) and the agent check. Then check that existing features are unaffected:
+  - real agents' `last_seen` keeps advancing;
+  - one scan or SBOM ingest succeeds after the deploy;
+  - the shared queue jobs `drift_check`, `service_cves` and `kg_sync` complete without "Queue job failed" (`wrangler tail`, or their effects in the DB);
+  - `GET /events/:id` returns 200.
+
+  Record the results. Stop.
+- [ ] **Step 5 (rollback):** Roll back the worker and the frontend together, and keep the column. An old worker leaves `content` untouched on regenerate, so structured steps can go stale after a roll-forward. On roll-forward, set `content = NULL` for advisories updated during the rollback window, or accept a regenerate.
