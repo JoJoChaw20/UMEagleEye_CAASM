@@ -275,13 +275,19 @@ export function cveIdsIn(text: string): string[] {
  *  not usable, including when it names a CVE that is not in the facts it was given: an
  *  invented id is worse than no AI text. Confidence always comes from the rules, which know
  *  whether a fix version was computed; the model's own rating is ignored. */
+export type AiDraftReason = 'ok' | 'not_json' | 'no_summary_or_steps' | 'unknown_cve'
 export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): (AdvisoryDraft & { stepNotes: string[] }) | null {
+  return parseAiDraftWithReason(raw, fallback, knownCves).draft
+}
+
+/** Same as parseAiDraft, but says why a reply was not used (never includes reply text). */
+export function parseAiDraftWithReason(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): { draft: (AdvisoryDraft & { stepNotes: string[] }) | null; reason: AiDraftReason } {
   let obj: Record<string, unknown>
   try {
     const body = raw.replace(/```json\s*/gi, '').replace(/```/g, '').trim()
     const start = body.indexOf('{'); const end = body.lastIndexOf('}')
     obj = JSON.parse(start >= 0 && end > start ? body.slice(start, end + 1) : body)
-  } catch { return null }
+  } catch { return { draft: null, reason: 'not_json' } }
   const summary = cleanProse(obj.summary, 700)
   const stepsRaw = Array.isArray(obj.steps) ? obj.steps : typeof obj.recommended_action === 'string' ? String(obj.recommended_action).split('\n') : []
   // A step is a string or {text, expert_note}. A step that fails is dropped (with its note);
@@ -298,7 +304,7 @@ export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: st
   }
   const kept = pairs.slice(0, 6)
   const steps = kept.map(p => p.text)
-  if (!summary || steps.length === 0) return null
+  if (!summary || steps.length === 0) return { draft: null, reason: 'no_summary_or_steps' }
   const known = new Set(knownCves.map(s => s.toUpperCase()))
   const stepNotes = kept.map(p => (p.note && !cveIdsIn(p.note).some(id => !known.has(id)) ? p.note : ''))
   const draft: AdvisoryDraft & { stepNotes: string[] } = {
@@ -309,8 +315,8 @@ export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: st
     confidence: fallback.confidence,
   }
   const prose = [draft.summary, ...draft.steps, draft.whyNow, draft.verify, draft.rollback].filter(Boolean).join(' ')
-  if (cveIdsIn(prose).some(id => !known.has(id))) return null
-  return draft
+  if (cveIdsIn(prose).some(id => !known.has(id))) return { draft: null, reason: 'unknown_cve' }
+  return { draft, reason: 'ok' }
 }
 
 // ── Storage format ───────────────────────────────────────────────

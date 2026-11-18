@@ -12,7 +12,7 @@ import { extractPorts } from './drift'
 import { cweList } from '../lib/cwe'
 import { enrichCve } from '../lib/advisoryEnrich'
 import {
-  sanitizeText, commandsFor, urgencyFor, buildSources, ruleBasedDraft, parseAiDraft, cveIdsIn,
+  sanitizeText, commandsFor, urgencyFor, buildSources, ruleBasedDraft, parseAiDraftWithReason, cveIdsIn,
   formatAdvisoryText, groupSummary, type AdvisoryFacts, type AdvisoryDraft,
 } from '../lib/advisoryKit'
 
@@ -40,7 +40,7 @@ async function callAI(
   deepseekKey: string | undefined,
   openrouterKey: string,
   model: string | undefined,
-): Promise<string> {
+): Promise<{ content: string; finishReason: string | null }> {
   const useDeepSeek = !!deepseekKey
   if (!useDeepSeek && !openrouterKey) throw new Error('No AI key configured')
   const apiKey  = useDeepSeek ? deepseekKey! : openrouterKey
@@ -61,12 +61,12 @@ async function callAI(
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: resolvedModel, messages, max_tokens: 900, temperature: 0.2 }),
+    body: JSON.stringify({ model: resolvedModel, messages, max_tokens: 1600, temperature: 0.2 }),
     signal: AbortSignal.timeout(20_000),
   })
   if (!res.ok) throw new Error(`AI API error: ${res.status}`)
-  const data = await res.json() as { choices: Array<{ message: { content: string } }> }
-  return data.choices[0]?.message.content ?? ''
+  const data = await res.json() as { choices: Array<{ message: { content: string }; finish_reason?: string | null }> }
+  return { content: data.choices[0]?.message.content ?? '', finishReason: data.choices[0]?.finish_reason ?? null }
 }
 
 const num = (v: unknown): number | null => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v))
@@ -296,14 +296,16 @@ export async function generateAdvisory(
   let basis = 'Rule-based (no AI)'
   const enriched = [facts.cve?.nvd ? 'NVD' : '', facts.cve?.osv ? 'OSV' : ''].filter(Boolean)
   try {
-    const raw = await callAI([
+    const { content: raw, finishReason } = await callAI([
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: JSON.stringify({
         eventType: facts.eventType, severity: facts.severity, asset: facts.asset, neighbours: facts.neighbours,
         cve: facts.cve, otherDetails: facts.other, urgency: facts.urgency,
       }) },
     ], deepseekKey, openrouterKey, model)
-    const parsed = parseAiDraft(raw, fallback, groundedCves(facts))
+    const { draft: parsed, reason } = parseAiDraftWithReason(raw, fallback, groundedCves(facts))
+    if (!parsed) console.warn('[advisory] AI reply not used:', reason, 'finish_reason=' + finishReason)
+    else if (finishReason === 'length') console.warn('[advisory] AI reply hit the token limit but parsed:', 'finish_reason=' + finishReason)
     if (parsed) {
       draft = parsed
       basis = `AI-written from scanner data${enriched.length ? ` + ${enriched.join(', ')}` : ''}; versions and commands set by rules`

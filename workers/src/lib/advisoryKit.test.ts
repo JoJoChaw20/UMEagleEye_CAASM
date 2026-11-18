@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAiDraft, ruleBasedDraft, type AdvisoryDraft, type AdvisoryFacts } from './advisoryKit'
+import { parseAiDraft, parseAiDraftWithReason, ruleBasedDraft, type AdvisoryDraft, type AdvisoryFacts } from './advisoryKit'
 import { buildContent } from './advisoryContent'
 
 const fallback: AdvisoryDraft = {
@@ -68,4 +68,15 @@ test('content is built for the rule-based fallback', () => {
 test('M3: an object step whose text is not a string is dropped', () => {
   const d = parseAiDraft(JSON.stringify({ summary: 'Sum text.', steps: [{ text: 123 }, { text: ['a'] }, { text: 'Real step.' }] }), fallback)!
   assert.deepEqual(d.steps, ['Real step.'])
+})
+
+test('parseAiDraftWithReason reports why a reply is not used', () => {
+  const good = ai([{ text: 'Do one thing.', expert_note: 'Because X.' }, { text: 'Second step.' }])
+  assert.equal(parseAiDraftWithReason(good, fallback).reason, 'ok')
+  assert.ok(parseAiDraftWithReason(good, fallback).draft)
+  const cut = good.slice(0, good.indexOf('Second step.') + 4)
+  assert.deepEqual(parseAiDraftWithReason(cut, fallback), { draft: null, reason: 'not_json' })
+  assert.equal(parseAiDraftWithReason('{}', fallback).reason, 'no_summary_or_steps')
+  const bad = JSON.stringify({ summary: 'About CVE-2099-0001 here.', steps: ['Patch it.'] })
+  assert.deepEqual(parseAiDraftWithReason(bad, fallback, ['CVE-2024-1111']), { draft: null, reason: 'unknown_cve' })
 })
