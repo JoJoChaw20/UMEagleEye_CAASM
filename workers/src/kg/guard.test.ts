@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { citationProblems, classify, isTypedConfirmation, onlyAsksToClose, stripFormatEcho, closureClaimProblems, generalAnswerProblems, labelSuggestedSteps, parseKind, refersToOwnOrganisation, structureProblems, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ModelCall } from './guard'
+import { citationProblems, classify, isTypedConfirmation, onlyAsksToClose, stripFormatEcho, closureClaimProblems, generalAnswerProblems, labelSuggestedSteps, parseKind, refersToOwnOrganisation, structureProblems, superadminRefusal, SUPERADMIN_ADVISORY_REFUSAL, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ModelCall } from './guard'
 
 const EVIDENCE = [
   'Device `web-01` (10.0.0.5), MAC aa:bb:cc:dd:ee:ff, 5 open critical alerts, 1,234 packages, score 72.0, port 8080.',
@@ -534,4 +534,13 @@ test('a message that only asks to close an advisory, with or without politeness'
 test('a message that also asks something else is not only a close request', () => {
   for (const q of ['Why was the site slow at 3pm on 2026-11-09? Also close advisory 7c9e6679.', 'Close advisory 281ab6b4. How many open alerts do we have?', 'how do I resolve CVE-2024-1234 on web-01?', 'fix 281ab6b4', 'what is advisory 281ab6b4 about?'])
     assert.equal(onlyAsksToClose(q), false, q)
+})
+
+test('superadminRefusal: fix or an advisory is refused in fixed words; general and system are not', () => {
+  assert.equal(SUPERADMIN_ADVISORY_REFUSAL, 'The Platform Superadmin can view overall statistics and ask general security questions, but cannot debug advisories.')
+  assert.equal(superadminRefusal('fix', false), SUPERADMIN_ADVISORY_REFUSAL)
+  assert.equal(superadminRefusal('general', true), SUPERADMIN_ADVISORY_REFUSAL)
+  assert.equal(superadminRefusal('system', true), SUPERADMIN_ADVISORY_REFUSAL)
+  assert.equal(superadminRefusal('general', false), null)
+  assert.equal(superadminRefusal('system', false), null)
 })

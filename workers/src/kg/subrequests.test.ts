@@ -5,7 +5,7 @@ import { DRAIN_REQUESTS, drainOutbox } from './sync'
 import { refreshProblems } from './problems'
 import { keywordQuery } from './retrieve'
 import { classify, IDK, type ModelCall, type ModelReply, type ToolCall } from './guard'
-import { runGraphAgent, type GraphCtx } from './agent'
+import { ADVISORY_CONTEXT_SUBREQUESTS, runGraphAgent, type GraphCtx } from './agent'
 import type { Q, Stmt } from './store'
 import type { Env } from '../types'
 
@@ -179,7 +179,7 @@ const toolCall = (name: string, args: unknown, id: string): ToolCall => ({ id, t
  * one embedding call takes, a stale performance history, a model that asks for the two dearest lookups every
  * round, and an answer that fails verification twice, so it is regenerated and its proposal removed.
  */
-async function worstCase(role: 'superadmin' | 'tenant_admin') {
+async function worstCase(role: 'superadmin' | 'tenant_admin', fromAdvisory = false) {
   const counts: Record<string, number> = {}
   const tick = (what: string) => { counts[what] = (counts[what] ?? 0) + 1 }
   const total = () => Object.values(counts).reduce((a, b) => a + b, 0)
@@ -252,9 +252,11 @@ async function worstCase(role: 'superadmin' | 'tenant_admin') {
     const ctx: GraphCtx = {
       query: q, env: chatEnv, ai,
       user: { userId: 'u1', role: role === 'superadmin' ? 'superadmin' : 'tenant_user', actions: role === 'superadmin' ? [] : MIGRATION_ACTIONS.tenant_admin, tenantId: role === 'superadmin' ? null : A }, pickedTenant: role === 'superadmin' ? A : null,
+      // A chat opened from an advisory: the route spent ADVISORY_CONTEXT_SUBREQUESTS loading it.
+      advisoryContext: fromAdvisory ? { advisoryId: ADV, sources: [{ key: `advisory:${ADV}`, title: 'Advisory 7c9e6679', type: 'advisory', text: 'Status: open' }] } : null,
     }
     const r = await runGraphAgent(ctx, 'Why was the site slow at 3pm on 2026-11-09? Also close advisory 7c9e6679.', [], async () => {})
-    return { r, counts, total: ROUTE_REQUESTS + total(), corrected, proposalsLeft: [...kvStore.keys()].filter(k => k.startsWith('kg:proposal:')).length }
+    return { r, counts, total: ROUTE_REQUESTS + (fromAdvisory ? ADVISORY_CONTEXT_SUBREQUESTS : 0) + total(), corrected, proposalsLeft: [...kvStore.keys()].filter(k => k.startsWith('kg:proposal:')).length }
   } finally {
     globalThis.fetch = realFetch
   }
@@ -276,3 +278,17 @@ for (const role of ['superadmin', 'tenant_admin'] as const) {
     } finally { console.error = err; console.warn = warn }
   })
 }
+
+test(`F2: the dearest chat opened from an advisory stays within ${CHAT_LIMIT} subrequests and still answers`, async t => {
+  const err = console.error, warn = console.warn
+  console.error = () => {}; console.warn = () => {}
+  try {
+    const w = await worstCase('tenant_admin', true)
+    const breakdown = `${w.total} subrequests: ${JSON.stringify({ route: ROUTE_REQUESTS, advisory: ADVISORY_CONTEXT_SUBREQUESTS, ...w.counts })}`
+    t.diagnostic(breakdown)
+    assert.ok(w.total <= CHAT_LIMIT, breakdown)
+    assert.equal(w.r.failed, false)
+    assert.ok(w.r.content.endsWith(IDK), w.r.content)
+    assert.equal(w.proposalsLeft, 0, 'a refused answer still removes its proposal')
+  } finally { console.error = err; console.warn = warn }
+})

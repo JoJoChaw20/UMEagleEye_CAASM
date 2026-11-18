@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { valueShape, readModelReply, problemKinds, recordIdsOf, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -13,13 +13,17 @@ const text = (t: string): ModelReply => ({ text: t, toolCalls: [], truncated: fa
 const call = (name: string, args: unknown, id = 'c1'): ToolCall => ({ id, type: 'function', function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } })
 const tools = (...calls: ToolCall[]): ModelReply => ({ text: '', toolCalls: calls, truncated: false })
 
-/** A model that first classifies, then plays the given replies. Records what it was sent. */
+/** A safety-review call (kg/safety.ts reviewAnswer). The fakes pass it unless a test says otherwise. */
+export const isReviewCall = (messages: ChatMessage[]) => String(messages[0]?.content ?? '').includes('reviewing an assistant')
+
+/** A model that first classifies, then plays the given replies. Records what it was sent. Safety reviews pass. */
 function model(kind: string, replies: Array<ModelReply | Error>) {
   const seen: Array<{ messages: ChatMessage[]; tools?: unknown[] }> = []
   let classified = false
   let next = 0
   const ai: GraphCtx['ai'] = async (messages, t) => {
     if (!classified) { classified = true; return text(kind) }
+    if (isReviewCall(messages)) return text('{"ok": true, "reasons": []}')
     seen.push({ messages: messages.map(m => ({ ...m })) as ChatMessage[], tools: t })
     const r = replies[next++] ?? text("I don't know.")
     if (r instanceof Error) throw r
@@ -253,7 +257,7 @@ test('a classify failure takes the grounded path', async () => {
 })
 
 test('fix answers need both labelled parts and get the steps label', async () => {
-  const good = '## What we found\nPort 5 on web-01 [S1].\n\n## Suggested steps\n1. Move it to port 9443.'
+  const good = '## What we found\nPort 5 on web-01 [S1].\n\n## Suggested steps\n1. Move it to port 9443.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [tools(search), text(good)] })
   const r = await runGraphAgent(s.ctx, 'fix web-01', [], s.emit)
   assert.match(r.content, /## Suggested steps\n> General guidance/)
@@ -455,10 +459,36 @@ test('count_nodes gives an exact total that can be cited', async () => {
   assert.equal(finalOf(s.events)?.sources[0]?.type, 'count')
 })
 
-test('a truncated answer says so', async () => {
-  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open ports [S1]', toolCalls: [], truncated: true }] })
+test('a truncated answer whose continuation fails says so', async () => {
+  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open ports [S1]', toolCalls: [], truncated: true }, new Error('model timeout')] })
   const r = await runGraphAgent(s.ctx, 'x', [], s.emit)
   assert.match(r.content, /cut off/i)
+  assert.match(r.content, /web-01 has 5 open ports \[S1\]/)
+})
+
+test('continuation: a truncated answer is continued and joined, with progress shown, and no cut-off note', async () => {
+  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open', toolCalls: [], truncated: true }, text(' ports at 10.0.0.5 [S1].')] })
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports at 10.0.0.5 [S1].')
+  assert.ok(s.events.some(e => (e.tool as { name?: string } | undefined)?.name === 'continue_answer'))
+  const cont = s.m.seen.at(-1)!.messages
+  assert.equal(cont.at(-2)?.role, 'assistant')
+  assert.equal(cont.at(-2)?.content, 'web-01 has 5 open')
+  assert.match(String(cont.at(-1)?.content), /^Continue exactly where you stopped/)
+})
+
+test('continuation: verification runs on the joined text, so an invented value in a later part is refused', async () => {
+  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open', toolCalls: [], truncated: true }, text(' ports at 10.9.9.9 [S1].'), text('Still 10.9.9.9 [S1].')] })
+  assert.equal((await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)).content, IDK)
+})
+
+test('continuation: after 3 parts still unfinished, the answer ends on its last sentence with the note', async () => {
+  const cut = (t: string): ModelReply => ({ text: t, toolCalls: [], truncated: true })
+  const s = setup({ replies: [tools(search), cut('web-01 has 5 open ports [S1]. It is at'), cut(' 10.0.0.5 [S1]. More'), cut(' text that'), cut(' never ends')] })
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports [S1]. It is at 10.0.0.5 [S1].\n\nThis answer was too long to finish. Ask about one step at a time.')
+  // 4096 + 4096 + 3808 output tokens reach the 12 000 cap: two continuations, not three
+  assert.equal(s.events.filter(e => (e.tool as { name?: string; status?: string } | undefined)?.name === 'continue_answer' && (e.tool as { status: string }).status === 'running').length, 2)
 })
 
 // ── Fix round 1: one test per review probe ──
@@ -590,7 +620,7 @@ test('I10: only stop and tool_calls count as a finished reply', async () => {
 })
 
 test('normal: a fix answer with real values in its steps is released', async () => {
-  const answer = '## What we found\nPort 5 on `web-01` at 10.0.0.5 [S1].\n\n## Suggested steps\n1. On `web-01`, close port 5 at 10.0.0.5.\n2. Restart the device after patching.'
+  const answer = '## What we found\nPort 5 on `web-01` at 10.0.0.5 [S1].\n\n## Suggested steps\n1. On `web-01`, close port 5 at 10.0.0.5.\n2. Restart the device after patching.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [tools(search), text(answer)] })
   const r = await runGraphAgent(s.ctx, 'how do I fix web-01?', [], s.emit)
   assert.notEqual(r.content, IDK)
@@ -897,7 +927,7 @@ test('final review normal: a company user still counts its own problems, and a s
 // ── Seen on staging, 2026-11-10 ──
 
 test('a fix answer that copies the section instructions into its headings is released without them', async () => {
-  const echoed = '## What we found: facts about this company from the tool results only, each cited.\nPort 5 on web-01 [S1].\n\n## Suggested steps: numbered steps from general security practice for this asset\'s operating system only.\n1. Move it to port 9443.'
+  const echoed = '## What we found: facts about this company from the tool results only, each cited.\nPort 5 on web-01 [S1].\n\n## Suggested steps: numbered steps from general security practice for this asset\'s operating system only.\n1. Move it to port 9443.\n\nConfidence: High - cited from the results.'
   const s = setup({ kind: 'fix', replies: [tools(search), text(echoed)] })
   const r = await runGraphAgent(s.ctx, 'fix web-01', [], s.emit)
   assert.doesNotMatch(r.content, /facts about this company|general security practice for this asset/)
@@ -1002,4 +1032,176 @@ test('a refused close inside a longer question is a note on the answer', async (
   const r = await runGraphAgent(s.ctx, 'How many ports are open on web-01? Also close advisory 7c9e6679.', [], s.emit)
   assert.match(r.content, /^> Not closed: Port 445 is still detected on web-01\./)
   assert.match(r.content, /Device web-01 has 5 open ports \[S1\]\.$/)
+})
+
+// ── Project 2 Task 1: a chat opened from one advisory ──
+const ADV_CTX = {
+  advisoryId: ADV,
+  sources: [
+    { key: `advisory:${ADV}`, title: 'Advisory 7c9e6679', type: 'advisory', text: 'Status: open\nSummary: OpenSSL 3.0.2 on web-01 is known exploited.' },
+    { key: 'cve:CVE-2024-0001:openssl:3.0.2', title: 'CVE-2024-0001 in openssl', type: 'cve', text: 'CVE: CVE-2024-0001\nFixed in: 3.0.15' },
+  ],
+}
+
+test('advisory context: its facts are S1.. and an answer citing them passes without any tool call', async () => {
+  const answer = '## What we found\nOpenSSL 3.0.2 on `web-01` has CVE-2024-0001 [S2], fixed in 3.0.15 [S2]. The advisory is open [S1].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.15.\n\nConfidence: High - cited from the results.'
+  const s = setup({ kind: 'fix', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)
+  assert.notEqual(r.content, IDK)
+  assert.deepEqual(finalOf(s.events)?.sources.map(x => x.ref), ['S1', 'S2'])
+  assert.equal(finalOf(s.events)?.sources[1].type, 'cve')
+  // the facts went to the model as untrusted data, after the system prompt
+  const sent = s.m.seen[0].messages
+  assert.equal(sent[1].role, 'system')
+  assert.match(String(sent[1].content), /UNTRUSTED DATA/)
+  assert.match(String(sent[1].content), /CVE-2024-0001/)
+})
+
+test('advisory context: the facts carry graph keys for the advisory, alert and device only', async () => {
+  const ctx = { advisoryId: ADV, sources: [...ADV_CTX.sources, { key: 'asset:55555555-5555-5555-5555-555555555555', title: 'web-01', type: 'asset', text: 'Device: web-01' }] }
+  const s = setup({ kind: 'fix', replies: [text("I don't know.")] })
+  s.ctx.advisoryContext = ctx
+  await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)
+  const facts = String(s.m.seen[0]!.messages[1]!.content)
+  assert.match(facts, new RegExp(`"key":"advisory:${ADV}"`))
+  assert.match(facts, /"key":"asset:55555555-5555-5555-5555-555555555555"/)
+  assert.doesNotMatch(facts, /"key":"cve:/, 'a CVE finding has no graph record, so no key to guess with')
+})
+
+test('problemKinds logs categories, never values', () => {
+  const out = problemKinds(['10.9.9.9', '[K7]', 'missing section: Expert guidance', 'expert guidance without a [K#] or [L#] reference: "x"', 'missing line: Confidence: High, Medium or Low, with a reason', 'the answer cites no source'])
+  assert.equal(out, 'unsupported-ipx1 unknown-refx1 structurex1 expert-uncitedx1 confidencex1 no-citationx1')
+  assert.doesNotMatch(out, /10\.9\.9\.9/)
+})
+
+test('recordIdsOf names only opaque record ids, so a rejected id can be traced; other values stay hidden', () => {
+  assert.deepEqual(recordIdsOf(['6ed61028', '7c9e6679-7425-40de-944b-e07fc1f90ae7', '10.9.9.9', '12345678', 'web-01', '3.9.9']), ['6ed61028', '7c9e6679-7425-40de-944b-e07fc1f90ae7'])
+  assert.deepEqual(recordIdsOf(['the answer cites no source']), [])
+})
+
+test('advisory context: an invented value is still refused', async () => {
+  const bad = '## What we found\nFixed in 3.0.99 [S2].\n\n## Suggested steps\n1. Upgrade openssl to 3.0.99.'
+  const s = setup({ kind: 'fix', replies: [text(bad), text(bad)] })
+  s.ctx.advisoryContext = ADV_CTX
+  assert.equal((await runGraphAgent(s.ctx, 'how do I fix this?', [], s.emit)).content, IDK)
+})
+
+test('advisory context: a question sorted as general is answered as a fix from the advisory', async () => {
+  const answer = '## What we found\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Suggested steps\n1. Upgrade openssl.\n\nConfidence: High - cited from the results.'
+  const s = setup({ kind: 'general', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'what is the safest way to patch?', [], s.emit)
+  assert.equal(finalOf(s.events)?.kind, 'fix')
+  assert.match(r.content, /## Suggested steps/)
+})
+
+test('advisory context: without it, behaviour is unchanged (general stays general)', async () => {
+  const s = setup({ kind: 'general', replies: [text('Patch promptly and verify the version.')] })
+  const r = await runGraphAgent(s.ctx, 'what is patch management?', [], s.emit)
+  assert.equal(finalOf(s.events)?.kind, 'general')
+  assert.doesNotMatch(r.content, /What we found/)
+})
+
+// ── Project 2 Task 2: the Platform Superadmin views statistics and asks general questions only ──
+const SUPER_REFUSAL = 'The Platform Superadmin can view overall statistics and ask general security questions, but cannot debug advisories.'
+
+test('superadmin fix question refused', async () => {
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, kind: 'fix', replies: [text('## What we found\nx [S1]\n\n## Suggested steps\n1. y')] })
+  const r = await runGraphAgent(s.ctx, 'how do I fix the openssl advisory on web-01?', [], s.emit)
+  assert.equal(r.content, SUPER_REFUSAL)
+  assert.equal(s.m.seen.length, 0, 'no model call after the classifier')
+  assert.ok(!s.calls.some(c => c.text.includes('kg_outbox')), 'nothing synced')
+})
+
+test('superadmin with advisory_id refused', async () => {
+  // The route refuses first; the agent refuses too if a context ever reaches it.
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, kind: 'system' })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'what does this advisory mean?', [], s.emit)
+  assert.equal(r.content, SUPER_REFUSAL)
+  assert.equal(s.m.seen.length, 0)
+})
+
+test('superadmin general allowed', async () => {
+  const s = setup({ role: 'superadmin', tenantId: null, kind: 'general', replies: [text('Patch management means applying vendor fixes on a schedule.')] })
+  const r = await runGraphAgent(s.ctx, 'what is patch management?', [], s.emit)
+  assert.notEqual(r.content, SUPER_REFUSAL)
+  assert.match(r.content, /vendor fixes/)
+})
+
+test('superadmin system question limited to counts', async () => {
+  const s = setup({
+    role: 'superadmin', tenantId: null, picked: A, q: { total: 7 },
+    replies: [tools(call('count_nodes', { type: 'asset' }, 'c1'), call('search_graph', { query: 'web' }, 'c2'), call('get_node', { key: 'asset:1' }, 'c3'), call('follow_links', { key: 'asset:1' }, 'c4')), text('The company has 7 assets [S1].')],
+  })
+  const r = await runGraphAgent(s.ctx, 'how many assets does this company have?', [], s.emit)
+  assert.match(r.content, /7 assets \[S1\]/)
+  // the count reads the picked company, but gives totals only, no record names
+  const countSql = s.calls.find(c => c.text.includes('count(*)::int AS total FROM kg_nodes'))
+  assert.ok(countSql?.params.includes(A), 'the count is scoped to the picked company')
+  assert.ok(!s.calls.some(c => c.text.includes('SELECT n.key, n.title FROM kg_nodes')), 'no record list for the superadmin')
+  const countResult = String(s.m.seen[1].messages.find(m => m.role === 'tool' && (m as { tool_call_id?: string }).tool_call_id === 'c1')?.content)
+  assert.doesNotMatch(countResult, /"items"/)
+  // search, get_node and follow_links never read the company's records
+  const recordReads = s.calls.filter(c => c.text.includes('ts_rank') || c.text.includes('n.key = $1') || c.text.includes('FROM kg_edges'))
+  assert.ok(recordReads.every(c => !c.params.includes(A)), 'record tools see shared and platform knowledge only')
+  assert.match(String(s.m.seen[0].messages[0].content), /Platform Superadmin\. Company records can only be counted/)
+})
+
+test('superadmin: a tenant user keeps record lists in counts', async () => {
+  const s = setup({ q: { total: 2 }, replies: [tools(call('count_nodes', { type: 'asset' })), text('There are 2 assets [S1].')] })
+  await runGraphAgent(s.ctx, 'how many assets?', [], s.emit)
+  assert.ok(s.calls.some(c => c.text.includes('SELECT n.key, n.title FROM kg_nodes')))
+})
+
+test('superadmin counts group and filter by categories only, never names or addresses', async () => {
+  assert.equal(statisticRefusal({ severity: 'high' }, 'deviceType'), null)
+  assert.match(String(statisticRefusal(undefined, 'hostname')), /statistics only/)
+  assert.match(String(statisticRefusal({ ip: '10.0.0.5' })), /statistics only/)
+  assert.ok(!STATISTIC_FIELDS.has('title') && !STATISTIC_FIELDS.has('hostname'))
+  const s = setup({ role: 'superadmin', tenantId: null, picked: A, replies: [tools(call('count_nodes', { type: 'asset', group_by: 'hostname' })), text("I don't know.")] })
+  await runGraphAgent(s.ctx, 'how many assets per host?', [], s.emit)
+  assert.ok(!s.calls.some(c => c.text.includes('GROUP BY')), 'the grouping never ran')
+})
+
+test('readModelReply reads a whole completion: text, tool calls, and anything but a normal end as cut off', () => {
+  assert.deepEqual(readModelReply({ choices: [{ message: { content: 'Hello [S1].' }, finish_reason: 'stop' }] }), { text: 'Hello [S1].', toolCalls: [], truncated: false })
+  const r = readModelReply({ choices: [{ message: { content: null, tool_calls: [{ id: 'c9', type: 'function', function: { name: 'get_overview', arguments: '' } }, { function: {} }] }, finish_reason: 'tool_calls' }] })
+  assert.deepEqual(r, { text: '', toolCalls: [{ id: 'c9', type: 'function', function: { name: 'get_overview', arguments: '{}' } }], truncated: false })
+  assert.equal(readModelReply({ choices: [{ message: { content: 'cut' }, finish_reason: 'length' }] }).truncated, true)
+  assert.equal(readModelReply({ choices: [{ message: { content: 'x' }, finish_reason: 'content_filter' }] }).truncated, true)
+  assert.deepEqual(readModelReply(null), { text: '', toolCalls: [], truncated: true })
+  assert.deepEqual(readModelReply({ error: { message: 'bad' } }), { text: '', toolCalls: [], truncated: true })
+})
+
+test('advisory context: a question sorted as neither is still answered as a fix from the advisory', async () => {
+  const answer = '## From your environment\nCVE-2024-0001 is fixed in 3.0.15 [S2].\n\n## Expert guidance\n1. Upgrade openssl rather than switching anything off [K1].\n\nConfidence: High - cited from the results.'
+  const s = setup({ kind: 'neither', replies: [text(answer)] })
+  s.ctx.advisoryContext = ADV_CTX
+  const r = await runGraphAgent(s.ctx, 'just disable Defender so the scan stops alerting', [], s.emit)
+  assert.equal(finalOf(s.events)?.kind, 'fix')
+  assert.doesNotMatch(r.content, /I can only help with/)
+})
+
+test('valueShape names the kind of an unsupported value without the value', () => {
+  assert.equal(valueShape('10.9.9.9'), 'ip')
+  assert.equal(valueShape('CVE-2024-3094'), 'cve')
+  assert.equal(valueShape('2026-11-18T09:18:42Z'), 'date')
+  assert.equal(valueShape('14:05'), 'time')
+  assert.equal(valueShape('7c9e6679'), 'id')
+  assert.equal(valueShape('42%'), 'number')
+  assert.equal(valueShape('1.0.1-1'), 'version')
+  assert.equal(valueShape('db.corp.internal'), 'hostname')
+  assert.equal(problemKinds(['10.9.9.9', '3.9.9']), 'unsupported-ipx1 unsupported-versionx1')
+})
+
+test('an empty, cut-off reply (thinking used the whole limit) is asked again once with twice the room', async () => {
+  const opts: Array<number | undefined> = []
+  const s = setup({ replies: [tools(search), { text: '', toolCalls: [], truncated: true }, text('web-01 has 5 open ports at 10.0.0.5 [S1].')] })
+  const ai = s.ctx.ai
+  s.ctx.ai = async (m, t, o) => { opts.push(o?.maxTokens); return ai(m, t, o) }
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports at 10.0.0.5 [S1].')
+  assert.equal(opts.at(-1), 8192)
 })
