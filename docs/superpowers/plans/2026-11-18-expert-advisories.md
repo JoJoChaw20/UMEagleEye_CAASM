@@ -237,4 +237,10 @@ Keep every existing rule. Facts for non-CVE alerts:
   - an older advisory without `content` still loads.
 
   Cleanup order: audit rows by tenant, then advisories and events (by cascade via the tenant), then the tenant, then users.
+
+  Also check permissions:
+  - a Tenant user without `advisory.generate` gets 403 on `POST /events/:id/advisory`;
+  - one with `advisory.generate` gets 202 or 200;
+  - `GET /advisories/:id` still works with `advisory.view` only;
+  - the Platform Superadmin cannot generate. The refusal comes from the existing `decide()` rule; there's no platform test login, so confirm it with the unit test `decide(superadmin, 'advisory.generate')` refusing, or as a browser check.
 - [ ] **Step 4:** Run the GET sweep (no 5xx) and the agent check. Record the results. Stop.

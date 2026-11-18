@@ -208,6 +208,23 @@ Four projects, built and released in this order. Each is usable on its own.
 
 ## Decisions settled after the builder check
 
+- **Who runs the workflow (owner).** The person who can generate an advisory can carry the whole
+  workflow for it. `advisory.generate` (with `chatbot.use` for the assistant) is the permission
+  for: viewing structured steps and labels, the advisory-scoped assistant ("Debug with AI" — today
+  gated on `advisory.close_via_chat`, moves to `advisory.generate`), starting verification
+  playbooks, and preparing and approving fix runs as the advisory's assignee with step-up. No
+  separate playbook or automation actions are added; the per-agent remediation switch (Tenant
+  Superadmin only) and step-up remain the safety gates. (This replaces `playbook.run`,
+  `playbook.approve`, `advisory.automation.run` and `advisory.automation.approve` named above.)
+- **Platform Superadmin (owner).** Can use the assistant only for cross-tenant overview statistics
+  and general security questions. It can never generate an advisory (already refused: write
+  action), never open an advisory-scoped chat, never get "fix"/debug answers about a specific
+  advisory, alert or device, and never start or approve a playbook or fix run. It may still view
+  advisories read-only (`advisory.view`). Project 2 enforces the assistant part server-side (a
+  superadmin question classified as a fix/debug question, or carrying `advisory_id`, is refused
+  with: "The Platform Superadmin can view overall statistics and ask general security questions,
+  but cannot debug advisories.").
+
 - **Approval (owner).** One engineer owns an incident and is fully in charge of it, so a fix run
   is approved by that one engineer (the advisory's assignee, holding `advisory.automation.approve`)
   with password + MFA code. There is no second approver. Risky steps — no reliable rollback, a
