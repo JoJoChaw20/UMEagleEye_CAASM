@@ -13,7 +13,7 @@ const text = (t: string): ModelReply => ({ text: t, toolCalls: [], truncated: fa
 const call = (name: string, args: unknown, id = 'c1'): ToolCall => ({ id, type: 'function', function: { name, arguments: JSON.stringify(args) } })
 const tools = (...calls: ToolCall[]): ModelReply => ({ text: '', toolCalls: calls, truncated: false })
 
-function setup(kind: string, replies: ModelReply[], opts: { role?: 'superadmin'; intel?: GraphCtx['intel'] } = {}) {
+function setup(kind: string, replies: ModelReply[], opts: { role?: 'superadmin'; intel?: GraphCtx['intel']; review?: string[] } = {}) {
   const calls: Array<{ text: string; params: unknown[] }> = []
   const q: Q = async (sql, params = []) => {
     calls.push({ text: sql, params })
@@ -23,9 +23,10 @@ function setup(kind: string, replies: ModelReply[], opts: { role?: 'superadmin';
     return []
   }
   const seen: Array<{ messages: ChatMessage[]; tools?: unknown[] }> = []
-  let classified = false, next = 0
+  let classified = false, next = 0, reviews = 0
   const ai: GraphCtx['ai'] = async (messages, t) => {
     if (!classified) { classified = true; return text(kind) }
+    if (String(messages[0]?.content ?? '').includes('reviewing an assistant')) { reviews++; return text(opts.review?.shift() ?? '{"ok": true, "reasons": []}') }
     seen.push({ messages: messages.map(m => ({ ...m })) as ChatMessage[], tools: t })
     return replies[next++] ?? text("I don't know.")
   }
@@ -37,7 +38,7 @@ function setup(kind: string, replies: ModelReply[], opts: { role?: 'superadmin';
     pickedTenant: null, intel: opts.intel,
   }
   const events: Array<Record<string, unknown>> = []
-  return { ctx, calls, seen, events, emit: async (e: Record<string, unknown>) => { events.push(e) } }
+  return { ctx, calls, seen, events, reviews: () => reviews, emit: async (e: Record<string, unknown>) => { events.push(e) } }
 }
 const names = (t?: unknown[]) => (t ?? []).map(x => (x as { function: { name: string } }).function.name)
 const finalSources = (events: Array<Record<string, unknown>>) => (events.find(e => 'sources' in e) as { sources: Array<{ ref: string; type: string; url?: string }> }).sources

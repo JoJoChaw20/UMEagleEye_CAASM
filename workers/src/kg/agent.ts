@@ -21,7 +21,7 @@ import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope
 import { decide, refusalMessage } from '../lib/actions'
 import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
-import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
+import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, isPlainRefusal, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
 import { refreshIfStale, refreshPlatformProblems } from './problems'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import { PERF_LIMITS_NOTE, askedTimeNote, gapRanges, refreshPerf } from './perf'
@@ -30,6 +30,7 @@ import { countNodes, followLinks, getNode, searchGraph, type NodeView } from './
 import type { Q } from './store'
 import type { AdvisoryContext } from './advisoryContext'
 import { searchKnowledge } from './knowledge'
+import { SAFE_REFUSAL, reviewAnswer, safetyCorrection, unsafeRecommendations } from './safety'
 import { CHAT_DRAIN_REQUESTS, drainOutbox, signalKgSyncSafe } from './sync'
 
 export const MAX_ROUNDS = 4
@@ -56,6 +57,8 @@ export const ADVISORY_CONTEXT_SUBREQUESTS = 4
 /** The most one tool call makes: search_graph's keyword read, embedding and vector read. */
 const TOOL_SUBREQUESTS = 3
 const ANSWER_SUBREQUESTS = 3
+/** Held back as well for a fix answer: the safety review, one safety rewrite and its second review. */
+const REVIEW_SUBREQUESTS = 3
 const CHAT_DRAIN_LIMIT = 100
 const ROUND_TIMEOUT_MS = 60_000
 const MAX_OUTPUT_TOKENS = 4096
@@ -554,10 +557,15 @@ async function handleToolCall(call: ToolCall, s: RunState, tools: ToolStep[], em
 
 /** The subrequests one chat has used, against CHAT_SUBREQUESTS. */
 class Budget {
+  private heldBack = ANSWER_SUBREQUESTS
+
   constructor(private used: number) {}
 
+  /** Holds back more for the answer, such as the safety review of a fix answer. It never shrinks. */
+  holdBack(n: number): void { this.heldBack = Math.max(this.heldBack, n) }
+
   /** Whether `n` more lookups fit and still leave the answer its held-back share. */
-  fits(n: number): boolean { return this.used + n <= CHAT_SUBREQUESTS - ANSWER_SUBREQUESTS }
+  fits(n: number): boolean { return this.used + n <= CHAT_SUBREQUESTS - this.heldBack }
 
   /**
    * Counts one subrequest. Model calls and removing a refused proposal may use the share held back
@@ -566,7 +574,7 @@ class Budget {
    * same way: its rows wait for the next drain with no attempt counted.
    */
   take(fromHeldBack = false): void {
-    if (this.used + 1 > CHAT_SUBREQUESTS - (fromHeldBack ? 0 : ANSWER_SUBREQUESTS)) throw new Error('Too many subrequests for this chat.')
+    if (this.used + 1 > CHAT_SUBREQUESTS - (fromHeldBack ? 0 : this.heldBack)) throw new Error('Too many subrequests for this chat.')
     this.used++
   }
 }
@@ -721,6 +729,41 @@ function advisoryMessage(s: RunState, advisory: AdvisoryContext): ChatMessage {
   }
 }
 
+type SafetyOutcome = { outcome: 'ok'; reply: ModelReply } | { outcome: 'idk' } | { outcome: 'refuse' }
+
+/**
+ * The safety review of an answer that already passed verification. The fixed check runs first, then the
+ * reviewer (when asked for). A failure gets one rewrite with the reasons; the rewrite must pass verification
+ * again (else IDK) and the safety review again (else the fixed safe refusal). A plain "I don't know" recommends
+ * nothing, so it is not sent to the reviewer.
+ */
+async function safetyGate(
+  ai: ModelCall, messages: ChatMessage[], reply: ModelReply,
+  o: { question: string; review: boolean; advisoryText?: string; recheck: (r: ModelReply) => string[]; tidy?: (r: ModelReply) => ModelReply },
+): Promise<SafetyOutcome> {
+  const reasonsFor = async (r: ModelReply): Promise<string[]> => {
+    const fixed = unsafeRecommendations(r.text)
+    if (fixed.length > 0) return fixed
+    if (!o.review || isPlainRefusal(r.text)) return []
+    const review = await reviewAnswer(ai, o.question, r.text, o.advisoryText)
+    return review.ok ? [] : review.reasons
+  }
+  const first = await reasonsFor(reply)
+  if (first.length === 0) return { outcome: 'ok', reply }
+  console.warn(`[kg-safety] answer failed the safety review: ${first.slice(0, 3).join('; ')}`)
+  messages.push({ role: 'assistant', content: reply.text || '(empty)' })
+  messages.push({ role: 'user', content: safetyCorrection(first) })
+  const raw = await ai(messages)
+  const second = o.tidy ? o.tidy(raw) : raw
+  if (o.recheck(second).length > 0) return { outcome: 'idk' }
+  const again = await reasonsFor(second)
+  if (again.length > 0) {
+    console.warn(`[kg-safety] rewrite failed the safety review too: ${again.slice(0, 3).join('; ')}`)
+    return { outcome: 'refuse' }
+  }
+  return { outcome: 'ok', reply: second }
+}
+
 function problemsWith(text: string, s: RunState, kind: Kind): string[] {
   if (!text.trim()) return ['the answer was empty']
   return [
@@ -809,6 +852,8 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (kind === 'neither') return await release(NEITHER)
     // The route already checked advisory.generate (which needs advisory.view and alert.view) for this advisory.
     if (!analystAccess(ctx.user) && kind !== 'system' && !advisory) return await release(RESTRICTED)
+    // A fix answer is always safety-reviewed, so its review is held back from the lookups.
+    if (kind === 'fix') budget.holdBack(ANSWER_SUBREQUESTS + REVIEW_SUBREQUESTS)
 
     if (kind === 'general') {
       // Not checked against the graph, but checked for anything about this company's own environment.
@@ -825,6 +870,10 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
         console.warn(`[kg-agent] general answer refused after one retry: ${problems.length} item(s) about the company's environment`)
         return await release(IDK)
       }
+      const safe = await safetyGate(ctx.ai, messages, reply, { question, review: false, recheck: r => generalAnswerProblems(r.text) })
+      if (safe.outcome === 'refuse') return await release(SAFE_REFUSAL)
+      if (safe.outcome === 'idk') return await release(IDK)
+      reply = safe.reply
       const body = reply.text.trim()
       if (!body) return await release(IDK)
       return await release(`${GENERAL_LABEL}\n\n${body}`, reply.truncated ? [CUT_OFF] : [])
@@ -881,6 +930,15 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
       await discardProposal(s)
       return await release(IDK, notes)
     }
+
+    // Safety: the fixed check on every answer, and for a fix answer the reviewer too. One rewrite, then the safe refusal.
+    const advisorySteps = advisory?.sources.filter(x => x.type === 'advisory_step').map(x => x.text).join('\n')
+    const safe = await safetyGate(ctx.ai, messages, reply, { question, review: kind === 'fix', advisoryText: advisorySteps, recheck: r => problemsWith(r.text, s, kind), tidy })
+    if (safe.outcome !== 'ok') {
+      await discardProposal(s)
+      return await release(safe.outcome === 'refuse' ? SAFE_REFUSAL : IDK, notes)
+    }
+    reply = safe.reply
 
     result.sources = [...s.book.cited(reply.text), ...s.kbook.cited(reply.text), ...s.lbook.cited(reply.text)]
     result.proposal = s.proposal

@@ -13,13 +13,17 @@ const text = (t: string): ModelReply => ({ text: t, toolCalls: [], truncated: fa
 const call = (name: string, args: unknown, id = 'c1'): ToolCall => ({ id, type: 'function', function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } })
 const tools = (...calls: ToolCall[]): ModelReply => ({ text: '', toolCalls: calls, truncated: false })
 
-/** A model that first classifies, then plays the given replies. Records what it was sent. */
+/** A safety-review call (kg/safety.ts reviewAnswer). The fakes pass it unless a test says otherwise. */
+export const isReviewCall = (messages: ChatMessage[]) => String(messages[0]?.content ?? '').includes('reviewing an assistant')
+
+/** A model that first classifies, then plays the given replies. Records what it was sent. Safety reviews pass. */
 function model(kind: string, replies: Array<ModelReply | Error>) {
   const seen: Array<{ messages: ChatMessage[]; tools?: unknown[] }> = []
   let classified = false
   let next = 0
   const ai: GraphCtx['ai'] = async (messages, t) => {
     if (!classified) { classified = true; return text(kind) }
+    if (isReviewCall(messages)) return text('{"ok": true, "reasons": []}')
     seen.push({ messages: messages.map(m => ({ ...m })) as ChatMessage[], tools: t })
     const r = replies[next++] ?? text("I don't know.")
     if (r instanceof Error) throw r
