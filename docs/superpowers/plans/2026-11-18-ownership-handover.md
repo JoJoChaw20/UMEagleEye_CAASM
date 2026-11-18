@@ -322,6 +322,6 @@ Run this plan after that one.
   - **Scheduled deactivation:** set `scheduled_deactivation_at` in the past for a test user. Their token gets 401, sign-in is refused, and `is_active` flips.
   - **Non-owner UI (browser):** sign in as the recipient, then as an approver. Each reaches `/ownership` from the nav and from the notice link, and sees Accept, Decline or Approve.
   - Run every smoke step only in the temporary tenant. Restore and Path B revoke only that tenant's unused enrolment tokens, so existing agents are unaffected.
-  - **Cleanup order:** delete the test tenant first. It cascades the ownership tables and notices, and the users' `tenant_id` becomes null. Then delete the test users. Or delete the ownership rows first.
+  - **Cleanup order:** delete the test tenant's audit rows first (`audit_logs.tenant_id` has no cascade), then the test tenant (it cascades the ownership tables and notices; the users' `tenant_id` becomes null), then audit rows of the test users, then the test users.
 - [ ] **Rollback:** the previous worker is compatible with `0039` but ignores `scheduled_deactivation_at`. Roll the frontend back together with the worker.
 - [ ] **Step 4:** Agents still online, the GET sweep shows no 5xx, and the user counts are unchanged. Record in the ledger. Stop.
