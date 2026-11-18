@@ -281,6 +281,13 @@
       "when": 1794950596892,
       "tag": "0039_ownership",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794966655292,
+      "tag": "0040_advisory_content",
+      "breakpoints": true
     }
   ]
 }

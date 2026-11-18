@@ -440,6 +440,7 @@ export const advisories = pgTable('advisories', {
   eventId: uuid('event_id').notNull().references(() => events.eventId, { onDelete: 'cascade' }),
   summary: text('summary').notNull(),
   recommendedAction: text('recommended_action').notNull(),
+  content: jsonb('content'),
   status: advisoryStatusEnum('status').notNull().default('open'),
   assignedTo: uuid('assigned_to').references(() => users.userId, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),

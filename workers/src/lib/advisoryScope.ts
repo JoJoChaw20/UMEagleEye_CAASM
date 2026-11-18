@@ -78,10 +78,11 @@ export function liveAdvisoryOf(eventId: string): SQL {
 
 /** Inserts an advisory for an alert only if it has no live one, in one statement, so two
  *  jobs for the same alert do not both add one. Returns advisory_id, or no row. */
-export function insertAdvisoryIfNoneSql(eventId: string, summary: string, recommendedAction: string): SQL {
+export function insertAdvisoryIfNoneSql(eventId: string, summary: string, recommendedAction: string, content: unknown | null): SQL {
+  const contentJson = content == null ? null : JSON.stringify(content)
   return sql`
-    INSERT INTO advisories (event_id, summary, recommended_action, status)
-    SELECT ${eventId}::uuid, ${summary}::text, ${recommendedAction}::text, 'open'::advisory_status
+    INSERT INTO advisories (event_id, summary, recommended_action, content, status)
+    SELECT ${eventId}::uuid, ${summary}::text, ${recommendedAction}::text, ${contentJson}::jsonb, 'open'::advisory_status
     WHERE NOT EXISTS (SELECT 1 FROM advisories WHERE ${liveAdvisoryOf(eventId)})
     RETURNING advisory_id
   `

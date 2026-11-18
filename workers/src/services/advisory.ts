@@ -284,7 +284,7 @@ export async function generateAdvisory(
     [inserted] = await db.update(advisories).set({ summary: draft.summary, recommendedAction })
       .where(eq(advisories.advisoryId, current.advisoryId)).returning()
   } else {
-    const res = await db.execute(insertAdvisoryIfNoneSql(eventId, draft.summary, recommendedAction))
+    const res = await db.execute(insertAdvisoryIfNoneSql(eventId, draft.summary, recommendedAction, null))
     const id = (res.rows[0] as { advisory_id?: string } | undefined)?.advisory_id
     // Lost a race with a parallel job for the same alert: that job's advisory stands.
     if (!id) return null
