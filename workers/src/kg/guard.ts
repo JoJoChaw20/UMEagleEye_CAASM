@@ -6,6 +6,8 @@
  * guards fall to the strict side: a question that cannot be sorted is treated as `system`, and
  * a fix answer without its "What we found" label is checked whole.
  */
+import { LONG_NOTE } from './continuation'
+
 export type Kind = 'system' | 'fix' | 'general' | 'neither'
 
 export type ToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } }
@@ -611,7 +613,7 @@ function guidanceParagraphs(text: string): string[] {
     block.push(line)
   })
   flush()
-  return paragraphs.filter(p => /[\p{L}\p{N}]/u.test(p.replace(CITATION, ' ')))
+  return paragraphs.filter(p => p !== LONG_NOTE && /[\p{L}\p{N}]/u.test(p.replace(CITATION, ' ')))
 }
 
 /**
@@ -629,7 +631,8 @@ export function expertCitationProblems(text: string, knownK: Set<string>, knownL
 
 /** A fix answer has "Confidence: High|Medium|Low" with a reason; Low also names who to check with. */
 export function confidenceProblems(text: string, kind: Kind): string[] {
-  if (kind !== 'fix' || isPlainRefusal(text)) return []
+  // An answer cut back to its last sentence (continuation.ts) lost its closing lines on purpose.
+  if (kind !== 'fix' || isPlainRefusal(text) || text.trimEnd().endsWith(LONG_NOTE)) return []
   const lines = text.split(/\r?\n/)
   const line = lines.find(l => CONFIDENCE_LINE.test(l))
   if (!line) return ['missing line: Confidence: High, Medium or Low, with a reason']

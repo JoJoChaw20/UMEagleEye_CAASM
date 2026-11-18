@@ -459,10 +459,36 @@ test('count_nodes gives an exact total that can be cited', async () => {
   assert.equal(finalOf(s.events)?.sources[0]?.type, 'count')
 })
 
-test('a truncated answer says so', async () => {
-  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open ports [S1]', toolCalls: [], truncated: true }] })
+test('a truncated answer whose continuation fails says so', async () => {
+  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open ports [S1]', toolCalls: [], truncated: true }, new Error('model timeout')] })
   const r = await runGraphAgent(s.ctx, 'x', [], s.emit)
   assert.match(r.content, /cut off/i)
+  assert.match(r.content, /web-01 has 5 open ports \[S1\]/)
+})
+
+test('continuation: a truncated answer is continued and joined, with progress shown, and no cut-off note', async () => {
+  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open', toolCalls: [], truncated: true }, text(' ports at 10.0.0.5 [S1].')] })
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports at 10.0.0.5 [S1].')
+  assert.ok(s.events.some(e => (e.tool as { name?: string } | undefined)?.name === 'continue_answer'))
+  const cont = s.m.seen.at(-1)!.messages
+  assert.equal(cont.at(-2)?.role, 'assistant')
+  assert.equal(cont.at(-2)?.content, 'web-01 has 5 open')
+  assert.match(String(cont.at(-1)?.content), /^Continue exactly where you stopped/)
+})
+
+test('continuation: verification runs on the joined text, so an invented value in a later part is refused', async () => {
+  const s = setup({ replies: [tools(search), { text: 'web-01 has 5 open', toolCalls: [], truncated: true }, text(' ports at 10.9.9.9 [S1].'), text('Still 10.9.9.9 [S1].')] })
+  assert.equal((await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)).content, IDK)
+})
+
+test('continuation: after 3 parts still unfinished, the answer ends on its last sentence with the note', async () => {
+  const cut = (t: string): ModelReply => ({ text: t, toolCalls: [], truncated: true })
+  const s = setup({ replies: [tools(search), cut('web-01 has 5 open ports [S1]. It is at'), cut(' 10.0.0.5 [S1]. More'), cut(' text that'), cut(' never ends')] })
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports [S1]. It is at 10.0.0.5 [S1].\n\nThis answer was too long to finish. Ask about one step at a time.')
+  // 4096 + 4096 + 3808 output tokens reach the 12 000 cap: two continuations, not three
+  assert.equal(s.events.filter(e => (e.tool as { name?: string; status?: string } | undefined)?.name === 'continue_answer' && (e.tool as { status: string }).status === 'running').length, 2)
 })
 
 // ── Fix round 1: one test per review probe ──

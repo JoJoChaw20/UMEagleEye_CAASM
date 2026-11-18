@@ -31,6 +31,7 @@ import type { Q } from './store'
 import type { AdvisoryContext } from './advisoryContext'
 import { searchKnowledge } from './knowledge'
 import { SAFE_REFUSAL, reviewAnswer, safetyCorrection, unsafeRecommendations } from './safety'
+import { CONTINUE_PROMPT, MAX_ANSWER_TOKENS, MAX_CONTINUATIONS, joinContinuation } from './continuation'
 import { CHAT_DRAIN_REQUESTS, drainOutbox, signalKgSyncSafe } from './sync'
 
 export const MAX_ROUNDS = 4
@@ -59,6 +60,8 @@ const TOOL_SUBREQUESTS = 3
 const ANSWER_SUBREQUESTS = 3
 /** Held back as well for a fix answer: the safety review, one safety rewrite and its second review. */
 const REVIEW_SUBREQUESTS = 3
+/** Held back for the first continuation of an answer that hit its output limit. Later ones use what is spare. */
+const CONTINUE_SUBREQUESTS = 1
 const CHAT_DRAIN_LIMIT = 100
 const ROUND_TIMEOUT_MS = 60_000
 const MAX_OUTPUT_TOKENS = 4096
@@ -564,6 +567,9 @@ class Budget {
   /** Holds back more for the answer, such as the safety review of a fix answer. It never shrinks. */
   holdBack(n: number): void { this.heldBack = Math.max(this.heldBack, n) }
 
+  /** Subrequests left in this chat, held-back share included. */
+  spare(): number { return CHAT_SUBREQUESTS - this.used }
+
   /** Whether `n` more lookups fit and still leave the answer its held-back share. */
   fits(n: number): boolean { return this.used + n <= CHAT_SUBREQUESTS - this.heldBack }
 
@@ -729,6 +735,40 @@ function advisoryMessage(s: RunState, advisory: AdvisoryContext): ChatMessage {
   }
 }
 
+const CONTINUE_STEP = { name: 'continue_answer', title: 'Finishing a long answer' }
+
+/**
+ * An answer that stopped at the output limit is continued, up to MAX_CONTINUATIONS times and
+ * MAX_ANSWER_TOKENS in all, and the parts are joined. A continuation runs only while `reserve` model
+ * calls (the regeneration, the safety review) still fit after it. If the parts run out first, the text
+ * ends at its last complete sentence with the fixed note; if a continuation call fails, the text so far
+ * is returned still marked truncated, so it carries the cut-off note.
+ */
+async function finishAnswer(ai: ModelCall, budget: Budget, emit: Emit, messages: ChatMessage[], first: ModelReply, reserve: number): Promise<ModelReply> {
+  if (!first.truncated || first.toolCalls.length > 0) return first
+  const parts = [first.text]
+  let spent = MAX_OUTPUT_TOKENS
+  for (let i = 0; i < MAX_CONTINUATIONS; i++) {
+    const room = MAX_ANSWER_TOKENS - spent
+    if (room <= 0 || budget.spare() < 1 + reserve) break
+    await emit({ tool: { ...CONTINUE_STEP, status: 'running' } })
+    let next: ModelReply
+    try {
+      const sofar = joinContinuation(parts, false)
+      next = await ai([...messages, { role: 'assistant', content: sofar }, { role: 'user', content: CONTINUE_PROMPT }], undefined, { maxTokens: Math.min(MAX_OUTPUT_TOKENS, room) })
+    } catch (err) {
+      console.warn('[kg-agent] continuation failed:', err instanceof Error ? err.message : err)
+      await emit({ tool: { ...CONTINUE_STEP, status: 'done', ok: false } })
+      return { text: joinContinuation(parts, false), toolCalls: [], truncated: true }
+    }
+    await emit({ tool: { ...CONTINUE_STEP, status: 'done', ok: true } })
+    parts.push(next.text)
+    spent += Math.min(MAX_OUTPUT_TOKENS, room)
+    if (!next.truncated) return { text: joinContinuation(parts, false), toolCalls: [], truncated: false }
+  }
+  return { text: joinContinuation(parts, true), toolCalls: [], truncated: false }
+}
+
 type SafetyOutcome = { outcome: 'ok'; reply: ModelReply } | { outcome: 'idk' } | { outcome: 'refuse' }
 
 /**
@@ -739,7 +779,7 @@ type SafetyOutcome = { outcome: 'ok'; reply: ModelReply } | { outcome: 'idk' } |
  */
 async function safetyGate(
   ai: ModelCall, messages: ChatMessage[], reply: ModelReply,
-  o: { question: string; review: boolean; advisoryText?: string; recheck: (r: ModelReply) => string[]; tidy?: (r: ModelReply) => ModelReply },
+  o: { question: string; review: boolean; advisoryText?: string; recheck: (r: ModelReply) => string[]; tidy?: (r: ModelReply) => ModelReply; finish?: (m: ChatMessage[], r: ModelReply) => Promise<ModelReply> },
 ): Promise<SafetyOutcome> {
   const reasonsFor = async (r: ModelReply): Promise<string[]> => {
     const fixed = unsafeRecommendations(r.text)
@@ -753,7 +793,8 @@ async function safetyGate(
   console.warn(`[kg-safety] answer failed the safety review: ${first.slice(0, 3).join('; ')}`)
   messages.push({ role: 'assistant', content: reply.text || '(empty)' })
   messages.push({ role: 'user', content: safetyCorrection(first) })
-  const raw = await ai(messages)
+  const first2 = await ai(messages)
+  const raw = o.finish ? await o.finish(messages, first2) : first2
   const second = o.tidy ? o.tidy(raw) : raw
   if (o.recheck(second).length > 0) return { outcome: 'idk' }
   const again = await reasonsFor(second)
@@ -852,25 +893,26 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (kind === 'neither') return await release(NEITHER)
     // The route already checked advisory.generate (which needs advisory.view and alert.view) for this advisory.
     if (!analystAccess(ctx.user) && kind !== 'system' && !advisory) return await release(RESTRICTED)
-    // A fix answer is always safety-reviewed, so its review is held back from the lookups.
-    if (kind === 'fix') budget.holdBack(ANSWER_SUBREQUESTS + REVIEW_SUBREQUESTS)
+    // A fix answer is always safety-reviewed, so its review is held back from the lookups, as is one continuation.
+    budget.holdBack(ANSWER_SUBREQUESTS + CONTINUE_SUBREQUESTS + (kind === 'fix' ? REVIEW_SUBREQUESTS : 0))
+    const finish = (msgs: ChatMessage[], r: ModelReply, reserve: number) => finishAnswer(ctx.ai, budget, emit, msgs, r, reserve)
 
     if (kind === 'general') {
       // Not checked against the graph, but checked for anything about this company's own environment.
       const messages: ChatMessage[] = [{ role: 'system', content: GENERAL_PROMPT }, ...historyMessages(history), { role: 'user', content: question }]
-      let reply = await ctx.ai(messages)
+      let reply = await finish(messages, await ctx.ai(messages), 2)
       let problems = generalAnswerProblems(reply.text)
       if (problems.length > 0) {
         messages.push({ role: 'assistant', content: reply.text })
         messages.push({ role: 'user', content: generalCorrection(problems) })
-        reply = await ctx.ai(messages)
+        reply = await finish(messages, await ctx.ai(messages), 1)
         problems = generalAnswerProblems(reply.text)
       }
       if (problems.length > 0) {
         console.warn(`[kg-agent] general answer refused after one retry: ${problems.length} item(s) about the company's environment`)
         return await release(IDK)
       }
-      const safe = await safetyGate(ctx.ai, messages, reply, { question, review: false, recheck: r => generalAnswerProblems(r.text) })
+      const safe = await safetyGate(ctx.ai, messages, reply, { question, review: false, recheck: r => generalAnswerProblems(r.text), finish: (m, r) => finish(m, r, 0) })
       if (safe.outcome === 'refuse') return await release(SAFE_REFUSAL)
       if (safe.outcome === 'idk') return await release(IDK)
       reply = safe.reply
@@ -911,7 +953,9 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
 
     // A copied instruction is cut before checking, so it cannot stand in for What we found.
     const tidy = (r: ModelReply): ModelReply => (kind === 'fix' ? { ...r, text: stripFormatEcho(r.text) } : r)
-    let reply = tidy(await retrieve(s, messages, result.tools, emit))
+    // What may still be needed after an answer: a regeneration, removing a proposal, and for a fix the safety review.
+    const afterAnswer = 2 + (kind === 'fix' ? REVIEW_SUBREQUESTS : 0)
+    let reply = tidy(await finish(messages, await retrieve(s, messages, result.tools, emit), afterAnswer))
     // A refused close is answered in the server's words: an error result is not evidence, so the
     // model's own wording of it (advisory, device, scan time) could never pass verification.
     if (s.closeRefusal && !s.proposal) {
@@ -922,7 +966,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (problems.length > 0) {
       messages.push({ role: 'assistant', content: reply.text || '(empty)' })
       messages.push({ role: 'user', content: correction(problems, kind) })
-      reply = tidy(await ctx.ai(messages))
+      reply = tidy(await finish(messages, await ctx.ai(messages), afterAnswer - 1))
       problems = problemsWith(reply.text, s, kind)
     }
     if (problems.length > 0) {
@@ -933,7 +977,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
 
     // Safety: the fixed check on every answer, and for a fix answer the reviewer too. One rewrite, then the safe refusal.
     const advisorySteps = advisory?.sources.filter(x => x.type === 'advisory_step').map(x => x.text).join('\n')
-    const safe = await safetyGate(ctx.ai, messages, reply, { question, review: kind === 'fix', advisoryText: advisorySteps, recheck: r => problemsWith(r.text, s, kind), tidy })
+    const safe = await safetyGate(ctx.ai, messages, reply, { question, review: kind === 'fix', advisoryText: advisorySteps, recheck: r => problemsWith(r.text, s, kind), tidy, finish: (m, r) => finish(m, r, 2) })
     if (safe.outcome !== 'ok') {
       await discardProposal(s)
       return await release(safe.outcome === 'refuse' ? SAFE_REFUSAL : IDK, notes)

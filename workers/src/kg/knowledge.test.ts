@@ -82,3 +82,9 @@ test('confidence line: missing, no reason, or Low without Check with is a proble
   assert.deepEqual(confidenceProblems(`${GOOD.replace(/Confidence:.*$/m, '**Confidence:** Low - unknown OS.')}\nCheck with: the vendor.`, 'fix'), [])
   assert.deepEqual(confidenceProblems('Short system answer [S1].', 'system'), [])
 })
+
+test('a capped fix answer (ends with the too-long note) needs no Confidence line, and the note is not an uncited paragraph', () => {
+  const capped = `${GOOD.replace(/\n\nConfidence:.*$/m, '')}\n\nThis answer was too long to finish. Ask about one step at a time.`
+  assert.deepEqual(confidenceProblems(capped, 'fix'), [])
+  assert.deepEqual(expertCitationProblems(capped, new Set(['K2']), new Set(['L1'])), [])
+})
