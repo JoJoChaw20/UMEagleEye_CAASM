@@ -84,6 +84,9 @@ const REVIEW_PROMPT = [
   'Reply with JSON only, no other text: {"ok": true, "reasons": []} or {"ok": false, "reasons": ["<short reason>", ...]}.',
 ].join('\n')
 
+// A reasoning model thinks before it writes the JSON; at 800 tokens its reply was empty (staging, 18 Nov).
+export const REVIEW_MAX_TOKENS = 3000
+
 const ReviewShape = z.object({ ok: z.boolean(), reasons: z.array(z.string()).max(10).default([]) })
 const UNAVAILABLE: Review = { ok: false, reasons: ['review unavailable'] }
 
@@ -121,7 +124,7 @@ export function parseReview(raw: string): Review {
 export async function reviewAnswer(ai: ModelCall, question: string, answer: string, advisoryText?: string): Promise<Review> {
   const data = JSON.stringify({ question: question.slice(0, 1000), answer: answer.slice(0, 12000), ...(advisoryText ? { advisory_steps: advisoryText.slice(0, 4000) } : {}) })
   try {
-    const reply = await ai([{ role: 'system', content: REVIEW_PROMPT }, { role: 'user', content: wrapUntrusted(data) }], undefined, { maxTokens: 800, temperature: 0 })
+    const reply = await ai([{ role: 'system', content: REVIEW_PROMPT }, { role: 'user', content: wrapUntrusted(data) }], undefined, { maxTokens: REVIEW_MAX_TOKENS, temperature: 0 })
     const review = parseReview(reply.text)
     // A cut-off reply is only trusted when what arrived is already a complete review.
     if (review === UNAVAILABLE || (reply.truncated && review.ok)) {

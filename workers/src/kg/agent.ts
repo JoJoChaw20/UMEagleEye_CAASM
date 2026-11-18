@@ -773,6 +773,23 @@ export function problemKinds(problems: string[]): string {
   return [...counts].map(([k, n]) => `${k}x${n}`).join(' ')
 }
 
+/**
+ * For a fix answer, the knowledge-base entries that best match the question (and the advisory it was asked
+ * from) are given up front as K refs, so Expert guidance can always be cited, even on a rewrite with no tools.
+ * The search is local: nothing leaves the Worker and it costs no subrequest.
+ */
+function knowledgeMessage(s: RunState, question: string, advisory: AdvisoryContext | null): ChatMessage[] {
+  const hint = advisory ? advisory.sources.filter(x => x.type === 'advisory' || x.type === 'alert' || x.type === 'cve').map(x => x.text).join(' ').slice(0, 600) : ''
+  const hits = searchKnowledge(`${question} ${hint}`, [], 5)
+  if (hits.length === 0) return []
+  const out = resultText({ results: hits.map(e => ({ ref: s.kbook.add(e.id, e.title, 'knowledge', e.source.url), title: e.title, guidance: e.guidance, source: e.source.name })) })
+  s.evidence.push(out)
+  return [{
+    role: 'system',
+    content: `Security guidance from the knowledge base, cited as [K#] under Expert guidance. Call search_knowledge for more.\n${wrapUntrusted(out)}`,
+  }]
+}
+
 /** The advisory's facts as the first sources (S1..), cited like tool results and checked the same way. */
 function advisoryMessage(s: RunState, advisory: AdvisoryContext): ChatMessage {
   // The graph key (advisory, alert, device) lets get_node and follow_links open the same record instead of
@@ -1006,6 +1023,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     const messages: ChatMessage[] = [
       { role: 'system', content: groundedPrompt(kind, access, !analystAccess(ctx.user), canPropose, countsOnly) + (perf ? ['', PERF_RULE, ...perfFacts].join('\n') : '') + (overviewQuestion && ctx.overview ? `\n${OVERVIEW_RULE}` : '') },
       ...(advisory ? [advisoryMessage(s, advisory)] : []),
+      ...(kind === 'fix' ? knowledgeMessage(s, question, advisory) : []),
       ...historyMessages(history),
       { role: 'user', content: question },
     ]

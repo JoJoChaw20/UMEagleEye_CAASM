@@ -117,3 +117,19 @@ test('expert: a system answer without an Expert guidance section is unchanged', 
   const s = setup('system', [tools(call('search_graph', { query: 'web-01' })), text('Port 22 is open on `web-01` [S1].')])
   assert.equal((await runGraphAgent(s.ctx, 'what is open on web-01?', [], s.emit)).content, 'Port 22 is open on `web-01` [S1].')
 })
+
+test('expert: a fix answer gets matching knowledge-base entries up front, so it can cite K refs without a tool call', async () => {
+  const s = setup('fix', [tools(call('search_graph', { query: 'web-01' }, 'a')), text(answer('1. Allow SSH only from the admin network and use keys [K1].'))])
+  const r = await runGraphAgent(s.ctx, 'how do I fix the exposed ssh port 22 on web-01?', [], s.emit)
+  assert.notEqual(r.content, IDK, r.content)
+  const pre = s.seen[0]!.messages.find(m => m.role === 'system' && String(m.content).startsWith('Security guidance from the knowledge base'))
+  assert.ok(pre, 'knowledge given up front')
+  assert.match(String(pre!.content), /"ref":"K1"/)
+  assert.equal(finalSources(s.events).find(x => x.ref === 'K1')?.type, 'knowledge')
+})
+
+test('expert: a system question gets no knowledge preload', async () => {
+  const s = setup('system', [text("I don't know.")])
+  await runGraphAgent(s.ctx, 'what is open on web-01?', [], s.emit)
+  assert.ok(!s.seen[0]!.messages.some(m => String(m.content).startsWith('Security guidance from the knowledge base')))
+})
