@@ -61,8 +61,8 @@ async function callAI(
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: resolvedModel, messages, max_tokens: 1600, temperature: 0.2 }),
-    signal: AbortSignal.timeout(20_000),
+    body: JSON.stringify({ model: resolvedModel, messages, max_tokens: 3000, temperature: 0.2 }),
+    signal: AbortSignal.timeout(45_000),
   })
   if (!res.ok) throw new Error(`AI API error: ${res.status}`)
   const data = await res.json() as { choices: Array<{ message: { content: string }; finish_reason?: string | null }> }
