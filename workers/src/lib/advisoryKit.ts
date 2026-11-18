@@ -19,6 +19,7 @@
  *   Basis: AI + NVD, OSV | Rule-based
  */
 import { fixTarget } from './fixTarget'
+import { unsafeRecommendations } from '../kg/safety'
 
 // ── Untrusted text ───────────────────────────────────────────────
 // Hostnames, banners, DHCP names and package names come off the network and can be
@@ -275,13 +276,13 @@ export function cveIdsIn(text: string): string[] {
  *  not usable, including when it names a CVE that is not in the facts it was given: an
  *  invented id is worse than no AI text. Confidence always comes from the rules, which know
  *  whether a fix version was computed; the model's own rating is ignored. */
-export type AiDraftReason = 'ok' | 'not_json' | 'no_summary_or_steps' | 'unknown_cve'
+export type AiDraftReason = 'ok' | 'not_json' | 'no_summary_or_steps' | 'unknown_cve' | 'unsafe'
 export function parseAiDraft(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): (AdvisoryDraft & { stepNotes: string[] }) | null {
   return parseAiDraftWithReason(raw, fallback, knownCves).draft
 }
 
 /** Same as parseAiDraft, but says why a reply was not used (never includes reply text). */
-export function parseAiDraftWithReason(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): { draft: (AdvisoryDraft & { stepNotes: string[] }) | null; reason: AiDraftReason } {
+export function parseAiDraftWithReason(raw: string, fallback: AdvisoryDraft, knownCves: string[] = []): { draft: (AdvisoryDraft & { stepNotes: string[] }) | null; reason: AiDraftReason; unsafe?: string[] } {
   let obj: Record<string, unknown>
   try {
     const body = raw.replace(/```json\s*/gi, '').replace(/```/g, '').trim()
@@ -316,6 +317,13 @@ export function parseAiDraftWithReason(raw: string, fallback: AdvisoryDraft, kno
   }
   const prose = [draft.summary, ...draft.steps, draft.whyNow, draft.verify, draft.rollback].filter(Boolean).join(' ')
   if (cveIdsIn(prose).some(id => !known.has(id))) return { draft: null, reason: 'unknown_cve' }
+  // The same fixed safety check as every chat answer (kg/safety.ts). Each field is checked on its own,
+  // so a warning in one step ("never use telnet") cannot cover advice in the next. Any unsafe advice,
+  // in a step, an expert note or the summary, verify, rollback or why-now text, rejects the whole draft:
+  // the rule-based advisory is used instead (safety first).
+  const fields = [draft.summary, ...draft.steps, ...draft.stepNotes, draft.whyNow, draft.verify, draft.rollback]
+  const unsafe = [...new Set(fields.flatMap(f => (f ? unsafeRecommendations(f) : [])))]
+  if (unsafe.length > 0) return { draft: null, reason: 'unsafe', unsafe }
   return { draft, reason: 'ok' }
 }
 

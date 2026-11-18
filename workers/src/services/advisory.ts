@@ -330,7 +330,7 @@ export async function generateAdvisory(
       const r = parseAiDraftWithReason(raw, fallback, groundedCves(facts))
       parsed = r.draft
       if (!parsed) {
-        console.warn('[advisory] AI reply not used:', r.reason, 'finish_reason=' + finishReason)
+        console.warn('[advisory] AI reply not used:', r.reason, ...(r.unsafe ? [`(${r.unsafe.join('; ')})`] : []), 'finish_reason=' + finishReason)
         if (retried) console.warn('[advisory] AI reply too long after retry, using rule-based advisory')
       }
     }
