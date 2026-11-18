@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseAiDraft, parseAiDraftWithReason, ruleBasedDraft, type AdvisoryDraft, type AdvisoryFacts } from './advisoryKit'
 import { buildContent } from './advisoryContent'
+import { unsafeRecommendations } from '../kg/safety'
 
 const fallback: AdvisoryDraft = {
   summary: 'fallback summary', steps: ['fallback step'], whyNow: 'now', verify: 'v', rollback: null,
@@ -79,4 +80,49 @@ test('parseAiDraftWithReason reports why a reply is not used', () => {
   assert.equal(parseAiDraftWithReason('{}', fallback).reason, 'no_summary_or_steps')
   const bad = JSON.stringify({ summary: 'About CVE-2099-0001 here.', steps: ['Patch it.'] })
   assert.deepEqual(parseAiDraftWithReason(bad, fallback, ['CVE-2024-1111']), { draft: null, reason: 'unknown_cve' })
+})
+
+test('the rule-based advisory (the fallback for an unsafe AI draft) passes the same safety check for every alert type', () => {
+  const asset = (internetFacing: boolean) => ({ label: 'h1', type: 'server', os: null, owner: null, criticality: null, internetFacing, windows: false, ports: [] })
+  const cve = (fixTo: string | null) => ({
+    id: 'CVE-2024-0001', pkg: 'openssl', packageType: 'deb', installed: '1.0', cvss: 9, epss: 0.5, kev: true, threatIntel: false,
+    tiTitles: [], cwe: [], description: null, group: { openCves: 1, kevCves: 1, fixTo, fixedCount: fixTo ? 1 : 0, noFixCount: fixTo ? 0 : 1 },
+  })
+  const all: AdvisoryFacts[] = []
+  for (const internetFacing of [false, true]) {
+    for (const eventType of ['port_opened', 'new_device', 'cti_match', 'version_downgrade', 'exposure', 'os_patch_missing']) all.push(facts({ eventType, asset: asset(internetFacing) }))
+    for (const fixTo of ['1.1', null]) all.push(facts({ eventType: 'cve_detected', asset: asset(internetFacing), cve: cve(fixTo) }))
+  }
+  for (const f of all) {
+    const d = ruleBasedDraft(f)
+    for (const text of [d.summary, ...d.steps, d.whyNow, d.verify, d.rollback]) {
+      if (text) assert.deepEqual(unsafeRecommendations(text), [], `${f.eventType} internet=${f.asset.internetFacing}: ${text}`)
+    }
+  }
+})
+
+test('an AI draft that recommends anything unsafe is not used (the rule-based advisory is)', () => {
+  const unsafeDraft = (o: Record<string, unknown>) => JSON.stringify({ summary: 'A real summary here.', steps: ['Patch the package.'], why_now: 'soon', verify: 'check', rollback: 'undo', ...o })
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['step', { steps: ['Patch the package.', 'Disable the firewall while testing the upgrade.'] }],
+    ['step object', { steps: [{ text: 'Allow inbound 3389 from any address so the vendor can connect.' }] }],
+    ['expert note', { steps: [{ text: 'Patch the package.', expert_note: 'If the service fails to read its key, chmod 777 the directory.' }] }],
+    ['summary', { summary: 'Turn off Windows Defender, then patch the package.' }],
+    ['why now', { why_now: 'Open port 3389 to the internet so the vendor can help.' }],
+    ['verify', { verify: 'Run curl -k https://host to skip the certificate error.' }],
+    ['rollback', { rollback: 'If it fails, run setenforce 0 and retry.' }],
+    // a warning in one step never covers the next step
+    ['next step', { steps: ['Never use telnet', 'Allow 3389 from anywhere'] }],
+  ]
+  for (const [where, o] of cases) {
+    const r = parseAiDraftWithReason(unsafeDraft(o), fallback)
+    assert.equal(r.draft, null, where)
+    assert.equal(r.reason, 'unsafe', where)
+  }
+  // safe advice and a description of the finding are kept
+  const safe = unsafeDraft({
+    summary: 'RDP on win-01 is open to the internet.',
+    steps: ['Allow 3389 only from the admin network, not from anywhere.', { text: 'Restrict inbound 3389 in Windows Defender Firewall.', expert_note: 'Never disable the firewall to test; keep a console session open.' }],
+  })
+  assert.equal(parseAiDraftWithReason(safe, fallback).reason, 'ok')
 })
