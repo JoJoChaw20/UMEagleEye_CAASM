@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Check, Copy, ExternalLink, ShieldCheck, Undo2, Clock } from 'lucide-react'
 import { parseAdvisory } from '../../utils/advisoryText'
+import { advisoryDisplay, kindBadge, plannedActionText, RISK_STYLE, REGENERATE_HINT } from '../../utils/advisoryView'
 
 const CONFIDENCE_STYLE = {
   High: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
@@ -27,7 +28,93 @@ function CommandLine({ command }) {
 // Renders a stored advisory: steps, the "why now" window, ready-to-run commands,
 // verify and rollback, confidence and clickable sources. Old plain advisories show
 // their steps only. compact = the Alerts drawer.
-export default function AdvisoryBody({ text, compact = false }) {
+export default function AdvisoryBody({ text, content, automation, compact = false }) {
+  const view = advisoryDisplay({ content, automation, recommendedAction: text })
+  if (view.mode === 'structured') return <StructuredBody content={view.content} compact={compact} />
+  return <TextBody text={text} compact={compact} />
+}
+
+// Structured advisories (content from the API). Everything is rendered as plain text.
+function StructuredBody({ content: c, compact }) {
+  const sources = (c.sources ?? []).filter((s) => s && typeof s.url === 'string' && /^https?:\/\//i.test(s.url))
+  const level = c.confidence?.level
+  return (
+    <div className="space-y-4">
+      {c.why_now && (
+        <div className="flex items-start gap-2.5 rounded-md border border-eagle-500/30 bg-eagle-500/[0.07] px-3 py-2.5 text-sm text-dark-100">
+          <Clock className="mt-0.5 h-4 w-4 flex-shrink-0 text-eagle-400" /><span>{c.why_now}</span>
+        </div>
+      )}
+
+      <ol className="space-y-3">
+        {c.steps.map((step, i) => {
+          const badge = kindBadge(step.kind)
+          return (
+            <li key={step.id ?? i} className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-eagle-500/30 bg-eagle-500/10 font-display text-xs font-semibold text-eagle-400">{i + 1}</span>
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${badge.className}`}>{badge.text}</span>
+                  <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${RISK_STYLE[step.risk] ?? RISK_STYLE.low}`}>{step.risk ?? 'low'} risk</span>
+                  {step.needs_reboot && <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">needs reboot</span>}
+                </div>
+                <p className={`${compact ? 'text-xs' : 'text-sm'} leading-relaxed text-dark-100`}>{step.text}</p>
+                {step.kind === 'external' && step.reason && <p className="text-xs text-red-300/80">{step.reason}</p>}
+                {step.expert_note && (
+                  <div className="rounded-md border border-dark-700 bg-dark-900 px-2.5 py-1.5">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-dark-500">Expert note</p>
+                    <p className="text-xs leading-relaxed text-dark-300">{step.expert_note}</p>
+                  </div>
+                )}
+                {step.kind === 'auto' && plannedActionText(step.action) && <p className="text-[11px] text-dark-500">{plannedActionText(step.action)}</p>}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+
+      {(c.verify || c.rollback) && (
+        <div className={`grid gap-3 ${compact ? '' : 'md:grid-cols-2'}`}>
+          {c.verify && (
+            <div className="rounded-md border border-dark-700 bg-dark-900 p-3">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-dark-200"><ShieldCheck className="h-3.5 w-3.5 text-accent-green" />Verify the fix</p>
+              <p className="text-xs leading-relaxed text-dark-300">{c.verify}</p>
+            </div>
+          )}
+          {c.rollback && (
+            <div className="rounded-md border border-dark-700 bg-dark-900 p-3">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-dark-200"><Undo2 className="h-3.5 w-3.5 text-dark-400" />If it breaks</p>
+              <p className="text-xs leading-relaxed text-dark-300">{c.rollback}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(level || sources.length > 0 || c.basis) && (
+        <div className="space-y-2 border-t border-dark-700 pt-3">
+          {sources.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-dark-400">Sources</span>
+              {sources.map((s) => (
+                <a key={s.url} href={s.url} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-dark-700 bg-dark-900 px-2 py-0.5 text-[11px] text-dark-200 transition-colors hover:border-eagle-500/50 hover:text-eagle-400">
+                  {s.label || s.url}<ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </a>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-dark-400">
+            {level && <span className={`rounded-md border px-2 py-0.5 font-semibold ${CONFIDENCE_STYLE[level] ?? CONFIDENCE_STYLE.Low}`}>{level} confidence</span>}
+            {c.confidence?.reason && <span>{c.confidence.reason}</span>}
+            {c.basis && <span className="text-dark-500">· {c.basis}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TextBody({ text, compact }) {
   const a = parseAdvisory(text)
   if (!a.steps.length && !a.structured) return <p className="text-sm text-dark-400">No recommended action recorded.</p>
   return (
@@ -92,6 +179,7 @@ export default function AdvisoryBody({ text, compact = false }) {
           </div>
         </div>
       )}
+      {!compact && <p className="text-[11px] text-dark-500">{REGENERATE_HINT}</p>}
     </div>
   )
 }

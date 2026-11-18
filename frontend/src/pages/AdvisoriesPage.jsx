@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import { useChatbot } from '../context/ChatbotContext'
 import TenantSelector from '../components/common/TenantSelector'
 import AdvisoryBody from '../components/common/AdvisoryBody'
+import { labelTone } from '../utils/advisoryView'
 
 const STATUS_OPTIONS = ['all', 'open', 'in_progress', 'acknowledged', 'resolved']
 
@@ -79,6 +80,14 @@ export default function AdvisoriesPage() {
     } catch (err) { console.error(err) }
   }
 
+  // Show the row at once, then load the detail (it carries the current automation label).
+  const openAdvisory = (a) => {
+    setSelectedAdvisory(a)
+    client.get(`/advisories/${a.advisoryId}`)
+      .then(res => setSelectedAdvisory(cur => (cur?.advisoryId === a.advisoryId ? { ...cur, ...res.data } : cur)))
+      .catch(console.error)
+  }
+
   const statusBadgeClass = (s) => {
     const map = {
       open:         'bg-red-500/20 text-red-400 border-red-500/30',
@@ -141,10 +150,13 @@ export default function AdvisoriesPage() {
               {advisories.map(a => (
                 <tr
                   key={a.advisoryId}
-                  onClick={() => setSelectedAdvisory(a)}
+                  onClick={() => openAdvisory(a)}
                   className="cursor-pointer hover:bg-white/5 transition-colors"
                 >
-                  <td className="max-w-md truncate text-dark-200 font-medium">{a.summary}</td>
+                  <td className="max-w-md truncate text-dark-200 font-medium">
+                    {a.summary}
+                    {a.automation_label && <span className={`ml-2 rounded-md border px-1.5 py-0.5 align-middle text-[10px] font-semibold ${labelTone(a.automation_label).className}`}>{a.automation_label}</span>}
+                  </td>
                   <td><span className={statusBadgeClass(a.status)}>{a.status?.replace('_', ' ')}</span></td>
                   <td className="text-dark-300 text-xs">{a.assignedToName || (a.assignedTo ? a.assignedTo.slice(0, 8) + '...' : 'Unassigned')}</td>
                   <td className="text-dark-400 text-xs">{new Date(a.createdAt).toLocaleString()}</td>
@@ -189,7 +201,13 @@ export default function AdvisoriesPage() {
               </div>
               <div>
                 <h3 className="mb-2 text-base font-semibold text-dark-50">Recommended action</h3>
-                <AdvisoryBody text={selectedAdvisory.recommendedAction} />
+                {selectedAdvisory.automation && (
+                  <div className="mb-3" title={selectedAdvisory.automation.reason}>
+                    <span className={`inline-block rounded-md border px-2 py-0.5 text-xs font-semibold ${labelTone(selectedAdvisory.automation.label).className}`}>{selectedAdvisory.automation.label}</span>
+                    {selectedAdvisory.automation.reason && <p className="mt-1 text-xs text-dark-400">{selectedAdvisory.automation.reason}</p>}
+                  </div>
+                )}
+                <AdvisoryBody text={selectedAdvisory.recommendedAction} content={selectedAdvisory.content} />
               </div>
             </div>
 
