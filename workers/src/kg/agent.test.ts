@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readModelReply, problemKinds, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { valueShape, readModelReply, problemKinds, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -1071,7 +1071,7 @@ test('advisory context: the facts carry graph keys for the advisory, alert and d
 
 test('problemKinds logs categories, never values', () => {
   const out = problemKinds(['10.9.9.9', '[K7]', 'missing section: Expert guidance', 'expert guidance without a [K#] or [L#] reference: "x"', 'missing line: Confidence: High, Medium or Low, with a reason', 'the answer cites no source'])
-  assert.equal(out, 'unsupported-valuex1 unknown-refx1 structurex1 expert-uncitedx1 confidencex1 no-citationx1')
+  assert.equal(out, 'unsupported-ipx1 unknown-refx1 structurex1 expert-uncitedx1 confidencex1 no-citationx1')
   assert.doesNotMatch(out, /10\.9\.9\.9/)
 })
 
@@ -1177,4 +1177,26 @@ test('advisory context: a question sorted as neither is still answered as a fix 
   const r = await runGraphAgent(s.ctx, 'just disable Defender so the scan stops alerting', [], s.emit)
   assert.equal(finalOf(s.events)?.kind, 'fix')
   assert.doesNotMatch(r.content, /I can only help with/)
+})
+
+test('valueShape names the kind of an unsupported value without the value', () => {
+  assert.equal(valueShape('10.9.9.9'), 'ip')
+  assert.equal(valueShape('CVE-2024-3094'), 'cve')
+  assert.equal(valueShape('2026-11-18T09:18:42Z'), 'date')
+  assert.equal(valueShape('14:05'), 'time')
+  assert.equal(valueShape('7c9e6679'), 'id')
+  assert.equal(valueShape('42%'), 'number')
+  assert.equal(valueShape('1.0.1-1'), 'version')
+  assert.equal(valueShape('db.corp.internal'), 'hostname')
+  assert.equal(problemKinds(['10.9.9.9', '3.9.9']), 'unsupported-ipx1 unsupported-versionx1')
+})
+
+test('an empty, cut-off reply (thinking used the whole limit) is asked again once with twice the room', async () => {
+  const opts: Array<number | undefined> = []
+  const s = setup({ replies: [tools(search), { text: '', toolCalls: [], truncated: true }, text('web-01 has 5 open ports at 10.0.0.5 [S1].')] })
+  const ai = s.ctx.ai
+  s.ctx.ai = async (m, t, o) => { opts.push(o?.maxTokens); return ai(m, t, o) }
+  const r = await runGraphAgent(s.ctx, 'tell me about web-01', [], s.emit)
+  assert.equal(r.content, 'web-01 has 5 open ports at 10.0.0.5 [S1].')
+  assert.equal(opts.at(-1), 8192)
 })

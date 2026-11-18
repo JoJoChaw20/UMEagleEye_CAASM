@@ -123,6 +123,8 @@ export function buildOverview(rows: OverviewRows, scope: OverviewScope, now = Da
   const openTotal = num(rows.alerts?.total)
   return {
     scope: scope.tenantId ? 'this company' : 'all companies',
+    // Stated as a value: verification reads numbers in values, not inside field names like scans_last_7_days.
+    period_days: 7,
     posture_score: postureScore(openCritical, openHigh, totalAssets, criticalAssets),
     assets: { total: totalAssets, critical: criticalAssets, internet_facing: num(rows.assets?.internet) },
     agents: { total: rows.agents.length, ...live },

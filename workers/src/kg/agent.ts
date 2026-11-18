@@ -757,6 +757,19 @@ async function performanceNotes(ctx: GraphCtx, access: Access, question: string,
 
 // ── The run ────────────────────────────────────────────────────────
 
+/** The shape of an unsupported value (ip, cve, date, ...), so the log tells which rule fired without the value. */
+export function valueShape(v: string): string {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}(?:\/\d+)?$/.test(v)) return 'ip'
+  if (/^CVE-\d{4}-\d+$/i.test(v)) return 'cve'
+  if (/^\d{4}-\d{2}-\d{2}/.test(v) || /^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/.test(v)) return 'date'
+  if (/^\d{1,2}:\d{2}/.test(v)) return 'time'
+  if (/^[0-9a-f]{8}(?:-[0-9a-f-]+)?$/i.test(v)) return 'id'
+  if (/^\d+(?:\.\d+)?%?$/.test(v)) return 'number'
+  if (/^\d+(?:\.\d+){1,3}[\w.~+-]*$/.test(v)) return 'version'
+  if (/^[\w-]+(?:\.[\w-]+)+$/.test(v)) return 'hostname'
+  return 'name'
+}
+
 /** Which checks an answer failed, by category only: the log never holds the values themselves. */
 export function problemKinds(problems: string[]): string {
   const kind = (p: string) =>
@@ -768,7 +781,7 @@ export function problemKinds(problems: string[]): string {
               : p.includes('tool-call markup') ? 'markup'
                 : p.includes('advisory was closed') ? 'closure'
                   : p === 'the answer was empty' ? 'empty'
-                    : 'unsupported-value'
+                    : `unsupported-${valueShape(p)}`
   const counts = new Map<string, number>()
   for (const p of problems) counts.set(kind(p), (counts.get(kind(p)) ?? 0) + 1)
   return [...counts].map(([k, n]) => `${k}x${n}`).join(' ')
@@ -821,6 +834,20 @@ const CONTINUE_STEP = { name: 'continue_answer', title: 'Finishing a long answer
  */
 async function finishAnswer(ai: ModelCall, budget: Budget, emit: Emit, messages: ChatMessage[], first: ModelReply, reserve: number): Promise<ModelReply> {
   if (!first.truncated || first.toolCalls.length > 0) return first
+  // Empty and cut off: a reasoning model spent the whole limit thinking. Ask again once with room to answer.
+  if (!first.text.trim()) {
+    if (budget.spare() < 1 + reserve) return first
+    await emit({ tool: { ...CONTINUE_STEP, status: 'running' } })
+    try {
+      first = await ai(messages, undefined, { maxTokens: 2 * MAX_OUTPUT_TOKENS })
+    } catch (err) {
+      console.warn('[kg-agent] re-ask after an empty reply failed:', err instanceof Error ? err.message : err)
+      await emit({ tool: { ...CONTINUE_STEP, status: 'done', ok: false } })
+      return first
+    }
+    await emit({ tool: { ...CONTINUE_STEP, status: 'done', ok: Boolean(first.text.trim()) } })
+    if (!first.truncated || !first.text.trim()) return first
+  }
   const parts = [first.text]
   let spent = MAX_OUTPUT_TOKENS
   for (let i = 0; i < MAX_CONTINUATIONS; i++) {
@@ -1059,7 +1086,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     }
 
     // Safety: the fixed check on every answer, and for a fix answer the reviewer too. One rewrite, then the safe refusal.
-    const advisorySteps = advisory?.sources.filter(x => x.type === 'advisory_step').map(x => x.text).join('\n')
+    const advisorySteps = advisory?.sources.filter(x => x.type === 'advisory' || x.type === 'advisory_step').map(x => x.text).join('\n')
     const safe = await safetyGate(ctx.ai, messages, reply, { question, review: kind === 'fix', advisoryText: advisorySteps, recheck: r => problemsWith(r.text, s, kind), tidy, finish: (m, r) => finish(m, r, 2) })
     if (safe.outcome !== 'ok') {
       await discardProposal(s)

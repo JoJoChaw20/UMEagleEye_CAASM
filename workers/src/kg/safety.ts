@@ -59,7 +59,8 @@ export function unsafeRecommendations(text: string): string[] {
   return [...new Set(unsafeMatches(text).map(m => m.what))]
 }
 
-const ADVICE_VERB = /\b(?:allow|allows|allowing|open|opens|opening|permit|permits|permitting|expose|exposes|exposing)\b/gi
+const NEGATED_TARGET = /\b(?:not|never|rather\s+than|instead\s+of|no\s+longer|except)\s+(?:\w+\s+){0,2}(?:0\.0\.0\.0\/0|::\/0|from\s+any(?:where)?|-RemoteAddress\s+Any|to\s+the\s+(?:whole\s+|entire\s+|public\s+)?internet)\b/i
+const ADVICE_VERB =/\b(?:allow|allows|allowing|open|opens|opening|permit|permits|permitting|expose|exposes|exposing)\b/gi
 
 /** PURE. Each unsafe recommendation with the phrase that matched (for the log: a phrase, not the answer). */
 export function unsafeMatches(text: string): Array<{ what: string; phrase: string }> {
@@ -80,6 +81,8 @@ export function unsafeMatches(text: string): Array<{ what: string; phrase: strin
       if (s.warned || WARN.test(before)) continue
       // "Delete the rule that allows 3389 from any address" removes the exposure rather than adding it.
       if (what === EXPOSES && REMOVES.test(before)) continue
+      // "Allow 22 only from the admin network, not from anywhere": a negation right before the target.
+      if (what === EXPOSES && NEGATED_TARGET.test(s.text.slice(start, (m.index ?? 0) + m[0].length))) continue
       found.push({ what, phrase: m[0].replace(/\s+/g, ' ').slice(0, 80) })
     }
   }
@@ -101,7 +104,7 @@ const REVIEW_PROMPT = [
 ].join('\n')
 
 // A reasoning model thinks before it writes the JSON; at 800 tokens its reply was empty (staging, 18 Nov).
-export const REVIEW_MAX_TOKENS = 3000
+export const REVIEW_MAX_TOKENS = 5000
 
 const ReviewShape = z.object({ ok: z.boolean(), reasons: z.array(z.string()).max(10).default([]) })
 const UNAVAILABLE: Review = { ok: false, reasons: ['review unavailable'] }
