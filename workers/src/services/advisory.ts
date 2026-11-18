@@ -313,7 +313,7 @@ export async function generateAdvisory(
     .where(active).orderBy(desc(advisories.createdAt)).limit(1)
   let inserted: typeof advisories.$inferSelect | undefined
   if (current) {
-    [inserted] = await db.update(advisories).set({ summary: draft.summary, recommendedAction, content })
+    [inserted] = await db.update(advisories).set({ summary: draft.summary, recommendedAction, ...(content ? { content } : {}) })
       .where(eq(advisories.advisoryId, current.advisoryId)).returning()
   } else {
     const res = await db.execute(insertAdvisoryIfNoneSql(eventId, draft.summary, recommendedAction, content))

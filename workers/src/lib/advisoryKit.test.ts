@@ -25,13 +25,14 @@ test('parseAiDraft accepts object steps with expert notes', () => {
   assert.deepEqual(d.stepNotes, ['It changes X and can break Y.', ''])
 })
 
-test('expert note with a URL or unknown CVE is dropped, not the draft', () => {
+test('expert note with a URL is stripped of it, an unknown CVE drops the note, backticks are removed, the draft stays', () => {
   const d = parseAiDraft(ai([
     { text: 'Step one.', expert_note: 'See https://evil.example/x for details' },
     { text: 'Step two.', expert_note: 'Fixes CVE-2099-0001 completely' },
     { text: 'Step three.', expert_note: 'Use `rm -rf` here' },
   ]), fallback)!
   assert.ok(d)
+  assert.equal(d.stepNotes[0], 'See for details')
   assert.equal(d.stepNotes[1], '')
   assert.ok(!/CVE-2099/.test(d.stepNotes.join(' ')))
   assert.ok(!/https?:/.test(d.stepNotes.join(' ')))
