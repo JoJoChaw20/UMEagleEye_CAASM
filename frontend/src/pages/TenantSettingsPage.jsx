@@ -403,7 +403,7 @@ export default function TenantSettingsPage() {
       )}
 
       {tenantId && (
-        <OwnershipSection tenantId={tenantId} tenantName={tenant?.name} users={users} onChanged={loadUsers} />
+        <OwnershipSection tenantId={tenantId} users={users} onChanged={loadUsers} />
       )}
 
       {/* ── Users ── */}

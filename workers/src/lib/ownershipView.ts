@@ -18,7 +18,7 @@ export function transferMessage(name: string, tenant: string, mode: string, deac
 }
 
 export function ownershipView(
-  i: { owner: { userId: string; username: string }; transfer: TransferRow | null; plan: PlanRow | null; recovery?: RecoveryRow | null; names: Record<string, string> },
+  i: { owner: { userId: string; username: string }; transfer: TransferRow | null; plan: PlanRow | null; recovery?: RecoveryRow | null; names: Record<string, string>; tenantName?: string },
   viewerId: string,
 ) {
   const person = (id: string | null): Person | null => (id ? { user_id: id, username: i.names[id] ?? '' } : null)
@@ -29,13 +29,22 @@ export function ownershipView(
   const r = i.recovery ?? null
   const role = !r ? null : viewerId === i.owner.userId ? 'owner' : viewerId === r.successorId ? 'successor'
     : viewerId === p?.approver1Id || viewerId === p?.approver2Id ? 'approver' : null
+  const slot: 1 | 2 | null = p?.approver1Id === viewerId ? 1 : p?.approver2Id === viewerId ? 2 : null
+  const me = {
+    is_successor: !!p?.successorId && p.successorId === viewerId,
+    approver_slot: slot,
+    has_approved: !!r && (slot === 1 ? !!r.approver1At : slot === 2 ? !!r.approver2At : false),
+  }
   return {
+    me,
+    recovery_open: !!r,
     owner: { user_id: i.owner.userId, username: i.owner.username },
     ...(t && concerned ? {
       pending_transfer: {
         transfer_id: t.transferId, from_user: person(t.fromUserId)!, to_user: person(t.toUserId)!,
         after: { mode: t.afterMode, actions: t.afterActions, deactivate_on: t.deactivateOn?.toISOString() ?? null },
         created_at: t.createdAt.toISOString(), expires_at: t.expiresAt.toISOString(),
+        ...(viewerId === t.toUserId ? { message: transferMessage(i.names[t.fromUserId] ?? '', i.tenantName ?? 'this tenant', t.afterMode, t.deactivateOn) } : {}),
       },
     } : {}),
     recovery_plan: isOwner && p

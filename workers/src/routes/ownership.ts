@@ -59,7 +59,8 @@ router.get(
         .filter((x): x is string => !!x)
       const rows = await db.select({ userId: users.userId, username: users.username }).from(users).where(inArray(users.userId, ids))
       const names = Object.fromEntries(rows.map((r) => [r.userId, r.username]))
-      return c.json(ownershipView({ owner, transfer, plan: plan ?? null, recovery, names }, me.userId))
+      const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+      return c.json(ownershipView({ owner, transfer, plan: plan ?? null, recovery, names, tenantName: tenant?.name }, me.userId))
     } catch (err) {
       console.error('ownership get error:', err)
       return c.json({ detail: 'Failed to load ownership' }, 500)

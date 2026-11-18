@@ -8,7 +8,7 @@ import { useSingleFlight } from '../auth/AuthParts'
 import { Spinner } from '../common/PageParts'
 import { cleanTotpInput } from '../../utils/mfa.js'
 import {
-  viewFor, afterModeLabel, AFTER_MODES, REASONS, reasonLabel, PLAN_BANNER, plan3Ready, transferBodyReady, transferMessage,
+  viewFor, afterModeLabel, AFTER_MODES, REASONS, reasonLabel, PLAN_BANNER, plan3Ready, transferBodyReady, localDate, dateAfterToday, deadlineISO,
 } from '../../utils/ownership'
 
 const errText = (err, fallback) => {
@@ -34,7 +34,7 @@ function UserSelect({ id, label, value, onChange, users, exclude = [] }) {
       <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className="input-field w-full text-sm">
         <option value="">Choose a user</option>
         {users.filter((u) => !exclude.includes(u.user_id) || u.user_id === value).map((u) => (
-          <option key={u.user_id} value={u.user_id}>{u.username} ({u.email})</option>
+          <option key={u.user_id} value={u.user_id}>{u.email ? `${u.username} (${u.email})` : u.username}</option>
         ))}
       </select>
     </div>
@@ -47,8 +47,8 @@ function ActionButton({ children, onRun, className = 'btn-secondary text-sm py-1
   const [error, setError] = useState('')
   const go = () => run(async () => {
     setError('')
-    try { await onRun() } catch (err) { setError(errText(err, failText)) }
-    return false
+    try { await onRun() } catch (err) { setError(errText(err, failText)); return false }
+    return true
   })
   return (
     <span className="inline-flex flex-col gap-2">
@@ -58,7 +58,7 @@ function ActionButton({ children, onRun, className = 'btn-secondary text-sm py-1
   )
 }
 
-export default function OwnershipSection({ tenantId, tenantName, users, onChanged }) {
+export default function OwnershipSection({ tenantId, users, onChanged }) {
   const { user, catalog, refreshUser } = useAuth()
   const [res, setRes] = useState(null)
   const [loadError, setLoadError] = useState('')
@@ -108,7 +108,7 @@ export default function OwnershipSection({ tenantId, tenantName, users, onChange
 
       {v.pendingAsRecipient && (
         <div className="space-y-3 rounded-lg border border-eagle-500/30 bg-eagle-500/5 p-4">
-          <p className="text-sm text-dark-100">{transferMessage(t.from_user.username, tenantName, t.after)}</p>
+          <p className="text-sm text-dark-100">{t.message}</p>
           <div className="flex gap-2">
             <button type="button" className="btn-primary text-sm py-1.5" onClick={() => setDialog({ kind: 'accept' })}>Accept</button>
             <ActionButton failText="Could not decline." onRun={async () => { await client.post(`${base}/transfer/decline`); await after('Transfer declined.') }}>Decline</ActionButton>
@@ -139,9 +139,10 @@ export default function OwnershipSection({ tenantId, tenantName, users, onChange
         </div>
       )}
 
+      {v.recoveryInProgress && <p className="text-sm text-dark-300">An ownership recovery is in progress.</p>}
+
       {v.canStartRecovery && (
         <div className="space-y-2 border-t border-dark-700/60 pt-4">
-          <p className="text-xs text-dark-400">If you are the recovery successor named by the owner, you can start an emergency recovery.</p>
           <button type="button" className="btn-secondary text-sm py-1.5" onClick={() => setDialog({ kind: 'start' })}>Start emergency recovery</button>
         </div>
       )}
@@ -149,7 +150,7 @@ export default function OwnershipSection({ tenantId, tenantName, users, onChange
       {dialog?.kind === 'accept' && t && (
         <StepUpDialog title="Accept ownership" idPrefix="own-accept" confirmLabel="Accept" onCancel={() => setDialog(null)}
           onSubmit={async (b) => { await client.post(`${base}/transfer/accept`, b); await after('You are now the Tenant Superadmin.') }}>
-          <p>{transferMessage(t.from_user.username, tenantName, t.after)}</p>
+          <p>{t.message}</p>
         </StepUpDialog>
       )}
       {dialog?.kind === 'transfer' && (
@@ -207,7 +208,7 @@ function TransferForm({ users, catalog, onSubmit }) {
     if (!ready) return
     const after = { mode }
     if (mode !== 'deactivate_now') after.actions = actions
-    if (mode === 'deactivate_on') after.deactivate_on = new Date(`${date}T23:59:59`).toISOString()
+    if (mode === 'deactivate_on') after.deactivate_on = deadlineISO(date)
     onSubmit({ to_user_id: to, after })
   }
   return (
@@ -226,9 +227,12 @@ function TransferForm({ users, catalog, onSubmit }) {
       {mode === 'deactivate_on' && (
         <div>
           <label htmlFor="own-date" className="mb-1 block text-xs text-dark-400">Deactivate on</label>
-          <input id="own-date" type="date" value={date} min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)}
+          <input id="own-date" type="date" value={date} min={localDate(1)}
             onChange={(e) => setDate(e.target.value)} className="input-field text-sm" />
         </div>
+      )}
+      {mode === 'deactivate_on' && date && !dateAfterToday(date) && (
+        <p role="alert" className="text-xs text-red-400">Choose a date after today.</p>
       )}
       {mode !== 'deactivate_now' && catalog && (
         <div className="space-y-2">
@@ -242,20 +246,31 @@ function TransferForm({ users, catalog, onSubmit }) {
 }
 
 function PlanForm({ users, plan, onSubmit }) {
-  const [s, setS] = useState(plan?.successor?.user_id || '')
-  const [a1, setA1] = useState(plan?.approver1?.user_id || '')
-  const [a2, setA2] = useState(plan?.approver2?.user_id || '')
-  const ready = plan3Ready(s, a1, a2)
+  const saved = [plan?.successor, plan?.approver1, plan?.approver2].map((p) => p?.user_id || '')
+  const key = saved.join('|')
+  const [s, setS] = useState(saved[0])
+  const [a1, setA1] = useState(saved[1])
+  const [a2, setA2] = useState(saved[2])
+  // Re-sync when the loaded plan changes (after a save or a reload).
+  useEffect(() => { setS(saved[0]); setA1(saved[1]); setA2(saved[2]) }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  const activeIds = users.map((u) => u.user_id)
+  // A saved member who is no longer active is shown as such and must be replaced.
+  const gone = (id, p) => (id && !activeIds.includes(id) ? [{ user_id: id, username: `${p?.username || 'Unknown'} (no longer active)`, email: '', stale: true }] : [])
+  const opts = (id, p) => [...gone(id, p), ...users]
+  const ready = plan3Ready(s, a1, a2) && [s, a1, a2].every((id) => activeIds.includes(id))
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (ready) onSubmit({ successor_id: s, approver_ids: [a1, a2] }) }}
       className="space-y-3 border-t border-dark-700/60 pt-4">
       <h3 className="text-sm font-semibold text-dark-100">Recovery plan</h3>
       <p className="text-xs text-dark-400">Choose a successor and two approvers: three different active users.</p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <UserSelect id="own-succ" label="Successor" value={s} onChange={setS} users={users} exclude={[a1, a2]} />
-        <UserSelect id="own-a1" label="Approver 1" value={a1} onChange={setA1} users={users} exclude={[s, a2]} />
-        <UserSelect id="own-a2" label="Approver 2" value={a2} onChange={setA2} users={users} exclude={[s, a1]} />
+        <UserSelect id="own-succ" label="Successor" value={s} onChange={setS} users={opts(s, plan?.successor)} exclude={[a1, a2]} />
+        <UserSelect id="own-a1" label="Approver 1" value={a1} onChange={setA1} users={opts(a1, plan?.approver1)} exclude={[s, a2]} />
+        <UserSelect id="own-a2" label="Approver 2" value={a2} onChange={setA2} users={opts(a2, plan?.approver2)} exclude={[s, a1]} />
       </div>
+      {[s, a1, a2].some((id) => id && !activeIds.includes(id)) && (
+        <p role="alert" className="text-xs text-amber-400">A saved member is no longer active. Pick a replacement.</p>
+      )}
       <button type="submit" disabled={!ready} className="btn-secondary text-sm py-1.5 disabled:opacity-40">Save plan</button>
     </form>
   )

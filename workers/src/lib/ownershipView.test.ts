@@ -48,3 +48,28 @@ test('open recovery is shown to the owner, successor and approvers only', () => 
   assert.equal(v('x'), null)
   assert.equal(ownershipView({ owner, transfer: null, plan, names }, 'o').recovery, null)
 })
+
+test('me block and recovery_open reveal only the viewer own position', () => {
+  const view = (id: string, recovery: any = null) => ownershipView({ owner, transfer: null, plan, recovery, names }, id)
+  assert.deepEqual(view('o').me, { is_successor: false, approver_slot: null, has_approved: false })
+  assert.deepEqual(view('x').me, { is_successor: false, approver_slot: null, has_approved: false })
+  assert.deepEqual(view('s').me, { is_successor: true, approver_slot: null, has_approved: false })
+  assert.equal(view('x').recovery_open, false)
+  const rec = {
+    recoveryId: 'r1', successorId: 's', reason: 'terminated', status: 'awaiting_approval', approver1At: null as Date | null,
+    approver2At: null as Date | null, createdAt: new Date(), expiresAt: new Date(), holdUntil: null,
+  }
+  assert.deepEqual(view('a1', rec).me, { is_successor: false, approver_slot: 1, has_approved: false })
+  assert.equal(view('x', rec).recovery_open, true)
+  assert.equal(view('x', rec).recovery, null)
+  const rec1 = { ...rec, approver1At: new Date() }
+  assert.equal(view('a1', rec1).me.has_approved, true)
+  assert.equal(view('a2', rec1).me.has_approved, false)
+  assert.equal(view('a2', rec1).me.approver_slot, 2)
+})
+
+test('recipient gets the server-built message; others do not', () => {
+  const v = (id: string) => ownershipView({ owner, transfer: t, plan: null, names, tenantName: 'Acme' }, id).pending_transfer as any
+  assert.equal(v('r').message, 'Olive wants to make you the Tenant Superadmin of Acme. You will be able to grant and remove access for every user, reset MFA, and transfer ownership. Olive will become a Tenant user.')
+  assert.equal(v('o').message, undefined)
+})

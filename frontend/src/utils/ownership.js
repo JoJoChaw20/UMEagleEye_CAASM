@@ -22,17 +22,29 @@ export function plan3Ready(a, b, c) {
   return !!(a && b && c) && new Set([a, b, c]).size === 3
 }
 
-export function transferBodyReady({ to, mode, date }) {
-  if (!to || !AFTER[mode]) return false
-  return mode !== 'deactivate_on' || !!date
+// Local calendar date (YYYY-MM-DD). One convention for the min attribute, the check and the deadline sent.
+export function localDate(offsetDays = 0, now = new Date()) {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-// Which parts to show. The backend does not say who the successor is before a recovery opens
-// (plan is owner-only), so any non-owner may try to start one; the server refuses others.
+export const dateAfterToday = (date, now = new Date()) => !!date && date > localDate(0, now)
+
+// The deadline sent: end of that local day.
+export const deadlineISO = (date) => new Date(`${date}T23:59:59`).toISOString()
+
+export function transferBodyReady({ to, mode, date, now }) {
+  if (!to || !AFTER[mode]) return false
+  return mode !== 'deactivate_on' || dateAfterToday(date, now)
+}
+
+// Which parts to show, from the server's per-viewer `me` block and `recovery_open` flag.
 export function viewFor(res, me) {
   if (!res) return { owner: null, isOwner: false }
   const isOwner = !!me && res.owner?.user_id === me.userId
   const t = res.pending_transfer || null
+  const me_ = res.me || {}
   const r = res.recovery || null
   return {
     owner: res.owner,
@@ -44,8 +56,9 @@ export function viewFor(res, me) {
     showPlanBanner: isOwner && res.plan_complete === false,
     plan: res.recovery_plan || null,
     recovery: r,
-    canStartRecovery: !isOwner && !r,
-    canApprove: !!r && r.your_role === 'approver' && r.status === 'awaiting_approval',
+    canStartRecovery: !isOwner && !!me_.is_successor && !res.recovery_open,
+    canApprove: !!r && r.status === 'awaiting_approval' && !!me_.approver_slot && !me_.has_approved,
+    recoveryInProgress: !!res.recovery_open && !isOwner && !r,
     canCancelRecovery: !!r && r.your_role === 'owner' && r.status === 'on_hold',
   }
 }
