@@ -7,7 +7,6 @@ import { useAuth } from '../context/AuthContext'
 import ActionPicker from '../components/users/ActionPicker'
 import { SidePanel, RowMenu, Toast, useToast, Spinner } from '../components/common/PageParts'
 import StepUpDialog from '../components/auth/StepUpDialog'
-import OwnershipSection from '../components/ownership/OwnershipSection'
 import { MFA_RESET_GUIDANCE, mfaResetToast } from '../utils/mfa'
 import { canConfirmDelete } from '../utils/users'
 import { accessSummary, actionLabels } from '../utils/actions'
@@ -400,10 +399,6 @@ export default function TenantSettingsPage() {
             </div>
           )}
         </div>
-      )}
-
-      {tenantId && (
-        <OwnershipSection tenantId={tenantId} users={users} onChanged={loadUsers} />
       )}
 
       {/* ── Users ── */}
