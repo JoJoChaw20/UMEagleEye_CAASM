@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { automationLabel, buildContent, mapSteps, type AdvisoryStep, type DeviceInfo } from './advisoryContent'
+import { advisoryView, automationLabel, buildContent, mapSteps, type AdvisoryStep, type DeviceInfo } from './advisoryContent'
 import { REMEDIATION_ACTIONS, isProtectedApp, isProtectedPort, isProtectedService } from './remediationCatalog'
 import type { AdvisoryFacts } from './advisoryKit'
 
@@ -234,4 +234,19 @@ test('nmap service names of protected services block nothing', () => {
     }
   }
   assert.ok(mapSteps(portFacts({ port: 8080, service_on_port: 'http nginx 1.2' }), T('x'), dev())[0]!.action)
+})
+
+test('advisoryView returns null automation for null content', () => {
+  assert.deepEqual(advisoryView({ content: null }, dev()), { content: null, automation: null })
+})
+
+test('advisoryView recomputes the label from current device info', () => {
+  const step: AdvisoryStep = {
+    id: 's1', text: 'Upgrade openssl to 3.0.14.', kind: 'auto', risk: 'low',
+    action: { key: 'pkg.upgrade', params: { manager: 'apt', package: 'openssl', version: '3.0.14' } },
+  }
+  const content = { summary: 's', why_now: null, steps: [step], verify: null, rollback: null, confidence: 'high', sources: [], basis: 'b', version: 1 } as const
+  const row = { content: content as unknown as import('./advisoryContent').AdvisoryContent }
+  assert.equal(advisoryView(row, dev({ hasAgent: false }))!.automation!.label, 'Needs outside support')
+  assert.equal(advisoryView(row, dev())!.automation!.label, 'Auto-fixable')
 })

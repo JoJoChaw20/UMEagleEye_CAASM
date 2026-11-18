@@ -160,6 +160,24 @@ export function automationLabel(steps: AdvisoryStep[], device: DeviceInfo): {
   return { label, available, reason: available ? 'EagleEye can apply the automatic steps.' : NOT_ON }
 }
 
+/** API view of stored content: the automation label is recomputed from the device as it is now.
+ *  A step that carries an action follows the current device (no agent or network device -> external,
+ *  otherwise auto); steps without an action keep their stored kind. */
+export function advisoryView(row: { content: AdvisoryContent | null }, device: DeviceInfo): {
+  content: AdvisoryContent | null; automation: ReturnType<typeof automationLabel> | null
+} {
+  const content = row.content ?? null
+  if (!content || !Array.isArray(content.steps)) return { content, automation: null }
+  const steps = content.steps.map((s): AdvisoryStep => {
+    if (!s.action) return s
+    const { reason: _drop, ...rest } = s
+    if (!device.hasAgent) return { ...rest, kind: 'external', reason: NO_AGENT }
+    if (device.isNetworkDevice) return { ...rest, kind: 'external', reason: NETWORK_DEVICE }
+    return { ...rest, kind: 'auto' }
+  })
+  return { content: { ...content, steps }, automation: automationLabel(steps, device) }
+}
+
 export function buildContent(
   draft: AdvisoryDraft & { stepNotes?: string[] }, facts: AdvisoryFacts, basis: string, device: DeviceInfo,
 ): AdvisoryContent {

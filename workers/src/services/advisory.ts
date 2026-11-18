@@ -249,11 +249,26 @@ Reply with JSON only:
 
 /** What the advisory's automation label needs to know about the device. Network devices are
  *  assets of type 'network'; an agent counts only when it is a live host agent on the asset. */
+export async function deviceInfoForAssets(db: DB, assetIds: string[]): Promise<Map<string, DeviceInfo>> {
+  const ids = [...new Set(assetIds)]
+  const out = new Map<string, DeviceInfo>()
+  if (ids.length === 0) return out
+  const [agentRows, assetRows] = await Promise.all([
+    db.select({ id: agents.hostAssetId }).from(agents)
+      .where(and(inArray(agents.hostAssetId, ids), eq(agents.kind, 'host'), isNull(agents.retiredAt))),
+    db.select({ id: assets.assetId, t: assets.deviceType }).from(assets).where(inArray(assets.assetId, ids)),
+  ])
+  const withAgent = new Set(agentRows.map(r => r.id))
+  const type = new Map(assetRows.map(r => [r.id, r.t]))
+  for (const id of ids) {
+    out.set(id, { hasAgent: withAgent.has(id), isNetworkDevice: type.get(id) === 'network', remediationEnabled: false, capabilities: [] })
+  }
+  return out
+}
+
 export async function deviceInfoFor(db: DB, assetId: string): Promise<DeviceInfo> {
-  const [agent] = await db.select({ agentId: agents.agentId }).from(agents)
-    .where(and(eq(agents.hostAssetId, assetId), eq(agents.kind, 'host'), isNull(agents.retiredAt))).limit(1)
-  const [a] = await db.select({ t: assets.deviceType }).from(assets).where(eq(assets.assetId, assetId)).limit(1)
-  return { hasAgent: !!agent, isNetworkDevice: a?.t === 'network', remediationEnabled: false, capabilities: [] }
+  return (await deviceInfoForAssets(db, [assetId])).get(assetId)
+    ?? { hasAgent: false, isNetworkDevice: false, remediationEnabled: false, capabilities: [] }
 }
 
 export async function generateAdvisory(

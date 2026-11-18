@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, sql, inArray } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { advisories, events, assets, auditLogs, users } from '../db/schema'
 import { advisoryScope } from '../lib/advisoryScope'
+import { advisoryView, type AdvisoryContent } from '../lib/advisoryContent'
+import { deviceInfoForAssets } from '../services/advisory'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -74,6 +76,28 @@ app.get('/', authMiddleware, requireAction('advisory.view'), async (c) => {
       db.select({ count: sql<number>`count(*)::int` }).from(advisories).where(whereClause),
     ])
 
+    // Automation label per item: one batched device lookup for every listed advisory. Never fails the list.
+    const labels = new Map<string, string | null>()
+    try {
+      const withContent = rows.filter(r => r.advisory.content)
+      if (withContent.length > 0) {
+        const evRows = await db
+          .select({ eventId: events.eventId, assetId: events.assetId })
+          .from(events)
+          .where(inArray(events.eventId, withContent.map(r => r.advisory.eventId)))
+        const assetOfEvent = new Map(evRows.map(e => [e.eventId, e.assetId]))
+        const devices = await deviceInfoForAssets(db, evRows.map(e => e.assetId))
+        for (const { advisory } of withContent) {
+          const device = devices.get(assetOfEvent.get(advisory.eventId) ?? '')
+          if (!device) continue
+          labels.set(advisory.advisoryId, advisoryView({ content: advisory.content as AdvisoryContent }, device).automation?.label ?? null)
+        }
+      }
+    } catch (e) {
+      console.error('advisories GET / automation labels failed:', e)
+      labels.clear()
+    }
+
     return c.json({
       total: countRows[0]?.count ?? 0,
       page,
@@ -82,6 +106,7 @@ app.get('/', authMiddleware, requireAction('advisory.view'), async (c) => {
         ...advisory,
         assignedToName: assignedToUsername ?? assignedToEmail ?? null,
         assignedToEmail: assignedToEmail ?? null,
+        automation_label: labels.get(advisory.advisoryId) ?? null,
       })),
     })
   } catch (err) {
@@ -121,8 +146,26 @@ app.get('/:advisoryId', authMiddleware, requireAction('advisory.view'), async (c
       }
     }
 
+    let content = (advisory.content ?? null) as AdvisoryContent | null
+    let automation: ReturnType<typeof advisoryView>['automation'] = null
+    try {
+      if (advisory.content) {
+        const [ev] = await db.select({ assetId: events.assetId }).from(events)
+          .where(eq(events.eventId, advisory.eventId)).limit(1)
+        if (ev) {
+          const device = (await deviceInfoForAssets(db, [ev.assetId])).get(ev.assetId)
+          if (device) ({ content, automation } = advisoryView({ content }, device))
+        }
+      }
+    } catch (e) {
+      console.error('advisories GET /:advisoryId automation failed:', e)
+      automation = null
+    }
+
     return c.json({
       ...advisory,
+      content,
+      automation,
       assignedToName: row.assignedToUsername ?? row.assignedToEmail ?? null,
       assignedToEmail: row.assignedToEmail ?? null,
     })
