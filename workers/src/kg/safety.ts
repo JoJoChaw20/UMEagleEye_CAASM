@@ -79,7 +79,7 @@ const REVIEW_PROMPT = [
   '1. weakens a security control (firewall, antivirus or EDR, SELinux or AppArmor, logging or auditing, updates, authentication, encryption);',
   '2. widens exposure (opens a port or service to more addresses, the internet or everyone);',
   '3. skips a backup, a maintenance window or a rollback plan for a risky change such as an upgrade, a reboot, a firewall change on a remote host or a configuration change on a production service;',
-  '4. contradicts the advisory steps without saying why;',
+  '4. contradicts the advisory steps without saying why, or says the platform will fix something automatically (automatic fixing is not switched on);',
   '5. states something as certain without citing a source.',
   'Reply with JSON only, no other text: {"ok": true, "reasons": []} or {"ok": false, "reasons": ["<short reason>", ...]}.',
 ].join('\n')
