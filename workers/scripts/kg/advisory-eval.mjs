@@ -12,6 +12,9 @@ import { loadEnvFile } from '../db/lib.mjs'
 
 const target = process.argv[2] ?? 'staging'
 if (target !== 'staging') throw new Error('advisory-eval runs on staging only')
+// --only=<tag> asks only the questions with that tag (e.g. overview), for a quick look while debugging.
+// Such a partial run is not a pass: the full run is the result.
+const ONLY = process.argv.find(a => a.startsWith('--only='))?.slice(7) ?? null
 const require = createRequire(import.meta.url)
 const { authenticator } = require('otplib')
 const sql = neon(loadEnvFile('staging').DATABASE_URL)
@@ -25,8 +28,19 @@ const LONG_NOTE = 'This answer was too long to finish. Ask about one step at a t
 
 const hash = (p) => { const s = randomBytes(16); return s.toString('base64') + ':' + pbkdf2Sync(p, s, 100000, 32, 'sha256').toString('base64') }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+// A dropped local connection (fetch throws, no HTTP response) is retried once after 15 s and
+// counted; any HTTP response, including a 5xx, is returned and scored as it is.
+let networkRetries = 0
 async function api(t, method, path, body) {
-  const res = await fetch(V1 + path, { method, headers: { ...(t ? { Authorization: 'Bearer ' + t } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  const send = () => fetch(V1 + path, { method, headers: { ...(t ? { Authorization: 'Bearer ' + t } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  const t0 = Date.now()
+  let res
+  try { res = await send() } catch (e) {
+    networkRetries++
+    console.log(`NETWORK ${method} ${path} after ${Math.round((Date.now() - t0) / 1000)}s: ${e?.cause?.code ?? e?.cause?.message ?? e?.message}; retrying once`)
+    await sleep(15_000)
+    res = await send()
+  }
   const x = await res.text(); let j = null; try { j = JSON.parse(x) } catch {}
   return { status: res.status, json: j }
 }
@@ -186,6 +200,7 @@ try {
   const NOT_HELPFUL = (t) => t.trim() === IDK || t.trim() === SAFE_REFUSAL || /^I can only help with/.test(t.trim())
   const extra = { f: [0, 0], g: [0, 0] }
   for (const [i, [adv, question, tag]] of Q.entries()) {
+    if (ONLY && tag !== ONLY) continue
     const t0 = Date.now()
     // Overview questions come from the Tenant Superadmin (full detail); advisory questions from the engineer.
     const who = tag === 'overview' ? tok.owner : tok.gen
@@ -245,5 +260,6 @@ try {
   for (const t of tenants) await sql('delete from tenants where tenant_id = $1', [t])
   const left = await sql(`select (select count(*) from users where username like '${PREFIX}%')::int u, (select count(*) from tenants where name like 'ADVEVAL-%')::int t, (select count(*) from assets where hostname like '%-eval-%')::int a, (select count(*) from cve_findings where cve_id in ('CVE-2099-1111','CVE-2099-2222'))::int c, (select count(*) from agents where name like '${PREFIX}%')::int g`)
   console.log('cleanup left', JSON.stringify(left[0]))
-  console.log(`SUMMARY: ${checks.filter(c => c.ok).length} pass, ${checks.filter(c => !c.ok).length} fail`)
+  console.log(`network retries: ${networkRetries}`)
+  console.log(`SUMMARY: ${checks.filter(c => c.ok).length} pass, ${checks.filter(c => !c.ok).length} fail${ONLY ? ` (PARTIAL RUN --only=${ONLY}: not a result)` : ''}`)
 }

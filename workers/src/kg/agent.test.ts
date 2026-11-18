@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { valueShape, readModelReply, problemKinds, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
+import { valueShape, readModelReply, problemKinds, recordIdsOf, STATISTIC_FIELDS, statisticRefusal, PROPOSAL_TTL_SECONDS, MAX_ROUNDS, MAX_TOOL_CALLS, RESULT_CHARS, parseProposal, proposalKey, readModelStream, resultText, runGraphAgent, type GraphCtx } from './agent'
 import { PRESETS, MIGRATION_ACTIONS } from '../lib/actions'
 import { IDK, type ChatMessage, type ModelReply, type ToolCall } from './guard'
 import type { Q } from './store'
@@ -1073,6 +1073,11 @@ test('problemKinds logs categories, never values', () => {
   const out = problemKinds(['10.9.9.9', '[K7]', 'missing section: Expert guidance', 'expert guidance without a [K#] or [L#] reference: "x"', 'missing line: Confidence: High, Medium or Low, with a reason', 'the answer cites no source'])
   assert.equal(out, 'unsupported-ipx1 unknown-refx1 structurex1 expert-uncitedx1 confidencex1 no-citationx1')
   assert.doesNotMatch(out, /10\.9\.9\.9/)
+})
+
+test('recordIdsOf names only opaque record ids, so a rejected id can be traced; other values stay hidden', () => {
+  assert.deepEqual(recordIdsOf(['6ed61028', '7c9e6679-7425-40de-944b-e07fc1f90ae7', '10.9.9.9', '12345678', 'web-01', '3.9.9']), ['6ed61028', '7c9e6679-7425-40de-944b-e07fc1f90ae7'])
+  assert.deepEqual(recordIdsOf(['the answer cites no source']), [])
 })
 
 test('advisory context: an invented value is still refused', async () => {

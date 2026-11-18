@@ -30,8 +30,8 @@ const UNSAFE: Array<[RegExp, string]> = [
   [/\bSet-MpPreference\b[^\n]*-Disable\w+\s+(?:\$?true|1)\b|\bDisableAntiSpyware\b/i, 'switches off Microsoft Defender'],
   [/\bchmod\s+(?:-[a-zA-Z]+\s+)*0?777\b|\bchmod\s+(?:-[a-zA-Z]+\s+)*a\+rwx\b/i, 'makes files writable by everyone (chmod 777)'],
   [/\b(?:curl|wget)\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|k|da)?sh\b|\b(?:iex|Invoke-Expression)\b[^\n]*\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b/i, 'pipes a download straight into a shell'],
-  // Advice verbs only: "is exposed to the internet" describes the finding, it does not recommend it.
-  [/\b(?:allow|allows|allowing|open|opens|opening|permit|permits|permitting|expose|exposes|exposing)\b[^.\n]{0,80}(?:0\.0\.0\.0\/0|::\/0|\bfrom\s+any(?:where)?\b|-RemoteAddress\s+Any\b|\bto\s+the\s+(?:whole\s+|entire\s+|public\s+)?internet\b)|--cidr\s+0\.0\.0\.0\/0|--source(?:-ranges)?[=\s]+0\.0\.0\.0\/0/i, EXPOSES],
+  // Exposure in prose is judged per target in exposureMatches; cloud CLI flags are matched here.
+  [/--cidr\s+0\.0\.0\.0\/0|--source(?:-ranges)?[=\s]+0\.0\.0\.0\/0/i, EXPOSES],
   [/\bPermitRootLogin\s+yes\b/i, 'allows root login over SSH'],
   [/\bcurl\b[^\n]*\s(?:-k|--insecure)\b|\bverify\s*=\s*False\b|\brejectUnauthorized\s*:\s*false\b|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*['"]?0|--no-check-certificate\b|StrictHostKeyChecking\s*[=\s]\s*no\b|\b(?:disable|disabling|turn\s+off|skip|skipping|ignore|ignoring|bypass|bypassing)\s+(?:the\s+)?(?:tls|ssl|https|certificate|cert)\s+(?:verification|validation|checks?|checking|errors?|warnings?)\b/i, 'turns off TLS or host-key verification'],
   [/\b(?:run|running|execute|executing|launch|launching)\b[^.\n]{0,30}\b(?:unknown|untrusted|unverified|unsigned)\b[^.\n]{0,20}\b(?:scripts?|binar(?:y|ies)|executables?|installers?)\b|\bdownload(?:ed)?\s+and\s+(?:run|execute)\b|\bSet-ExecutionPolicy\s+(?:Unrestricted|Bypass)\b/i, 'runs an unknown script'],
@@ -60,7 +60,49 @@ export function unsafeRecommendations(text: string): string[] {
 }
 
 const NEGATED_TARGET = /\b(?:not|never|rather\s+than|instead\s+of|no\s+longer|except)\s+(?:\w+\s+){0,2}(?:0\.0\.0\.0\/0|::\/0|from\s+any(?:where)?|-RemoteAddress\s+Any|to\s+the\s+(?:whole\s+|entire\s+|public\s+)?internet)\b/i
+// "open" followed by no object ("open to ...", "open and ...", "open, ...") is an adjective: a state.
+const OPEN_AS_STATE = /^open(?:\s+(?:to|and|on|for|from)\b|\s*,)/i
+// Words that turn a state into advice: leave/keep/make/let it open, it should/must/needs to remain open.
+const KEEPS_OPEN = /\b(?:leave|leaving|keep|keeping|make|making|let|letting|set|setting|remain|stay|should|must|needs?\s+to|ha(?:ve|s)\s+to)\b/i
 const ADVICE_VERB =/\b(?:allow|allows|allowing|open|opens|opening|permit|permits|permitting|expose|exposes|exposing)\b/gi
+// Where exposure goes: everyone, any address, the internet.
+const EXPOSURE_TARGET = /0\.0\.0\.0\/0|::\/0|\bfrom\s+any(?:where)?\b|-RemoteAddress\s+Any\b|\bto\s+the\s+(?:whole\s+|entire\s+|public\s+)?internet\b/gi
+// How far before its target an advice verb may stand ("allow inbound TCP 3389 on the server from anywhere").
+const VERB_REACH = 80
+
+/**
+ * PURE. Exposure advice in one sentence. Each target ("to the internet", "from anywhere", 0.0.0.0/0) is
+ * judged on its own, from the advice verb nearest to it in its own clause (the text since the previous
+ * target), so a described exposure ("port 22 is open to the internet") never hides advice in the same
+ * sentence ("allow 3389 from anywhere because port 22 is open to the internet").
+ */
+function exposureMatches(s: { text: string; warned: boolean }): Array<{ what: string; phrase: string }> {
+  const found: Array<{ what: string; phrase: string }> = []
+  let clauseStart = 0
+  for (const t of s.text.matchAll(EXPOSURE_TARGET)) {
+    const at = t.index ?? 0, end = at + t[0].length
+    const clause = s.text.slice(clauseStart, at)
+    const verb = [...clause.matchAll(ADVICE_VERB)].filter(v => at - (clauseStart + (v.index ?? 0) + v[0].length) <= VERB_REACH).pop()
+    const from = clauseStart
+    clauseStart = end
+    // No advice verb: the target is only mentioned ("RDP is exposed to the internet").
+    if (!verb) continue
+    const start = from + (verb.index ?? 0)
+    const before = s.text.slice(0, start)
+    const lead = s.text.slice(from, start)
+    // A warning anywhere before it in the sentence ("never allow 3389 from anywhere or open 445 to the internet").
+    if (s.warned || WARN.test(before)) continue
+    // "Delete the rule that allows 3389 from any address" removes the exposure rather than adding it.
+    if (REMOVES.test(lead)) continue
+    // "Allow 22 only from the admin network, not from anywhere": a negation right before the target.
+    if (NEGATED_TARGET.test(s.text.slice(start, end))) continue
+    // "Port 3389 is open to the internet": "open" with no object is the state of the finding, unless the
+    // sentence starts with it or advises keeping it so ("leave RDP open to the internet").
+    if (OPEN_AS_STATE.test(s.text.slice(start)) && before.trim() && !KEEPS_OPEN.test(before)) continue
+    found.push({ what: EXPOSES, phrase: s.text.slice(start, end).replace(/\s+/g, ' ').slice(0, 80) })
+  }
+  return found
+}
 
 /** PURE. Each unsafe recommendation with the phrase that matched (for the log: a phrase, not the answer). */
 export function unsafeMatches(text: string): Array<{ what: string; phrase: string }> {
@@ -69,22 +111,14 @@ export function unsafeMatches(text: string): Array<{ what: string; phrase: strin
     for (const [re, what] of UNSAFE) {
       const m = s.text.match(re)
       if (!m) continue
-      let start = m.index ?? 0
-      // For exposure, judge from the advice verb nearest the target: in "open a VPN rather than exposing 3389
-      // to the internet" the verb that exposes is "exposing", and "rather than" warns against it.
-      if (what === EXPOSES) {
-        const verbs = [...m[0].matchAll(ADVICE_VERB)]
-        if (verbs.length > 0) start += verbs[verbs.length - 1]!.index ?? 0
-      }
       // A warning before the action in the same sentence ("never disable the firewall") makes it advice against it.
-      const before = s.text.slice(0, start)
+      const before = s.text.slice(0, m.index ?? 0)
       if (s.warned || WARN.test(before)) continue
-      // "Delete the rule that allows 3389 from any address" removes the exposure rather than adding it.
+      // "Delete the rule that adds --cidr 0.0.0.0/0" removes the exposure rather than adding it.
       if (what === EXPOSES && REMOVES.test(before)) continue
-      // "Allow 22 only from the admin network, not from anywhere": a negation right before the target.
-      if (what === EXPOSES && NEGATED_TARGET.test(s.text.slice(start, (m.index ?? 0) + m[0].length))) continue
       found.push({ what, phrase: m[0].replace(/\s+/g, ' ').slice(0, 80) })
     }
+    found.push(...exposureMatches(s))
   }
   return found
 }

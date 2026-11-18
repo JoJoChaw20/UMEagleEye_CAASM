@@ -770,6 +770,15 @@ export function valueShape(v: string): string {
   return 'name'
 }
 
+/**
+ * The unsupported values that are opaque record ids (an advisory or alert id, or its 8-character short
+ * form, holding at least one letter). They carry no company data, appear in request URLs already, and
+ * are the one value class the log names, so a rejected id can be traced. Numbers and names stay hidden.
+ */
+export function recordIdsOf(problems: string[]): string[] {
+  return problems.filter(p => /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i.test(p) && /[a-f]/i.test(p))
+}
+
 /** Which checks an answer failed, by category only: the log never holds the values themselves. */
 export function problemKinds(problems: string[]): string {
   const kind = (p: string) =>
@@ -1073,7 +1082,8 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     }
     let problems = problemsWith(reply.text, s, kind)
     if (problems.length > 0) {
-      console.warn(`[kg-agent] answer rejected (${kind}, ${result.tools.map(t => t.name).join(',') || 'no tools'}): ${problemKinds(problems)}`)
+      const ids = recordIdsOf(problems)
+      console.warn(`[kg-agent] answer rejected (${kind}, ${result.tools.map(t => t.name).join(',') || 'no tools'}): ${problemKinds(problems)}${ids.length ? ` ids=${ids.join(',')}` : ''}`)
       messages.push({ role: 'assistant', content: reply.text || '(empty)' })
       messages.push({ role: 'user', content: correction(problems, kind) })
       reply = tidy(await finish(messages, await ctx.ai(messages), afterAnswer - 1))
