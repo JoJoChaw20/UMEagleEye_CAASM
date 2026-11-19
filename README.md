@@ -1,4 +1,4 @@
-# UMEagleEye 2.0 — AI-Driven CAASM Platform
+# UMEagleEye — AI-Driven CAASM Platform
 
 UMEagleEye is an AI-Driven **Cyber Asset Attack Surface Management (CAASM)** platform developed as a Final Year Project at the Faculty of Computer Science & Information Technology, University of Malaya. It provides comprehensive visibility into cyber assets, automates threat detection, delivers intelligent remediation guidance, and generates automated posture scoring and reporting — all hosted serverlessly with no always-on infrastructure.
 
