@@ -133,3 +133,49 @@ test('expert: a system question gets no knowledge preload', async () => {
   await runGraphAgent(s.ctx, 'what is open on web-01?', [], s.emit)
   assert.ok(!s.seen[0]!.messages.some(m => String(m.content).startsWith('Security guidance from the knowledge base')))
 })
+
+test('expert: a step still uncited after the retry is left out with a note; the cited steps are released (eval v7, 21 Nov)', async () => {
+  const mixed = answer('1. Allow SSH only from the admin network and use keys [K1].\n\n2. Just disable password logins everywhere.')
+  const s = setup('fix', [tools(call('search_graph', { query: 'web-01' }, 'a'), call('search_knowledge', { query: 'port 22 exposed' }, 'b')), text(mixed), text(mixed)])
+  const r = await runGraphAgent(s.ctx, 'how do I fix the open ssh port on web-01?', [], s.emit)
+  assert.notEqual(r.content, IDK)
+  assert.match(r.content, /Some suggested steps were left out/)
+  assert.match(r.content, /Allow SSH only from the admin network/)
+  assert.doesNotMatch(r.content, /disable password logins/)
+  assert.match(r.content, /Port 22 is open on `web-01`/)
+})
+
+test('expert: an invented fact in From your environment is never cut out: still IDK', async () => {
+  const bad = answer('1. Allow SSH only from the admin network and use keys [K1].').replace('`web-01`', '`web-99`')
+  const s = setup('fix', [tools(call('search_graph', { query: 'web-01' }, 'a'), call('search_knowledge', { query: 'port 22 exposed' }, 'b')), text(bad), text(bad)])
+  assert.equal((await runGraphAgent(s.ctx, 'how do I fix the open ssh port on web-01?', [], s.emit)).content, IDK)
+})
+
+// Final run 2 (21 Nov): one unsafe rollback step ("sudo ufw disable") cost a whole long guide.
+test('safety: an unsafe step in the guidance is left out with a note, and the safe steps are released', async () => {
+  const mixed = answer('1. Allow SSH only from the admin network and use keys [K1].\n\n2. If access breaks, run `sudo ufw disable` from the console [K1].')
+  const s = setup('fix', [tools(call('search_graph', { query: 'web-01' }, 'a'), call('search_knowledge', { query: 'port 22 exposed' }, 'b')), text(mixed)])
+  const r = await runGraphAgent(s.ctx, 'how do I fix the open ssh port on web-01?', [], s.emit)
+  assert.notEqual(r.content, IDK)
+  assert.doesNotMatch(r.content, /ufw disable/)
+  assert.match(r.content, /Allow SSH only from the admin network/)
+  assert.match(r.content, /Some suggested steps were left out/)
+  assert.equal(s.reviews(), 1, 'the shortened answer still gets the safety review')
+})
+
+test('safety: when every step is unsafe nothing is left to release, so the rewrite and refusal still apply', async () => {
+  const bad = answer('1. Run `sudo ufw disable` so the vendor can connect [K1].')
+  const s = setup('fix', [tools(call('search_graph', { query: 'web-01' }, 'a'), call('search_knowledge', { query: 'port 22 exposed' }, 'b')), text(bad), text(bad)])
+  const r = await runGraphAgent(s.ctx, 'how do I fix the open ssh port on web-01?', [], s.emit)
+  assert.doesNotMatch(r.content, /ufw disable/)
+})
+
+test('safety: a rewrite that adds an unsafe rollback step has that step cut, and the rest is reviewed (Q36 check, 21 Nov)', async () => {
+  const draft = answer('1. Allow SSH only from the admin network and use keys [K1].')
+  const rewrite = answer('1. Allow SSH only from the admin network and use keys [K1].\n\n2. Rollback: if access breaks, run `sudo ufw disable` [K1].')
+  const s = setup('fix', [tools(call('search_graph', { query: 'web-01' }, 'a'), call('search_knowledge', { query: 'port 22 exposed' }, 'b')), text(draft), text(rewrite)],
+    { review: ['{"ok": false, "reasons": ["no rollback plan"]}', '{"ok": true, "reasons": []}'] })
+  const r = await runGraphAgent(s.ctx, 'how do I fix the open ssh port on web-01?', [], s.emit)
+  assert.doesNotMatch(r.content, /ufw disable/)
+  assert.match(r.content, /Allow SSH only from the admin network/)
+})

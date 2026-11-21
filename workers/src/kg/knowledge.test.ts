@@ -88,3 +88,43 @@ test('a capped fix answer (ends with the too-long note) needs no Confidence line
   assert.deepEqual(confidenceProblems(capped, 'fix'), [])
   assert.deepEqual(expertCitationProblems(capped, new Set(['K2']), new Set(['L1'])), [])
 })
+
+test('a guidance step citing the advisory or its step [S#] is backed; any other S citation is not (eval v7, 21 Nov)', () => {
+  // its own paragraph, so the [K2] above does not cover it
+  const text = GOOD.replace('2. Use keys instead of passwords [K2][L1].', '\n2. Run a fresh SBOM scan on `web-01` to confirm the fix [S3].')
+  assert.deepEqual(expertCitationProblems(text, new Set(['K2']), new Set(), new Set(['S3'])), [])
+  assert.equal(expertCitationProblems(text, new Set(['K2']), new Set(), new Set(['S2'])).length, 1)
+  assert.equal(expertCitationProblems(text, new Set(['K2']), new Set()).length, 1)
+})
+
+test('an "I don\'t know" paragraph under Expert guidance claims nothing, so it needs no citation (eval v7, 21 Nov)', () => {
+  const text = GOOD.replace('2. Use keys instead of passwords [K2][L1].', "\nI don't know the exact PowerShell command for this setting.")
+  assert.deepEqual(expertCitationProblems(text, new Set(['K2']), new Set(['L1'])), [])
+  // advice after the admission still needs a citation
+  const advice = GOOD.replace('2. Use keys instead of passwords [K2][L1].', "\nI don't know the exact command. Turn on NLA in the registry.")
+  assert.equal(expertCitationProblems(advice, new Set(['K2']), new Set(['L1'])).length, 1)
+})
+
+test('a title line under Expert guidance names a topic and needs no citation (eval v7, 21 Nov)', () => {
+  const text = GOOD.replace('2. Use keys instead of passwords [K2][L1].', '\n6. **Set up monitoring and alerting**\n\n7. Alert on failed logins [K2].')
+  assert.deepEqual(expertCitationProblems(text, new Set(['K2']), new Set(['L1'])), [])
+  assert.deepEqual(expertCitationProblems(GOOD.replace('2. Use keys instead of passwords [K2][L1].', '\n### Step 2: Keys\n\nUse keys [K2].'), new Set(['K2']), new Set(['L1'])), [])
+  // a bold line that gives advice is still advice
+  assert.equal(expertCitationProblems(GOOD.replace('2. Use keys instead of passwords [K2][L1].', '\n**Disable password login now.** It is safer.'), new Set(['K2']), new Set(['L1'])).length, 1)
+})
+
+test('the entries added after eval v7 are found by the questions that lacked them (21 Nov)', () => {
+  const top = (q: string, n = 4) => searchKnowledge(q).slice(0, n).map(e => e.id)
+  assert.ok(top('enable network level authentication for rdp').includes('kb-081'), top('enable network level authentication for rdp').join(','))
+  assert.ok(top('VPN vs RD Gateway for remote desktop').includes('kb-082'))
+  assert.ok(top('account lockout policy against brute force').includes('kb-083'))
+  assert.ok(top('monitor failed rdp logons and alert').includes('kb-084'))
+  assert.ok(top('ssh key management, disable password login').includes('kb-085'))
+  assert.ok(top('mfa options for ssh').includes('kb-086'))
+  assert.ok(top('ssh logging and alerting on linux').includes('kb-087'))
+  assert.ok(top('monitoring for a week after the change').includes('kb-088'))
+})
+
+test('the RD Gateway ports entry is found for "VPN or RD Gateway, which ports" (final run 2, 21 Nov)', () => {
+  assert.ok(searchKnowledge('which port does RD Gateway use').slice(0, 4).some(e => e.id === 'kb-089'))
+})

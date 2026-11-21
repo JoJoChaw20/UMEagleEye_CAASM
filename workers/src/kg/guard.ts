@@ -83,7 +83,7 @@ export async function classify(ai: ModelCall, question: string): Promise<Kind> {
 
 type ValueClass = 'literal' | 'id' | 'number' | 'date' | 'time'
 // What a literal looks like: "Suggested steps" checks only some of these.
-type ValueTag = 'ip' | 'version' | 'cve' | 'fqdn' | 'host' | 'named' | 'caps' | 'code'
+type ValueTag = 'ip' | 'version' | 'cve' | 'fqdn' | 'host' | 'named' | 'caps' | 'code' | 'percent'
 interface Value { raw: string; cls: ValueClass; norm: string; tag?: ValueTag }
 
 // S = this company's data, K = knowledge-base entry, L = live lookup (NVD, OSV, EPSS, CWE, ATT&CK).
@@ -195,8 +195,12 @@ function clockNorm(h: string, m: string, sec?: string, meridiem?: string): strin
 }
 
 /** Full-width digits become digits; emphasis underscores go; the T of an ISO timestamp is split. */
+// Hyphens a model may write in CVE IDs, versions and dates (final run 2: "CVE‑2099‑1111" with U+2011 was
+// read as the numbers 2099 and 1111 and refused). NFKC alone maps U+2011 to U+2010, not to "-".
+const UNICODE_HYPHEN = /[‐‑‒−﹣－]/g
+
 function prepare(input: string): string {
-  return input.normalize('NFKC').replace(/(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g, ' ').replace(/(\d)T(\d)/g, '$1 $2')
+  return input.normalize('NFKC').replace(UNICODE_HYPHEN, '-').replace(/(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g, ' ').replace(/(\d)T(\d)/g, '$1 $2')
 }
 
 const isIPv4 = (v: string): boolean => {
@@ -275,7 +279,8 @@ function extractValues(rawInput: string, stripMarkers: boolean): Value[] {
   for (const m of s.matchAll(NUMBER)) {
     const digits = m[1] ?? '', suffix = (m[2] ?? '').toLowerCase()
     if (COMMON_TERMS.has(`${digits}${suffix}`.toLowerCase()) || /^(st|nd|rd|th)$/.test(suffix)) continue
-    out.push({ raw: digits, cls: 'number', norm: normNumber(digits) })
+    const percent = !suffix && /^\s?%/.test(s.slice((m.index ?? 0) + m[0].length))
+    out.push({ raw: digits, cls: 'number', norm: normNumber(digits), ...(percent ? { tag: 'percent' as const } : {}) })
   }
   return out
 }
@@ -363,7 +368,18 @@ function stepValues(steps: string): Value[] {
 
 // ── The checks ─────────────────────────────────────────────────────
 
-interface EvidenceIndex { text: string; numbers: Set<string>; ids: string[]; dates: Set<string>; times: Set<string> }
+interface EvidenceIndex { text: string; raw: string; numbers: Set<string>; percents: Set<string>; ids: string[]; dates: Set<string>; times: Set<string> }
+
+/** A fraction in the records (EPSS 0.91) written as a percentage (91%, 91.2%): the same value (eval v7). */
+function percentForms(values: Value[]): Set<string> {
+  const out = new Set<string>()
+  for (const v of values) {
+    const x = Number(v.norm)
+    if (v.cls !== 'number' || !v.norm.includes('.') || !(x > 0 && x < 1)) continue
+    for (const d of [0, 1, 2]) out.add(normNumber((x * 100).toFixed(d)))
+  }
+  return out
+}
 
 /** The evidence as plain text: tool results reach here as JSON with `<` escaped. */
 function evidenceText(evidence: string | string[]): string {
@@ -388,7 +404,9 @@ function indexEvidence(evidence: string | string[]): EvidenceIndex {
   return {
     // Dates and times are compared whole, so their digits must not match anything else.
     text: prepare(joined).replace(ISO_DATE, ' ').replace(CLOCK, ' ').toLowerCase(),
+    raw: joined.toLowerCase(),
     numbers: new Set(values.filter(v => v.cls === 'number').map(v => v.norm)),
+    percents: percentForms(values),
     ids: values.filter(v => v.cls === 'id').map(v => v.raw.toLowerCase()),
     dates, times,
   }
@@ -396,8 +414,19 @@ function indexEvidence(evidence: string | string[]): EvidenceIndex {
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&')
 
+// "criticality-5": a field and its value joined into one word, supported by "criticality": 5 in the records (eval v7).
+const FIELD_VALUE = /^([a-z][a-z_]{2,30})-(\d{1,6})$/i
+
 function isSupported(v: Value, index: EvidenceIndex): boolean {
-  if (v.cls === 'number') return index.numbers.has(v.norm)
+  if (v.cls === 'number') return index.numbers.has(v.norm) || (v.tag === 'percent' && index.percents.has(v.norm))
+  const pair = v.cls === 'literal' && v.tag === 'host' ? v.raw.match(FIELD_VALUE) : null
+  if (pair && new RegExp(`"?${escapeRegExp(pair[1]!.toLowerCase())}"?\\s*[:=]\\s*"?${pair[2]}(?![\\d.])`).test(index.raw)) return true
+  // "id_ed25519_web-eval-01": a file name joined with "_" from tool terms and a retrieved host name (eval v7).
+  // Every part with a digit must be a known term or supported on its own.
+  if (v.cls === 'literal' && v.tag === 'host' && v.raw.includes('_')) {
+    const parts = v.raw.split('_').filter(p => /\d/.test(p))
+    if (parts.length > 0 && parts.every(p => COMMON_TERMS.has(p.toLowerCase()) || STEP_TERM.test(p) || isSupported({ ...v, raw: p, norm: p }, index))) return true
+  }
   if (v.cls === 'date') return index.dates.has(v.norm)
   if (v.cls === 'time') return index.times.has(v.norm)
   // An id may be the start of a longer one: the short form of a UUID.
@@ -405,13 +434,30 @@ function isSupported(v: Value, index: EvidenceIndex): boolean {
   return new RegExp(`(?<![\\w-]|\\d\\.)${escapeRegExp(v.raw.toLowerCase())}(?![\\w-]|\\.\\d)`).test(index.text)
 }
 
+// Words that correct a value rather than state it: "3.9.9 is not the fixed version", "3.9.9 is incorrect".
+const CORRECTS = /\b(?:not|no|isn['’]t|aren['’]t|doesn['’]t|don['’]t|does\s+not|do\s+not|never|incorrect|wrong|mistaken|invalid|instead|rather\s+than|nonexistent)\b/i
+
+/**
+ * A value the user wrote may be named to correct it (eval v7: "should I install 3.9.9?" needs "3.9.9 is not
+ * the fix"). It passes only when every sentence that names it also corrects it, so it is never stated as fact.
+ */
+function correctsQuestionValue(raw: string, text: string, question: string): boolean {
+  if (!question.toLowerCase().includes(raw.toLowerCase())) return false
+  const named = text.split(/(?<=[.!?;])\s+|\n+/).filter(s => s.toLowerCase().includes(raw.toLowerCase()))
+  return named.length > 0 && named.every(s => CORRECTS.test(s))
+}
+
 /** The values in the answer that the retrieved content does not support. Empty means it passed. */
-export function verifyAnswer(text: string, evidence: string | string[], kind: Kind): string[] {
+export function verifyAnswer(text: string, evidence: string | string[], kind: Kind, question?: string): string[] {
   if (kind !== 'system' && kind !== 'fix') return []
   const index = indexEvidence(evidence)
   const parts = kind === 'fix' ? splitFix(text) : { checked: text, steps: '' }
-  const values = [...extractValues(parts.checked, true), ...stepValues(parts.steps)]
-  return [...new Set(values.filter(v => !isSupported(v, index)).map(v => v.raw))]
+  // In the suggested steps, a value the user wrote may be used as given (final run 3: "allow SSH only from
+  // 10.88.0.0/24" needs that network in the ufw command). Stated as a fact it still needs a source.
+  const asked = (v: Value) => Boolean(question && question.toLowerCase().includes(v.raw.toLowerCase()))
+  const values = [...extractValues(parts.checked, true), ...stepValues(parts.steps).filter(v => !asked(v))]
+  const unsupported = values.filter(v => !isSupported(v, index) && !(question && correctsQuestionValue(v.raw, text, question)))
+  return [...new Set(unsupported.map(v => v.raw))]
 }
 
 /** The source references an answer cites, such as S1. */
@@ -622,18 +668,112 @@ function guidanceParagraphs(text: string): string[] {
     block.push(line)
   })
   flush()
-  return paragraphs.filter(p => p !== LONG_NOTE && /[\p{L}\p{N}]/u.test(p.replace(CITATION, ' ')))
+  // A paragraph that only says what is not known, or only titles the steps after it, claims nothing,
+  // so it needs no citation (eval v7).
+  return paragraphs.filter(p => p !== LONG_NOTE && /[\p{L}\p{N}]/u.test(p.replace(CITATION, ' ')) && !isPlainRefusal(p) && !TITLE_ONLY.test(p))
+}
+
+// A title line: a markdown heading, or a whole line in bold ("6. **Set up monitoring and alerting**").
+const TITLE_ONLY = /^\s*(?:#{1,6}\s+[^\n]*|(?:\d+[.)]\s*)?(?:\*\*|__)[^*_\n]{1,100}(?:\*\*|__)\s*:?)\s*$/
+
+const UNCITED = 'expert guidance without a [K#] or [L#] reference: '
+const uncitedKey = (p: string) => p.replace(/\s+/g, ' ').slice(0, 60)
+
+export const GUIDANCE_PRUNED_NOTE = 'Some suggested steps were left out because they could not be checked against a source.'
+
+/** A guidance step: a prose paragraph with the code blocks after it. `from` and `to` are line numbers. */
+interface GuidanceUnit { from: number; to: number; prose: string[]; all: string[] }
+
+function guidanceUnits(lines: string[]): GuidanceUnit[] {
+  const units: GuidanceUnit[] = []
+  let inGuidance = false, level = 7, fenced = false, lastProse = false, cur: GuidanceUnit | null = null
+  const close = (at: number) => { if (cur) { cur.to = at; units.push(cur); cur = null } }
+  lines.forEach((line, i) => {
+    const fence = /^\s*(```|~~~)/.test(line)
+    const code = fenced || fence
+    if (fence) fenced = !fenced
+    if (!code) {
+      const lab = labelOf(line)
+      if (lab) { close(i); inGuidance = lab.name === 'expert guidance'; level = lab.level; lastProse = false; return }
+      if (inGuidance && (line.match(/^\s*(#{1,6})\s/)?.[1]?.length ?? 8) <= level) { close(i); inGuidance = false; lastProse = false; return }
+    }
+    if (!inGuidance) return
+    if (!code && (/^\s*>/.test(line) || CONFIDENCE_LINE.test(line) || CHECK_WITH_LINE.test(line))) { close(i); lastProse = false; return }
+    if (code) { if (!cur) cur = { from: i, to: i, prose: [], all: [] }; cur.all.push(line); lastProse = false; return }
+    if (!line.trim()) { if (cur) cur.all.push(line); lastProse = false; return }
+    if (!(lastProse && cur)) { close(i); cur = { from: i, to: i, prose: [], all: [] } }
+    cur!.prose.push(line); cur!.all.push(line); lastProse = true
+  })
+  close(lines.length)
+  return units
+}
+
+/**
+ * PURE. When an answer still fails after its one retry and every problem sits in a guidance step (an
+ * uncited paragraph, or a value no tool returned), the answer without those steps and their commands.
+ * Removing steps cannot add a claim, and the caller checks the result again in full. Null when any
+ * problem is elsewhere (a fact in "From your environment" is never cut) or no step would be left.
+ */
+export function pruneGuidance(text: string, problems: string[]): string | null {
+  const lines = text.split(/\r?\n/)
+  const units = guidanceUnits(lines)
+  const drop = new Set<GuidanceUnit>()
+  return collectDrops(units, problems, drop) ? cutUnits(lines, units, drop) : null
+}
+
+/**
+ * PURE. The answer without the guidance steps that contain these phrases (the safety check's matches,
+ * such as "ufw disable" in a rollback step). Null when a phrase is outside the guidance or no step would be left.
+ */
+export function pruneGuidanceContaining(text: string, phrases: string[]): string | null {
+  const lines = text.split(/\r?\n/)
+  const units = guidanceUnits(lines)
+  const flat = (t: string) => t.replace(/\s+/g, ' ').toLowerCase()
+  const drop = new Set<GuidanceUnit>()
+  for (const phrase of phrases) {
+    const holding = units.filter(u => flat(u.all.join('\n')).includes(flat(phrase)))
+    if (holding.length === 0) return null
+    for (const u of holding) drop.add(u)
+  }
+  return cutUnits(lines, units, drop)
+}
+
+function cutUnits(lines: string[], units: GuidanceUnit[], drop: Set<GuidanceUnit>): string | null {
+  if (drop.size === 0 || units.every(u => drop.has(u) || u.prose.length === 0)) return null
+  const cut = new Set<number>()
+  for (const u of drop) for (let i = u.from; i < u.to; i++) cut.add(i)
+  return lines.filter((_, i) => !cut.has(i)).join('\n')
+}
+
+function collectDrops(units: GuidanceUnit[], problems: string[], drop: Set<GuidanceUnit>): boolean {
+  for (const p of problems) {
+    if (p.startsWith(UNCITED)) {
+      const key = p.slice(UNCITED.length).replace(/^"|"$/g, '')
+      const unit = units.find(u => uncitedKey(u.prose.join('\n').trim()) === key)
+      if (!unit) return false
+      drop.add(unit)
+      continue
+    }
+    // A value: the problem is the value itself. Anything else (structure, citations, confidence) is not cut.
+    if (/\s/.test(p.trim()) || !p.trim()) return false
+    const value = p.trim().toLowerCase()
+    const holding = units.filter(u => u.all.join('\n').toLowerCase().includes(value))
+    if (holding.length === 0) return false
+    for (const u of holding) drop.add(u)
+  }
+  return true
 }
 
 /**
  * Every paragraph under "## Expert guidance" cites a knowledge-base entry [K#] or live lookup [L#] that
  * was actually given, and no K or L reference anywhere in the answer is unknown.
  */
-export function expertCitationProblems(text: string, knownK: Set<string>, knownL: Set<string>): string[] {
+export function expertCitationProblems(text: string, knownK: Set<string>, knownL: Set<string>, plan: Set<string> = new Set()): string[] {
   const problems = [...citedRefsOf(text, 'K').filter(r => !knownK.has(r)), ...citedRefsOf(text, 'L').filter(r => !knownL.has(r))].map(r => `[${r}]`)
   for (const p of guidanceParagraphs(text)) {
-    const cites = [...citedRefsOf(p, 'K').filter(r => knownK.has(r)), ...citedRefsOf(p, 'L').filter(r => knownL.has(r))]
-    if (cites.length === 0) problems.push(`expert guidance without a [K#] or [L#] reference: "${p.replace(/\s+/g, ' ').slice(0, 60)}"`)
+    // plan: the advisory and its steps, the organisation's own remediation plan ("rescan to confirm the fix", eval v7).
+    const cites = [...citedRefsOf(p, 'K').filter(r => knownK.has(r)), ...citedRefsOf(p, 'L').filter(r => knownL.has(r)), ...citedRefs(p).filter(r => plan.has(r))]
+    if (cites.length === 0) problems.push(`${UNCITED}"${uncitedKey(p)}"`)
   }
   return problems
 }
@@ -657,7 +797,7 @@ export function confidenceProblems(text: string, kind: Kind): string[] {
 
 /** What each fix section holds, as the prompt words it (agent.ts FIX_FORMAT). */
 export const FOUND_HINT = 'State only facts about this company from the tool results, and cite each one.'
-export const STEPS_HINT = 'Give numbered steps for this asset\'s operating system, each paragraph citing the knowledge-base entry [K#] or live lookup [L#] it follows.'
+export const STEPS_HINT = 'Give numbered steps for this asset\'s operating system, each paragraph citing the knowledge-base entry [K#], live lookup [L#] or advisory step [S#] it follows.'
 
 // The opening words of each instruction, current and earlier wording, up to the end of its sentence.
 const ECHO = /^(?:state only facts about this company|facts about this company from the tool results|give numbered steps from general security practice|numbered steps from general security practice|give numbered steps for this asset|numbered steps for this asset)[^.\n]*\.?\s*/i
