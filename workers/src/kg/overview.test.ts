@@ -103,6 +103,27 @@ test('overview: an invented number is still refused', async () => {
   assert.match(r.content, /I don't know/)
 })
 
+// Eval v6 (21 Nov 2026): "What should I fix first?" searched the knowledge base, wrote an uncited
+// "## Expert guidance" section twice and ended as "I don't know". An overview answer lists what to fix
+// and points to each advisory; how to fix it is the advisory's job.
+const toolNames = (t: unknown[] | undefined) => (t as Array<{ function: { name: string } }> ?? []).map(x => x.function.name)
+
+test('overview: "what should I fix first" is not offered the knowledge search and is told to point to advisories', async () => {
+  const ov = buildOverview(rows(), { tenantId: 't', detail: true }, NOW)
+  const answer = `## Overall status\n- Posture score: ${ov.posture_score} [S1]\n\n## What to fix first\n1. P1: \`web-01\` openssl 1.0.0-1, advisory 7c9e6679 [S1].`
+  const s = setup('fix', [{ text: '', toolCalls: [call('get_overview', {})], truncated: false }, text(answer)], async () => ov)
+  const r = await runGraphAgent(s.ctx, 'What should I fix first?', [], s.emit)
+  assert.equal(r.content, answer)
+  for (const seen of s.seen) assert.ok(!toolNames(seen.tools).includes('search_knowledge'), 'search_knowledge offered to an overview question')
+  assert.match(String(s.seen[0]!.messages[0]!.content), /no "## Expert guidance" section/)
+})
+
+test('overview: a question that is not an overview is still offered the knowledge search', async () => {
+  const s = setup('fix', [text("I don't know.")])
+  await runGraphAgent(s.ctx, 'how do I restrict SSH on web-01?', [], s.emit)
+  assert.ok(toolNames(s.seen[0]!.tools).includes('search_knowledge'))
+})
+
 test('overview: not offered when the route did not wire it', async () => {
   const s = setup('system', [text("I don't know.")])
   await runGraphAgent(s.ctx, 'how are we doing?', [], s.emit)

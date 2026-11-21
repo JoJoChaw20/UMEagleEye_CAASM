@@ -214,6 +214,7 @@ const OVERVIEW_RULE = [
   'Answer with "## Overall status": one line per area with its exact numbers (posture score; assets: total, critical, internet-facing; agents: online, offline; scans in the last 7 days: total, failed; open alerts: critical, high, medium, low, new this week; advisories active; priority tiers P0, P1, P2, P3), each cited.',
   'Then "## What to fix first": the P0 items, then the P1 items from top_priorities, each with its device, what it is about and its advisory ID if it has one, cited. If there are no P0 or P1 items, say so and list the P2 items. If the overview gives counts only, give the tier counts and say individual items are not shown for this role.',
   'Then one or two sentences on what stands out, using only these numbers. Copy every number exactly as given: never calculate percentages, sums or differences. Never call this an all-clear while alerts are open.',
+  'Write no "## Expert guidance" section and no how-to-fix steps: how to fix an item is in its advisory, so give the advisory ID for the user to open.',
 ].join('\n')
 
 /** The Platform Superadmin sees companies as statistics: counts and totals, never one record. */
@@ -274,6 +275,9 @@ interface RunState {
   budget: Budget; dropProposal: (key: string) => Promise<void>
   /** Why a requested close was refused, in the server's words. Released as the answer when no proposal was made. */
   closeRefusal: string | null
+  /** An overview question answered from get_overview: it lists what to fix and points to advisories, so the
+   *  knowledge search is not offered (eval v6: it led to an uncited Expert guidance section and "I don't know"). */
+  overview?: boolean
 }
 
 /** A refused close: the model hears it as an error, and the user gets this exact text. */
@@ -563,6 +567,7 @@ const NEEDS = new Map(TOOLS.filter(t => t.needs).map(t => [t.name, t.needs!]))
 function offeredTools(s: RunState) {
   return OPENAI_TOOLS.filter(t => {
     if (t.function.name === 'propose_resolve_advisory' && !s.canPropose) return false
+    if (t.function.name === 'search_knowledge' && s.overview) return false
     const needs = NEEDS.get(t.function.name)
     return !needs || Boolean(s.ctx[needs])
   })
@@ -1094,7 +1099,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (asksToClose && !roleCanClose) notes.push(cannotClose(ctx.user))
     const canPropose = asksToClose && roleCanClose
     const countsOnly = ctx.user.role === 'superadmin'
-    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook('S'), kbook: new SourceBook('K'), lbook: new SourceBook('L'), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null }
+    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook('S'), kbook: new SourceBook('K'), lbook: new SourceBook('L'), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null, overview: overviewQuestion && Boolean(ctx.overview) }
     state = s
     // Values the server computed (current UTC time, recorded range, gaps, the time asked in UTC+8 and UTC) may be
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
