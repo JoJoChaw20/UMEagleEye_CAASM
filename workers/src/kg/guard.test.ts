@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { citationProblems, classify, isTypedConfirmation, onlyAsksToClose, stripFormatEcho, closureClaimProblems, generalAnswerProblems, labelSuggestedSteps, parseKind, refersToOwnOrganisation, structureProblems, superadminRefusal, SUPERADMIN_ADVISORY_REFUSAL, toolMarkupProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ModelCall } from './guard'
+import { citationProblems, classify, isTypedConfirmation, onlyAsksToClose, stripFormatEcho, closureClaimProblems, generalAnswerProblems, labelSuggestedSteps, parseKind, refersToOwnOrganisation, structureProblems, superadminRefusal, SUPERADMIN_ADVISORY_REFUSAL, toolMarkupProblems, pruneGuidance, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ModelCall } from './guard'
 
 const EVIDENCE = [
   'Device `web-01` (10.0.0.5), MAC aa:bb:cc:dd:ee:ff, 5 open critical alerts, 1,234 packages, score 72.0, port 8080.',
@@ -543,4 +543,104 @@ test('superadminRefusal: fix or an advisory is refused in fixed words; general a
   assert.equal(superadminRefusal('system', true), SUPERADMIN_ADVISORY_REFUSAL)
   assert.equal(superadminRefusal('general', false), null)
   assert.equal(superadminRefusal('system', false), null)
+})
+
+// Eval v7 (21 Nov): correct answers ended as "I don't know" because the fact check rejected these.
+test('an EPSS fraction in the records supports the same value written as a percentage', () => {
+  const ev = 'CVE-2099-1111 EPSS 0.91 CVSS 9.8'
+  assert.deepEqual(verifyAnswer('EPSS is 91% [S1].', ev, 'system'), [])
+  assert.deepEqual(verifyAnswer('EPSS is 91 % [S1].', ev, 'system'), [])
+  // only as a percentage, and only the same value
+  assert.deepEqual(verifyAnswer('You have 91 hosts [S1].', ev, 'system'), ['91'])
+  assert.deepEqual(verifyAnswer('EPSS is 92% [S1].', ev, 'system'), ['92'])
+  assert.deepEqual(verifyAnswer('EPSS is 91.2% [S1].', 'EPSS 0.91234', 'system'), [])
+})
+
+test('a value from the question may be named to correct it, never stated as a fact', () => {
+  const ev = 'openssl 1.0.0-1, fix_to 1.0.1-1'
+  const q = 'I think the fixed version is 3.9.9, so should I install openssl 3.9.9?'
+  assert.deepEqual(verifyAnswer('No: 3.9.9 is not the fixed version; upgrade to 1.0.1-1 [S1].', ev, 'system', q), [])
+  assert.deepEqual(verifyAnswer('Version 3.9.9 is incorrect. The fix is 1.0.1-1 [S1].', ev, 'system', q), [])
+  // the user's value stated as the fix still fails
+  assert.deepEqual(verifyAnswer('Yes, install 3.9.9 [S1].', ev, 'system', q), ['3.9.9'])
+  // a value not in the question still fails, even beside a correction
+  assert.deepEqual(verifyAnswer('No, 4.0.0 is not the fix [S1].', ev, 'system', q), ['4.0.0'])
+  // without the question nothing changes
+  assert.deepEqual(verifyAnswer('No: 3.9.9 is not the fixed version [S1].', ev, 'system'), ['3.9.9'])
+})
+
+test('a field and its value joined with a hyphen are supported when the records hold that pair', () => {
+  const ev = '{"hostname":"web-eval-01","criticality":5}'
+  assert.deepEqual(verifyAnswer('`web-eval-01` is criticality-5 [S1].', ev, 'system'), [])
+  assert.deepEqual(verifyAnswer('`web-eval-01` is criticality-4 [S1].', ev, 'system'), ['criticality-4'])
+})
+
+test('a file name built from a retrieved host name is supported (eval v7, 21 Nov)', () => {
+  const ev = 'Device `web-eval-01` (10.88.0.10)'
+  const steps = '## From your environment\nSSH is open on `web-eval-01` [S1].\n\n## Expert guidance\n1. Create the key id_ed25519_web-eval-01 for this server [K1].\n\nConfidence: High - cited.'
+  assert.deepEqual(verifyAnswer(steps, ev, 'fix'), [])
+  assert.deepEqual(verifyAnswer(steps.replace('id_ed25519_web-eval-01', 'id_ed25519_db-prod-07'), ev, 'fix'), ['id_ed25519_db-prod-07'])
+})
+
+const PRUNE = [
+  '## From your environment',
+  'SSH is open on `web-eval-01` [S1].',
+  '',
+  '## Expert guidance',
+  '1. Restrict SSH to the admin network [K1].',
+  '```',
+  'sudo ufw allow from 10.88.0.0/24 to any port 22',
+  '```',
+  '',
+  '2. Copy the key to bastion-07 first.',
+  '```',
+  'ssh-copy-id admin@bastion-07',
+  '```',
+  '',
+  '3. Turn on fail2ban.',
+  '',
+  'Confidence: Medium - the steps are cited.',
+].join('\n')
+
+test('pruneGuidance leaves out only the guidance steps that caused the problems, with their commands', () => {
+  const out = pruneGuidance(PRUNE, ['bastion-07', 'expert guidance without a [K#] or [L#] reference: "3. Turn on fail2ban."'])
+  assert.ok(out)
+  assert.match(out!, /1\. Restrict SSH/)
+  assert.match(out!, /ufw allow from 10\.88\.0\.0\/24/)
+  assert.doesNotMatch(out!, /bastion-07|fail2ban/)
+  assert.match(out!, /SSH is open on `web-eval-01`/)
+  assert.match(out!, /Confidence: Medium/)
+})
+
+test('pruneGuidance gives up when a problem is outside the guidance or nothing would be left', () => {
+  // a fact in From your environment is never cut: the answer must be right or "I don't know"
+  assert.equal(pruneGuidance(PRUNE.replace('`web-eval-01`', '`web-eval-09`'), ['web-eval-09']), null)
+  // a problem that is not a value or an uncited step
+  assert.equal(pruneGuidance(PRUNE, ['missing section: What we found']), null)
+  // every step would go
+  assert.equal(pruneGuidance(PRUNE, ['10.88.0.0', 'bastion-07', 'expert guidance without a [K#] or [L#] reference: "3. Turn on fail2ban."']), null)
+  // a paragraph the problem names is not there
+  assert.equal(pruneGuidance(PRUNE, ['expert guidance without a [K#] or [L#] reference: "9. Something else"']), null)
+})
+
+test('Unicode hyphens in CVE IDs, versions and dates are read as "-" (final run 2, 21 Nov)', () => {
+  const ev = 'CVE-2099-1111 openssl 1.0.0-1 fix 1.0.1-1 created 2026-11-21'
+  for (const h of ['‐', '‑', '‒', '−', '﹣', '－'])
+    assert.deepEqual(verifyAnswer(`CVE${h}2099${h}1111 needs openssl 1.0.1${h}1, seen 2026${h}11${h}21 [S1].`, ev, 'system'), [], JSON.stringify(h))
+  // an invented CVE with such a hyphen is still caught, as the whole ID
+  assert.deepEqual(verifyAnswer('Also CVE‑2099‑9999 [S1].', ev, 'system'), ['CVE-2099-9999'])
+})
+
+test('an address the user gave may be used in the suggested commands, never stated as a fact (final run 3, 21 Nov)', () => {
+  const ev = 'Device `web-eval-01` (10.88.0.10), port 22 open'
+  const q = 'Give me ufw commands to allow SSH only from 10.88.0.0/24.'
+  const steps = (cmd: string) => `## From your environment\nSSH is open on \`web-eval-01\` (10.88.0.10) [S1].\n\n## Expert guidance\n1. Allow your admin network [K1]:\n\`\`\`\n${cmd}\n\`\`\`\n\nConfidence: High - cited.`
+  assert.deepEqual(verifyAnswer(steps('sudo ufw allow from 10.88.0.0/24 to any port 22 proto tcp'), ev, 'fix', q), [])
+  // without the question it is still an address nothing returned
+  assert.deepEqual(verifyAnswer(steps('sudo ufw allow from 10.88.0.0/24 to any port 22 proto tcp'), ev, 'fix'), ['10.88.0.0'])
+  // an address the user did not give is still refused in a command
+  assert.deepEqual(verifyAnswer(steps('sudo ufw allow from 10.77.0.0/24 to any port 22'), ev, 'fix', q), ['10.77.0.0'])
+  // the user's address stated as a fact about the environment is still refused
+  const fact = '## From your environment\nThe admin network is 10.88.0.0/24 [S1].\n\n## Expert guidance\n1. Restrict SSH [K1].\n\nConfidence: High - cited.'
+  assert.ok(verifyAnswer(fact, ev, 'fix', q).includes('10.88.0.0'))
 })

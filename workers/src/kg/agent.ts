@@ -21,7 +21,7 @@ import { ACTIVE_ADVISORY_STATUSES, advisoryIdPrefix } from '../lib/advisoryScope
 import { decide, refusalMessage } from '../lib/actions'
 import { accessFor, accessSql, analystAccess, type Access } from './access'
 import { clip, type Row } from './extract'
-import { FOUND_HINT, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, isOverviewQuestion, isPlainRefusal, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
+import { FOUND_HINT, GUIDANCE_PRUNED_NOTE, IDK, STEPS_HINT, citationProblems, citedRefs, classify, closureClaimProblems, generalAnswerProblems, isTypedConfirmation, labelSuggestedSteps, onlyAsksToClose, refersToOwnOrganisation, stripFormatEcho, structureProblems, isOverviewQuestion, isPlainRefusal, superadminRefusal, toolMarkupProblems, citedRefsOf, confidenceProblems, expertCitationProblems, pruneGuidance, pruneGuidanceContaining, verifyAnswer, wantsAdvisoryClosed, wrapUntrusted, type ChatMessage, type Kind, type ModelCall, type ModelOptions, type ModelReply, type ToolCall } from './guard'
 import { refreshIfStale, refreshPlatformProblems } from './problems'
 import { lastSbomColumn, sameProblemOpen, stillDetectedMessage } from './detection'
 import { PERF_LIMITS_NOTE, askedTimeNote, gapRanges, refreshPerf } from './perf'
@@ -81,6 +81,8 @@ export class AnswerDeadline extends Error {
   constructor() { super('The answer time limit was reached.') }
 }
 const MAX_OUTPUT_TOKENS = 4096
+/** 0, not 0.2: at 0.2 the same question passed in one evaluation run and ended as "I don't know" in the next (v6 and v7, 21 Nov). */
+const ANSWER_TEMPERATURE = 0
 const HISTORY_TURNS = 6
 const HISTORY_CHARS = 1000
 const PROBLEM_LIST_MAX = 20
@@ -189,7 +191,7 @@ const PROPOSE_RULE = 'The user asked to close an advisory: call propose_resolve_
 const FIX_FORMAT = [
   'Write the answer in exactly two sections, in this order. Each section starts with its heading alone on its own line, written exactly as "## From your environment" and "## Expert guidance", with nothing after the heading on that line. Never copy these instructions into the answer.',
   `Under the first heading: ${FOUND_HINT}`,
-  `Under the second heading: ${STEPS_HINT} Call search_knowledge first (and lookup_cve for a CVE when offered). Advice you cannot cite to a [K#] or [L#] ref is left out. Where a step names this company's asset, port or version, use the real value from From your environment, never a placeholder or an invented example. Name no IP address, CVE ID, hostname or advisory ID that is not in the tool results. Prefer the least risky change; say when a backup, a maintenance window or a rollback plan is needed.`,
+  `Under the second heading: ${STEPS_HINT} Call search_knowledge first (and lookup_cve for a CVE when offered). Advice you cannot cite to a [K#] or [L#] ref, or to the advisory step [S#] it repeats, is left out. Where a step names this company's asset, port or version, use the real value from From your environment, never a placeholder or an invented example. Name no IP address, CVE ID, hostname or advisory ID that is not in the tool results. Prefer the least risky change; say when a backup, a maintenance window or a rollback plan is needed. A rollback restores the saved rules or the previous version; it never switches a security control off.`,
   'End with one line "Confidence: High", "Confidence: Medium" or "Confidence: Low", then a dash and the reason. With Low, add a line "Check with: <who>", such as the system owner or the vendor.',
 ]
 
@@ -262,6 +264,8 @@ class SourceBook {
 
   refs(): Set<string> { return new Set([...this.byKey.values()].map(s => s.ref)) }
 
+  refsOfType(types: string[]): Set<string> { return new Set([...this.byKey.values()].filter(s => types.includes(s.type)).map(s => s.ref)) }
+
   cited(text: string): Source[] {
     const refs = new Set(this.prefix === 'S' ? citedRefs(text) : citedRefsOf(text, this.prefix))
     return [...this.byKey.values()].filter(s => refs.has(s.ref))
@@ -278,6 +282,8 @@ interface RunState {
   /** An overview question answered from get_overview: it lists what to fix and points to advisories, so the
    *  knowledge search is not offered (eval v6: it led to an uncited Expert guidance section and "I don't know"). */
   overview?: boolean
+  /** The user's question: a value the user wrote may be named in the answer to correct it (eval v7: "3.9.9"). */
+  question?: string
 }
 
 /** A refused close: the model hears it as an error, and the user gets this exact text. */
@@ -916,7 +922,10 @@ async function finishAnswer(ai: ModelCall, budget: Budget, emit: Emit, messages:
   return { text: joinContinuation(parts, true), toolCalls: [], truncated: false }
 }
 
-type SafetyOutcome = { outcome: 'ok'; reply: ModelReply } | { outcome: 'idk' } | { outcome: 'refuse' }
+type SafetyOutcome = { outcome: 'ok'; reply: ModelReply; pruned?: boolean } | { outcome: 'idk' } | { outcome: 'refuse' }
+
+/** What a guidance step may be left out for: the safety check's matched phrases, or verification problems. */
+type PruneFor = { phrases: string[] } | { problems: string[] }
 
 /**
  * The safety review of an answer that already passed verification. The fixed check runs first, then the
@@ -926,12 +935,17 @@ type SafetyOutcome = { outcome: 'ok'; reply: ModelReply } | { outcome: 'idk' } |
  */
 async function safetyGate(
   ai: ModelCall, messages: ChatMessage[], reply: ModelReply,
-  o: { question: string; review: boolean; advisoryText?: string; recheck: (r: ModelReply) => string[]; tidy?: (r: ModelReply) => ModelReply; finish?: (m: ChatMessage[], r: ModelReply) => Promise<ModelReply> },
+  o: { question: string; review: boolean; advisoryText?: string; recheck: (r: ModelReply) => string[]; tidy?: (r: ModelReply) => ModelReply; finish?: (m: ChatMessage[], r: ModelReply) => Promise<ModelReply>; staging?: boolean; prune?: (r: ModelReply, why: PruneFor) => ModelReply | null },
 ): Promise<SafetyOutcome> {
   const reasonsFor = async (r: ModelReply): Promise<string[]> => {
     const matches = unsafeMatches(r.text)
     if (matches.length > 0) {
       console.warn(`[kg-safety] fixed check matched: ${matches.slice(0, 3).map(m => `${m.what} <${m.phrase}>`).join('; ')}`)
+      // Staging holds only test data, so it may log the sentence: it shows whether the match was advice or a warning.
+      if (o.staging) for (const m of matches.slice(0, 3)) {
+        const at = r.text.indexOf(m.phrase)
+        if (at >= 0) console.warn(`[kg-safety] staging: context: ${r.text.slice(Math.max(0, at - 200), at + m.phrase.length + 120).replace(/\s+/g, ' ')}`)
+      }
       return [...new Set(matches.map(m => m.what))]
     }
     if (!o.review || isPlainRefusal(r.text)) return []
@@ -941,26 +955,52 @@ async function safetyGate(
   const first = await reasonsFor(reply)
   if (first.length === 0) return { outcome: 'ok', reply }
   console.warn(`[kg-safety] answer failed the safety review: ${first.slice(0, 3).join('; ')}`)
+  // The fixed check found unsafe advice only inside some guidance steps (final run 2: a rollback step with
+  // "sudo ufw disable" in a long guide): leave those steps out and review the rest, the model review included.
+  // Removing steps adds no claim; if anything is still wrong, the rewrite below runs as before.
+  const matched = unsafeMatches(reply.text)
+  const cut = matched.length > 0 ? o.prune?.(reply, { phrases: matched.map(m => m.phrase) }) : null
+  if (cut && (await reasonsFor(cut)).length === 0) {
+    console.warn(`[kg-safety] released without ${matched.length} unsafe guidance item(s)`)
+    return { outcome: 'ok', reply: cut, pruned: true }
+  }
   messages.push({ role: 'assistant', content: reply.text || '(empty)' })
   messages.push({ role: 'user', content: safetyCorrection(first) })
   const first2 = await ai(messages)
   const raw = o.finish ? await o.finish(messages, first2) : first2
-  const second = o.tidy ? o.tidy(raw) : raw
-  if (o.recheck(second).length > 0) return { outcome: 'idk' }
+  let second = o.tidy ? o.tidy(raw) : raw
+  let pruned = false
+  const problems = o.recheck(second)
+  if (problems.length > 0) {
+    // The rewrite added a step nothing supports (final run 2: an uncited restart step): leave it out as the
+    // main check does, or "I don't know" when the problem is elsewhere.
+    const shorter = o.prune?.(second, { problems })
+    if (!shorter) return { outcome: 'idk' }
+    second = shorter
+    pruned = true
+  }
   const again = await reasonsFor(second)
   if (again.length > 0) {
+    // The rewrite added an unsafe step (Q36 check: a rollback that runs "sudo ufw disable"): leave that step
+    // out and review the rest once more; the refusal stays when anything is still wrong.
+    const unsafe = unsafeMatches(second.text)
+    const trimmed = unsafe.length > 0 ? o.prune?.(second, { phrases: unsafe.map(m => m.phrase) }) : null
+    if (trimmed && (await reasonsFor(trimmed)).length === 0) {
+      console.warn(`[kg-safety] rewrite released without ${unsafe.length} unsafe guidance item(s)`)
+      return { outcome: 'ok', reply: trimmed, pruned: true }
+    }
     console.warn(`[kg-safety] rewrite failed the safety review too: ${again.slice(0, 3).join('; ')}`)
     return { outcome: 'refuse' }
   }
-  return { outcome: 'ok', reply: second }
+  return { outcome: 'ok', reply: second, ...(pruned ? { pruned } : {}) }
 }
 
 function problemsWith(text: string, s: RunState, kind: Kind): string[] {
   if (!text.trim()) return ['the answer was empty']
   return [
-    ...toolMarkupProblems(text, s.evidence), ...verifyAnswer(text, s.evidence, kind), ...citationProblems(text, s.book.refs(), kind),
+    ...toolMarkupProblems(text, s.evidence), ...verifyAnswer(text, s.evidence, kind, s.question), ...citationProblems(text, s.book.refs(), kind),
     ...structureProblems(text, kind), ...closureClaimProblems(text),
-    ...expertCitationProblems(text, s.kbook.refs(), s.lbook.refs()), ...confidenceProblems(text, kind),
+    ...expertCitationProblems(text, s.kbook.refs(), s.lbook.refs(), s.book.refsOfType(['advisory', 'advisory_step'])), ...confidenceProblems(text, kind),
   ]
 }
 
@@ -969,7 +1009,7 @@ function correction(problems: string[], kind: Kind): string {
   return [
     `That answer was rejected. These values or parts are not supported by the tool results: ${list}.`,
     'Rewrite the whole answer using only values from the tool results, cite each fact like [S1], and write "I don\'t know" for anything the results do not show.',
-    'Every paragraph under "## Expert guidance" must cite a knowledge-base entry like [K1] or a live lookup like [L1] that you were given; drop advice you cannot cite.',
+    'Every paragraph under "## Expert guidance" must cite a knowledge-base entry like [K1], a live lookup like [L1], or the advisory or advisory step [S#] it comes from; drop advice you cannot cite.',
     kind === 'fix' ? 'Keep the two sections "## From your environment" and "## Expert guidance", and end with the Confidence line.' : '',
     // The rewrite is asked without tools; asked for one anyway, the model wrote tool-call markup (eval v5).
     'Do not request any tool: write the finished answer from the tool results above.',
@@ -1071,7 +1111,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
         console.warn(`[kg-agent] general answer refused after one retry: ${problems.length} item(s) about the company's environment`)
         return await release(IDK)
       }
-      const safe = await safetyGate(ctx.ai, messages, reply, { question, review: false, recheck: r => generalAnswerProblems(r.text), finish: (m, r) => finish(m, r, 0) })
+      const safe = await safetyGate(ctx.ai, messages, reply, { question, review: false, recheck: r => generalAnswerProblems(r.text), finish: (m, r) => finish(m, r, 0), staging: ctx.env.APP_ENV === 'staging' })
       if (safe.outcome === 'refuse') return await release(SAFE_REFUSAL)
       if (safe.outcome === 'idk') return await release(IDK)
       reply = safe.reply
@@ -1099,7 +1139,7 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
     if (asksToClose && !roleCanClose) notes.push(cannotClose(ctx.user))
     const canPropose = asksToClose && roleCanClose
     const countsOnly = ctx.user.role === 'superadmin'
-    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook('S'), kbook: new SourceBook('K'), lbook: new SourceBook('L'), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null, overview: overviewQuestion && Boolean(ctx.overview) }
+    const s: RunState = { ctx, access: countsOnly ? { ...access, tenantId: null } : access, countAccess: access, countsOnly, book: new SourceBook('S'), kbook: new SourceBook('K'), lbook: new SourceBook('L'), calls: 0, evidence: [], proposal: null, canPropose, budget, dropProposal, closeRefusal: null, overview: overviewQuestion && Boolean(ctx.overview), question }
     state = s
     // Values the server computed (current UTC time, recorded range, gaps, the time asked in UTC+8 and UTC) may be
     // cited. Nothing the user or the model wrote goes in: the asked-time line holds only the parsed time.
@@ -1124,28 +1164,51 @@ export async function runGraphAgent(unmetered: GraphCtx, question: string, histo
       notes.push(s.closeRefusal)
     }
     let problems = problemsWith(reply.text, s, kind)
+    const firstTry = { reply, problems }
     if (problems.length > 0) {
       const ids = recordIdsOf(problems)
       console.warn(`[kg-agent] answer rejected (${kind}, ${result.tools.map(t => t.name).join(',') || 'no tools'}): ${problemKinds(problems)}${ids.length ? ` ids=${ids.join(',')}` : ''}`)
+      if (ctx.env.APP_ENV === 'staging') console.warn(`[kg-agent] staging: rejected values: ${problems.slice(0, 20).map(p => clip(p, 80)).join(' | ')}`)
       messages.push({ role: 'assistant', content: reply.text || '(empty)' })
       messages.push({ role: 'user', content: correction(problems, kind) })
       reply = tidy(await finish(messages, await ctx.ai(messages), afterAnswer - 1))
       problems = problemsWith(reply.text, s, kind)
     }
+    // Still failing only in some guidance steps: release the answer without them rather than "I don't know"
+    // (eval v7: long guides lost every verified step to one unchecked line). The cut answer is checked again
+    // in full and still goes through the safety review below.
+    if (problems.length > 0) {
+      for (const tried of [{ reply, problems }, firstTry]) {
+        const pruned = pruneGuidance(tried.reply.text, tried.problems)
+        if (pruned === null || problemsWith(pruned, s, kind).length > 0) continue
+        console.warn(`[kg-agent] released without ${tried.problems.length} unchecked guidance item(s): ${problemKinds(tried.problems)}`)
+        reply = { ...tried.reply, text: pruned }
+        problems = []
+        notes.push(GUIDANCE_PRUNED_NOTE)
+        break
+      }
+    }
     if (problems.length > 0) {
       console.warn(`[kg-agent] answer refused after one retry: ${problems.length} unsupported item(s): ${problemKinds(problems)}`)
+      // Staging holds only test data, so it may log the values themselves: they show whether the check was right.
+      if (ctx.env.APP_ENV === 'staging') console.warn(`[kg-agent] staging: refused values: ${problems.slice(0, 20).map(p => clip(p, 80)).join(' | ')}`)
       await discardProposal(s)
       return await release(IDK, notes)
     }
 
     // Safety: the fixed check on every answer, and for a fix answer the reviewer too. One rewrite, then the safe refusal.
     const advisorySteps = advisory?.sources.filter(x => x.type === 'advisory' || x.type === 'advisory_step').map(x => x.text).join('\n')
-    const safe = await safetyGate(ctx.ai, messages, reply, { question, review: kind === 'fix', advisoryText: advisorySteps, recheck: r => problemsWith(r.text, s, kind), tidy, finish: (m, r) => finish(m, r, 2) })
+    const safe = await safetyGate(ctx.ai, messages, reply, { question, review: kind === 'fix', advisoryText: advisorySteps, recheck: r => problemsWith(r.text, s, kind), tidy, finish: (m, r) => finish(m, r, 2), staging: ctx.env.APP_ENV === 'staging',
+      prune: (r, why) => {
+        const text = 'phrases' in why ? pruneGuidanceContaining(r.text, why.phrases) : pruneGuidance(r.text, why.problems)
+        return text !== null && problemsWith(text, s, kind).length === 0 ? { ...r, text } : null
+      } })
     if (safe.outcome !== 'ok') {
       await discardProposal(s)
       return await release(safe.outcome === 'refuse' ? SAFE_REFUSAL : IDK, notes)
     }
     reply = safe.reply
+    if (safe.pruned && !notes.includes(GUIDANCE_PRUNED_NOTE)) notes.push(GUIDANCE_PRUNED_NOTE)
 
     result.sources = [...s.book.cited(reply.text), ...s.kbook.cited(reply.text), ...s.lbook.cited(reply.text)]
     result.proposal = s.proposal
@@ -1198,7 +1261,7 @@ export function modelFor(env: Env): ModelCall | null {
       // stream (a JSON chunk per token, thinking included) cost ~100 ms of CPU per question on staging,
       // which the Free plan's CPU allowance shares with the agents' heartbeats (18 Nov).
       body: JSON.stringify({
-        model: ai.model, messages, stream: false, max_tokens: opts.maxTokens ?? MAX_OUTPUT_TOKENS, temperature: opts.temperature ?? 0.2,
+        model: ai.model, messages, stream: false, max_tokens: opts.maxTokens ?? MAX_OUTPUT_TOKENS, temperature: opts.temperature ?? ANSWER_TEMPERATURE,
         ...(tools && tools.length ? { tools, tool_choice: 'auto' } : {}),
       }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? ROUND_TIMEOUT_MS),
