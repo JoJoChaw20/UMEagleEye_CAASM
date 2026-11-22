@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter, RefreshCw, CheckCircle2, Server, ExternalLink, Search, X, Globe, Clock, User, ChevronLeft, ChevronRight, Timer, Lightbulb, History, Link2, Crosshair, ArrowRight, ArrowLeft } from 'lucide-react'
+import { Bell, Shield, AlertTriangle, TrendingUp, Zap, Filter, RefreshCw, CheckCircle2, Server, ExternalLink, Search, X, Globe, Clock, User, ChevronLeft, ChevronRight, Timer, Lightbulb, History, Link2, Crosshair, ArrowRight, ArrowLeft, ListChecks } from 'lucide-react'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
@@ -13,7 +13,7 @@ import PackageCveList from '../components/common/PackageCveList'
 import {
   SEVERITY_COLORS, cvssColor, EVENT_TYPE_LABELS, TYPE_GROUPS, RETIRED_TYPES, DRIFT_TYPES, alertLabel, renderDetail, playbook,
   StatusBadge, SevBadge, timeAgo, CHART_TOOLTIP_STYLE, RISKY_PORTS, CONCERNS, riskReasons, isCtiHit,
-  affectedVersions, versionList, fixFor, isPackageAlert,
+  affectedVersions, versionList, fixFor, isPackageAlert, TIERS,
 } from '../components/common/alertMeta'
 import {
   ConcernFilterBar, AgingHeatmap, ReasonChips, PriorityTier, DueLabel, fmtNum,
@@ -21,6 +21,7 @@ import {
 import AdvisoryBody from '../components/common/AdvisoryBody'
 import { historyActor } from '../utils/users'
 import { hoursText, workText } from '../utils/fixTime'
+import WeeklyCard from '../components/alerts/WeeklyCard'
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
@@ -73,7 +74,7 @@ function writeLastVisit(v) {
 }
 
 export default function AlertsPage() {
-  const { can } = useAuth()
+  const { can, isPlatformSuperadmin } = useAuth()
   const canUpdateAlert       = can('alert.manage')
   const canBulk         = can('alert.bulk_update')
   const canAdvisory     = can('advisory.generate')
@@ -85,6 +86,7 @@ export default function AlertsPage() {
   const [search,       setSearch]       = useState(searchParams.get('q') ?? '')
   const [debounced,    setDebounced]    = useState(search)
   const [severity,     setSeverity]     = useState(() => searchParams.get('severity') ?? '')
+  const [tier,         setTier]         = useState(() => (/^[1-4]$/.test(searchParams.get('tier') ?? '') ? searchParams.get('tier') : ''))
   const [age,          setAge]          = useState('')
   // Exact filters from deep links: one asset, or one CVE package
   const [assetFilter,  setAssetFilter]  = useState(() => searchParams.get('asset_id')
@@ -122,6 +124,7 @@ export default function AlertsPage() {
   const queryParams = useMemo(() => {
     const p = { page, page_size: PAGE_SIZE, sort: activeView.sort ?? sort, ...activeView.params }
     if (severity) p.severity = severity
+    if (tier) p.tier = tier
     if (age) p.age = age
     if (assetFilter) p.asset_id = assetFilter.id
     if (pkgFilter) p.package = pkgFilter
@@ -132,7 +135,7 @@ export default function AlertsPage() {
     if (debounced) p.q = debounced
     if (tenantFilter) p.tenant_id = tenantFilter
     return p
-  }, [page, sort, activeView, severity, age, assetFilter, pkgFilter, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
+  }, [page, sort, activeView, severity, tier, age, assetFilter, pkgFilter, typeFilter, deviceType, onlyExposed, onlyNew, debounced, tenantFilter])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -171,8 +174,9 @@ export default function AlertsPage() {
     if (assetFilter) { next.asset_id = assetFilter.id; if (assetFilter.label) next.label = assetFilter.label }
     if (pkgFilter) next.package = pkgFilter
     if (tenantFilter) next.tenant_id = tenantFilter
+    if (tier) next.tier = tier
     setSearchParams(next, { replace: true })
-  }, [view, debounced, detailId, assetFilter, pkgFilter, tenantFilter, setSearchParams])
+  }, [view, debounced, detailId, assetFilter, pkgFilter, tenantFilter, tier, setSearchParams])
 
   const resetPage = (fn) => (v) => { fn(v); setPage(1) }
 
@@ -238,9 +242,9 @@ export default function AlertsPage() {
     return n
   })
 
-  const filtersActive = severity || age || assetFilter || pkgFilter || typeFilter || deviceType || onlyExposed || onlyNew || search
+  const filtersActive = severity || tier || age || assetFilter || pkgFilter || typeFilter || deviceType || onlyExposed || onlyNew || search
   const clearFilters = () => {
-    setSeverity(''); setAge(''); setAssetFilter(null); setPkgFilter(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
+    setSeverity(''); setTier(''); setAge(''); setAssetFilter(null); setPkgFilter(''); setTypeFilter(''); setDeviceType(''); setOnlyExposed(false); setOnlyNew(false); setSearch(''); setPage(1)
   }
   const assetLabel = assetFilter && (assetFilter.label || events[0]?.asset_hostname || events[0]?.asset_ip || 'selected asset')
   // From the drawer: narrow the queue to one asset / one package
@@ -272,6 +276,8 @@ export default function AlertsPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={resetPage(setTenantFilter)} />
+          {/* what raises an alert, how it is ranked, and the fix-time targets */}
+          <Link to="/alerts/rules" className="btn-secondary flex items-center gap-2 text-sm"><ListChecks className="w-4 h-4" /> Alert rules</Link>
           {canDriftAudit && (
             <button onClick={triggerDriftAudit} disabled={auditing} className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-60">
               <RefreshCw className={`w-4 h-4 ${auditing ? 'animate-spin' : ''}`} />
@@ -353,6 +359,9 @@ export default function AlertsPage() {
         </div>
       </div>
 
+      {/* ── Week by week (a tenant's: the platform superadmin picks one above) ── */}
+      {(!isPlatformSuperadmin || tenantFilter) && <WeeklyCard tenantId={isPlatformSuperadmin ? tenantFilter : null} />}
+
       {/* ── Saved views ── */}
       <div className="flex gap-1 overflow-x-auto border-b border-dark-700 -mb-2">
         {VIEWS.filter(v => !v.concern && (canUpdateAlert || v.id !== 'mine')).map(v => (
@@ -381,6 +390,14 @@ export default function AlertsPage() {
           <input value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
             placeholder="Host, IP, CVE or package…" className="input-field text-sm py-1.5 pl-9 w-64" />
         </div>
+        {/* the tiers the queue is ordered by (workers/src/lib/alertRank.ts); severity still splits work within one */}
+        <select value={tier} onChange={e => resetPage(setTier)(e.target.value)} className="input-field text-sm py-1.5 w-44" aria-label="Tier"
+          title="Tier 1 Compromise, 2 Exploited, 3 Fix, 4 Review (Alert rules explains each)">
+          <option value="">All tiers</option>
+          {Object.values(TIERS).map(t => (
+            <option key={t.tier} value={t.tier}>{t.tier} · {t.label}{stats?.by_tier ? ` (${fmtNum(stats.by_tier[t.tier] ?? 0)})` : ''}</option>
+          ))}
+        </select>
         <select value={severity} onChange={e => resetPage(setSeverity)(e.target.value)} className="input-field text-sm py-1.5 w-36">
           <option value="">All severities</option>
           <option value="critical">Critical</option>

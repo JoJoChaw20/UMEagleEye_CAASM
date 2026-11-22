@@ -336,7 +336,7 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
 
     const [
       byStatus, bySeverity, byType, avgRisk, newCount, resolvedCount,
-      mttr, recent30, slaBreaches, dailyNew, dailyResolved, agingRows, concernRows, policyRow,
+      mttr, recent30, slaBreaches, dailyNew, dailyResolved, agingRows, concernRows, policyRow, byTier,
     ] = await Promise.all([
       db.select({ status: events.status, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
@@ -382,7 +382,13 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
       tenantId
         ? db.select({ policy: tenants.slaPolicy }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
         : Promise.resolve([] as { policy: unknown }[]),
+      // open alerts per tier (lib/alertRank.ts), for the Alerts page's tier filter
+      db.select({ tier: sql<number>`${tierExpr}`, count: sql<number>`count(*)::int` })
+        .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+        .where(and(tenantCond, isOpenEvent())).groupBy(sql`1`),
     ])
+    const by_tier: Record<string, number> = { 1: 0, 2: 0, 3: 0, 4: 0 }
+    for (const r of byTier) by_tier[String(r.tier)] = r.count
 
     const by_status: Record<string, number> = { open: 0, in_progress: 0, resolved: 0, false_positive: 0, accepted_risk: 0 }
     for (const r of byStatus) by_status[r.status] = r.count
@@ -416,6 +422,7 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
       open_total,
       by_status,
       by_severity,                           // open only
+      by_tier,                               // open only: 1 compromise, 2 exploited, 3 fix, 4 review
       by_type,                               // open only
       total_critical:   by_severity.critical,
       avg_risk_score:   avgRisk[0]?.avg ?? 0,
