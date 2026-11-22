@@ -1,14 +1,14 @@
 // Threat sightings (rule R7, lib/sightings.ts): the host agent's side.
 //
 //   GET  /sightings/indicators?part=feeds&after=<cursor>&limit=2000
-//        the tenant's matchable feed domains and IPs, paged by (last_seen, indicator_id); the
+//        the tenant's matchable feed domains, IPs and malware file hashes, paged by (last_seen, indicator_id); the
 //        agent keeps the last `next` and asks again for what changed since (a weekly full
 //        resync starts without a cursor and replaces its list, dropping removed entries)
 //   GET  /sightings/indicators?part=events
 //        the domains and IPs of the published threat-intel events its tenant may match, whole
 //        (small; fetched more often, so an analyst's new event reaches the agents quickly)
 //   POST /sightings  {hits: [...]}
-//        what this computer looked up or connected to that is on the list; re-checked here,
+//        what this computer looked up, connected to or runs (a program's file hash) that is on the list; re-checked here,
 //        then one cti_match alert per (asset, listed value), match_kind 'sighting'
 //
 // Agent auth: X-Agent-ID + Bearer key (as routes/network.ts). Matching happens on the
@@ -70,7 +70,7 @@ app.get('/indicators', async (c) => {
     const res = await db.execute(sql`
       SELECT c.indicator_type::text AS type, c.value
       FROM cti_indicators c JOIN ti_events te ON te.ti_event_id = c.ti_event_id
-      WHERE c.indicator_type IN ('ip', 'domain', 'url') AND ${matchableSql(tenant)}
+      WHERE c.indicator_type IN ('ip', 'domain', 'url', 'hash') AND ${matchableSql(tenant)}
       ORDER BY c.indicator_id
       LIMIT ${MAX_EVENT_VALUES + 1}
     `)
@@ -87,7 +87,7 @@ app.get('/indicators', async (c) => {
   const res = await db.execute(sql`
     SELECT c.indicator_type::text AS type, c.value, c.last_seen::text AS seen, c.indicator_id::text AS id
     FROM cti_indicators c
-    WHERE c.ti_event_id IS NULL AND c.to_ids AND c.warning IS NULL AND c.indicator_type IN ('ip', 'domain', 'url') AND ${FEED_FRESH}
+    WHERE c.ti_event_id IS NULL AND c.to_ids AND c.warning IS NULL AND c.indicator_type IN ('ip', 'domain', 'url', 'hash') AND ${FEED_FRESH}
       ${after ? sql`AND (c.last_seen, c.indicator_id) > (${after.seen}::timestamptz, ${after.id}::uuid)` : sql``}
     ORDER BY c.last_seen, c.indicator_id
     LIMIT ${limit}
@@ -115,7 +115,7 @@ app.post('/', zValidator('json', z.object({ hits: z.array(z.unknown()).max(1000)
   if (hits.length === 0) return c.json({ accepted: 0, dropped: 0, rejected, created: 0, updated: 0, reopened: 0 })
 
   // The re-check: only what the tenant's matchable indicators list now counts.
-  const { ips, names } = lookupValues(hits)
+  const { ips, names, hashes } = lookupValues(hits)
   const res = await db.execute(sql`
     SELECT c.indicator_id::text AS "indicatorId", c.indicator_type::text AS type, c.value, c.source,
            c.ti_event_id::text AS "tiEventId", te.title, te.threat_level::text AS level,
@@ -125,6 +125,8 @@ app.post('/', zValidator('json', z.object({ hits: z.array(z.unknown()).max(1000)
       (c.indicator_type = 'ip' AND ${inList(sql`c.value`, ips)})
       OR (c.indicator_type = 'domain' AND ${inList(sql`c.value`, names)})
       OR (c.indicator_type = 'url' AND ${inList(URL_HOST, ips)})
+      -- hashes are stored as the feed wrote them (a few in upper case): both spellings, so the index serves it
+      OR (c.indicator_type = 'hash' AND ${inList(sql`c.value`, [...hashes, ...hashes.map(h => h.toUpperCase())])})
     )
     LIMIT 1000
   `)

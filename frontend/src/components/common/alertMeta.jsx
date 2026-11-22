@@ -141,9 +141,11 @@ const shortTime = (iso) => {
 // "Looked up c2.evil.com (DNS) 14×, last 10:32" / "Connected to 198.51.100.7:443 (msedge.exe) 3×, last 10:32"
 export function sightingSummary(d) {
   const n = d.count ?? 1
-  const what = d.matched_on === 'connection'
-    ? `Connected to ${d.observed ?? d.indicator_value}${d.port ? `:${d.port}` : ''}${d.process ? ` (${d.process})` : ''}`
-    : `Looked up ${d.observed ?? d.indicator_value} (DNS)`
+  const what = d.matched_on === 'process'
+    ? `Ran ${d.process ?? 'a program'}, a listed malware file (${String(d.indicator_value ?? '').slice(0, 12)}…)`
+    : d.matched_on === 'connection'
+      ? `Connected to ${d.observed ?? d.indicator_value}${d.port ? `:${d.port}` : ''}${d.process ? ` (${d.process})` : ''}`
+      : `Looked up ${d.observed ?? d.indicator_value} (DNS)`
   const last = shortTime(d.last_seen_at)
   return `${what}${n > 1 ? ` ${n.toLocaleString()}×` : ''}${last ? `, last ${last}` : ''}`
 }
@@ -337,6 +339,9 @@ function basePlaybook(e) {
   }
   if (isMaliciousPackage(e)) {
     return { urgency: 'Now', text: `${d.package_name} ${d.package_version} (${d.ecosystem}) is a release published as malware${d.summary ? `: ${d.summary}` : ''}. Its install scripts may already have run on this device. Isolate it, find which project or program pulled the package in, remove it, and rotate any secrets the device holds (tokens, SSH keys, cloud credentials). Escalate to a senior analyst.` }
+  }
+  if (isSighting(e) && d.matched_on === 'process') {
+    return { urgency: 'Now', text: `The program ${d.process ?? '(name unknown)'} running on this computer is a file ${(d.sources ?? []).join(', ') || 'threat intel'} lists as malware (its file hash matches exactly). Isolate the computer from the network and escalate to a senior analyst. Do not delete the file before it is examined: note where it runs from, how it starts (services, scheduled tasks, Run keys) and when it arrived. If the listing is wrong (a legitimate tool listed by mistake), mark the alert a false positive.` }
   }
   if (isSighting(e)) {
     const who = d.process ? ` Find ${d.process} on the computer: where it was installed from, and whether anyone expects it to run.` : ' Find which program made it (the agent names the program only for connections).'

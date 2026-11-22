@@ -5,6 +5,7 @@ matches, and the monitor that uploads only matches."""
 from __future__ import annotations
 
 import gzip
+import hashlib
 import ipaddress
 import json
 import struct
@@ -500,3 +501,86 @@ def test_saved_list_is_gzip_json(tmp_path):
     lst.save(path, AGENT)
     data = json.loads(gzip.decompress(path.read_bytes()))
     assert data["domains"] == ["evil.com"] and data["agent_id"] == AGENT
+
+
+# ── running programs against listed malware hashes (programs.py) ────────────
+# Plain bytes standing in for a payload (not EICAR: antivirus quarantines that file under the test)
+PAYLOAD = b"eagleeye sightings test payload\n" * 1000
+PAYLOAD_SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
+PAYLOAD_MD5 = hashlib.md5(PAYLOAD).hexdigest()  # noqa: S324
+
+
+def test_hash_items_are_taken_lowercase_and_junk_is_skipped():
+    hashes = IndicatorList.hashes_of([
+        {"k": "h", "v": PAYLOAD_SHA256.upper()}, {"k": "h", "v": PAYLOAD_MD5}, {"k": "h", "v": "abc"},
+        {"k": "h", "v": "z" * 64}, {"k": "d", "v": "evil.com"}, "junk",
+    ])
+    assert hashes == {PAYLOAD_SHA256, PAYLOAD_MD5}
+    # an older agent's split() skips them: domains and IPs only
+    assert IndicatorList.split([{"k": "h", "v": PAYLOAD_MD5}]) == (set(), set())
+
+
+def test_hashes_sync_from_feeds_and_events_and_are_kept_on_disk(tmp_path):
+    server = FakeServer({None: {"items": [{"k": "d", "v": "evil.com"}, {"k": "h", "v": PAYLOAD_SHA256}], "next": "c1", "done": True}},
+                        events=[{"k": "h", "v": PAYLOAD_MD5}])
+    path = tmp_path / "l.json.gz"
+    sync = ListSync(IndicatorList(), server, path, AGENT, clock=lambda: 1_000_000.0)
+    sync.sync()
+    assert sync.list.hashes == {PAYLOAD_SHA256} and sync.list.event_hashes == {PAYLOAD_MD5}
+    assert sync.list.match_hash(PAYLOAD_SHA256.upper()) == PAYLOAD_SHA256 and sync.list.match_hash("00" * 32) is None
+    again = IndicatorList.load(path, AGENT)
+    assert again.hashes == {PAYLOAD_SHA256} and again.event_hashes == {PAYLOAD_MD5} and len(again) == 3
+
+
+def test_hash_file_gives_the_three_hashes_in_one_read_and_skips_large_files(tmp_path):
+    from eagleeye.sightings.programs import hash_file
+    f = tmp_path / "payload.bin"
+    f.write_bytes(PAYLOAD)
+    h = hash_file(str(f))
+    assert h is not None and h.sha256 == PAYLOAD_SHA256 and h.md5 == PAYLOAD_MD5 and len(h.sha1) == 40
+    assert hash_file(str(f), max_size=10) is None
+    assert hash_file(str(tmp_path / "gone")) is None
+
+
+def test_each_program_is_hashed_once_while_it_stays_the_same_and_rounds_are_capped():
+    from eagleeye.sightings.programs import Hashes, Program, ProgramHasher
+    running = [Program("/usr/bin/a", "/usr/bin/a"), Program("/usr/bin/b", "/usr/bin/b"), Program("/usr/bin/a", "/usr/bin/a")]
+    stats = {"/usr/bin/a": (1, 1), "/usr/bin/b": (2, 2)}
+    hashed = []
+
+    def hasher(path):
+        hashed.append(path)
+        return Hashes("s" + path, "x", "m")
+    h = ProgramHasher(lambda: list(running), hasher=hasher, stat=lambda p: stats.get(p), max_new=1)
+    assert [p.path for p, _ in h.round()] == ["/usr/bin/a"]          # one new file per round here
+    assert [p.path for p, _ in h.round()] == ["/usr/bin/a", "/usr/bin/b"]
+    h.round()
+    assert hashed == ["/usr/bin/a", "/usr/bin/b"]                    # not again while unchanged
+    stats["/usr/bin/a"] = (1, 99)                                    # replaced on disk
+    h.round()
+    assert hashed[-1] == "/usr/bin/a"
+    running[:] = [Program("/usr/bin/b", "/usr/bin/b")]               # a stopped: forgotten
+    h.round()
+    assert "/usr/bin/a" not in h._cache
+
+
+def test_a_running_program_with_a_listed_hash_is_recorded_with_its_name_only():
+    from eagleeye.sightings.programs import Hashes, Program, ProgramHasher
+    progs = [Program("C:\\Users\\jo\\AppData\\Local\\Temp\\beacon.exe", "C:\\Users\\jo\\AppData\\Local\\Temp\\beacon.exe"),
+             Program("C:\\Windows\\notepad.exe", "C:\\Windows\\notepad.exe")]
+    hashes = {progs[0].path: Hashes("aa" * 32, "bb" * 20, PAYLOAD_MD5), progs[1].path: Hashes("cc" * 32, "dd" * 20, "ee" * 16)}
+    hasher = ProgramHasher(lambda: progs, hasher=lambda p: hashes[p], stat=lambda p: (1, 1))
+    m = SightingsMonitor(FakeClient(), AGENT, None, poll_connections=lambda: [], process_of=lambda c: None,
+                         clock=lambda: 1000.0, hasher=hasher)
+    m.list.event_hashes = {PAYLOAD_MD5}                                # listed by its MD5
+    assert m.poll_programs_once() == 1
+    [entry] = m.recorder.take()
+    assert (entry.value, entry.type, entry.via, entry.process) == (PAYLOAD_MD5, "hash", "process", "beacon.exe")
+    assert entry.payload()["process"] == "beacon.exe" and "Users" not in json.dumps(entry.payload())
+
+
+def test_parse_ps_takes_full_paths_only():
+    from eagleeye.sightings.programs import parse_ps
+    got = parse_ps("  1 /sbin/launchd\n 420 /Applications/Safari.app/Contents/MacOS/Safari\n 77 (kernel_task)\n")
+    assert [p.path for p in got] == ["/sbin/launchd", "/Applications/Safari.app/Contents/MacOS/Safari"]
+    assert got[1].name == "Safari"

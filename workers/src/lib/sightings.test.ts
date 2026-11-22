@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  cleanHits, decodeCursor, domainCandidates, encodeCursor, listItem, listItems, lookupValues, matchHits, planSightings,
+  LIST_RULES, cleanHits, decodeCursor, domainCandidates, encodeCursor, listItem, listItems, lookupValues, matchHits, planSightings,
   sightingSeverity, type ExistingSighting, type Hit, type IndicatorRow,
 } from './sightings'
 
@@ -46,7 +46,42 @@ test('cursor: round trip of the exact Postgres time and id; anything else is no 
 
 test('a looked-up name is listed under itself or any parent with two labels or more', () => {
   assert.deepEqual(domainCandidates('a.b.evil.com'), ['a.b.evil.com', 'b.evil.com', 'evil.com'])
-  assert.deepEqual(lookupValues([hit('x.evil.com'), hit('203.0.113.9')]), { ips: ['203.0.113.9'], names: ['x.evil.com', 'evil.com'] })
+  assert.deepEqual(lookupValues([hit('x.evil.com'), hit('203.0.113.9')]), { ips: ['203.0.113.9'], names: ['x.evil.com', 'evil.com'], hashes: [] })
+})
+
+const SHA256 = 'a'.repeat(64)
+
+test('file hashes go on the list (rules 4) as lower-case hex of 32, 40 or 64 digits', () => {
+  assert.deepEqual(listItem('hash', SHA256.toUpperCase()), { k: 'h', v: SHA256 })
+  assert.deepEqual(listItem('hash', 'b'.repeat(32)), { k: 'h', v: 'b'.repeat(32) })
+  assert.equal(listItem('hash', 'z'.repeat(64)), null)
+  assert.equal(listItem('hash', 'a'.repeat(50)), null)
+  assert.ok(LIST_RULES >= 4)
+})
+
+test('a running program\'s hash is a hit only as a process; nothing else is', () => {
+  const { hits, rejected } = cleanHits([
+    { value: SHA256.toUpperCase(), type: 'hash', via: 'process', process: 'C:\\Users\\jo\\AppData\\Local\\Temp\\beacon.exe' },
+    { value: SHA256, type: 'hash', via: 'dns' },                  // a hash is never looked up
+    { value: 'evil.com', type: 'domain', via: 'process' },        // a program shows only a hash
+    { value: 'abc', type: 'hash', via: 'process' },               // not a hash
+  ], new Date())
+  assert.equal(rejected, 3)
+  assert.deepEqual([hits[0]!.value, hits[0]!.type, hits[0]!.via, hits[0]!.process], [SHA256, 'hash', 'process', 'beacon.exe'])
+  assert.deepEqual(lookupValues(hits).hashes, [SHA256])
+})
+
+test('a listed hash running is stronger than a contact: one step up, capped at critical', () => {
+  const { hits } = cleanHits([{ value: SHA256, type: 'hash', via: 'process', process: 'beacon.exe' }], new Date())
+  const rows = [row('hash', SHA256.toUpperCase(), { confidence: 0.5 })]
+  const { matched } = matchHits(hits, rows)
+  assert.equal(matched.length, 1)
+  assert.equal(matched[0]!.itype, 'hash')
+  assert.equal(sightingSeverity(rows), 'critical')                           // 50% feed: high, +1
+  assert.equal(sightingSeverity([row('hash', SHA256, { confidence: 0.25 })]), 'high')
+  assert.equal(sightingSeverity([row('hash', SHA256, { confidence: 0.9 })]), 'critical')
+  const w = planSightings({ matched, existing: [], newId }).insert[0]!
+  assert.deepEqual([w.details.indicator_type, w.details.matched_on, w.details.process], ['hash', 'process', 'beacon.exe'])
 })
 
 test('clean hits: malformed ones dropped, the agent clock clamped, a process path cut to its name', () => {

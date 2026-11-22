@@ -849,7 +849,9 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 d.advisory_id && d.advisory_id !== d.cve_id && ['Advisory', d.advisory_id],
                 Array.isArray(d.ti_event_titles) && d.ti_event_titles.length > 0 && ['Threat-intel events', d.ti_event_titles.join(' · ')],
                 e.event_type === 'cti_match' && d.observed && ['Matched', d.match_kind === 'sighting'
-                  ? `${d.matched_on === 'connection' ? 'Connection' : 'DNS lookup'}: ${d.observed}${d.port ? `:${d.port}` : ''}`
+                  ? (d.matched_on === 'process'
+                    ? `Running program: ${d.process ?? 'name unknown'} (file hash ${d.indicator_value})`
+                    : `${d.matched_on === 'connection' ? 'Connection' : 'DNS lookup'}: ${d.observed}${d.port ? `:${d.port}` : ''}`)
                   : `${d.matched_on === 'ip' ? 'Public IP' : d.matched_on === 'hostname' ? 'Hostname' : d.matched_on === 'package' ? 'SBOM package' : 'Installed software'}: ${d.observed}`],
                 d.match_kind === 'sighting' && d.process && ['Program', d.process],
                 d.match_kind === 'sighting' && ['Contacts', `${(d.count ?? 1).toLocaleString()} (seen by ${(d.seen_via ?? [d.matched_on]).map(v => (v === 'dns' ? 'DNS answers' : 'the connection table')).join(' and ')})`],

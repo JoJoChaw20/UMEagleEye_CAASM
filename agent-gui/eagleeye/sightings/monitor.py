@@ -1,5 +1,6 @@
 """Runs threat sightings while the setting is on: the list sync, a capture that takes only
-DNS answers, the 30-second connection poll and the uploads (see the package notes)."""
+DNS answers, the 30-second connection poll, the 1-minute program round (file hashes) and the
+uploads (see the package notes)."""
 
 from __future__ import annotations
 
@@ -10,13 +11,14 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..passive.frames import dns_answer
-from . import connections, dns
+from . import connections, dns, programs
 from .indicators import IndicatorList, ListSync
 from .recorder import HitRecorder
 
 log = logging.getLogger("eagleeye.sightings")
 
 CONNECTION_POLL = 30
+PROGRAM_POLL = 60           # running programs against the listed malware hashes (programs.py)
 UPLOAD_FRESH = 60           # a first contact goes up within a minute
 UPLOAD_EVERY = 300          # repeats every 5 minutes
 TICK = 5
@@ -32,6 +34,7 @@ class SightingsMonitor:
         poll_connections: Callable[[], list[connections.Conn]] = connections.poll,
         process_of: Callable[[connections.Conn], Optional[str]] = connections.process_of,
         clock: Callable[[], float] = time.time,
+        hasher: Optional[programs.ProgramHasher] = None,
     ) -> None:
         self.client = client
         self.list = IndicatorList.load(list_path, agent_id)
@@ -46,6 +49,8 @@ class SightingsMonitor:
         self._seen_connections: set[tuple[str, int, int]] = set()
         self._last_upload = clock()
         self._last_poll = 0.0
+        self.hasher = hasher or programs.ProgramHasher(programs.running_programs)
+        self._last_programs = 0.0
         self.hub: Any = None
         self.uploaded = 0               # contacts the server has
         self.last_upload_error: Optional[str] = None
@@ -79,6 +84,19 @@ class SightingsMonitor:
                 self.recorder.record(ip, "ip", "connection", self._process_of(conn), conn.port)
                 hits += 1
         self._seen_connections = keys
+        return hits
+
+    def poll_programs_once(self) -> int:
+        """Record each running program whose file hash is listed (once per round while it runs).
+        Returns how many."""
+        hits = 0
+        for prog, hashes in self.hasher.round():
+            for value in hashes.all():
+                listed = self.list.match_hash(value)
+                if listed:
+                    self.recorder.record(listed, "hash", "process", prog.name)
+                    hits += 1
+                    break
         return hits
 
     # ── uploads ──
@@ -140,6 +158,10 @@ class SightingsMonitor:
                     self._last_poll = self._clock()
                     if len(self.list):
                         self.poll_connections_once()
+                if self._clock() - self._last_programs >= PROGRAM_POLL:
+                    self._last_programs = self._clock()
+                    if self.list.has_hashes():          # nothing to hash for without listed hashes
+                        self.poll_programs_once()
                 if self.upload_due():
                     self.upload()
             except Exception as exc:  # noqa: BLE001 - one bad round must not stop sightings

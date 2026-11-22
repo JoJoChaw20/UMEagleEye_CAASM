@@ -23,8 +23,10 @@
 import { confidenceLevel } from './confidence'
 
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
-export type IndicatorType = 'ip' | 'domain' | 'url'
-export type Via = 'dns' | 'connection'
+export type IndicatorType = 'ip' | 'domain' | 'url' | 'hash'
+// process: a program running on the computer whose file hash is listed (agent sightings/programs.py)
+export type Via = 'dns' | 'connection' | 'process'
+const HASH = /^([0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/
 
 const SEVERITIES: Severity[] = ['low', 'medium', 'high', 'critical']
 const OCTET = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
@@ -40,8 +42,10 @@ export const LIST_PAGE = 2000
 // Which values go on the agents' list (listItem). Raised when that changes: an agent seeing another
 // number fetches the whole list again. 2: URLs only on IPv4 hosts (17 Nov 2026). 3: shared CDN
 // addresses and the top 1,000 sites off the list, feed values expire 30 days (IP) or 90 days
-// (domain, URL) after a feed last listed them (22 Nov 2026).
-export const LIST_RULES = 3
+// (domain, URL) after a feed last listed them (22 Nov 2026). 4: malware file hashes (MD5, SHA-1,
+// SHA-256) on the list, matched against the computer's running programs (22 Nov 2026); an older
+// agent skips {k: 'h'} items.
+export const LIST_RULES = 4
 const MAX_COUNT = 1_000_000
 const HIT_WINDOW_MS = 7 * 86400_000
 
@@ -59,7 +63,7 @@ function urlHost(url: string): string | null {
 }
 
 // ── The agent's list ─────────────────────────────────────────────────
-export interface ListItem { k: 'd' | 'i'; v: string }
+export interface ListItem { k: 'd' | 'i' | 'h'; v: string }
 
 /** An indicator as the agent's list holds it, or null when it cannot be seen in traffic. */
 export function listItem(type: string, value: string): ListItem | null {
@@ -74,6 +78,7 @@ export function listItem(type: string, value: string): ListItem | null {
     return IPV4.test(v) ? { k: 'i', v } : null
   }
   if (type === 'domain') return !isIp(v) && DOMAIN.test(v) ? { k: 'd', v } : null
+  if (type === 'hash') return HASH.test(v) ? { k: 'h', v } : null
   return null
 }
 
@@ -114,8 +119,8 @@ export function domainCandidates(name: string): string[] {
 
 // ── Hits (agent → server) ────────────────────────────────────────────
 export interface Hit {
-  value: string            // what this computer looked up or connected to
-  type: 'domain' | 'ip'
+  value: string            // what this computer looked up or connected to, or a running program's hash
+  type: 'domain' | 'ip' | 'hash'
   via: Via
   count: number
   firstSeen: Date
@@ -138,9 +143,12 @@ export function cleanHits(raw: unknown, now: Date): { hits: Hit[]; rejected: num
   for (const r of list) {
     const h = (r && typeof r === 'object' ? r : {}) as Record<string, unknown>
     const value = typeof h.value === 'string' ? normalValue(h.value) : ''
-    const type = h.type === 'ip' || h.type === 'domain' ? h.type : null
-    const via = h.via === 'dns' || h.via === 'connection' ? h.via : null
-    if (!type || !via || !(type === 'ip' ? isIp(value) : DOMAIN.test(value))) { rejected++; continue }
+    const type = h.type === 'ip' || h.type === 'domain' || h.type === 'hash' ? h.type : null
+    const via = h.via === 'dns' || h.via === 'connection' || h.via === 'process' ? h.via : null
+    // a hash is seen only in a running program, and a program shows only a hash
+    const valid = type === 'hash' ? via === 'process' && HASH.test(value)
+      : via !== 'process' && (type === 'ip' ? isIp(value) : DOMAIN.test(value))
+    if (!type || !via || !valid) { rejected++; continue }
     const count = typeof h.count === 'number' && Number.isInteger(h.count) && h.count >= 1 ? Math.min(h.count, MAX_COUNT) : 1
     const lastSeen = clampTime(h.last_seen, now)
     let firstSeen = clampTime(h.first_seen, now)
@@ -153,14 +161,16 @@ export function cleanHits(raw: unknown, now: Date): { hits: Hit[]; rejected: num
 }
 
 /** What to look up for the re-check: every IP, and every name a domain may be listed under. */
-export function lookupValues(hits: Hit[]): { ips: string[]; names: string[] } {
+export function lookupValues(hits: Hit[]): { ips: string[]; names: string[]; hashes: string[] } {
   const ips = new Set<string>()
   const names = new Set<string>()
+  const hashes = new Set<string>()
   for (const h of hits) {
     if (h.type === 'ip') ips.add(h.value)
+    else if (h.type === 'hash') hashes.add(h.value)
     else for (const n of domainCandidates(h.value)) names.add(n)
   }
-  return { ips: [...ips], names: [...names] }
+  return { ips: [...ips], names: [...names], hashes: [...hashes] }
 }
 
 // ── The re-check ─────────────────────────────────────────────────────
@@ -196,7 +206,7 @@ export function matchHits(hits: Hit[], rows: IndicatorRow[]): { matched: Matched
   const groups = new Map<string, Matched>()
   const dropped: Hit[] = []
   for (const h of hits) {
-    const keys = h.type === 'ip' ? [`i:${h.value}`] : domainCandidates(h.value).map(n => `d:${n}`)
+    const keys = h.type === 'ip' ? [`i:${h.value}`] : h.type === 'hash' ? [`h:${h.value}`] : domainCandidates(h.value).map(n => `d:${n}`)
     const key = keys.find(k => byListed.has(k))
     if (!key) { dropped.push(h); continue }
     const indicators = byListed.get(key)!
@@ -213,12 +223,14 @@ export function matchHits(hits: Hit[], rows: IndicatorRow[]): { matched: Matched
 
 /** S1: a contact is stronger evidence than R5's listing. A feed entry by its source's confidence
  *  (lib/confidence.ts: 75%+ critical, 50%+ high, below medium), a high-level event critical, medium
- *  high, low medium; a URL's host one step lower. Medium and below are reviewed, not investigated
- *  at once (lib/alertRank.ts: tier 1 needs high or critical). */
+ *  high, low medium; a URL's host one step lower. A listed file hash one step HIGHER: the malware's
+ *  own file is running, not just a contact (a hash names one file exactly). Medium and below are
+ *  reviewed, not investigated at once (lib/alertRank.ts: tier 1 needs high or critical). */
 export function sightingSeverity(indicators: IndicatorRow[]): Severity {
   const rank = (r: IndicatorRow) =>
-    (r.tiEventId === null ? 1 + confidenceLevel(r.confidence) : r.level === 'high' ? 4 : r.level === 'medium' ? 3 : 2) - (r.type === 'url' ? 1 : 0)
-  const best = Math.max(1, ...indicators.map(rank))
+    (r.tiEventId === null ? 1 + confidenceLevel(r.confidence) : r.level === 'high' ? 4 : r.level === 'medium' ? 3 : 2)
+      - (r.type === 'url' ? 1 : 0) + (r.type === 'hash' ? 1 : 0)
+  const best = Math.min(4, Math.max(1, ...indicators.map(rank)))
   return SEVERITIES[best - 1]!
 }
 

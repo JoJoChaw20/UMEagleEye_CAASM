@@ -1,8 +1,9 @@
-"""The organisation's bad domains and IPs, as this agent keeps them, and how it keeps them
-up to date.
+"""The organisation's bad domains, IPs and malware file hashes, as this agent keeps them, and how
+it keeps them up to date.
 
 Two parts come from the server (workers/src/routes/sightings.ts):
-  * feeds: ~90,000 values (OTX, ThreatFox...), paged by a cursor. The agent asks for what
+  * feeds: ~130,000 values (ThreatFox, URLhaus, Feodo Tracker), paged by a cursor. Hashes come with
+    list rules 4; an older server sends none, and an older agent skips them. The agent asks for what
     changed since its last page every FEEDS_EVERY; once a week it fetches the whole list
     again into a fresh copy and swaps it in, which drops what the server removed.
   * events: the published threat-intel events of its organisation, small, fetched whole
@@ -19,6 +20,7 @@ import gzip
 import ipaddress
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -31,6 +33,7 @@ EVENTS_EVERY = 30 * 60
 RETRY_AFTER = 15 * 60
 MAX_PAGES = 200                     # 400,000 values: far above today's ~90,000
 FILE_VERSION = 1
+HEX = re.compile(r"[0-9a-f]+")
 
 
 def normal_ip(value: str) -> Optional[str]:
@@ -50,8 +53,10 @@ class IndicatorList:
     def __init__(self) -> None:
         self.domains: set[str] = set()
         self.ips: set[str] = set()
+        self.hashes: set[str] = set()           # malware file hashes (lowercase hex: MD5, SHA-1, SHA-256)
         self.event_domains: set[str] = set()
         self.event_ips: set[str] = set()
+        self.event_hashes: set[str] = set()
         self.cursor: Optional[str] = None
         self.full_at = 0.0
         self.feeds_at = 0.0
@@ -63,7 +68,15 @@ class IndicatorList:
         # thread never sees one half-filled.
 
     def __len__(self) -> int:
-        return len(self.domains) + len(self.ips) + len(self.event_domains) + len(self.event_ips)
+        return (len(self.domains) + len(self.ips) + len(self.hashes)
+                + len(self.event_domains) + len(self.event_ips) + len(self.event_hashes))
+
+    def has_hashes(self) -> bool:
+        return bool(self.hashes or self.event_hashes)
+
+    def match_hash(self, value: str) -> Optional[str]:
+        h = value.lower()
+        return h if h in self.hashes or h in self.event_hashes else None
 
     def match_domain(self, name: str) -> Optional[str]:
         """The listed domain `name` falls under (itself or a parent with two labels or more), or None."""
@@ -97,6 +110,17 @@ class IndicatorList:
                     ips.add(ip)
         return domains, ips
 
+    @staticmethod
+    def hashes_of(items: Iterable[Any]) -> set[str]:
+        """Server items {k: 'h', v} (list rules 4+) as lowercase hex hashes of 32, 40 or 64 digits."""
+        out: set[str] = set()
+        for item in items:
+            if isinstance(item, dict) and item.get("k") == "h" and isinstance(item.get("v"), str):
+                h = item["v"].strip().lower()
+                if len(h) in (32, 40, 64) and HEX.fullmatch(h):
+                    out.add(h)
+        return out
+
     # ── on disk ──
     def save(self, path: Optional[Path], agent_id: str) -> None:
         if path is None:
@@ -104,8 +128,9 @@ class IndicatorList:
         data = {
             "version": FILE_VERSION, "agent_id": agent_id, "cursor": self.cursor, "rules": self.rules,
             "full_at": self.full_at, "feeds_at": self.feeds_at, "events_at": self.events_at,
-            "domains": sorted(self.domains), "ips": sorted(self.ips),
+            "domains": sorted(self.domains), "ips": sorted(self.ips), "hashes": sorted(self.hashes),
             "event_domains": sorted(self.event_domains), "event_ips": sorted(self.event_ips),
+            "event_hashes": sorted(self.event_hashes),
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +156,9 @@ class IndicatorList:
         out.ips = {ip for ip in (normal_ip(v) for v in data.get("ips") or [] if isinstance(v, str)) if ip}
         out.event_domains = {normal_name(d) for d in data.get("event_domains") or [] if isinstance(d, str)}
         out.event_ips = {ip for ip in (normal_ip(v) for v in data.get("event_ips") or [] if isinstance(v, str)) if ip}
+        # saved as hex strings: read back through the same check as the server's items
+        out.hashes = IndicatorList.hashes_of({"k": "h", "v": v} for v in data.get("hashes") or [])
+        out.event_hashes = IndicatorList.hashes_of({"k": "h", "v": v} for v in data.get("event_hashes") or [])
         out.cursor = data.get("cursor") if isinstance(data.get("cursor"), str) else None
         out.rules = data.get("rules") if isinstance(data.get("rules"), int) else None
         for key in ("full_at", "feeds_at", "events_at"):
@@ -176,10 +204,12 @@ class ListSync:
             full = now - lst.full_at >= FULL_EVERY
             if now - lst.events_at >= EVENTS_EVERY:
                 answer = self._fetch("events", None)
-                domains, ips = IndicatorList.split(answer.get("items") or [])
-                lst.event_domains, lst.event_ips = domains, ips
+                items = answer.get("items") or []
+                domains, ips = IndicatorList.split(items)
+                hashes = IndicatorList.hashes_of(items)
+                lst.event_domains, lst.event_ips, lst.event_hashes = domains, ips, hashes
                 lst.events_at = now
-                done.append(f"events: {len(domains) + len(ips)} value(s)")
+                done.append(f"events: {len(domains) + len(ips) + len(hashes)} value(s)")
                 if answer.get("truncated"):
                     log.warning("The organisation's threat-intel events list more values than the agent takes; "
                                 "only the first ones are matched")
@@ -190,16 +220,16 @@ class ListSync:
                         full = True
                     new_rules = rules       # kept only once the list was fetched under them
             if full:
-                domains, ips, cursor, pages = self._pages(None, set(), set())
-                lst.domains, lst.ips, lst.cursor = domains, ips, cursor
+                domains, ips, hashes, cursor, pages = self._pages(None, set(), set(), set())
+                lst.domains, lst.ips, lst.hashes, lst.cursor = domains, ips, hashes, cursor
                 lst.full_at = lst.feeds_at = now
-                done.append(f"feeds in full: {len(domains) + len(ips)} value(s) in {pages} page(s)")
+                done.append(f"feeds in full: {len(domains) + len(ips) + len(hashes)} value(s) in {pages} page(s)")
             elif now - lst.feeds_at >= FEEDS_EVERY:
-                before = len(lst.domains) + len(lst.ips)
-                domains, ips, cursor, pages = self._pages(lst.cursor, set(lst.domains), set(lst.ips))
-                lst.domains, lst.ips, lst.cursor = domains, ips, cursor
+                before = len(lst.domains) + len(lst.ips) + len(lst.hashes)
+                domains, ips, hashes, cursor, pages = self._pages(lst.cursor, set(lst.domains), set(lst.ips), set(lst.hashes))
+                lst.domains, lst.ips, lst.hashes, lst.cursor = domains, ips, hashes, cursor
                 lst.feeds_at = now
-                done.append(f"feeds since the last sync: {len(domains) + len(ips) - before} new value(s) "
+                done.append(f"feeds since the last sync: {len(domains) + len(ips) + len(hashes) - before} new value(s) "
                             f"in {pages} page(s)")
             if new_rules is not None:
                 lst.rules = new_rules
@@ -215,17 +245,20 @@ class ListSync:
             lst.save(self._path, self._agent_id)
         return done
 
-    def _pages(self, cursor: Optional[str], domains: set[str], ips: set[str]) -> tuple[set[str], set[str], Optional[str], int]:
+    def _pages(self, cursor: Optional[str], domains: set[str], ips: set[str],
+               hashes: set[str]) -> tuple[set[str], set[str], set[str], Optional[str], int]:
         pages = 0
         while pages < MAX_PAGES:
             answer = self._fetch("feeds", cursor)
             pages += 1
-            more_domains, more_ips = IndicatorList.split(answer.get("items") or [])
+            items = answer.get("items") or []
+            more_domains, more_ips = IndicatorList.split(items)
             domains |= more_domains
             ips |= more_ips
+            hashes |= IndicatorList.hashes_of(items)
             nxt = answer.get("next")
             if isinstance(nxt, str):
                 cursor = nxt
             if answer.get("done", True) or not isinstance(nxt, str):
                 break
-        return domains, ips, cursor, pages
+        return domains, ips, hashes, cursor, pages

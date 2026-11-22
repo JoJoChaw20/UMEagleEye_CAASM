@@ -21,8 +21,8 @@ MAX_ENTRIES = 1000                  # far more than any real computer; a flood k
 @dataclass
 class Entry:
     value: str
-    type: str                       # domain | ip
-    via: str                        # dns | connection
+    type: str                       # domain | ip | hash
+    via: str                        # dns | connection | process (a running program's file hash)
     count: int
     first: float
     last: float
