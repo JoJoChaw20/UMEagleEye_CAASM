@@ -123,6 +123,8 @@ export default function App() {
         <Route path="reports" element={<ProtectedRoute action="report.view"><ReportsPage /></ProtectedRoute>} />
 
         {/* SYSTEM */}
+        <Route path="agents/install" element={<ProtectedRoute action="agent.view"><AgentsPage view="install" /></ProtectedRoute>} />
+        <Route path="agents/defaults" element={<ProtectedRoute action="agent.view"><AgentsPage view="defaults" /></ProtectedRoute>} />
         <Route path="agents"   element={<ProtectedRoute action="agent.view"><AgentsPage /></ProtectedRoute>} />
         <Route path="chatbot"  element={<ChatbotRedirect />} />
         <Route path="settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Plus, X, RefreshCw, Radio, AlertCircle, ChevronDown, ChevronRight, Monitor, Download,
+  Plus, X, RefreshCw, Radio, AlertCircle, ChevronDown, ChevronRight, Monitor, Download, ArrowLeft,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -221,11 +221,12 @@ function AgentRow({ a, showTenant, tenantName, onOpen }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────
-const TABS = [
-  { key: 'agents', label: 'Agents' },
-  { key: 'install', label: 'Install' },
-  { key: 'defaults', label: 'Defaults' },
-]
+// view: the agent list (/agents), or a sub-page under Agents in the sidebar: Install (/agents/install)
+// and Defaults (/agents/defaults). They were tabs; ?tab=install|defaults links still lead there.
+const SUB_PAGES = {
+  install: { title: 'Install agents', lead: 'Download EagleEye Agent, connect one computer with a connection code, or many with an install code.' },
+  defaults: { title: 'Agent defaults', lead: 'The settings every agent of this tenant starts with, by kind of agent, and what the agents may do on their own (scan policy).' },
+}
 
 function Modal({ title, onClose, children, wide = false }) {
   useEffect(() => {
@@ -255,9 +256,10 @@ function Modal({ title, onClose, children, wide = false }) {
   )
 }
 
-export default function AgentsPage() {
+export default function AgentsPage({ view = 'agents' }) {
   const { user, can, isPlatformSuperadmin: isSuperadmin } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [agents, setAgents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -271,7 +273,17 @@ export default function AgentsPage() {
   const [tenants, setTenants] = useState([])
   const [tenantFilter, setTenantFilter] = useState(() => searchParams.get('tenant_id') ?? '')
 
-  const tab = TABS.some((t) => t.key === searchParams.get('tab')) ? searchParams.get('tab') : 'agents'
+  const tab = view
+  const sub = SUB_PAGES[view] ?? null
+  // an old ?tab= link: the sub-page it meant
+  const legacyTab = view === 'agents' ? searchParams.get('tab') : null
+  useEffect(() => {
+    if (legacyTab && SUB_PAGES[legacyTab]) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('tab')
+      navigate(`/agents/${legacyTab}${next.toString() ? `?${next}` : ''}`, { replace: true })
+    }
+  }, [legacyTab]) // eslint-disable-line react-hooks/exhaustive-deps
   const setParam = (key, value) => {
     const next = new URLSearchParams(searchParams)
     if (value) next.set(key, value)
@@ -385,31 +397,21 @@ export default function AgentsPage() {
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="page-title">Agents</h1>
+          {/* a block of its own: .page-title is inline-flex and would sit beside it */}
+          {sub && <Link to="/agents" className="flex w-fit items-center gap-1 text-xs text-dark-400 hover:text-eagle-400"><ArrowLeft className="h-3.5 w-3.5" /> Agents</Link>}
+          <h1 className={`page-title${sub ? ' mt-1' : ''}`}>{sub?.title ?? 'Agents'}</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">
-            An EagleEye Agent on each computer reports it and scans its network; network agents read the routers and switches.
-            Their settings are set here.
+            {sub?.lead ?? 'An EagleEye Agent on each computer reports it and scans its network; network agents read the routers and switches.'}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <TenantSelector value={tenantFilter} onChange={(tenantId) => { setTenantFilter(tenantId); setParam('tenant_id', tenantId) }} />
-          <button onClick={load} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
-          </button>
+          {!sub && (
+            <button onClick={load} disabled={loading} className="btn-secondary flex items-center gap-2 text-sm">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
+            </button>
+          )}
         </div>
-      </div>
-
-      <div className="flex gap-1 border-b border-dark-700/60" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setParam('tab', t.key === 'agents' ? '' : t.key)}
-            className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${tab === t.key
-              ? 'border-eagle-500 text-dark-50' : 'border-transparent text-dark-400 hover:text-dark-200'}`}
-          >
-            {t.label}
-            {t.key === 'agents' && !loading && <span className="ml-1.5 text-xs text-dark-500">{active.length}</span>}
-          </button>
-        ))}
       </div>
 
       {error && <div className="glass-card p-4 border border-red-500/30"><p className="text-red-400 text-sm">{error}</p></div>}
@@ -462,7 +464,7 @@ export default function AgentsPage() {
                 <Radio className="w-14 h-14 mx-auto mb-4 opacity-20" />
                 <p className="text-lg font-medium mb-2 text-dark-200">No agents yet</p>
                 <p className="text-sm max-w-md mx-auto">Install EagleEye Agent on a computer and connect it with a connection code, or use an install code for many computers.</p>
-                <button onClick={() => setParam('tab', 'install')} className="btn-primary mt-4 inline-flex items-center gap-2">
+                <button onClick={() => navigate('/agents/install')} className="btn-primary mt-4 inline-flex items-center gap-2">
                   <Download className="w-4 h-4" /> Install agents
                 </button>
               </div>

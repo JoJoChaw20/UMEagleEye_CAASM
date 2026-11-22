@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Bell, FileSearch, Globe, FileText,
-  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown, ListChecks, Crosshair, BookOpen,
+  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown, ListChecks, Crosshair, BookOpen, Download, SlidersHorizontal,
 } from 'lucide-react'
 
 // One source for the sidebar and the command palette. Items are filtered by the same
@@ -36,7 +36,12 @@ export function buildNavSections(can, role) {
       ...item('report.view', { to: '/reports', icon: FileText, label: 'Reports', keywords: 'pdf export' }),
     ]},
     { label: 'System', items: [
-      ...item('agent.view', { to: '/agents', icon: Bot, label: 'Agents', keywords: 'eagleeye agent heartbeat connection code' }),
+      ...item('agent.view', { to: '/agents', end: true, icon: Bot, label: 'Agents', keywords: 'eagleeye agent heartbeat status online' }),
+      // its sub-pages (sub: drawn indented under it)
+      ...item('agent.view', { to: '/agents/install', sub: true, icon: Download, label: 'Install',
+        keywords: 'install agent download connection code install code enrol register windows linux macos' }),
+      ...item('agent.view', { to: '/agents/defaults', sub: true, icon: SlidersHorizontal, label: 'Defaults',
+        keywords: 'agent defaults settings scan policy passive listening sightings' }),
       // Settings is for every signed-in user (profile, password, MFA)
       { to: '/settings', icon: Settings, label: 'Settings', keywords: 'profile mfa password' },
       // Every tenant member: the recipient, successor and approvers are Tenant users
