@@ -13,6 +13,8 @@ import { kgQuery } from '../kg/store'
 import { recordJob, refreshPerf, timedJob } from '../kg/perf'
 import { refreshPlatformProblems } from '../kg/problems'
 import { tenants } from '../db/schema'
+import { recordWeeks } from '../services/weekly'
+import { isoWeek } from '../lib/weekly'
 
 // Maps cron expression to handler name for logging
 function getCronName(cron: string): string {
@@ -106,6 +108,17 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
             alerts += await refreshCveAlertScores(db, { tenantId: id })
           }
           return `${changed} criticality score(s) changed, ${alerts} CVE alert risk score(s) updated`
+        })
+        // Weekly history (services/weekly.ts): the week that just ended (Monday), and any missing before
+        // it; each tenant's Weekly Summary report for a week just ended is queued (the report queue).
+        await step(env, 'weekly-history', async () => {
+          const r = await recordWeeks(db)
+          for (const w of r.live) {
+            const name = `weekly_${isoWeek(w.weekStart)}_${w.tenantId.slice(0, 8)}.pdf`
+            await env.ADVISORY_QUEUE.send({ type: 'report', reportType: 'weekly', filename: name, r2Key: name,
+              requestedBy: 'schedule', tenantId: w.tenantId })
+          }
+          return `${r.weeks} week(s) recorded for ${r.tenants} tenant(s); ${r.live.length} weekly report(s) queued`
         })
         // Safety net for the relationships (they are also rebuilt when devices come or go).
         await step(env, 'relationships', async () => {

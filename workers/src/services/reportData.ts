@@ -12,6 +12,8 @@ import { assets, events, postureMetrics, advisories, ctiIndicators, scanResults,
 import { buildReportStory } from './reportStory'
 import { computePosture } from './posture'
 import { fixTimeSummary } from './fixTime'
+import { weeklyView } from './weekly'
+import { compareWeeks, isoWeek } from '../lib/weekly'
 
 export async function buildReportData(db: DB, tenantId: string | undefined, reportType: string) {
   const af   = tenantId ? eq(assets.tenantId, tenantId) : undefined
@@ -101,7 +103,18 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
 
   // The report's storyline (verdict, first actions, hotspots, changes, progress, coverage), and the
   // fix-time figures for management (services/fixTime.ts, the same as the Dashboard)
-  const [story, fixTime] = await Promise.all([buildReportStory(db, tenantId, reportType), fixTimeSummary(db, tenantId)])
+  const [story, fixTime, weekly] = await Promise.all([
+    buildReportStory(db, tenantId, reportType), fixTimeSummary(db, tenantId),
+    // a tenant's weekly report: last finished week against the week before and the baseline (services/weekly.ts)
+    reportType === 'weekly' && tenantId ? weeklyView(db, tenantId, 2) : Promise.resolve(null),
+  ])
+  const lastWeek = weekly?.weeks[0] ?? null
+  const weekOverWeek = weekly && lastWeek ? {
+    week_start: lastWeek.week_start, iso_week: isoWeek(lastWeek.week_start), backfilled: lastWeek.backfilled,
+    vs_last_week: compareWeeks(lastWeek.metrics, weekly.weeks[1]?.metrics ?? null),
+    baseline_week: weekly.baseline_week ? isoWeek(weekly.baseline_week) : null,
+    vs_baseline: weekly.baseline ? compareWeeks(lastWeek.metrics, weekly.baseline) : [],
+  } : null
 
   const posture    = postureRows[0]
   // No snapshot yet (a new tenant, or staging, which has no nightly job): compute it now,
@@ -134,5 +147,6 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
     last_scan:         lastScanRows[0] ?? null,
     story,
     fix_time:          fixTime,
+    week_over_week:    weekOverWeek,
   }
 }

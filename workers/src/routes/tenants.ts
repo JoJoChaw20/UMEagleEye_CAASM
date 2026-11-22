@@ -7,7 +7,7 @@ import {
   authMiddleware, hasAction, requireAction, requireOwnTenant, requirePlatformSuperadmin, requireTenantSuperadmin,
 } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { tenants, users, assets, auditLogs } from '../db/schema'
+import { tenants, users, assets, auditLogs, weeklySnapshots } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
@@ -327,6 +327,35 @@ router.put(
       previousState: { sla_policy: cleanSlaPolicy(tenant.slaPolicy) }, newState: { sla_policy: next },
     })
     return c.json(slaPolicyOut(next, true))
+  }
+)
+
+// ── Baseline week (services/weekly.ts): the recorded week later weeks are compared against ──
+// {week_start: 'yyyy-mm-dd' (a recorded week's Monday) | null}. The tenant's Tenant Superadmin sets it.
+router.put(
+  '/:tenantId/baseline-week',
+  authMiddleware,
+  requireTenantSuperadmin,
+  requireOwnTenant,
+  zValidator('json', z.object({ week_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable() })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { tenantId } = c.req.param()
+    const { week_start: week } = c.req.valid('json')
+    const [tenant] = await db.select({ baseline: tenants.baselineWeek }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+    if (week) {
+      const [rec] = await db.select({ id: weeklySnapshots.snapshotId }).from(weeklySnapshots)
+        .where(and(eq(weeklySnapshots.tenantId, tenantId), eq(weeklySnapshots.weekStart, week))).limit(1)
+      if (!rec) return c.json({ detail: 'That week has no record yet: choose a finished week from the history' }, 400)
+    }
+    await db.update(tenants).set({ baselineWeek: week }).where(eq(tenants.tenantId, tenantId))
+    await audit(db, c, {
+      userId: user.userId, tenantId, actionType: 'tenant.baseline_week', targetEntity: tenantId,
+      previousState: { baseline_week: tenant.baseline }, newState: { baseline_week: week },
+    })
+    return c.json({ baseline_week: week })
   }
 )
 

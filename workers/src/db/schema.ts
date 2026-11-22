@@ -1,7 +1,7 @@
 import {
   pgTable, pgEnum, uuid, varchar, text, boolean, integer,
   smallint, bigint, char, timestamp, jsonb, numeric, index, uniqueIndex,
-  primaryKey
+  primaryKey, date
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
@@ -89,6 +89,9 @@ export const tenants = pgTable('tenants', {
   // a shared event is read-only context until this tenant opts in (here, or per event:
   // tiEventAlertChoices). services/threatIntel.ts matchableSql.
   sharedEventAlerts: boolean('shared_event_alerts').notNull().default(false),
+  // The week (its Monday, Malaysia time) this tenant compares later weeks against (weekly_snapshots);
+  // null: none chosen
+  baselineWeek: date('baseline_week'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -490,6 +493,21 @@ export const postureMetrics = pgTable('posture_metrics', {
   topRisks: jsonb('top_risks'),
   timestamp: timestamp('timestamp', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_posture_timestamp').on(t.timestamp)])
+
+// ─── Weekly history (services/weekly.ts) ─────────────────────────
+// One record per tenant per week (Monday 00:00 to Monday 00:00, Malaysia time): devices, open alerts
+// at the week's end by tier, severity and type, new and resolved that week, time to resolve, on-time
+// share, KEV, sightings, posture score (lib/weekly.ts WeekMetrics). Written when the week ends;
+// earlier weeks are reconstructed from alert dates (backfilled = true: alerts counted with their
+// severity and tier of today, devices removed since not known).
+export const weeklySnapshots = pgTable('weekly_snapshots', {
+  snapshotId: uuid('snapshot_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  weekStart: date('week_start').notNull(),
+  metrics: jsonb('metrics').notNull(),
+  backfilled: boolean('backfilled').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [uniqueIndex('idx_weekly_tenant_week').on(t.tenantId, t.weekStart)])
 
 // ─── Table 10: Asset Relationships ──────────────────────────────
 export const assetRelationships = pgTable('asset_relationships', {

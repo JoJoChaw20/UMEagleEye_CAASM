@@ -10,9 +10,10 @@ import useAgentPulse from './useAgentPulse'
 // circuit "bus" (the logo's wing traces); the active page lights its ring node.
 
 function NavItem({ item, collapsed }) {
+  const end = item.to === '/' || !!item.end
   if (collapsed) {
     return (
-      <NavLink to={item.to} end={item.to === '/'} title={item.label} aria-label={item.label}
+      <NavLink to={item.to} end={end} title={item.label} aria-label={item.label}
         className={({ isActive }) =>
           `relative mx-auto mb-1 flex h-10 w-10 items-center justify-center rounded-md transition-colors duration-150 ${
             isActive ? 'bg-rail-raised text-eagle-300 shadow-[inset_0_0_0_1px_rgb(var(--eagle-500)/0.35)]' : 'text-rail-muted hover:bg-rail-raised/60 hover:text-rail-text'}`}>
@@ -20,8 +21,26 @@ function NavItem({ item, collapsed }) {
       </NavLink>
     )
   }
+  // A sub-page sits indented under its parent, smaller, with a short branch from the bus to it
+  if (item.sub) {
+    return (
+      <NavLink to={item.to} end
+        className={({ isActive }) => `group relative ml-11 flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors duration-150 ${
+          isActive ? 'bg-rail-raised text-on-brand' : 'text-rail-muted hover:bg-rail-raised/60 hover:text-rail-text'}`}>
+        {({ isActive }) => (
+          <>
+            <span aria-hidden="true" className={`absolute -left-[36px] top-1/2 h-px w-[30px] ${isActive ? 'bg-eagle-400' : 'bg-rail-line'}`} />
+            <span aria-hidden="true" className={`absolute -left-[7px] top-1/2 -translate-y-1/2 rounded-full ${
+              isActive ? 'h-[7px] w-[7px] border-2 border-eagle-400 bg-rail' : 'h-[4px] w-[4px] bg-rail-line group-hover:bg-rail-muted'}`} />
+            <item.icon className={`h-3.5 w-3.5 flex-shrink-0 ${isActive ? 'text-eagle-300' : ''}`} />
+            <span className="truncate">{item.label}</span>
+          </>
+        )}
+      </NavLink>
+    )
+  }
   return (
-    <NavLink to={item.to} end={item.to === '/'}
+    <NavLink to={item.to} end={end}
       className={({ isActive }) => `group relative ml-5 flex h-9 items-center gap-3 rounded-md px-2.5 text-sm transition-colors duration-150 ${
         isActive ? 'bg-rail-raised text-on-brand' : 'text-rail-muted hover:bg-rail-raised/60 hover:text-rail-text'}`}>
       {({ isActive }) => (

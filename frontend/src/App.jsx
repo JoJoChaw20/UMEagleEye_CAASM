@@ -9,6 +9,7 @@ import NetworkMapPage from './pages/NetworkMapPage'
 import AssetDetailPage from './pages/AssetDetailPage'
 import DiscoveryPage from './pages/DiscoveryPage'
 import AlertsPage from './pages/AlertsPage'
+import WeeklyHistoryPage from './pages/WeeklyHistoryPage'
 import AdvisoriesPage from './pages/AdvisoriesPage'
 import ThreatIntelPage from './pages/ThreatIntelPage'
 import SBOMPage from './pages/SBOMPage'
@@ -107,6 +108,8 @@ export default function App() {
 
         {/* SECURITY */}
         <Route path="alerts"       element={<ProtectedRoute action="alert.view"><AlertsPage /></ProtectedRoute>} />
+        {/* its data is the Dashboard's (GET /posture/weekly needs dashboard.view) */}
+        <Route path="alerts/weekly" element={<ProtectedRoute action="dashboard.view"><WeeklyHistoryPage /></ProtectedRoute>} />
         <Route path="advisories"   element={<ProtectedRoute action="advisory.view"><AdvisoriesPage /></ProtectedRoute>} />
         <Route path="threat-intel" element={<ProtectedRoute action="cti.view"><ThreatIntelPage /></ProtectedRoute>} />
         <Route path="sbom"         element={<ProtectedRoute action="sbom.view"><SBOMPage /></ProtectedRoute>} />
