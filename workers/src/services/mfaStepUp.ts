@@ -56,7 +56,7 @@ export async function claimStep(
 export async function stepUp(
   c: Ctx, db: DB, user: UserRow, input: { password?: string; code?: string },
 ): Promise<Response | null> {
-  const passwordOnly = !user.mfaEnabled && isMfaExempt(c.env, user.username)
+  const passwordOnly = !user.mfaEnabled && isMfaExempt(c.env, user.username, user.role)
   if (!passwordOnly && (!user.mfaEnabled || !user.totpSecret)) return c.json({ detail: 'Set up MFA first.' }, 409)
   const limited = await codeLimited(c, user.userId)
   if (limited) return limited

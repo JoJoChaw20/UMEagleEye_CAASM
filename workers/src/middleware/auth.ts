@@ -40,7 +40,7 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   if (!row) {
     return c.json({ detail: 'Your account is deactivated. Contact your Tenant Superadmin.' }, 401)
   }
-  const refused = sessionGate(payload, row, c.req.path, new Date(), isMfaExempt(c.env, row.username))
+  const refused = sessionGate(payload, row, c.req.path, new Date(), isMfaExempt(c.env, row.username, row.role))
   if (refused) {
     if (isDeactivated(row)) await flipIfDue(db, payload.sub)
     return c.json(refused.body, refused.status)

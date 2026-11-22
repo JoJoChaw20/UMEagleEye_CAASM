@@ -16,6 +16,7 @@ export interface Env {
   // ── Vars ──
   APP_ENV: string
   MFA_EXEMPT_USERNAMES?: string
+  MFA_EXEMPT_SUPERADMINS?: string  // "true": Platform Superadmins sign in without MFA (lib/mfaFlow.ts isMfaExempt)
   OPENROUTER_MODEL: string
   SCAN_DEFAULT_SUBNET: string
   JWT_EXPIRE_MINUTES: string

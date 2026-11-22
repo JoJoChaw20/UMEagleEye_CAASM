@@ -67,7 +67,7 @@ async function mfaStep(c: Ctx, row: UserRow) {
   const db = getDb(c.env.DATABASE_URL)
   // Staging only: an exempt account with MFA off signs in with the password alone (lib/mfaFlow.ts isMfaExempt);
   // one that set MFA up signs in with its code like everyone else.
-  if (!row.mfaEnabled && isMfaExempt(c.env, row.username)) {
+  if (!row.mfaEnabled && isMfaExempt(c.env, row.username, row.role)) {
     const settled = await settledAccount(c, db, row)
     if (settled.refused) return settled.refused
     await db.update(users).set({ lastLogin: new Date() }).where(eq(users.userId, row.userId))
@@ -675,7 +675,7 @@ app.get('/me', authMiddleware, async (c) => {
 
     // Role and actions as normalized (a legacy role reads as a tenant user): lib/accountRows.ts
     const { passwordHash, ...profile } = withAccount(row)
-    return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH, mfa_exempt: isMfaExempt(c.env, row.username) })
+    return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH, mfa_exempt: isMfaExempt(c.env, row.username, row.role) })
   } catch (err) {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)
@@ -699,8 +699,8 @@ app.get('/mfa/status', authMiddleware, async (c) => {
   try {
     const authUser = c.get('user')
     const db = getDb(c.env.DATABASE_URL)
-    const [row] = await db.select({ mfaEnabled: users.mfaEnabled, username: users.username }).from(users).where(eq(users.userId, authUser.userId)).limit(1)
-    return c.json({ mfa_enabled: row?.mfaEnabled === true, mfa_exempt: isMfaExempt(c.env, row?.username ?? ''), recovery_codes_left: await recoveryCodesLeft(db, authUser.userId) })
+    const [row] = await db.select({ mfaEnabled: users.mfaEnabled, username: users.username, role: users.role }).from(users).where(eq(users.userId, authUser.userId)).limit(1)
+    return c.json({ mfa_enabled: row?.mfaEnabled === true, mfa_exempt: isMfaExempt(c.env, row?.username ?? '', row?.role),recovery_codes_left: await recoveryCodesLeft(db, authUser.userId) })
   } catch (err) {
     console.error('mfa/status error:', err)
     return c.json({ detail: 'Failed to read MFA status' }, 500)

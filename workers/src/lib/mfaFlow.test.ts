@@ -159,6 +159,17 @@ test('isMfaExempt: only APP_ENV staging', () => {
   assert.equal(isMfaExempt({ MFA_EXEMPT_USERNAMES: 'admin', APP_ENV: 'staging' }, 'admin'), true)
 })
 
+test('isMfaExempt: MFA_EXEMPT_SUPERADMINS covers Platform Superadmins in any environment, no one else', () => {
+  const env = { MFA_EXEMPT_SUPERADMINS: 'true', APP_ENV: 'production' }
+  assert.equal(isMfaExempt(env, 'Prof Badrul', 'superadmin'), true)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_SUPERADMINS: 'true' }, 'admin', 'superadmin'), true)
+  assert.equal(isMfaExempt(env, 'owner', 'tenant_superadmin'), false)
+  assert.equal(isMfaExempt(env, 'user', 'tenant_user'), false)
+  assert.equal(isMfaExempt(env, 'admin'), false)
+  assert.equal(isMfaExempt({ APP_ENV: 'production' }, 'admin', 'superadmin'), false)
+  assert.equal(isMfaExempt({ MFA_EXEMPT_SUPERADMINS: 'yes', APP_ENV: 'production' }, 'admin', 'superadmin'), false)
+})
+
 test('isMfaExempt: whitespace around names tolerated', () => {
   const env = { MFA_EXEMPT_USERNAMES: ' alice , admin ', APP_ENV: 'staging' }
   assert.equal(isMfaExempt(env, 'admin'), true)

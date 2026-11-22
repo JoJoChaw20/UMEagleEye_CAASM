@@ -15,11 +15,15 @@ export function signInOutcome(mfaEnabled: boolean): MfaStage {
 }
 
 /**
- * Staging-only exception to mandatory MFA: usernames in MFA_EXEMPT_USERNAMES (comma list, exact
- * match) sign in with the password alone. Active only when APP_ENV is exactly 'staging' (fail closed: production,
- * unset or anything else is never exempt).
+ * Exceptions to mandatory MFA; an exempt account with MFA off signs in with the password alone.
+ * - MFA_EXEMPT_SUPERADMINS = "true": every Platform Superadmin, in any environment.
+ * - MFA_EXEMPT_USERNAMES (comma list, exact match): only when APP_ENV is exactly 'staging' (fail closed:
+ *   production, unset or anything else is never exempt by name).
  */
-export function isMfaExempt(env: { MFA_EXEMPT_USERNAMES?: string; APP_ENV?: string }, username: string): boolean {
+export function isMfaExempt(
+  env: { MFA_EXEMPT_USERNAMES?: string; MFA_EXEMPT_SUPERADMINS?: string; APP_ENV?: string }, username: string, role?: string,
+): boolean {
+  if (role === 'superadmin' && env.MFA_EXEMPT_SUPERADMINS === 'true') return true
   if (env.APP_ENV !== 'staging') return false
   if (!username) return false
   // The username is compared exactly; only the list entries are trimmed.

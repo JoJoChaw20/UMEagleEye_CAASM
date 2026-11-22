@@ -62,6 +62,7 @@ crons = [
 
 [vars]
 APP_ENV = "production"
+MFA_EXEMPT_SUPERADMINS = "true"
 OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
 SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
 JWT_EXPIRE_MINUTES = "1440"
@@ -94,6 +95,7 @@ enabled = true
 [env.staging.vars]
 APP_ENV = "staging"
 MFA_EXEMPT_USERNAMES = "admin"
+MFA_EXEMPT_SUPERADMINS = "true"
 OPENROUTER_MODEL = "deepseek/deepseek-v4-pro"
 SCAN_DEFAULT_SUBNET = "192.168.1.0/24"
 JWT_EXPIRE_MINUTES = "1440"
