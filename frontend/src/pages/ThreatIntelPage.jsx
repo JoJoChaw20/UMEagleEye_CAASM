@@ -79,8 +79,8 @@ function FeedHealth({ stats, ingesting, onIngest }) {
 // view: the sub-pages under Threat Intel in the sidebar: 'matches' (/threat-intel/matches) and 'events'
 // (/threat-intel/events); none: the overview (tiles, feeds, Indicators, ATT&CK, Coverage).
 const SUB_PAGES = {
-  matches: { title: 'Matches', lead: 'Open threat-intel matches on your assets, one group per asset.' },
-  events: { title: 'Threat-intel events', lead: 'Your own threat-intel events, and the ones other tenants share with you.' },
+  matches: { title: 'Matches', listLabel: 'Assets matched', lead: 'Open threat-intel matches on your assets, and what those threats are known to do.' },
+  events: { title: 'Threat-intel events', listLabel: 'Events', lead: 'Your own threat-intel events, the ones other tenants share with you, and what they describe.' },
 }
 
 export default function ThreatIntelPage({ view }) {
@@ -94,6 +94,8 @@ export default function ThreatIntelPage({ view }) {
   const [stats, setStats] = useState(null)
   const [ingesting, setIngesting] = useState(false)
   const [tab, setTab] = useState('indicators')
+  const [subTab, setSubTab] = useState('list')       // a sub-page: its list, or its ATT&CK view
+  useEffect(() => { setSubTab('list') }, [view])
   const [lookupInput, setLookupInput] = useState('')
   const [panelValue, setPanelValue] = useState(null)
 
@@ -206,7 +208,14 @@ export default function ThreatIntelPage({ view }) {
           </div>
           {lookupForm}
         </div>
-        {view === 'matches' ? <MatchesPanel onLookup={setPanelValue} showToast={showToast} /> : <TiEventsPanel showToast={showToast} />}
+        {/* the list, and what those threats do in MITRE ATT&CK (the matrix scoped to them) */}
+        <Tabs label={`${sub.title} views`} active={subTab} onChange={setSubTab} tabs={[
+          { id: 'list', label: sub.listLabel },
+          { id: 'attack', label: 'MITRE ATT&CK' },
+        ]} />
+        {subTab === 'attack'
+          ? <AttackMatrixPanel key={view} fixedScope={view === 'matches' ? 'matched' : 'events'} />
+          : view === 'matches' ? <MatchesPanel onLookup={setPanelValue} showToast={showToast} /> : <TiEventsPanel showToast={showToast} />}
         {panelValue && <IndicatorPanel value={panelValue} onClose={() => setPanelValue(null)} />}
       </div>
     )
@@ -254,7 +263,8 @@ export default function ThreatIntelPage({ view }) {
       ]} />
 
       {tab === 'matrix' ? (
-        <AttackMatrixPanel onShowIndicators={showAttackIndicators} />
+        // the feeds' view only: the matched and events views are on the Matches and Events sub-pages
+        <AttackMatrixPanel fixedScope="feeds" onShowIndicators={showAttackIndicators} />
       ) : tab === 'evidence' ? (
         <EvidencePanel stats={stats} />
       ) : (

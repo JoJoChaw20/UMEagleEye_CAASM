@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Bell, FileSearch, Globe, FileText,
-  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown, CalendarRange, Crosshair, BookOpen,
+  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown, ListChecks, Crosshair, BookOpen,
 } from 'lucide-react'
 
 // One source for the sidebar and the command palette. Items are filtered by the same
@@ -20,9 +20,9 @@ export function buildNavSections(can, role) {
     { label: 'Security', items: [
       // end: Alerts is not lit while its sub-page is open
       ...item('alert.view', { to: '/alerts', end: true, icon: Bell, label: 'Alerts', keywords: 'events findings cve drift' }),
-      // a sub-page of Alerts (sub: drawn indented under it); the same data as the Dashboard's
-      ...(can('alert.view') ? item('dashboard.view', { to: '/alerts/weekly', sub: true, icon: CalendarRange, label: 'Weekly history',
-        keywords: 'week baseline trend history progress compare last week management' }) : []),
+      // a sub-page of Alerts (sub: drawn indented under it): what raises an alert, the tiers, fix-time targets
+      ...item('alert.view', { to: '/alerts/rules', sub: true, icon: ListChecks, label: 'Alert rules',
+        keywords: 'fix-time targets sla tiers ranking what alerts rules due deadline policy' }),
       ...item('advisory.view', { to: '/advisories', icon: FileSearch, label: 'Advisories', keywords: 'remediation ai sla' }),
       ...item('cti.view', { to: '/threat-intel', end: true, icon: Globe, label: 'Threat Intel', keywords: 'ioc feeds kev mitre attack coverage indicators' }),
       // its sub-pages (sub: drawn indented under it), each with its own view action too

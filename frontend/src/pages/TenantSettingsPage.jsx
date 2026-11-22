@@ -12,7 +12,6 @@ import StepUpDialog from '../components/auth/StepUpDialog'
 import { MFA_RESET_GUIDANCE, mfaResetToast } from '../utils/mfa'
 import { canConfirmDelete } from '../utils/users'
 import { accessSummary, actionLabels } from '../utils/actions'
-import FixTargetsCard from '../components/common/FixTargetsCard'
 
 // Users page for the Tenant Superadmin: the tenant's name, and who may do what. Each tenant user
 // holds a list of actions, chosen in the ActionPicker (PUT /tenants/:id/users/:userId/actions).
@@ -413,8 +412,7 @@ export default function TenantSettingsPage() {
         </div>
       )}
 
-      {/* ── Fix-time targets (when alerts are due) ── */}
-      {tenantId && <FixTargetsCard tenantId={tenantId} />}
+      {/* Fix-time targets moved to Alerts > Alert rules (pages/AlertRulesPage.jsx) */}
 
       {/* ── Users ── */}
       <div className="glass-card overflow-hidden">

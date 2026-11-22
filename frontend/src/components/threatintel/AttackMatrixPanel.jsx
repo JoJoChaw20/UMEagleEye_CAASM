@@ -58,11 +58,13 @@ function downloadLayer(data) {
   URL.revokeObjectURL(a.href)
 }
 
-export default function AttackMatrixPanel({ onShowIndicators }) {
-  const [scope, setScope] = useState('feeds')       // feeds | matched | events
+// fixedScope: one view, no switcher. The pages show each where it belongs: the feeds on Threat Intelligence,
+// 'matched' on Matches (what the threats on your assets do), 'events' on Events.
+export default function AttackMatrixPanel({ onShowIndicators, fixedScope }) {
+  const [scope, setScope] = useState(fixedScope ?? 'feeds')       // feeds | matched | events
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
-  const [shadeBy, setShadeBy] = useState('iocs')    // iocs | families
+  const [shadeBy, setShadeBy] = useState(fixedScope === 'events' ? 'families' : 'iocs')    // iocs | families
   const [selected, setSelected] = useState(null)    // technique id
   const [expanded, setExpanded] = useState({})      // tactic short -> true
 
@@ -81,7 +83,7 @@ export default function AttackMatrixPanel({ onShowIndicators }) {
   // events: most events hold few indicators, so compare them by number of events
   const pickScope = (sc) => { setScope(sc); setShadeBy(sc === 'events' ? 'families' : 'iocs') }
 
-  const scopeBar = (
+  const scopeBar = fixedScope ? null : (
     <div className="flex gap-1 bg-dark-800 rounded-lg p-1 w-fit">
       {Object.entries(SCOPES).map(([id, { label }]) => (
         <button key={id} onClick={() => pickScope(id)}

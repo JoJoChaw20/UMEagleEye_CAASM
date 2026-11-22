@@ -230,23 +230,19 @@ export function buildPdf(data, reportType) {
     { value: String(ch.new_devices ?? 0), label: 'New devices found', color: ch.new_devices ? C.amber : C.ink },
     { value: String(ch.new_ports ?? 0), label: 'New open ports', color: ch.new_ports ? C.amber : C.ink },
   ], 15)
-  // Weekly report: the last finished week against the week before and the tenant's baseline week
-  // (workers/src/services/weekly.ts)
+  // Weekly report: the last finished week against the week before (workers/src/services/weekly.ts)
   const wow = data.week_over_week
   if (wow && (wow.vs_last_week ?? []).length) {
     font(8.5, 'bold', C.ink); ensure(10)
-    doc.text(safe(`Week ${wow.iso_week} compared${wow.backfilled ? ' (reconstructed from alert dates)' : ''}`), M, y); y += 4
-    const base = new Map((wow.vs_baseline ?? []).map(b => [b.key, b]))
+    doc.text(safe(`Week ${wow.iso_week} compared with the week before${wow.backfilled ? ' (reconstructed from alert dates)' : ''}`), M, y); y += 4
     const fmtN = (v) => (v == null ? '-' : String(v))
     const fmtD = (c) => (c?.delta == null ? '-' : `${c.delta > 0 ? '+' : ''}${c.delta}`)
     const tone = (c) => (c?.trend === 'better' ? C.green : c?.trend === 'worse' ? C.red : C.muted)
     table([
-      { label: 'Measure', w: 64, get: r => r.label, bold: true, color: () => C.ink },
-      { label: `Week ${wow.iso_week}`, w: 28, align: 'right', get: r => fmtN(r.now) },
-      { label: 'Week before', w: 26, align: 'right', get: r => fmtN(r.then) },
-      { label: 'Change', w: 20, align: 'right', get: r => fmtD(r), color: r => tone(r), bold: true },
-      { label: wow.baseline_week ? `vs baseline ${wow.baseline_week}` : 'vs baseline (none set)', w: 44, align: 'right',
-        get: r => (base.get(r.key) ? `${fmtD(base.get(r.key))} (was ${fmtN(base.get(r.key).then)})` : '-'), color: r => tone(base.get(r.key)) },
+      { label: 'Measure', w: 82, get: r => r.label, bold: true, color: () => C.ink },
+      { label: `Week ${wow.iso_week}`, w: 36, align: 'right', get: r => fmtN(r.now) },
+      { label: 'Week before', w: 36, align: 'right', get: r => fmtN(r.then) },
+      { label: 'Change', w: 28, align: 'right', get: r => fmtD(r), color: r => tone(r), bold: true },
     ], wow.vs_last_week)
   }
   const net = (ch.opened ?? 0) - (ch.closed ?? 0)
