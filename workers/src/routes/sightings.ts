@@ -21,7 +21,7 @@ import { and, eq, sql, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { getDb } from '../db/client'
 import { agents, auditLogs, eventCtiIndicators, events } from '../db/schema'
-import { FEED_FRESH, matchableSql } from '../services/threatIntel'
+import { FEED_FRESH, matchableSql, sharedBySql } from '../services/threatIntel'
 import {
   LIST_PAGE, LIST_RULES, cleanHits, decodeCursor, encodeCursor, listItems, lookupValues, matchHits, planSightings,
   type ExistingSighting, type IndicatorRow,
@@ -119,7 +119,7 @@ app.post('/', zValidator('json', z.object({ hits: z.array(z.unknown()).max(1000)
   const res = await db.execute(sql`
     SELECT c.indicator_id::text AS "indicatorId", c.indicator_type::text AS type, c.value, c.source,
            c.ti_event_id::text AS "tiEventId", te.title, te.threat_level::text AS level,
-           c.confidence_score::float AS confidence
+           c.confidence_score::float AS confidence, ${sharedBySql(sql`${agent.tenantId}::uuid`)} AS "sharedBy"
     FROM cti_indicators c LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
     WHERE ${matchableSql(sql`${agent.tenantId}::uuid`)} AND (
       (c.indicator_type = 'ip' AND ${inList(sql`c.value`, ips)})

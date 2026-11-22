@@ -20,7 +20,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
-import { matchableSql, type IntelScope } from './threatIntel'
+import { matchableSql, refreshCveIntel, sharedBySql, type IntelScope } from './threatIntel'
 import { CONFIDENCE_LEVEL_SQL } from '../lib/confidence'
 
 type DB = ReturnType<typeof getDb>
@@ -52,6 +52,7 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
   const inScope = assetScope(scope)
   const special = sql.raw(`ARRAY[${SPECIAL_V4.map(n => `'${n}'`).join(',')}]::inet[]`)
   const visibleTo = (alias: string) => matchableSql(sql.raw(`${alias}.tenant_id`))
+  const sharedBy = (alias: string) => sharedBySql(sql.raw(`${alias}.tenant_id`))
 
   const res = await db.execute(sql`
     WITH s AS (
@@ -90,23 +91,23 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
     hit AS (
       SELECT ips.asset_id, ips.tenant_id, c.indicator_type::text AS itype, c.value AS ivalue,
              'ip' AS matched_on, ips.ip AS observed, 'ioc' AS kind, c.source, c.ti_event_id, te.title, te.threat_level::text AS level,
-             ${CONF} AS conf_level
+             ${CONF} AS conf_level, ${sharedBy('ips')} AS shared_by
       FROM ips JOIN cti_indicators c ON c.indicator_type = 'ip' AND c.value = ips.ip
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE ${visibleTo('ips')}
       UNION ALL
-      SELECT sx.asset_id, sx.tenant_id, 'domain', c.value, 'hostname', sx.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}
+      SELECT sx.asset_id, sx.tenant_id, 'domain', c.value, 'hostname', sx.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}, ${sharedBy('sx')}
       FROM suffixes sx JOIN cti_indicators c ON c.indicator_type = 'domain' AND c.value = sx.name
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE ${visibleTo('sx')}
       UNION ALL
-      SELECT h.asset_id, h.tenant_id, 'url', c.value, 'hostname', h.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}
+      SELECT h.asset_id, h.tenant_id, 'url', c.value, 'hostname', h.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}, ${sharedBy('h')}
       FROM hosts h JOIN url_iocs c ON c.url_host = h.host
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE ${visibleTo('h')}
       UNION ALL
       SELECT so.asset_id, so.tenant_id, 'software', c.value, so.matched_on,
-             so.name || COALESCE(' ' || so.version, ''), 'watchlist', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}
+             so.name || COALESCE(' ' || so.version, ''), 'watchlist', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}, ${sharedBy('so')}
       FROM soft so
       JOIN cti_indicators c ON c.indicator_type = 'software'
         AND (lower(so.name) = lower(substring(c.value from '^(@?[^@]+)'))
@@ -133,7 +134,9 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
                'rule', CASE WHEN min(kind) = 'watchlist' THEN 'R6' ELSE 'R5' END,
                'sources', to_jsonb(array_agg(DISTINCT COALESCE(title, source))),
                'ti_event_titles', COALESCE(to_jsonb(array_agg(DISTINCT title) FILTER (WHERE title IS NOT NULL)), '[]'::jsonb),
-               'ti_event_ids', COALESCE(to_jsonb(array_agg(DISTINCT ti_event_id) FILTER (WHERE ti_event_id IS NOT NULL)), '[]'::jsonb)
+               'ti_event_ids', COALESCE(to_jsonb(array_agg(DISTINCT ti_event_id) FILTER (WHERE ti_event_id IS NOT NULL)), '[]'::jsonb),
+               -- the other tenants whose shared events name it ("Shared by", services/threatIntel.ts)
+               'shared_by', COALESCE(to_jsonb(array_agg(DISTINCT shared_by) FILTER (WHERE shared_by IS NOT NULL)), '[]'::jsonb)
              ) AS details
       FROM hit GROUP BY asset_id, itype, ivalue
     ),
@@ -191,6 +194,25 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
   const row = (res.rows[0] ?? {}) as Partial<MatchResult>
   await linkMatchIndicators(db, inScope)
   return { created: Number(row.created ?? 0), reopened: Number(row.reopened ?? 0), resolved: Number(row.resolved ?? 0) }
+}
+
+/** After a change to what intel `scope` may use (an event changed, a tenant opted in or out of shared
+ *  events): refresh the CVE alerts and re-match the assets. Returns how many alerts changed; a
+ *  failing half is logged, not thrown (the change itself is saved). */
+export async function refreshIntelAlerts(db: DB, scope: IntelScope): Promise<number> {
+  let changed = 0
+  try {
+    changed += await refreshCveIntel(db, scope)
+  } catch (err) {
+    console.error('threat intel: refreshing CVE alerts failed:', err)
+  }
+  try {
+    const m = await matchIocs(db, scope)
+    changed += m.created + m.reopened + m.resolved
+  } catch (err) {
+    console.error('threat intel: matching assets failed:', err)
+  }
+  return changed
 }
 
 /** Link each open cti_match alert to the matchable indicators it is about (shown on the

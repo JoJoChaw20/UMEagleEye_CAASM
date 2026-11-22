@@ -503,6 +503,9 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
           named_techniques: ctiIndicators.attackTechniques,
           confidence: ctiIndicators.confidenceScore,
           event_id: tiEvents.tiEventId, event_title: tiEvents.title, event_level: tiEvents.threatLevel,
+          // another tenant's shared event that this tenant opted into
+          shared_by: sql<string | null>`CASE WHEN ${tiEvents.tenantId} IS NOT NULL AND ${tiEvents.tenantId} IS DISTINCT FROM ${asset.tenantId}
+            THEN (SELECT name FROM tenants tn WHERE tn.tenant_id = ${tiEvents.tenantId}) END`,
         })
         .from(eventCtiIndicators)
         .innerJoin(ctiIndicators, eq(eventCtiIndicators.indicatorId, ctiIndicators.indicatorId))

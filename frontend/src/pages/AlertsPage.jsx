@@ -857,6 +857,7 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 d.match_kind === 'sighting' && d.last_seen_at && ['Last contact', new Date(d.last_seen_at).toLocaleString()],
                 e.event_type === 'cti_match' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
                 e.event_type === 'cti_match' && Array.isArray(d.sources) && d.sources.length > 0 && ['Listed by', d.sources.join(', ')],
+                e.event_type === 'cti_match' && Array.isArray(d.shared_by) && d.shared_by.length > 0 && ['Shared by', `${d.shared_by.join(', ')} (an event they share with all tenants)`],
                 e.event_type === 'os_patch_missing' && ['Windows', `${d.product ?? '—'}`],
                 e.event_type === 'os_patch_missing' && ['Installed build', d.build],
                 e.event_type === 'os_patch_missing' && d.latest_build && ['Latest build', d.kb
@@ -949,7 +950,7 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 <ul className="space-y-1.5">{e.cti_indicators.map((i, n) => (
                   <li key={n} className="text-xs text-dark-300">
                     <span className="font-mono text-accent-red">{i.value}</span>{' '}
-                    <span className="text-dark-500">({i.type}, {i.event_title ? `event "${i.event_title}"` : i.source})</span>
+                    <span className="text-dark-500">({i.type}, {i.event_title ? `event "${i.event_title}"` : i.source}{i.shared_by ? `, shared by ${i.shared_by}` : ''})</span>
                     {i.family && <div className="text-dark-400">Malware family: {i.family}{i.attack_software ? ` (ATT&CK ${i.attack_software}, ${i.technique_count} techniques)` : ''}</div>}
                     {i.techniques?.length > 0 && <TechniqueChips list={i.techniques} />}
                   </li>

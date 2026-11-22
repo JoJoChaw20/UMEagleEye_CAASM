@@ -115,6 +115,16 @@ test('a first sighting: one alert with what the computer did and who lists it', 
   assert.equal(w.details.last_seen_at, '2026-11-17T09:45:00.000Z')
   assert.deepEqual(w.details.ti_event_titles, ['Campaign X'])
   assert.deepEqual(w.details.sources, ['Campaign X'])
+  assert.deepEqual(w.details.shared_by, [])
+})
+
+test('a sighting of another tenant\'s shared event says who shared it', () => {
+  const { matched } = matchHits([hit('c2.evil.com')], [
+    row('domain', 'evil.com', { tiEventId: 'ev1', title: 'Campaign X', level: 'high', sharedBy: 'University A' }),
+    row('domain', 'evil.com', { tiEventId: 'ev2', title: 'Ours', level: 'low', sharedBy: null }),
+  ])
+  const w = planSightings({ matched, existing: [], newId }).insert[0]!
+  assert.deepEqual(w.details.shared_by, ['University A'])
 })
 
 const existing = (status: ExistingSighting['status'], over: Partial<ExistingSighting> = {}): ExistingSighting => ({

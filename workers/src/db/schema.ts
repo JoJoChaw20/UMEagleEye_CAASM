@@ -85,6 +85,10 @@ export const tenants = pgTable('tenants', {
   agentPolicy: jsonb('agent_policy').notNull().default({}),
   // Fix-time targets in hours that differ from the defaults (lib/alertRank.ts SLA_DEFAULTS)
   slaPolicy: jsonb('sla_policy').notNull().default({}),
+  // Threat-intel events other tenants share with all tenants raise alerts here too. Off by default:
+  // a shared event is read-only context until this tenant opts in (here, or per event:
+  // tiEventAlertChoices). services/threatIntel.ts matchableSql.
+  sharedEventAlerts: boolean('shared_event_alerts').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -425,6 +429,10 @@ export const ctiIndicators = pgTable('cti_indicators', {
   uniqueIndex('idx_cti_event_value').on(t.tiEventId, t.value).where(sql`${t.tiEventId} IS NOT NULL`),
   // The agents' sightings list pages through feed entries by (last_seen, indicator_id) (routes/sightings.ts).
   index('idx_cti_feed_seen').on(t.lastSeen, t.indicatorId).where(sql`${t.tiEventId} IS NULL`),
+  // Matching looks values up across feeds AND events (c.value = f.cve_id, = an IP, = a domain), which
+  // neither partial index serves: without this every lookup read the whole table (37 ms each, about
+  // 5 minutes for staging's 8,368 open CVE findings).
+  index('idx_cti_type_value').on(t.indicatorType, t.value),
 ])
 
 // ─── Threat-intel events (MISP-style) ───────────────────────────
@@ -447,6 +455,16 @@ export const tiEvents = pgTable('ti_events', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
   publishedAt: timestamp('published_at', { withTimezone: true }),
 }, (t) => [index('idx_ti_events_tenant').on(t.tenantId, t.status)])
+
+// A receiving tenant's choice for one event another tenant shared with all tenants: raise alerts
+// from it (true) or not (false), whatever tenants.shared_event_alerts says. No row = that setting.
+export const tiEventAlertChoices = pgTable('ti_event_alert_choices', {
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  tiEventId: uuid('ti_event_id').notNull().references(() => tiEvents.tiEventId, { onDelete: 'cascade' }),
+  alerts: boolean('alerts').notNull(),
+  setBy: uuid('set_by').references(() => users.userId, { onDelete: 'set null' }),
+  setAt: timestamp('set_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [primaryKey({ columns: [t.tenantId, t.tiEventId] })])
 
 // ─── Table 8: Advisories ────────────────────────────────────────
 export const advisories = pgTable('advisories', {

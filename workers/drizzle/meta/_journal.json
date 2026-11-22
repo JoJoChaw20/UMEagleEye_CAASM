@@ -302,6 +302,20 @@
       "when": 1795339972627,
       "tag": "0042_alert_ranking_sla",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795347492169,
+      "tag": "0043_shared_event_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795348531457,
+      "tag": "0044_cti_type_value_index",
+      "breakpoints": true
     }
   ]
 }

@@ -10,8 +10,11 @@
  *   - tenant superadmins and tenant admins write their tenant's events; superadmins
  *     write platform events (no tenant, visible to everyone); business owners read.
  *
- * Effect on alerts (services/threatIntel.ts): attributes of a PUBLISHED event count for
- * the tenants that can see it, except ones marked to_ids=false or on the warninglist.
+ * Effect on alerts (services/threatIntel.ts eventAlertsSql): attributes of a PUBLISHED event
+ * count for its own tenant (platform events: every tenant), except ones marked to_ids=false or on
+ * the warninglist. An event shared with all tenants counts in another tenant only once that
+ * tenant opts in: for every shared event (PUT /tenants/:id/shared-event-alerts) or for this one
+ * (PUT /:id/alerts). Its alerts there say "Shared by <tenant>".
  * CVE attributes flag CVE alerts (services/threatIntel.ts); IP, domain, URL and
  * software attributes are matched against assets (services/iocMatch.ts). Hashes and
  * emails are kept for reference: no agent data can match them yet.
@@ -24,11 +27,12 @@ import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { auditLogs, ctiIndicators, tenants, tiEvents, users } from '../db/schema'
+import { auditLogs, ctiIndicators, tenants, tiEventAlertChoices, tiEvents, users } from '../db/schema'
 import { IOC_TYPES, parseIocs, type IocType } from '../lib/iocParse'
 import { WARNINGLIST_LABELS, warninglistOf } from '../lib/warninglist'
-import { refreshCveIntel, scopeForEvent } from '../services/threatIntel'
-import { matchIocs } from '../services/iocMatch'
+import { scopeForEvent } from '../services/threatIntel'
+import { refreshIntelAlerts } from '../services/iocMatch'
+import { alertsHere, type AlertSetting } from '../lib/sharedEvents'
 import { resolveSoftware, softwareName, techniqueIds, techniqueName } from '../lib/attack'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -113,21 +117,19 @@ function audit(db: DB, user: User, ev: EventRow, actionType: string, newState: u
 
 /** After a change that can affect alerts: refresh the CVE alerts and re-match the assets
  *  of whoever can see the event. Returns how many alerts changed. */
-async function refreshAfter(db: DB, ev: EventRow, previousDistribution?: string): Promise<number> {
-  const scope = scopeForEvent(ev, previousDistribution)
-  let changed = 0
-  try {
-    changed += await refreshCveIntel(db, scope)
-  } catch (err) {
-    console.error('ti event: refreshing CVE alerts failed:', err)
-  }
-  try {
-    const m = await matchIocs(db, scope)
-    changed += m.created + m.reopened + m.resolved
-  } catch (err) {
-    console.error('ti event: matching assets failed:', err)
-  }
-  return changed
+function refreshAfter(db: DB, ev: EventRow, previousDistribution?: string): Promise<number> {
+  return refreshIntelAlerts(db, scopeForEvent(ev, previousDistribution))
+}
+
+/** The viewer tenant's default for shared events and its choices per event (lib/sharedEvents.ts). */
+async function alertSetting(db: DB, user: User): Promise<AlertSetting> {
+  if (!user.tenantId) return { tenantDefault: false, choices: new Map() }
+  const [[t], rows] = await Promise.all([
+    db.select({ on: tenants.sharedEventAlerts }).from(tenants).where(eq(tenants.tenantId, user.tenantId)).limit(1),
+    db.select({ id: tiEventAlertChoices.tiEventId, alerts: tiEventAlertChoices.alerts })
+      .from(tiEventAlertChoices).where(eq(tiEventAlertChoices.tenantId, user.tenantId)),
+  ])
+  return { tenantDefault: t?.on ?? false, choices: new Map(rows.map((r) => [r.id, r.alerts])) }
 }
 
 const eventBody = z.object({
@@ -179,7 +181,7 @@ app.get('/', authMiddleware, requireAction('ti_event.view'), async (c) => {
     const conditions = [visibleWhere(user)]
     if (status === 'draft' || status === 'published') conditions.push(eq(tiEvents.status, status))
 
-    const rows = await db
+    const [rows, setting] = await Promise.all([db
       .select({
         ev: tiEvents,
         tenantName: tenants.name,
@@ -192,14 +194,18 @@ app.get('/', authMiddleware, requireAction('ti_event.view'), async (c) => {
       .leftJoin(users, eq(users.userId, tiEvents.createdBy))
       .where(and(...conditions))
       .orderBy(desc(tiEvents.updatedAt))
-      .limit(200)
+      .limit(200), alertSetting(db, user)])
 
     return c.json({
       items: rows.map(r => eventOut(r.ev, user, {
         tenant_name: r.ev.tenantId ? r.tenantName : null,
         own: !!r.ev.tenantId && r.ev.tenantId === user.tenantId,
         author: r.author, attribute_count: r.attributes, cve_count: r.cves,
+        ...alertsHere(r.ev, user.tenantId, setting),
       })),
+      // the viewer tenant's default for events other tenants share (null: no tenant)
+      shared_event_alerts: user.tenantId ? setting.tenantDefault : null,
+      can_set_shared_default: user.role === 'tenant_superadmin',
     })
   } catch (err) {
     console.error('ti events list error:', err)
@@ -245,7 +251,7 @@ app.get('/:id', authMiddleware, requireAction('ti_event.view'), async (c) => {
     if (!ev || !canView(user, ev)) return c.json({ detail: 'Event not found' }, 404)
     // Open alerts this event drives now (in the viewer's own tenant; superadmins: all).
     const viewerTenant = user.role === 'superadmin' ? sql`true` : sql`a.tenant_id = ${user.tenantId ?? null}`
-    const [attrs, matches] = await Promise.all([
+    const [attrs, matches, setting] = await Promise.all([
       db.select().from(ctiIndicators)
         .where(eq(ctiIndicators.tiEventId, ev.tiEventId))
         .orderBy(asc(ctiIndicators.indicatorType), asc(ctiIndicators.value))
@@ -264,8 +270,15 @@ app.get('/:id', authMiddleware, requireAction('ti_event.view'), async (c) => {
         WHERE ${viewerTenant}
         LIMIT 50
       `),
+      alertSetting(db, user),
     ])
+    const [owner] = ev.tenantId && ev.tenantId !== user.tenantId
+      ? await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.tenantId, ev.tenantId)).limit(1)
+      : []
     return c.json(eventOut(ev, user, {
+      ...alertsHere(ev, user.tenantId, setting),
+      shared_event_alerts: user.tenantId ? setting.tenantDefault : null,
+      tenant_name: owner?.name ?? null,
       own: !!ev.tenantId && ev.tenantId === user.tenantId,
       attribute_count: attrs.length,
       attributes: attrs.map(attributeOut),
@@ -336,6 +349,44 @@ app.delete('/:id', authMiddleware, requireAction('ti_event.delete'), async (c) =
   } catch (err) {
     console.error('ti event delete error:', err)
     return c.json({ detail: 'Failed to delete event' }, 500)
+  }
+})
+
+// ── PUT /:id/alerts ─── the viewer tenant's choice for another tenant's shared event ──
+// {alerts: true | false} raises alerts from it here, or not, whatever the tenant's default;
+// null goes back to the default. Needs ti_event.publish: like publishing an own event, it makes
+// indicators raise alerts in the tenant.
+app.put('/:id/alerts', authMiddleware, requireAction('ti_event.publish'),
+  zValidator('json', z.object({ alerts: z.boolean().nullable() }), badRequest), async (c) => {
+  try {
+    const user = c.get('user') as User
+    const db = getDb(c.env.DATABASE_URL)
+    const ev = await loadEvent(db, c.req.param('id'))
+    if (!ev || !canView(user, ev)) return c.json({ detail: 'Event not found' }, 404)
+    const tenantId = user.tenantId
+    if (!tenantId) return c.json({ detail: 'Your account has no tenant' }, 403)
+    if (!ev.tenantId || ev.tenantId === tenantId || ev.distribution !== 'all_tenants') {
+      return c.json({ detail: 'Only an event another tenant shares with all tenants has this choice' }, 400)
+    }
+    const { alerts } = c.req.valid('json')
+    const [prev] = await db.select({ alerts: tiEventAlertChoices.alerts }).from(tiEventAlertChoices)
+      .where(and(eq(tiEventAlertChoices.tenantId, tenantId), eq(tiEventAlertChoices.tiEventId, ev.tiEventId))).limit(1)
+    const write = alerts === null
+      ? db.delete(tiEventAlertChoices).where(and(eq(tiEventAlertChoices.tenantId, tenantId), eq(tiEventAlertChoices.tiEventId, ev.tiEventId)))
+      : db.insert(tiEventAlertChoices).values({ tenantId, tiEventId: ev.tiEventId, alerts, setBy: user.userId })
+          .onConflictDoUpdate({ target: [tiEventAlertChoices.tenantId, tiEventAlertChoices.tiEventId], set: { alerts, setBy: user.userId, setAt: new Date() } })
+    await db.batch([
+      write,
+      db.insert(auditLogs).values({
+        userId: user.userId, tenantId, actionType: 'ti_event.alert_choice', targetEntity: ev.tiEventId,
+        previousState: { alerts: prev?.alerts ?? null }, newState: { alerts, title: ev.title },
+      }),
+    ])
+    const alertsUpdated = await refreshIntelAlerts(db, { tenantId })
+    return c.json(eventOut(ev, user, { ...alertsHere(ev, tenantId, await alertSetting(db, user)), alerts_updated: alertsUpdated }))
+  } catch (err) {
+    console.error('ti event alert choice error:', err)
+    return c.json({ detail: 'Failed to save the choice' }, 500)
   }
 })
 

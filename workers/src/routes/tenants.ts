@@ -25,6 +25,7 @@ import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH, hashPassword } from '../lib/auth'
 import { inviteCredentials } from '../lib/passwordRules'
 import { SLA_DEFAULTS, SLA_KEYS, SLA_MAX_HOURS, SLA_MIN_HOURS, cleanSlaPolicy, slaPolicy, type SlaKey } from '../lib/alertRank'
+import { refreshIntelAlerts } from '../services/iocMatch'
 
 const USERNAME_TAKEN = { detail: 'That username is already taken. Choose another one.' }
 import { networkTargetErrors } from '../services/scanTargets'
@@ -326,6 +327,34 @@ router.put(
       previousState: { sla_policy: cleanSlaPolicy(tenant.slaPolicy) }, newState: { sla_policy: next },
     })
     return c.json(slaPolicyOut(next, true))
+  }
+)
+
+// ── Alerts from other tenants' shared threat-intel events (services/threatIntel.ts eventAlertsSql) ──
+// The tenant's default for every event another tenant shares with all tenants (off: read-only
+// context). A choice made for one event (PUT /cti/events/:id/alerts) overrides it. The tenant's
+// Tenant Superadmin changes it; the list of events shows it (GET /cti/events).
+router.put(
+  '/:tenantId/shared-event-alerts',
+  authMiddleware,
+  requireTenantSuperadmin,
+  requireOwnTenant,
+  zValidator('json', z.object({ alerts: z.boolean() })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { tenantId } = c.req.param()
+    const { alerts } = c.req.valid('json')
+    const [tenant] = await db.select({ alerts: tenants.sharedEventAlerts }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+    if (tenant.alerts === alerts) return c.json({ shared_event_alerts: alerts, alerts_updated: 0 })
+
+    await db.update(tenants).set({ sharedEventAlerts: alerts }).where(eq(tenants.tenantId, tenantId))
+    await audit(db, c, {
+      userId: user.userId, tenantId, actionType: 'tenant.shared_event_alerts', targetEntity: tenantId,
+      previousState: { shared_event_alerts: tenant.alerts }, newState: { shared_event_alerts: alerts },
+    })
+    return c.json({ shared_event_alerts: alerts, alerts_updated: await refreshIntelAlerts(db, { tenantId }) })
   }
 )
 

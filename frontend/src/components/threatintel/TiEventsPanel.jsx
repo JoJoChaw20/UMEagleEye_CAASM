@@ -182,7 +182,7 @@ function EventDialog({ initial, onClose, onSaved }) {
               <option value="all_tenants">All tenants</option>
             </select>
             {form.distribution === 'all_tenants' && (
-              <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts only in your organisation.</span>
+              <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts in theirs only if they turn that on.</span>
             )}
           </label>
         </div>
@@ -219,7 +219,7 @@ function EventDialog({ initial, onClose, onSaved }) {
         </label>}
         <p className="text-xs text-dark-500">
           A new event is a draft. Its indicators count for alerts once you publish it
-          {form.distribution === 'organisation' ? ', for your organisation only.' : ', for every tenant that can see it.'}
+          {form.distribution === 'organisation' ? ', for your organisation only.' : ': in your organisation, and in other tenants that choose to use it.'}
         </p>
         {error && <p className="text-sm text-red-400">{error}</p>}
         <div className="flex justify-end gap-2">
@@ -302,6 +302,43 @@ function AddAttributes({ eventId, onAdded, showToast }) {
   )
 }
 
+// ── Alerts from another tenant's shared event: off unless this tenant turns them on ──
+// (workers/src/lib/sharedEvents.ts). A choice for this event wins over the tenant's default.
+function SharedAlertChoice({ ev, busy, act }) {
+  const { can } = useAuth()
+  const canChoose = can('ti_event.publish')
+  const set = (alerts) => act(() => client.put(`/cti/events/${ev.event_id}/alerts`, { alerts }),
+    alerts === null ? 'Back to your default.' : alerts ? 'Alerts from this event are on.' : 'Alerts from this event are off.')
+  const why = ev.alerts_choice === null
+    ? `your default for shared events (${ev.shared_event_alerts ? 'on' : 'off'})`
+    : 'chosen for this event'
+  return (
+    <div className={`glass-card p-4 flex items-start justify-between gap-4 flex-wrap border ${ev.alerts_here ? 'border-amber-500/40' : 'border-transparent'}`}>
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold text-dark-200">
+          Alerts in your organisation: <span className={ev.alerts_here ? 'text-amber-300' : 'text-dark-400'}>{ev.alerts_here ? 'On' : 'Off'}</span>
+        </h3>
+        <p className="text-xs text-dark-400 mt-1">
+          {ev.status !== 'published' ? 'Unpublished by its owner: not used for alerts. ' : ''}
+          {ev.alerts_here
+            ? `Its indicators are matched against your assets and agents, and its alerts say "Shared by ${ev.tenant_name ?? 'another tenant'}" (${why}).`
+            : `It is for reading only: its indicators raise no alerts here (${why}).`}
+        </p>
+      </div>
+      {canChoose && ev.status === 'published' && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {ev.alerts_here
+            ? <button onClick={() => set(false)} disabled={busy} className="btn-secondary text-sm">Turn off for this event</button>
+            : <button onClick={() => set(true)} disabled={busy} className="btn-primary text-sm">Raise alerts from this event</button>}
+          {ev.alerts_choice !== null && (
+            <button onClick={() => set(null)} disabled={busy} className="text-xs text-dark-400 hover:text-dark-100 underline">Use our default</button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── One event ─────────────────────────────────────────────────
 function EventDetail({ eventId, onBack, onChanged, showToast }) {
   const { can } = useAuth()
@@ -374,6 +411,7 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
               <StatusBadge status={ev.status} />
               <Badge cls={LEVELS[ev.threat_level]?.cls}>{LEVELS[ev.threat_level]?.label} threat</Badge>
               <Badge cls="bg-dark-700/60 text-dark-200 border-dark-600">{SHARING[ev.distribution]?.label}</Badge>
+              {ev.shared_in && <Badge cls="bg-sky-500/10 text-sky-300 border-sky-500/30">Shared by {ev.tenant_name ?? 'another tenant'}</Badge>}
               {(ev.tags || []).map(t => (
                 <Badge key={t} cls="bg-eagle-500/10 text-eagle-300 border-eagle-500/30"><Tag className="w-3 h-3 inline mr-1" />{t}</Badge>
               ))}
@@ -418,12 +456,17 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
           Created {fmt(ev.created_at)} · updated {fmt(ev.updated_at)}{ev.published_at && ` · published ${fmt(ev.published_at)}`}
         </p>
         <p className="text-xs text-dark-400">
-          {ev.status === 'published'
-            ? 'Published: its indicators are used for alerts' + (ev.distribution === 'organisation' ? ' in your organisation.' : ' in every tenant that can see it.')
-            : 'Draft: not used for alerts until you publish it.'}
-          {' '}IPs, domains, URLs and software are matched against your assets; hashes and emails are kept for reference.
+          {ev.shared_in
+            ? `Shared by ${ev.tenant_name ?? 'another tenant'}. `
+            : ev.status === 'published'
+              ? 'Published: its indicators are used for alerts' + (ev.distribution === 'organisation' ? ' in your organisation.'
+                : ev.distribution === 'platform' ? ' in every tenant.' : ' in your organisation, and in other tenants that turn it on.')
+              : 'Draft: not used for alerts until you publish it.'}
+          {' '}IPs, domains, URLs and software are matched against {ev.shared_in ? 'assets' : 'your assets'}; hashes and emails are kept for reference.
         </p>
       </div>
+
+      {ev.shared_in && <SharedAlertChoice ev={ev} busy={busy} act={act} />}
 
       {ev.status === 'published' && (
         <div className="glass-card p-4">
@@ -431,7 +474,7 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
             <Crosshair className="w-4 h-4 text-accent-red" /> Open alerts this event drives ({ev.matching_alerts?.length ?? 0}{ev.matching_alerts?.length === 50 ? '+' : ''})
           </h3>
           {(ev.matching_alerts ?? []).length === 0 ? (
-            <p className="text-xs text-dark-500">None of your assets match it right now.</p>
+            <p className="text-xs text-dark-500">{ev.shared_in && !ev.alerts_here ? 'None: alerts from this event are off in your organisation.' : 'None of your assets match it right now.'}</p>
           ) : (
             <ul className="space-y-1">
               {ev.matching_alerts.map(m => (
@@ -516,9 +559,11 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
 
 // ── Panel: list ↔ detail ──────────────────────────────────────
 export default function TiEventsPanel({ showToast }) {
-  const { can, isPlatformSuperadmin } = useAuth()
+  const { can, isPlatformSuperadmin, user } = useAuth()
   const canCreate = can('ti_event.create')
   const [events, setEvents] = useState(null)
+  const [shared, setShared] = useState({ on: null, canSet: false })   // the tenant's default for shared events
+  const [savingShared, setSavingShared] = useState(false)
   const [filter, setFilter] = useState('all')       // all | ours | shared | drafts
   const [openId, setOpenId] = useState(null)
   const [creating, setCreating] = useState(false)
@@ -527,6 +572,7 @@ export default function TiEventsPanel({ showToast }) {
     try {
       const res = await client.get('/cti/events')
       setEvents(res.data.items || [])
+      setShared({ on: res.data.shared_event_alerts ?? null, canSet: !!res.data.can_set_shared_default })
     } catch (err) {
       showToast(errorText(err, 'Failed to load threat-intel events'), 'error')
       setEvents([])
@@ -542,6 +588,19 @@ export default function TiEventsPanel({ showToast }) {
   const isMine = (e) => e.own || (isPlatformSuperadmin && !e.tenant_id)
   const shown = (events || []).filter(e =>
     filter === 'ours' ? isMine(e) : filter === 'shared' ? !isMine(e) : filter === 'drafts' ? e.status === 'draft' : true)
+
+  const setSharedDefault = async (on) => {
+    setSavingShared(true)
+    try {
+      const { data } = await client.put(`/tenants/${user?.tenantId}/shared-event-alerts`, { alerts: on })
+      showToast(`Alerts from shared events are ${on ? 'on' : 'off'} by default.${data.alerts_updated ? ` ${data.alerts_updated} alert(s) updated.` : ''}`)
+      await load()
+    } catch (err) {
+      showToast(errorText(err, 'Failed to save the setting'), 'error')
+    } finally {
+      setSavingShared(false)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -561,6 +620,27 @@ export default function TiEventsPanel({ showToast }) {
         )}
       </div>
 
+      {filter === 'shared' && shared.on !== null && (
+        <div className="glass-card p-4 flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-dark-200">
+              Alerts from events other tenants share: <span className={shared.on ? 'text-amber-300' : 'text-dark-400'}>{shared.on ? 'On' : 'Off'} by default</span>
+            </h3>
+            <p className="text-xs text-dark-400 mt-1">
+              {shared.on
+                ? 'Every event another tenant shares with all tenants is matched against your assets and agents, unless you turn it off for that event.'
+                : 'Shared events are for reading only, unless you turn alerts on for an event (open it). Platform events always count.'}
+              {' '}Their alerts say which tenant shared them.
+            </p>
+          </div>
+          {shared.canSet && (
+            <button onClick={() => setSharedDefault(!shared.on)} disabled={savingShared} className="btn-secondary text-sm">
+              {savingShared ? 'Saving…' : shared.on ? 'Turn off by default' : 'Turn on for all shared events'}
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="glass-card overflow-hidden">
         {events === null ? (
           <div className="flex justify-center py-16"><div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" /></div>
@@ -575,7 +655,7 @@ export default function TiEventsPanel({ showToast }) {
         ) : (
           <table className="data-table">
             <thead>
-              <tr><th>Event</th><th>Level</th><th>Status</th><th>Shared with</th><th>From</th><th>Indicators</th><th>Updated</th></tr>
+              <tr><th>Event</th><th>Level</th><th>Status</th><th>Shared with</th><th>From</th><th>Alerts here</th><th>Indicators</th><th>Updated</th></tr>
             </thead>
             <tbody>
               {shown.map(e => (
@@ -588,6 +668,11 @@ export default function TiEventsPanel({ showToast }) {
                   <td><StatusBadge status={e.status} /></td>
                   <td className="text-xs text-dark-300">{SHARING[e.distribution]?.short}</td>
                   <td className="text-xs text-dark-300">{!e.tenant_id ? 'Platform' : e.own ? 'Us' : e.tenant_name}</td>
+                  <td className="text-xs" title={e.shared_in ? (e.alerts_choice === null ? 'Your default for shared events' : 'Chosen for this event') : undefined}>
+                    {e.alerts_here === undefined ? <span className="text-dark-500">—</span>
+                      : e.alerts_here ? <span className="text-amber-300">Yes</span>
+                      : <span className="text-dark-500">{e.status === 'draft' ? 'Not yet' : 'No'}</span>}
+                  </td>
                   <td className="text-xs text-dark-300">{e.attribute_count}{e.cve_count > 0 && <span className="text-dark-500"> ({e.cve_count} CVE)</span>}</td>
                   <td className="text-xs text-dark-400">{fmt(e.updated_at)}</td>
                 </tr>

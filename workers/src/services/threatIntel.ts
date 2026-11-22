@@ -3,9 +3,10 @@
  * with it.
  *
  * An indicator is MATCHABLE for an asset of tenant T when it is a global feed entry
- * (OTX, ThreatFox, CISA KEV), or an attribute of a PUBLISHED event that is T's own,
- * shared with all tenants, or a platform event; and it is marked to_ids and not on a
- * warninglist. Drafts and other tenants' private events never touch T's alerts.
+ * (ThreatFox, URLhaus, Feodo Tracker, CISA KEV), or an attribute of a PUBLISHED event that
+ * is T's own, a platform event, or shared with all tenants by another tenant and opted into
+ * by T (eventAlertsSql); and it is marked to_ids and not on a warninglist. Drafts and other
+ * tenants' private events never touch T's alerts.
  *
  * CVE findings (cve_findings) carry the result: has_cti_match (any matchable 'cve'
  * indicator), kev (one of them is CISA KEV) and ti_event_titles (the events naming it); the
@@ -13,9 +14,8 @@
  * those after anything changes (nightly feeds, an event published, unpublished, edited or
  * deleted), both ways: a flag can also be cleared.
  */
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
-import { ctiIndicators, tiEvents } from '../db/schema'
 import { recomputePackageAlerts } from './packageAlerts'
 
 type DB = ReturnType<typeof getDb>
@@ -40,15 +40,33 @@ export const FEED_FRESH = sql`(c.ti_event_id IS NOT NULL OR (c.source NOT IN (${
   OR c.last_seen > now() - (CASE WHEN c.indicator_type = 'ip' THEN ${sql.raw(String(Number(FEED_FRESH_DAYS.ip)))}
                                  ELSE ${sql.raw(String(Number(FEED_FRESH_DAYS.domain)))} END) * interval '1 day')))`
 
+/**
+ * SQL: event `te` (published) raises alerts in tenant `tenant`: its own event, a platform event (the
+ * superadmin's), or one another tenant shared with all tenants that `tenant` opted into: its choice
+ * for that event (ti_event_alert_choices), else its default (tenants.shared_event_alerts, off).
+ * Without the opt-in a shared event is only read: one tenant admin cannot flood every tenant with
+ * alerts (an event naming "Microsoft Edge" or "edu.my").
+ */
+export function eventAlertsSql(tenant: SQL): SQL {
+  return sql`(te.tenant_id = ${tenant} OR te.distribution = 'platform'
+    OR (te.distribution = 'all_tenants' AND COALESCE(
+      (SELECT ch.alerts FROM ti_event_alert_choices ch WHERE ch.tenant_id = ${tenant} AND ch.ti_event_id = te.ti_event_id),
+      (SELECT tn.shared_event_alerts FROM tenants tn WHERE tn.tenant_id = ${tenant}),
+      false)))`
+}
+
 /** SQL: indicator `c` (joined to its event `te`, LEFT JOIN) is matchable for tenant `tenant`. */
-// An event a tenant shares with all tenants can be READ by every tenant, but raises alerts only in
-// its own tenant: otherwise one tenant admin could flood every tenant with alerts (an event naming
-// "Microsoft Edge" or "edu.my"). Only platform events (the superadmin's) alert every tenant.
 export function matchableSql(tenant: SQL): SQL {
   return sql`(c.to_ids AND c.warning IS NULL AND ${FEED_FRESH} AND (
     c.ti_event_id IS NULL
-    OR (te.status = 'published' AND (te.tenant_id = ${tenant} OR te.distribution = 'platform'))
+    OR (te.status = 'published' AND ${eventAlertsSql(tenant)})
   ))`
+}
+
+/** SQL: the name of the tenant that shared event `te`, when it is not `tenant` itself ("Shared by"). */
+export function sharedBySql(tenant: SQL): SQL {
+  return sql`(CASE WHEN te.tenant_id IS NOT NULL AND te.tenant_id IS DISTINCT FROM ${tenant}
+    THEN (SELECT tn.name FROM tenants tn WHERE tn.tenant_id = te.tenant_id) END)`
 }
 
 export interface CveIntel { kev: boolean; titles: string[] }
@@ -57,16 +75,15 @@ export interface CveIntel { kev: boolean; titles: string[] }
 export async function cveIntelFor(db: DB, tenantId: string | null, cveIds: string[]): Promise<Map<string, CveIntel>> {
   const out = new Map<string, CveIntel>()
   if (cveIds.length === 0) return out
-  const rows = await db
-    .select({ value: ctiIndicators.value, source: ctiIndicators.source, eventId: ctiIndicators.tiEventId, title: tiEvents.title })
-    .from(ctiIndicators)
-    .leftJoin(tiEvents, eq(tiEvents.tiEventId, ctiIndicators.tiEventId))
-    .where(and(
-      eq(ctiIndicators.indicatorType, 'cve'),
-      inArray(ctiIndicators.value, cveIds),
-      sql`${ctiIndicators.toIds} AND ${ctiIndicators.warning} IS NULL`,
-      sql`(${ctiIndicators.tiEventId} IS NULL OR (${tiEvents.status} = 'published' AND (${tiEvents.tenantId} = ${tenantId} OR ${tiEvents.distribution} = 'platform')))`,
-    ))
+  // Aliased c / te so the shared rule (eventAlertsSql) applies as everywhere else.
+  const res = await db.execute(sql`
+    SELECT c.value, c.source, c.ti_event_id AS "eventId", te.title
+    FROM cti_indicators c LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
+    WHERE c.indicator_type = 'cve' AND c.value IN (${sql.join(cveIds.map((v) => sql`${v}`), sql`, `)})
+      AND c.to_ids AND c.warning IS NULL
+      AND (c.ti_event_id IS NULL OR (te.status = 'published' AND ${eventAlertsSql(sql`${tenantId}::uuid`)}))
+  `)
+  const rows = res.rows as Array<{ value: string; source: string; eventId: string | null; title: string | null }>
   for (const r of rows) {
     const cur = out.get(r.value) ?? { kev: false, titles: [] }
     if (!r.eventId && r.source === KEV_SOURCE) cur.kev = true

@@ -89,7 +89,7 @@ const ROWS: Row[] = [
   ['ti_event.view', 'threat_intel', 'View threat events', 'Allows the user to see the threat events recorded by the tenant and their indicators.', 'low', ['cti.view']],
   ['ti_event.create', 'threat_intel', 'Create threat events', 'Allows the user to record a new threat event.', 'medium', ['ti_event.view']],
   ['ti_event.edit', 'threat_intel', 'Edit threat events', 'Allows the user to change a threat event, and to add, edit or remove its indicators.', 'medium', ['ti_event.view']],
-  ['ti_event.publish', 'threat_intel', 'Publish threat events', 'Allows the user to publish or unpublish a threat event. When published, its indicators are sent to agents for threat sightings.', 'medium', ['ti_event.view']],
+  ['ti_event.publish', 'threat_intel', 'Publish threat events', 'Allows the user to publish or unpublish a threat event, and to choose whether an event another tenant shares raises alerts here. When published, its indicators are sent to agents for threat sightings.', 'medium', ['ti_event.view']],
   ['ti_event.delete', 'threat_intel', 'Delete threat events', 'Allows the user to permanently delete a threat event and its indicators. This cannot be undone.', 'high', ['ti_event.view']],
 
   ['network.view', 'network', 'View network map', 'Allows the user to see the network map, device links, and topology tree.', 'low', []],

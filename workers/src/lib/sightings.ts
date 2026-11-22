@@ -173,6 +173,7 @@ export interface IndicatorRow {
   title: string | null
   level: string | null      // the event's threat level; null for a feed entry
   confidence?: number | null  // a feed entry's confidence 0-1 (ThreatFox's own; KEV 1); null for an event
+  sharedBy?: string | null    // the other tenant whose shared event lists it ("Shared by")
 }
 
 export interface Matched {
@@ -268,6 +269,7 @@ export function planSightings(input: {
       sources: uniq(m.indicators.map(i => i.title ?? i.source)),
       ti_event_titles: titles,
       ti_event_ids: uniq(m.indicators.map(i => i.tiEventId).filter((t): t is string => !!t)),
+      shared_by: uniq(m.indicators.map(i => i.sharedBy).filter((t): t is string => !!t)),
       ...(m.itype === 'url' ? { listed_urls: uniq(m.indicators.map(i => i.value)).slice(0, 5) } : {}),
     }
     const severity = sightingSeverity(m.indicators)
