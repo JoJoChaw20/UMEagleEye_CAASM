@@ -112,6 +112,9 @@ export default function App() {
         <Route path="alerts/weekly" element={<ProtectedRoute action="dashboard.view"><WeeklyHistoryPage /></ProtectedRoute>} />
         <Route path="advisories"   element={<ProtectedRoute action="advisory.view"><AdvisoriesPage /></ProtectedRoute>} />
         <Route path="threat-intel" element={<ProtectedRoute action="cti.view"><ThreatIntelPage /></ProtectedRoute>} />
+        {/* sub-pages: matches are alerts (alert.view), events are threat events (ti_event.view) */}
+        <Route path="threat-intel/matches" element={<ProtectedRoute action="cti.view"><ProtectedRoute action="alert.view"><ThreatIntelPage view="matches" /></ProtectedRoute></ProtectedRoute>} />
+        <Route path="threat-intel/events" element={<ProtectedRoute action="cti.view"><ProtectedRoute action="ti_event.view"><ThreatIntelPage view="events" /></ProtectedRoute></ProtectedRoute>} />
         <Route path="sbom"         element={<ProtectedRoute action="sbom.view"><SBOMPage /></ProtectedRoute>} />
 
         {/* REPORTS */}

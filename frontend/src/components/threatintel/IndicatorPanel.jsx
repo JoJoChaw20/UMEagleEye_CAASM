@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink, Globe, Link2, Hash, Mail, Bu
 import client from '../../api/client'
 import { SevBadge } from '../common/alertMeta'
 import { SidePanel, Spinner } from '../common/PageParts'
+import { REASON_LABEL, USE_META } from './indicatorUse'
 
 export const TYPE_META = {
   ip:       { icon: Globe,    label: 'IP' },
@@ -37,7 +38,7 @@ export default function IndicatorPanel({ value, onClose }) {
   }, [value])
 
   const ind = result?.indicator
-  const notForAlerts = !!ind && (!!ind.warning || ind.to_ids === false)
+  const notForAlerts = !!ind && (ind.used_for === 'reference' || !!ind.warning || ind.to_ids === false)
   const assets = result?.matched_assets ?? []
 
   return (
@@ -66,7 +67,10 @@ export default function IndicatorPanel({ value, onClose }) {
                   ? 'This does not mean it is safe: it may not be tracked yet.'
                   : `Listed by ${ind.source}${ind.event_title ? ` (event “${ind.event_title}”)` : ''}.${
                     ind.warning ? ` It is on the safe list (${ind.warning}), so it never raises an alert.`
-                      : ind.to_ids === false ? ' Its source marks it as not for detection, so it never raises an alert.' : ''}`}
+                      : ind.to_ids === false ? ' Its source marks it as not for detection, so it never raises an alert.'
+                      : ind.reference_reason === 'expired' ? ' No feed has listed it lately, so it no longer raises alerts (an IP is often reassigned within weeks).'
+                      : ind.reference_reason === 'retired' ? ' It comes from a feed no longer used, so it raises no alert.'
+                      : ind.reference_reason ? ` ${REASON_LABEL[ind.reference_reason] ?? ''}`.trimEnd() : ''}`}
               </p>
             </div>
           </div>
@@ -75,6 +79,9 @@ export default function IndicatorPanel({ value, onClose }) {
             <div className="grid grid-cols-2 gap-2">
               {[
                 ['Type', <TypeLabel key="t" type={ind.indicator_type} />],
+                ...(ind.used_for ? [['Used for', <span key="u" title={USE_META[ind.used_for]?.help}>
+                  {USE_META[ind.used_for]?.label}{ind.reference_reason ? <span className="block text-xs text-dark-400">{REASON_LABEL[ind.reference_reason] ?? ind.reference_reason}</span> : null}
+                </span>]] : []),
                 ['Confidence', ind.confidence_score == null ? '—' : `${(ind.confidence_score * 100).toFixed(0)}%`],
                 ['Malware family', ind.malware_family || '—'],
                 ['ATT&CK software', ind.attack_software ? `${ind.attack_software_name} (${ind.attack_software})` : '—'],

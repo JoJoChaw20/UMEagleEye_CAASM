@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Bell, FileSearch, Globe, FileText,
-  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown, CalendarRange,
+  Settings, Radar, Bot, Building2, Package, Boxes, Users, Share2, Crown, CalendarRange, Crosshair, BookOpen,
 } from 'lucide-react'
 
 // One source for the sidebar and the command palette. Items are filtered by the same
@@ -24,7 +24,12 @@ export function buildNavSections(can, role) {
       ...(can('alert.view') ? item('dashboard.view', { to: '/alerts/weekly', sub: true, icon: CalendarRange, label: 'Weekly history',
         keywords: 'week baseline trend history progress compare last week management' }) : []),
       ...item('advisory.view', { to: '/advisories', icon: FileSearch, label: 'Advisories', keywords: 'remediation ai sla' }),
-      ...item('cti.view', { to: '/threat-intel', icon: Globe, label: 'Threat Intel', keywords: 'ioc feeds kev mitre attack' }),
+      ...item('cti.view', { to: '/threat-intel', end: true, icon: Globe, label: 'Threat Intel', keywords: 'ioc feeds kev mitre attack coverage indicators' }),
+      // its sub-pages (sub: drawn indented under it), each with its own view action too
+      ...(can('cti.view') ? [
+        ...item('alert.view', { to: '/threat-intel/matches', sub: true, icon: Crosshair, label: 'Matches', keywords: 'threat intel matches compromise sightings assets' }),
+        ...item('ti_event.view', { to: '/threat-intel/events', sub: true, icon: BookOpen, label: 'Events', keywords: 'threat intel events misp campaign share indicators' }),
+      ] : []),
       ...item('sbom.view', { to: '/sbom', icon: Package, label: 'SBOM', keywords: 'software packages syft grype' }),
     ]},
     { label: 'Reports', items: [

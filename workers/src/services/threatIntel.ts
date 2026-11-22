@@ -35,10 +35,41 @@ export const FEED_FRESH_DAYS = { ip: 30, domain: 90, url: 90 } as const
 // and "text * interval" fails (it broke the agents' list download on 22 Nov until fixed).
 // A retired feed's rows (AlienVault OTX, dropped 22 Nov 2026) stop matching at once; retention deletes them.
 export const RETIRED_SOURCES = ['AlienVault OTX']
-export const FEED_FRESH = sql`(c.ti_event_id IS NOT NULL OR (c.source NOT IN (${sql.raw(RETIRED_SOURCES.map((s) => `'${s.replace(/'/g, "''")}'`).join(', '))})
-  AND (c.indicator_type NOT IN ('ip', 'domain', 'url')
-  OR c.last_seen > now() - (CASE WHEN c.indicator_type = 'ip' THEN ${sql.raw(String(Number(FEED_FRESH_DAYS.ip)))}
+const RETIRED_LIST = sql.raw(RETIRED_SOURCES.map((s) => `'${s.replace(/'/g, "''")}'`).join(', '))
+/** A feed value still listed recently enough to match (an event's attributes always are), for table alias `a`. */
+export function freshSql(a: string): SQL {
+  const t = sql.raw(a)
+  return sql`(${t}.ti_event_id IS NOT NULL OR (${t}.source NOT IN (${RETIRED_LIST})
+  AND (${t}.indicator_type NOT IN ('ip', 'domain', 'url')
+  OR ${t}.last_seen > now() - (CASE WHEN ${t}.indicator_type = 'ip' THEN ${sql.raw(String(Number(FEED_FRESH_DAYS.ip)))}
                                  ELSE ${sql.raw(String(Number(FEED_FRESH_DAYS.domain)))} END) * interval '1 day')))`
+}
+export const FEED_FRESH = freshSql('c')
+
+/**
+ * What an indicator is used for (the Threat Intelligence page), for table alias `a`:
+ *   'agents'      on the agents' list, checked on the computers (sightings: lookups, connections, running
+ *                 programs' file hashes), and matched against the assets' addresses and names (R5);
+ *   'assets'      matched against scan, inventory and SBOM data only: CVEs, watched software, URLs on a
+ *                 named host (their host against device names);
+ *   'reference:<why>'  kept for lookups and context, never matched: retired (its feed was dropped),
+ *                 safe_list (on a warninglist), not_for_detection (to_ids off), expired (no feed has
+ *                 listed it lately), no_data (a type nothing here can see: emails).
+ * Follows routes/sightings.ts and matchableSql; lib/indicatorUse.test.ts keeps them in step.
+ */
+export function indicatorUseSql(a: string): SQL {
+  const t = sql.raw(a)
+  const ipv4Host = sql.raw(`${a}.value ~ '^[A-Za-z][A-Za-z0-9+.-]*://([^/?#@]*@)?[0-9]{1,3}(\\.[0-9]{1,3}){3}([:/?#]|$)'`)
+  return sql`(CASE
+    WHEN ${t}.source IN (${RETIRED_LIST}) AND ${t}.ti_event_id IS NULL THEN 'reference:retired'
+    WHEN ${t}.warning IS NOT NULL THEN 'reference:safe_list'
+    WHEN NOT ${t}.to_ids THEN 'reference:not_for_detection'
+    WHEN NOT ${freshSql(a)} THEN 'reference:expired'
+    WHEN ${t}.indicator_type IN ('ip', 'domain', 'hash') THEN 'agents'
+    WHEN ${t}.indicator_type = 'url' AND ${ipv4Host} THEN 'agents'
+    WHEN ${t}.indicator_type IN ('cve', 'software', 'url') THEN 'assets'
+    ELSE 'reference:no_data' END)`
+}
 
 /**
  * SQL: event `te` (published) raises alerts in tenant `tenant`: its own event, a platform event (the

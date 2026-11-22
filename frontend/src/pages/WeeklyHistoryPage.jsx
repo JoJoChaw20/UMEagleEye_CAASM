@@ -14,7 +14,8 @@ export default function WeeklyHistoryPage() {
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <Link to="/alerts" className="inline-flex items-center gap-1 text-xs text-dark-400 hover:text-eagle-400"><ArrowLeft className="h-3.5 w-3.5" /> Alerts</Link>
+          {/* a block of its own: .page-title is inline-flex and would sit beside it */}
+          <Link to="/alerts" className="flex w-fit items-center gap-1 text-xs text-dark-400 hover:text-eagle-400"><ArrowLeft className="h-3.5 w-3.5" /> Alerts</Link>
           <h1 className="page-title mt-1">Weekly history</h1>
           <p className="text-dark-400 text-sm mt-1">How the alert queue changes week by week, against last week and your baseline week.</p>
         </div>

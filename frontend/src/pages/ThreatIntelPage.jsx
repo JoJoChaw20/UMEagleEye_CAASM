@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Globe, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle, RefreshCw } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Globe, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle, RefreshCw, ArrowLeft } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TiEventsPanel from '../components/threatintel/TiEventsPanel'
 import AttackMatrixPanel from '../components/threatintel/AttackMatrixPanel'
 import MatchesPanel from '../components/threatintel/MatchesPanel'
 import IndicatorPanel, { TypeLabel, TYPE_META } from '../components/threatintel/IndicatorPanel'
+import EvidencePanel from '../components/threatintel/EvidencePanel'
+import { REASON_LABEL, USE_META } from '../components/threatintel/indicatorUse'
 import { Tabs, StatTile, Toast, useToast, Spinner, Pager, ago } from '../components/common/PageParts'
 
-// Threat Intelligence: does any of it touch our assets? Matches first, then our own
-// threat-intel events, the global feeds (OTX, ThreatFox, CISA KEV) and the ATT&CK view.
+// Threat Intelligence: does any of it touch our assets? The overview (matches, events and indicator
+// tiles, feed health) with the global feeds (ThreatFox, URLhaus, Feodo Tracker, CISA KEV), the ATT&CK
+// view and Coverage: what the indicators are used for (checked by agents, against assets, or
+// reference only), how the alerts ended, and the limits. Matches and Events are sub-pages.
 
 const PAGE_SIZE = 20
 const STALE_HOURS = 36       // the feeds load nightly: older than this means a run was missed
@@ -71,16 +76,24 @@ function FeedHealth({ stats, ingesting, onIngest }) {
   )
 }
 
-export default function ThreatIntelPage() {
+// view: the sub-pages under Threat Intel in the sidebar: 'matches' (/threat-intel/matches) and 'events'
+// (/threat-intel/events); none: the overview (tiles, feeds, Indicators, ATT&CK, Coverage).
+const SUB_PAGES = {
+  matches: { title: 'Matches', lead: 'Open threat-intel matches on your assets, one group per asset.' },
+  events: { title: 'Threat-intel events', lead: 'Your own threat-intel events, and the ones other tenants share with you.' },
+}
+
+export default function ThreatIntelPage({ view }) {
   const { toast, show: showToast } = useToast()
   const { can } = useAuth()
+  const navigate = useNavigate()
   // Matches are alerts (GET /events: alert.view) and Events are threat events (GET /cti/events:
-  // ti_event.view); this page only needs cti.view, so each tab shows with its own action.
+  // ti_event.view); this page only needs cti.view, so each sub-page shows with its own action.
   const canMatches = can('alert.view')
   const canEvents = can('ti_event.view')
   const [stats, setStats] = useState(null)
   const [ingesting, setIngesting] = useState(false)
-  const [tab, setTab] = useState(null)              // set once the stats say whether there are matches
+  const [tab, setTab] = useState('indicators')
   const [lookupInput, setLookupInput] = useState('')
   const [panelValue, setPanelValue] = useState(null)
 
@@ -94,22 +107,16 @@ export default function ThreatIntelPage() {
   const [typeFilter, setTypeFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
   const [matchedOnly, setMatchedOnly] = useState(false)
+  const [useFilter, setUseFilter] = useState('')          // agents | assets | reference
   const [attackFilter, setAttackFilter] = useState(null)   // from the ATT&CK tab: { family } | { technique }, with a label
 
   const loadStats = useCallback(async () => {
     try {
       const res = await client.get('/cti/stats')
       setStats(res.data)
-      setTab((cur) => cur ?? (canMatches && res.data?.matches?.open > 0 ? 'matches' : canEvents ? 'events' : 'indicators'))
-    } catch {
-      setTab((cur) => cur ?? (canEvents ? 'events' : 'indicators'))
-    }
-  }, [canMatches, canEvents])
-  useEffect(() => { loadStats() }, [loadStats])
-  // A grant removed mid-session hides its tab: move off it
-  useEffect(() => {
-    if ((tab === 'matches' && !canMatches) || (tab === 'events' && !canEvents)) setTab(canEvents ? 'events' : 'indicators')
-  }, [tab, canMatches, canEvents])
+    } catch { /* the tiles show dashes */ }
+  }, [])
+  useEffect(() => { if (!view) loadStats() }, [view, loadStats])
 
   useEffect(() => {
     const t = setTimeout(() => { setQDebounced(q.trim()); setPage(1) }, 300)
@@ -124,6 +131,7 @@ export default function ThreatIntelPage() {
       if (typeFilter) params.indicator_type = typeFilter
       if (sourceFilter) params.source = sourceFilter
       if (matchedOnly) params.matched = 'true'
+      if (useFilter) params.use = useFilter
       if (attackFilter?.family) params.family = attackFilter.family
       if (attackFilter?.technique) params.technique = attackFilter.technique
       const res = await client.get('/cti/indicators', { params })
@@ -134,7 +142,7 @@ export default function ThreatIntelPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, qDebounced, typeFilter, sourceFilter, matchedOnly, attackFilter, showToast])
+  }, [page, qDebounced, typeFilter, sourceFilter, matchedOnly, useFilter, attackFilter, showToast])
   useEffect(() => { if (tab === 'indicators') loadIndicators() }, [tab, loadIndicators])
 
   // Staging only (stats.can_ingest): the run takes a minute or two, one feed per queue job
@@ -164,12 +172,45 @@ export default function ThreatIntelPage() {
   const showAttackIndicators = (f) => {
     setAttackFilter(f); setSourceFilter(''); setTypeFilter(''); setQ(''); setMatchedOnly(false); setPage(1); setTab('indicators')
   }
-  const clearFilters = () => { setQ(''); setTypeFilter(''); setSourceFilter(''); setMatchedOnly(false); setAttackFilter(null); setPage(1) }
-  const hasFilters = q || typeFilter || sourceFilter || matchedOnly || attackFilter
+  const clearFilters = () => { setQ(''); setTypeFilter(''); setSourceFilter(''); setMatchedOnly(false); setUseFilter(''); setAttackFilter(null); setPage(1) }
+  const hasFilters = q || typeFilter || sourceFilter || matchedOnly || useFilter || attackFilter
 
   const m = stats?.matches
   const types = Object.entries(stats?.by_type ?? {})
   const sources = (stats?.feeds ?? []).map((f) => f.source)
+  const sub = view ? SUB_PAGES[view] : null
+
+  const lookupForm = (
+    <form onSubmit={lookup} className="flex gap-2 w-full sm:w-auto" role="search">
+      <div className="relative flex-1 sm:w-80">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
+        <input type="text" value={lookupInput} onChange={(e) => setLookupInput(e.target.value)}
+          placeholder="Look up an IP, domain, hash or CVE…" aria-label="Look up a value in threat intelligence"
+          className="input-field w-full pl-10 text-sm" />
+      </div>
+      <button type="submit" disabled={!lookupInput.trim()} className="btn-primary text-sm disabled:opacity-50">Look up</button>
+    </form>
+  )
+
+  // A sub-page: its own header and panel, the lookup kept
+  if (sub) {
+    return (
+      <div className="space-y-6">
+        <Toast toast={toast} />
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            {/* a block of its own: .page-title is inline-flex and would sit beside it */}
+            <Link to="/threat-intel" className="flex w-fit items-center gap-1 text-xs text-dark-400 hover:text-eagle-400"><ArrowLeft className="h-3.5 w-3.5" /> Threat Intelligence</Link>
+            <h1 className="page-title mt-1">{sub.title}</h1>
+            <p className="text-dark-400 text-sm mt-1 max-w-2xl">{sub.lead}</p>
+          </div>
+          {lookupForm}
+        </div>
+        {view === 'matches' ? <MatchesPanel onLookup={setPanelValue} showToast={showToast} /> : <TiEventsPanel showToast={showToast} />}
+        {panelValue && <IndicatorPanel value={panelValue} onClose={() => setPanelValue(null)} />}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -181,15 +222,7 @@ export default function ThreatIntelPage() {
           <h1 className="page-title">Threat Intelligence</h1>
           <p className="text-dark-400 text-sm mt-1 max-w-2xl">Which of your assets threat intelligence names, your own threat-intel events, and the feeds behind them.</p>
         </div>
-        <form onSubmit={lookup} className="flex gap-2 w-full sm:w-auto" role="search">
-          <div className="relative flex-1 sm:w-80">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-            <input type="text" value={lookupInput} onChange={(e) => setLookupInput(e.target.value)}
-              placeholder="Look up an IP, domain, hash or CVE…" aria-label="Look up a value in threat intelligence"
-              className="input-field w-full pl-10 text-sm" />
-          </div>
-          <button type="submit" disabled={!lookupInput.trim()} className="btn-primary text-sm disabled:opacity-50">Look up</button>
-        </form>
+        {lookupForm}
       </div>
 
       {/* Summary */}
@@ -197,36 +230,33 @@ export default function ThreatIntelPage() {
         <StatTile label="Matches on our assets" icon={Crosshair}
           value={m ? m.open : '—'} tone={m?.open > 0 ? 'danger' : 'good'}
           sub={m ? (m.open > 0 ? `${m.high} critical or high${m.sightings ? ` · ${m.sightings} seen in traffic` : ''}` : 'nothing matched') : ' '}
-          onClick={canMatches ? () => setTab('matches') : undefined} />
+          onClick={canMatches ? () => navigate('/threat-intel/matches') : undefined} />
         <StatTile label="Assets affected" icon={Server}
           value={m ? m.assets : '—'} tone={m?.assets > 0 ? 'warning' : 'muted'}
-          sub="with an open match" onClick={canMatches ? () => setTab('matches') : undefined} />
+          sub="with an open match" onClick={canMatches ? () => navigate('/threat-intel/matches') : undefined} />
         <StatTile label="Threat-intel events" icon={BookOpen}
           value={stats?.ti_events?.total ?? '—'} sub={stats ? `${stats.ti_events.published} published` : ' '}
-          onClick={canEvents ? () => setTab('events') : undefined} />
-        <StatTile label="Feed indicators" icon={Database}
-          value={stats ? stats.total_indicators.toLocaleString() : '—'}
-          sub={stats ? `+${stats.recent_7d.toLocaleString()} in the last 7 days` : ' '}
-          onClick={() => { clearFilters(); setTab('indicators') }} />
+          onClick={canEvents ? () => navigate('/threat-intel/events') : undefined} />
+        {/* what is actually matched, not everything stored (workers/src/services/threatIntel.ts indicatorUseSql) */}
+        <StatTile label="Indicators in use" icon={Database}
+          value={stats?.usage ? (stats.usage.agents + stats.usage.assets).toLocaleString() : '—'}
+          sub={stats?.usage ? `${stats.usage.agents.toLocaleString()} checked by agents · ${stats.usage.reference.toLocaleString()} reference only` : ' '}
+          onClick={() => setTab('evidence')} />
       </div>
 
       <FeedHealth stats={stats} ingesting={ingesting} onIngest={ingest} />
 
-      {tab && (
-        <Tabs label="Threat intelligence views" active={tab} onChange={setTab} tabs={[
-          ...(canMatches ? [{ id: 'matches', label: 'Matches', count: m?.open }] : []),
-          ...(canEvents ? [{ id: 'events', label: 'Events', count: stats?.ti_events?.total }] : []),
-          { id: 'indicators', label: 'Indicators' },
-          { id: 'matrix', label: 'MITRE ATT&CK' },
-        ]} />
-      )}
+      {/* Matches and Events are sub-pages (sidebar, under Threat Intel) */}
+      <Tabs label="Threat intelligence views" active={tab} onChange={setTab} tabs={[
+        { id: 'indicators', label: 'Indicators' },
+        { id: 'matrix', label: 'MITRE ATT&CK' },
+        { id: 'evidence', label: 'Coverage' },
+      ]} />
 
-      {!tab ? <Spinner /> : tab === 'matches' && canMatches ? (
-        <MatchesPanel onLookup={setPanelValue} showToast={showToast} />
-      ) : tab === 'events' && canEvents ? (
-        <TiEventsPanel showToast={showToast} />
-      ) : tab === 'matrix' ? (
+      {tab === 'matrix' ? (
         <AttackMatrixPanel onShowIndicators={showAttackIndicators} />
+      ) : tab === 'evidence' ? (
+        <EvidencePanel stats={stats} />
       ) : (
         <div className="space-y-4">
           {/* Filters */}
@@ -251,6 +281,12 @@ export default function ThreatIntelPage() {
                 )
               })}
             </div>
+            <select value={useFilter} onChange={(e) => { setUseFilter(e.target.value); setPage(1) }} className="input-field text-sm py-1.5 w-52" aria-label="Used for">
+              <option value="">Any use</option>
+              {Object.entries(USE_META).map(([k, m]) => (
+                <option key={k} value={k}>{m.label}{stats?.usage ? ` (${stats.usage[k].toLocaleString()})` : ''}</option>
+              ))}
+            </select>
             <select value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPage(1) }} className="input-field text-sm py-1.5 w-44" aria-label="Feed">
               <option value="">All feeds</option>
               {sources.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -274,7 +310,7 @@ export default function ThreatIntelPage() {
               <div className="overflow-x-auto">
                 <table className="data-table">
                   <thead>
-                    <tr><th>Type</th><th>Value</th><th>Feed</th><th>Confidence</th><th>Malware family</th><th>ATT&CK</th><th>Last seen</th></tr>
+                    <tr><th>Type</th><th>Value</th><th>Used for</th><th>Feed</th><th>Confidence</th><th>Malware family</th><th>ATT&CK</th><th>Last seen</th></tr>
                   </thead>
                   <tbody>
                     {indicators.map((ind) => (
@@ -282,6 +318,14 @@ export default function ThreatIntelPage() {
                         tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setPanelValue(ind.value) }}>
                         <td><TypeLabel type={ind.indicator_type} /></td>
                         <td className="font-mono text-xs text-accent-cyan max-w-xs truncate" title={ind.value}>{ind.value}</td>
+                        <td>
+                          {ind.used_for && (
+                            <span className={`text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap ${USE_META[ind.used_for]?.cls ?? ''}`}
+                              title={ind.reference_reason ? `Reference only: ${REASON_LABEL[ind.reference_reason] ?? ind.reference_reason}` : USE_META[ind.used_for]?.help}>
+                              {USE_META[ind.used_for]?.short}{ind.reference_reason === 'expired' ? ' · expired' : ''}
+                            </span>
+                          )}
+                        </td>
                         <td className="text-dark-300 text-xs">{ind.source}</td>
                         <td><ConfBar score={ind.confidence_score} /></td>
                         <td className="text-dark-300 text-xs max-w-[10rem] truncate" title={ind.malware_family || ''}>{ind.malware_family || '—'}</td>

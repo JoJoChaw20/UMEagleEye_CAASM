@@ -9,6 +9,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
 import { ACTIVE_FEEDS, CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
+import { indicatorUseSql } from '../services/threatIntel'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
   ATTACK, buildMatrix, expandTechniques, type MatrixGroup, softwareName, softwareUsing, techniqueName, techniquesFor,
@@ -72,6 +73,14 @@ function toSnake(row: typeof ctiIndicators.$inferSelect) {
   }
 }
 
+// What each feed indicator is used for (services/threatIntel.ts indicatorUseSql)
+const USE = indicatorUseSql('"cti_indicators"')
+/** 'agents' | 'assets' | 'reference:<why>' as {used_for, reference_reason}. */
+export function usedFor(use: string): { used_for: 'agents' | 'assets' | 'reference'; reference_reason: string | null } {
+  if (use === 'agents' || use === 'assets') return { used_for: use, reference_reason: null }
+  return { used_for: 'reference', reference_reason: use.startsWith('reference:') ? use.slice(10) : 'no_data' }
+}
+
 // Indicators linked to open match alerts on the user's assets (superadmins: any tenant).
 function matchedIndicatorIds(db: DB, user: { role: string; tenantId?: string | null }) {
   return db
@@ -100,8 +109,11 @@ app.get('/indicators', authMiddleware, requireAction('cti.view'), async (c) => {
     const family   = c.req.query('family')?.trim()
     const technique = c.req.query('technique')?.trim().toUpperCase()
     const matched  = c.req.query('matched') === 'true'
+    const use      = c.req.query('use')            // agents | assets | reference
 
     const conditions = [FEED, ...attackConditions(family, technique)]
+    if (use === 'agents' || use === 'assets') conditions.push(sql`${USE} = ${use}`)
+    if (use === 'reference') conditions.push(sql`${USE} LIKE 'reference:%'`)
     // Only indicators behind an open match alert on the user's own assets.
     if (matched) conditions.push(inArray(ctiIndicators.indicatorId, matchedIndicatorIds(db, c.get('user'))))
     if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve' | 'software'))
@@ -111,7 +123,7 @@ app.get('/indicators', authMiddleware, requireAction('cti.view'), async (c) => {
     const whereClause = and(...conditions)
 
     const [rows, countRows] = await Promise.all([
-      db.select().from(ctiIndicators).where(whereClause).orderBy(desc(ctiIndicators.lastSeen)).limit(limit).offset(offset),
+      db.select({ row: ctiIndicators, use: sql<string>`${USE}` }).from(ctiIndicators).where(whereClause).orderBy(desc(ctiIndicators.lastSeen)).limit(limit).offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(whereClause),
     ])
 
@@ -119,7 +131,7 @@ app.get('/indicators', authMiddleware, requireAction('cti.view'), async (c) => {
       total:  countRows[0]?.count ?? 0,
       page,
       limit,
-      items:  rows.map(toSnake),
+      items:  rows.map((r) => ({ ...toSnake(r.row), ...usedFor(r.use) })),
     })
   } catch (err) {
     console.error('cti GET /indicators error:', err)
@@ -136,7 +148,7 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
     const ownTenant = user.tenantId ?? NO_TENANT
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
-    const [totalResult, bySource, byType, recent7d, matchRows, eventRows, lastIngest] = await Promise.all([
+    const [totalResult, bySource, byType, recent7d, matchRows, eventRows, lastIngest, usageRows, outcomeRows] = await Promise.all([
       db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(FEED),
       db
         .select({ source: ctiIndicators.source, count: sql<number>`count(*)::int` })
@@ -182,7 +194,34 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
           and(eq(tiEvents.status, 'published'), inArray(tiEvents.distribution, ['all_tenants', 'platform'])),
         )),
       c.env.KV_CACHE.get<LastIngest>(LAST_INGEST_KEY, 'json').catch(() => null),
+      // What the feed indicators are used for: checked by agents, against assets, or reference only (and why)
+      db.select({ use: sql<string>`${USE}`, n: sql<number>`count(*)::int` }).from(ctiIndicators).where(FEED).groupBy(sql`1`),
+      // How this tenant's threat-intel alerts ended, last 90 days: the measured precision on real data
+      db.select({
+          kind: sql<string>`COALESCE(${events.details}->>'match_kind', 'ioc')`,
+          status: events.status,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(events).innerJoin(assets, eq(assets.assetId, events.assetId))
+        .where(and(
+          eq(events.eventType, 'cti_match'),
+          inArray(events.status, ['resolved', 'false_positive', 'accepted_risk']),
+          gte(events.resolvedAt, new Date(Date.now() - 90 * 86_400_000)),
+          isSuper ? undefined : eq(assets.tenantId, ownTenant),
+        ))
+        .groupBy(sql`1`, events.status),
     ])
+    const usage = { agents: 0, assets: 0, reference: 0, reference_reasons: {} as Record<string, number> }
+    for (const r of usageRows) {
+      const u = usedFor(r.use)
+      usage[u.used_for] += r.n
+      if (u.reference_reason) usage.reference_reasons[u.reference_reason] = (usage.reference_reasons[u.reference_reason] ?? 0) + r.n
+    }
+    const outcomes: Record<string, { resolved: number; false_positive: number; accepted_risk: number }> = {}
+    for (const r of outcomeRows) {
+      const o = (outcomes[r.kind] ??= { resolved: 0, false_positive: 0, accepted_risk: 0 })
+      o[r.status as 'resolved' | 'false_positive' | 'accepted_risk'] += r.n
+    }
 
     const by_source: Record<string, number> = {}
     for (const row of bySource) by_source[row.source] = row.count
@@ -202,6 +241,10 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
         sightings: matchRows[0]?.sightings ?? 0,
       },
       ti_events: { total: eventRows[0]?.total ?? 0, published: eventRows[0]?.published ?? 0 },
+      // feed indicators by what they are used for (agents / assets / reference, with the reasons)
+      usage,
+      // closed threat-intel alerts, last 90 days, by kind (sighting, ioc, malicious_package, watchlist) and outcome
+      outcomes_90d: outcomes,
       // Feed health: each feed's count, and when it last loaded (null before the first
       // recorded run). next_ingest_at is the nightly run: null on staging, which has no crons;
       // there can_ingest lets the Platform Superadmin load them (feedRefresh).
@@ -340,7 +383,7 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
       ? sql`true`
       : sql`(${tiEvents.tenantId} = ${user.tenantId ?? null} OR (${tiEvents.status} = 'published' AND ${tiEvents.distribution} IN ('all_tenants', 'platform')))`
     const [hit] = await db
-      .select({ indicator: ctiIndicators, eventTitle: tiEvents.title })
+      .select({ indicator: ctiIndicators, eventTitle: tiEvents.title, use: sql<string>`${USE}` })
       .from(ctiIndicators)
       .leftJoin(tiEvents, eq(tiEvents.tiEventId, ctiIndicators.tiEventId))
       .where(and(inArray(ctiIndicators.value, spellings), or(FEED, visibleEvent)))
@@ -437,6 +480,8 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
         found: true,
         indicator: {
           ...toSnake(indicator),
+          // what it is used for (an event's attribute: as its feed counterpart would be)
+          ...usedFor(hit!.use),
           event_title: hit?.eventTitle ?? null,
           // documented for the family in ATT&CK, or inferred from its kind or role (lib/malwareKind.ts),
           // or for a KEV CVE from MITRE CTID's mappings
