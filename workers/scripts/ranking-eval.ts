@@ -8,8 +8,10 @@
  * vulnerability, and where exploited (KEV) and threat-intel alerts land.
  *
  * Run from workers/:
- *   npx esbuild scripts/ranking-eval.ts --bundle --platform=node --format=cjs --outfile=.ranking-eval.cjs
- *   node .ranking-eval.cjs --target staging [--out <dir>]
+ *   npx esbuild scripts/ranking-eval.ts --bundle --platform=node --format=esm --outfile=scripts/db/.ranking-eval.mjs \
+ *     "--banner:js=import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);"
+ *   node scripts/db/.ranking-eval.mjs --target staging [--out <dir>]
+ * (the bundle sits in scripts/db so the env file is found as from scripts/db/lib.mjs)
  * Only SELECTs. Tenants are reported as "tenant 1, 2...", no hostnames or addresses.
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -18,8 +20,8 @@ import { neon } from '@neondatabase/serverless'
 import { drizzle } from 'drizzle-orm/neon-http'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { assets, events } from '../src/db/schema'
-import { priorityExpr, rankScoreExpr, tierExpr, dueStatusExpr, slaKeyExpr } from '../src/lib/priority'
-import { priorityOf, rankScore, tierOf, slaKeyOf, type Severity } from '../src/lib/alertRank'
+import { priorityExpr, rankScoreExpr, tierExpr, dueStatusExpr, slaKeyExpr, effortKeyExpr, effortHoursExpr } from '../src/lib/priority'
+import { EFFORT_HOURS, effortKeyOf, priorityOf, rankScore, tierOf, slaKeyOf, type Severity } from '../src/lib/alertRank'
 // @ts-expect-error plain .mjs helper shared by the db scripts
 import { loadEnvFile } from './db/lib.mjs'
 
@@ -42,6 +44,7 @@ const oldPriority = sql<number>`round((
 type Row = {
   tenantId: string; type: string; severity: Severity; details: Record<string, unknown>; score: string | null
   internet: boolean | null; crit: number | null; oldP: number; newP: number; tier: number; rank: number; due: string; slaKey: string
+  effort: string; effortHours: number
 }
 const INFO = new Set(['new_device', 'config_change', 'version_downgrade'])
 const isKev = (d: Record<string, unknown>) => d.kev === true || Number(d.kev_count ?? 0) > 0
@@ -74,6 +77,7 @@ async function main() {
     tenantId: assets.tenantId, type: events.eventType, severity: events.severity, details: events.details,
     score: events.compositeRiskScore, internet: assets.isInternetFacing, crit: assets.criticalityScore,
     oldP: oldPriority, newP: priorityExpr, tier: tierExpr, rank: rankScoreExpr, due: dueStatusExpr, slaKey: slaKeyExpr,
+    effort: effortKeyExpr, effortHours: effortHoursExpr,
   }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
     .where(and(inArray(events.status, ['open', 'in_progress']), sql`${assets.tenantId} IS NOT NULL`)) as unknown as Row[]
 
@@ -84,8 +88,10 @@ async function main() {
       compositeRiskScore: r.score == null ? null : Number(r.score), internetFacing: !!r.internet, criticality: r.crit }
     const t = tierOf(input), s = rankScore(input)
     const k = slaKeyOf(t, r.severity, !!r.internet)
-    if (t !== Number(r.tier) || Math.abs(s - Number(r.rank)) > 0.11 || Math.abs(priorityOf(input) - Number(r.newP)) > 0.11 || k !== r.slaKey) {
-      mismatches.push({ type: r.type, severity: r.severity, sql: { tier: r.tier, rank: r.rank, key: r.slaKey }, pure: { tier: t, rank: s, key: k } })
+    const e = effortKeyOf(input)
+    if (t !== Number(r.tier) || Math.abs(s - Number(r.rank)) > 0.11 || Math.abs(priorityOf(input) - Number(r.newP)) > 0.11 || k !== r.slaKey
+      || e !== r.effort || EFFORT_HOURS[e] !== Number(r.effortHours)) {
+      mismatches.push({ type: r.type, severity: r.severity, sql: { tier: r.tier, rank: r.rank, key: r.slaKey, effort: r.effort }, pure: { tier: t, rank: s, key: k, effort: e } })
     }
   }
 

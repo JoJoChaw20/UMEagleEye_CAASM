@@ -11,6 +11,7 @@ import { isOpenEvent } from '../lib/eventStatus'
 import { assets, events, postureMetrics, advisories, ctiIndicators, scanResults, sboms } from '../db/schema'
 import { buildReportStory } from './reportStory'
 import { computePosture } from './posture'
+import { fixTimeSummary } from './fixTime'
 
 export async function buildReportData(db: DB, tenantId: string | undefined, reportType: string) {
   const af   = tenantId ? eq(assets.tenantId, tenantId) : undefined
@@ -98,8 +99,9 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
       .from(scanResults).where(sf).orderBy(desc(scanResults.startedAt)).limit(1),
   ])
 
-  // The report's storyline (verdict, first actions, hotspots, changes, progress, coverage)
-  const story = await buildReportStory(db, tenantId, reportType)
+  // The report's storyline (verdict, first actions, hotspots, changes, progress, coverage), and the
+  // fix-time figures for management (services/fixTime.ts, the same as the Dashboard)
+  const [story, fixTime] = await Promise.all([buildReportStory(db, tenantId, reportType), fixTimeSummary(db, tenantId)])
 
   const posture    = postureRows[0]
   // No snapshot yet (a new tenant, or staging, which has no nightly job): compute it now,
@@ -131,5 +133,6 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
     sbom_count:        sbomRows[0]?.count ?? 0,
     last_scan:         lastScanRows[0] ?? null,
     story,
+    fix_time:          fixTime,
   }
 }

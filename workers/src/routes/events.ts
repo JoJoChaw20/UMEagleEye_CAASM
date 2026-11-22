@@ -21,8 +21,9 @@ import {
 } from '../db/schema'
 import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
-import { dueAtExpr, dueStatusExpr, priorityExpr, rankScoreExpr, slaHoursExpr, tierExpr } from '../lib/priority'
-import { slaPolicy } from '../lib/alertRank'
+import { dueAtExpr, dueStatusExpr, effortHoursExpr, effortKeyExpr, priorityExpr, rankScoreExpr, slaHoursExpr, tierExpr } from '../lib/priority'
+import { expectedTimeToResolve } from '../services/fixTime'
+import { EFFORT_LABEL, slaPolicy, type EffortKey } from '../lib/alertRank'
 import { softwareName, techniqueName, techniquesFor } from '../lib/attack'
 import { kevTechniques } from '../lib/kevAttack'
 import { exposureAttackOf } from '../lib/exposureAttack'
@@ -157,6 +158,8 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
       // tier=1..4 (lib/alertRank.ts): Compromise, Exploited, Fix, Review
       /^[1-4]$/.test(q('tier') ?? '') ? sql`${tierExpr} = ${Number(q('tier'))}` : undefined,
       q('due') === 'soon' ? and(isOpenEvent(), sql`${dueStatusExpr} = 'due_soon'`) : undefined,
+      // due in the next 7 days and not yet overdue: the Dashboard's fix-time count (services/fixTime.ts)
+      q('due') === '7d' ? and(isOpenEvent(), sql`${dueAtExpr} between now() and now() + interval '7 days'`) : undefined,
       assignedTo === 'me' ? eq(events.assignedTo, user.userId)
         : assignedTo === 'unassigned' ? isNull(events.assignedTo)
         : assignedTo && z.string().uuid().safeParse(assignedTo).success ? eq(events.assignedTo, assignedTo)
@@ -522,9 +525,14 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
     const osInfo = (asset.osInfo ?? {}) as Record<string, unknown>
     const advisory = advisoryRows[0]
     // its tier, score and fix-time target, as the queue shows them (lib/priority.ts)
-    const [rank] = await db.select({
-      priority: priorityExpr, tier: tierExpr, rankScore: rankScoreExpr, dueAt: dueAtExpr, dueStatus: dueStatusExpr, slaHours: slaHoursExpr,
-    }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(eq(events.eventId, event.eventId)).limit(1)
+    const [[rank], expected] = await Promise.all([
+      db.select({
+        priority: priorityExpr, tier: tierExpr, rankScore: rankScoreExpr, dueAt: dueAtExpr, dueStatus: dueStatusExpr, slaHours: slaHoursExpr,
+        effortKey: effortKeyExpr, effortHours: effortHoursExpr,
+      }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(eq(events.eventId, event.eventId)).limit(1),
+      // how long this kind of alert takes to resolve here (services/fixTime.ts), when enough are resolved
+      expectedTimeToResolve(db, asset.tenantId, event.eventType),
+    ])
     const open = event.status === 'open' || event.status === 'in_progress'
 
     return c.json({
@@ -534,6 +542,8 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
       due_at:               open && rank?.dueAt ? new Date(rank.dueAt).toISOString() : null,
       due_status:           open ? rank?.dueStatus ?? null : null,
       sla_hours:            rank ? Number(rank.slaHours) : null,
+      effort:               rank ? { key: rank.effortKey, label: EFFORT_LABEL[rank.effortKey as EffortKey] ?? rank.effortKey, hours: Number(rank.effortHours) } : null,
+      expected_resolve:     expected,          // {median_hours, resolved} or null (fewer than 10 resolved)
       reopened_at:          event.reopenedAt,
       reopen_count:         event.reopenCount,
       event_id:             event.eventId,

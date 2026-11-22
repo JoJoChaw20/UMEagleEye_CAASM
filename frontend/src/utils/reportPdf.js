@@ -5,12 +5,14 @@
 //           1. Decisions for this period, 2. Do these first (ranked fixes with asset,
 //           reason, deadline and owner).
 //   Page 2  3. Where the risk is (hotspot assets) · 4. What changed this period ·
-//           5. Remediation progress (advisories, SLA breaches, unowned alerts) ·
+//           5. Remediation progress (advisories, fix-time: overdue, due in 7 days, estimated work,
+//              on-time %, typical time to resolve per alert type; longest overdue, unowned alerts) ·
 //           6. Coverage and blind spots.
 //   Then    Appendix (weekly and monthly reports): highest-risk CVEs, open advisories,
 //           inventory by type, threat-intel feeds, last scan.
 // jsPDF's standard fonts are Latin-1 only, so every string goes through safe().
 import { jsPDF } from 'jspdf'
+import { hoursText, workText } from './fixTime.js'
 
 const TYPE_NAMES = { executive: 'Executive Briefing', weekly: 'Weekly Summary', monthly: 'Monthly Report' }
 
@@ -26,6 +28,12 @@ const LEVEL = {
   stable: { label: 'STABLE', fg: C.green, bg: C.greenBg },
 }
 const SEV = { critical: C.red, high: [200, 90, 10], medium: C.amber, low: C.muted }
+// Alert types in the fix-time table (the Worker builds this PDF too, so not alertMeta.jsx's labels)
+const ALERT_TYPE = {
+  cve_detected: 'Vulnerable package', vulnerable_service: 'Vulnerable service', os_patch_missing: 'Missing Windows update',
+  exposure: 'Exposure', cti_match: 'Threat-intel match', port_opened: 'New open port', new_device: 'New device',
+  config_change: 'Configuration change', software_change: 'Software change',
+}
 
 const safe = (s) => String(s ?? '')
   .replace(/[–—]/g, '-').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/…/g, '...')
@@ -237,6 +245,32 @@ export function buildPdf(data, reportType) {
     { value: String(pr.resolved_in_period ?? 0), label: `Resolved in ${days} days`, color: pr.resolved_in_period ? C.green : C.ink },
     { value: String(pr.unassigned_critical ?? 0), label: 'Critical alerts with no assignee', color: pr.unassigned_critical ? C.red : C.ink },
   ], 15)
+  // Fix-time figures for management (workers/src/services/fixTime.ts): work in estimated hours, on-time %,
+  // and how long each kind of alert takes to resolve here
+  const ft = data.fix_time
+  if (ft) {
+    font(8.5, 'bold', C.ink); ensure(24); doc.text('Fix-time: what is due and how long fixes take', M, y); y += 4
+    const onTime = ft.on_time_30d ?? {}
+    tiles([
+      { value: String(ft.overdue?.count ?? 0), label: `Overdue (${workText(ft.overdue?.hours ?? 0)} of work)`, color: ft.overdue?.count ? C.red : C.ink },
+      { value: String(ft.due_7d?.count ?? 0), label: `Due in the next 7 days (${workText(ft.due_7d?.hours ?? 0)} of work)`, color: ft.due_7d?.count ? C.amber : C.ink },
+      { value: `${Math.round(ft.open?.hours ?? 0)} h`, label: `Estimated work for all ${ft.open?.count ?? 0} open alerts (8-hour working days: ${Math.round((ft.open?.hours ?? 0) / 0.8) / 10})` },
+      { value: onTime.pct == null ? '-' : `${onTime.pct}%`, label: `Fixed on time, last 30 days (${onTime.on_time ?? 0} of ${onTime.resolved ?? 0})`,
+        color: onTime.pct == null ? C.ink : onTime.pct >= 80 ? C.green : onTime.pct >= 50 ? C.amber : C.red },
+    ], 15)
+    const ttr = (ft.time_to_resolve ?? []).slice(0, 8)
+    if (ttr.length) {
+      table([
+        { label: 'Alert type', w: 80, get: r => ALERT_TYPE[r.type] ?? r.type, bold: true, color: () => C.ink },
+        { label: 'Resolved (90 days)', w: 42, align: 'right', get: r => r.resolved },
+        { label: 'Typical time to resolve', w: 60, align: 'right',
+          get: r => (r.reliable ? hoursText(r.median_hours) : `${hoursText(r.median_hours)} (fewer than ${ft.min_resolved ?? 10})`),
+          color: r => (r.reliable ? C.body : C.muted) },
+      ], ttr)
+    }
+    paragraph(`Estimated work per alert: investigate a possible compromise 4 h, update a package 30 min, upgrade a service 1 h, install a Windows update 1 h (with a restart), fix an exposure 30 min, review a change 15 min. Typical time is the median from first seen (or reopened) to resolved; it is a guide once ${ft.min_resolved ?? 10} of a type are resolved.`, 7.5, C.muted)
+    y += 2
+  }
   if ((pr.sla_breaches ?? []).length) {
     font(8.5, 'bold', C.ink); ensure(8); doc.text('Longest overdue: alerts past their fix-time target', M, y); y += 4
     table([

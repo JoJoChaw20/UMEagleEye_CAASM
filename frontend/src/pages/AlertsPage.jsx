@@ -20,6 +20,7 @@ import {
 } from '../components/common/triageViz'
 import AdvisoryBody from '../components/common/AdvisoryBody'
 import { historyActor } from '../utils/users'
+import { hoursText, workText } from '../utils/fixTime'
 
 const PAGE_SIZE = 20
 const LAST_VISIT_KEY = 'alerts_last_visit'
@@ -31,7 +32,8 @@ const VIEWS = [
   { id: 'open',      label: 'All open',                   params: { status: 'open' } },
   { id: 'mine',      label: 'My queue',                   params: { status: 'open', assigned_to: 'me' } },
   { id: 'overdue',   label: 'Overdue',                    params: { status: 'open', overdue: 'true' } },
-  { id: 'due-soon',  label: 'Due soon',                   params: { status: 'open', due: 'soon' } },
+  // due in the next 7 days, not yet overdue: the same count as the Dashboard's Fix-time card
+  { id: 'due-soon',  label: 'Due in 7 days',              params: { status: 'open', due: '7d' } },
   { id: 'exposed',   label: 'Critical or high on internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
   { id: 'drift',     label: 'Drift to review',            params: { status: 'open', event_type: DRIFT_CSV } },
   // one alert per vulnerable package (its CVEs inside): each row is one upgrade
@@ -761,6 +763,13 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <PriorityTier score={e.priority_score} tier={e.tier} />
                   <DueLabel e={e} />
+                  {/* estimated hands-on work, and how long this kind takes here (workers/src/services/fixTime.ts) */}
+                  {e.effort && (
+                    <span className="text-[11px] text-dark-400" title={e.effort.label}>
+                      ~{workText(e.effort.hours)} of work
+                      {e.expected_resolve && ` · usually resolved here in ${hoursText(e.expected_resolve.median_hours)} (median of ${e.expected_resolve.resolved})`}
+                    </span>
+                  )}
                 </div>
               )}
             </div>

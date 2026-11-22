@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { events, assets } from '../db/schema'
 import { RISKY_PORTS } from './exposure'
-import { SLA_DEFAULTS } from './alertRank'
+import { EFFORT_HOURS, SLA_DEFAULTS } from './alertRank'
 
 // Triage order for the Alerts queue, the dashboard, reports and the assistant: the SQL form of
 // lib/alertRank.ts (tier, then a 0-100 score comparable across alert types; read that file for
@@ -58,6 +58,20 @@ const DEFAULT_WHENS = sql.raw(Object.entries(SLA_DEFAULTS).map(([k, h]) => `WHEN
 export const slaHoursExpr = sql<number>`COALESCE(
   (SELECT (t.sla_policy->>${slaKeyExpr})::int FROM tenants t WHERE t.tenant_id = ${assets.tenantId}),
   (CASE ${slaKeyExpr} ${DEFAULT_WHENS} END))`
+
+/** The work estimate that applies (lib/alertRank.ts effortKeyOf). */
+export const effortKeyExpr = sql<string>`(CASE
+  WHEN ${events.eventType} = 'cti_match' THEN
+    CASE WHEN ${d('match_kind')} = 'watchlist' THEN 'software' WHEN ${tierExpr} = 1 THEN 'investigate' ELSE 'review' END
+  WHEN ${events.eventType} = 'cve_detected' THEN 'package'
+  WHEN ${events.eventType} = 'vulnerable_service' THEN 'service'
+  WHEN ${events.eventType} = 'os_patch_missing' THEN 'windows_update'
+  WHEN ${events.eventType} = 'exposure' THEN 'exposure'
+  WHEN ${events.eventType} = 'port_opened' AND (${d('port')}) ~ '^[0-9]+$' AND (${d('port')})::int = ANY(${RISKY}) THEN 'exposure'
+  ELSE 'review' END)`
+const EFFORT_WHENS = sql.raw(Object.entries(EFFORT_HOURS).map(([k, h]) => `WHEN '${k}' THEN ${Number(h)}`).join(' '))
+/** Estimated hours of work (lib/alertRank.ts EFFORT_HOURS). */
+export const effortHoursExpr = sql<number>`(CASE ${effortKeyExpr} ${EFFORT_WHENS} ELSE 0.25 END)::float`
 
 /** When the fix-time clock started: first seen, or the last time the alert reopened. */
 export const clockStartExpr = sql`COALESCE(${events.reopenedAt}, ${events.firstSeen})`

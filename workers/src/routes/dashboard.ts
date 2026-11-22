@@ -20,6 +20,7 @@ import { CONCERN_IDS, concernCondition, concernCountColumns } from '../lib/conce
 import { extractPorts } from '../services/drift'
 import { summarizeCoverage, type CoverageAsset } from '../lib/coverage'
 import { agentLiveness } from '../lib/agentLiveness'
+import { fixTimeSummary } from '../services/fixTime'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -391,6 +392,8 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
         sla_breaches: priorityMetrics[0]?.overdue ?? 0,
         advisories_open_over_72h: advisoryMetrics.reduce((sum, a) => sum + a.slaBreaches, 0),
       },
+      // the management view: work waiting, overdue and due in 7 days, on-time %, measured time to resolve
+      fix_time: await fixTimeSummary(db, tenantId),
     })
   } catch (err) {
     console.error('dashboard GET /summary error:', err)

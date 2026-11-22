@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  SLA_DEFAULTS, cleanSlaPolicy, dueOf, priorityOf, rankScore, slaKeyOf, slaPolicy, tierOf, tierOfPriority, type RankInput,
+  EFFORT_HOURS, SLA_DEFAULTS, cleanSlaPolicy, dueOf, effortKeyOf, priorityOf, rankScore, slaKeyOf, slaPolicy, tierOf, tierOfPriority, type RankInput,
 } from './alertRank'
 
 const alert = (over: Partial<RankInput>): RankInput => ({
@@ -64,6 +64,23 @@ test('fix-time targets: defaults, tenant overrides, which one applies', () => {
   assert.deepEqual(cleanSlaPolicy({ critical: 72, high: '168', low: 0, bogus: 5, medium: 2.5, kev: 999999 }), { critical: 72, high: 168 })
   assert.equal(slaPolicy({ critical: 72 }).critical, 72)
   assert.equal(slaPolicy(null).high, 30 * 24)
+})
+
+test('estimated work per alert: the planning figures, by what fixing it takes', () => {
+  const k = (type: string, severity: RankInput['severity'], details: Record<string, unknown> = {}) => effortKeyOf({ type, severity, details })
+  assert.equal(k('cti_match', 'critical', { match_kind: 'sighting' }), 'investigate')
+  assert.equal(k('cti_match', 'critical', { match_kind: 'malicious_package' }), 'investigate')
+  assert.equal(k('cti_match', 'medium', { match_kind: 'malicious_package', match_scope: 'name' }), 'review')   // a name match is reviewed
+  assert.equal(k('cti_match', 'high', { match_kind: 'watchlist' }), 'software')
+  assert.equal(k('cve_detected', 'critical', { kev: true }), 'package')
+  assert.equal(k('vulnerable_service', 'high'), 'service')
+  assert.equal(k('os_patch_missing', 'high'), 'windows_update')
+  assert.equal(k('exposure', 'medium'), 'exposure')
+  assert.equal(k('port_opened', 'high', { port: 3389 }), 'exposure')
+  assert.equal(k('port_opened', 'low', { port: 8080 }), 'review')
+  assert.equal(k('new_device', 'medium'), 'review')
+  assert.deepEqual([EFFORT_HOURS.investigate, EFFORT_HOURS.package, EFFORT_HOURS.service, EFFORT_HOURS.windows_update,
+    EFFORT_HOURS.exposure, EFFORT_HOURS.review], [4, 0.5, 1, 1, 0.5, 0.25])
 })
 
 test('due status: on track, due soon in the last quarter, overdue', () => {

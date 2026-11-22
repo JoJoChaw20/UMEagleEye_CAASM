@@ -134,6 +134,41 @@ export function slaKeyOf(tier: Tier, severity: Severity, internetFacing: boolean
   return severity
 }
 
+/**
+ * Estimated hands-on work to close an alert, in hours: what the SOC reports as workload ("12 hours
+ * of fixes due this week"). Planning figures for one device, not measurements; the tenant's own
+ * measured time to resolve (median per alert type, services/fixTime.ts) shows how long alerts
+ * actually stay open.
+ */
+export type EffortKey = 'investigate' | 'package' | 'service' | 'windows_update' | 'exposure' | 'software' | 'review'
+export const EFFORT_HOURS: Record<EffortKey, number> = {
+  investigate: 4,          // a possible compromise: isolate, examine, clean up
+  package: 0.5,            // update one package on one device
+  service: 1,              // upgrade a network service (and check it still works)
+  windows_update: 1,       // install the update, with a restart
+  exposure: 0.5,           // change a setting or close a port
+  software: 0.5,           // update or remove watched software
+  review: 0.25,            // look at a change and accept it or open a fix
+}
+export const EFFORT_LABEL: Record<EffortKey, string> = {
+  investigate: 'Investigate a possible compromise', package: 'Update a package', service: 'Upgrade a service',
+  windows_update: 'Install a Windows update (restart)', exposure: 'Fix an exposure', software: 'Update or remove watched software',
+  review: 'Review a change',
+}
+
+export function effortKeyOf(a: Pick<RankInput, 'type' | 'severity' | 'details'>): EffortKey {
+  if (a.type === 'cti_match') {
+    if (a.details.match_kind === 'watchlist') return 'software'
+    return tierOf(a) === 1 ? 'investigate' : 'review'
+  }
+  if (a.type === 'cve_detected') return 'package'
+  if (a.type === 'vulnerable_service') return 'service'
+  if (a.type === 'os_patch_missing') return 'windows_update'
+  if (a.type === 'exposure') return 'exposure'
+  if (a.type === 'port_opened' && Number(a.details.port) in RISKY_PORTS) return 'exposure'
+  return 'review'
+}
+
 export type DueStatus = 'on_track' | 'due_soon' | 'overdue'
 
 /** Due date from when the clock started (first seen, or reopened), and its status at `now`:
