@@ -9,10 +9,11 @@ const SCAN_TYPES = [
   { value: 'passive', label: 'Passive scan (listen only)', action: 'scan.passive.run' },
 ]
 
-// A full (active) scan, run by one agent. Passive listening needs no scan: agents listen
-// all the time. "Automatic" lets the server pick the online agent with the Scanner role
-// that is on the range's network (GET /scans/route shows which, and why); an agent that is
-// not on it scans only when picked here (through a router: no MAC addresses).
+// A full (active) scan, run by one agent. "Automatic" lets the server pick the online agent
+// with the Scanner role that is on the range's network (GET /scans/route shows which, and why);
+// an agent that is not on it scans only when picked here (through a router: no MAC addresses).
+// A passive scan runs nothing: agents with passive listening on hear their network all the time,
+// and this asks one to upload what it has heard now. The range only finds that agent (Automatic).
 
 const ipNum = (ip) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0)
 /** Whether an IPv4 address is in a CIDR ("192.168.36.60" in "192.168.36.0/24"). */
@@ -68,24 +69,27 @@ export default function NewScanModal({ agents: allAgents, networks, initial, can
 
   // Follow the chosen agent's network until the range is edited by hand
   useEffect(() => { if (!touched && agentId && agentId !== 'auto') setSubnet(lastNetwork[agentId] ?? '') }, [agentId, touched, lastNetwork])
-  // Which agent "Automatic" would use for this range (asked a moment after typing stops)
+  // Which agent "Automatic" would use for this range and scan type (asked a moment after typing stops)
   useEffect(() => {
     if (!canRoute || agentId !== 'auto' || validateSubnet(subnet)) { setRoute(null); return undefined }
     let live = true
     const t = setTimeout(() => {
-      client.get('/scans/route', { params: { subnet: subnet.trim() } })
+      client.get('/scans/route', { params: { subnet: subnet.trim(), scan_type: scanType } })
         .then((r) => live && setRoute(r.data))
         .catch(() => live && setRoute(null))
     }, 350)
     return () => { live = false; clearTimeout(t) }
-  }, [agentId, subnet, canRoute])
+  }, [agentId, subnet, canRoute, scanType])
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const subnetError = validateSubnet(subnet)
+  const passive = scanType === 'passive'
+  // A passive scan with a chosen agent needs no range: that agent uploads what it heard on its own network
+  const needsRange = !passive || agentId === 'auto'
+  const subnetError = needsRange ? validateSubnet(subnet) : null
   const agent = agents.find((a) => a.agent_id === agentId)
 
   const submit = async (e) => {
@@ -94,7 +98,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, can
     setSubmitting(true)
     setError(null)
     try {
-      await onSubmit({ subnet: subnet.trim(), agent_id: agentId, scan_type: scanType })
+      await onSubmit({ ...(needsRange ? { subnet: subnet.trim() } : {}), agent_id: agentId, scan_type: scanType })
       onClose()
     } catch (err) {
       const d = err?.response?.data
@@ -108,7 +112,7 @@ export default function NewScanModal({ agents: allAgents, networks, initial, can
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4" onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-labelledby="new-scan-title" className="glass-card w-full max-w-md p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h2 id="new-scan-title" className="text-lg font-semibold text-dark-50">{scanTypes.length === 1 && scanType === 'passive' ? 'New passive scan' : 'New full scan'}</h2>
+          <h2 id="new-scan-title" className="text-lg font-semibold text-dark-50">{passive ? 'New passive scan' : 'New full scan'}</h2>
           <button onClick={onClose} className="text-dark-400 hover:text-dark-50" title="Close"><X className="w-5 h-5" /></button>
         </div>
 
@@ -129,9 +133,9 @@ export default function NewScanModal({ agents: allAgents, networks, initial, can
             <div>
               {canSeeAgents ? (
                 <>
-                  <label htmlFor="scan-agent" className="block text-xs text-dark-400 mb-1">Agent that runs it</label>
+                  <label htmlFor="scan-agent" className="block text-xs text-dark-400 mb-1">{passive ? 'Agent that listens' : 'Agent that runs it'}</label>
                   <select id="scan-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="input-field w-full text-sm">
-                    <option value="auto">Automatic: the agent on that network (recommended)</option>
+                    <option value="auto">{passive ? 'Automatic: the agent listening on that network' : 'Automatic: the agent on that network (recommended)'}</option>
                     {agents.map((a) => (
                       <option key={a.agent_id} value={a.agent_id} disabled={a.status !== 'online'}>
                         {a.name}{a.status !== 'online' ? ` (${a.status})` : lastNetwork[a.agent_id] ? ` · on ${lastNetwork[a.agent_id]}` : ''}
@@ -166,12 +170,14 @@ export default function NewScanModal({ agents: allAgents, networks, initial, can
                       )}
                     </div>
                   ))
+              ) : passive ? (
+                <p className="text-[11px] text-dark-500 mt-1">Uploads what this agent has heard on its own network so far. Its passive listening must be on.</p>
               ) : (
                 <p className="text-[11px] text-dark-500 mt-1">The agent can only reach networks its computer is connected to; others only through a router (no MAC addresses).</p>
               )}
             </div>
-            <div>
-              <label htmlFor="scan-range" className="block text-xs text-dark-400 mb-1">Range or address</label>
+            {needsRange && <div>
+              <label htmlFor="scan-range" className="block text-xs text-dark-400 mb-1">{passive ? 'Network to listen on' : 'Range or address'}</label>
               <input id="scan-range" type="text" value={subnet} onChange={(e) => { setSubnet(e.target.value); setTouched(true) }}
                 placeholder="192.168.1.0/24" className={`input-field w-full text-sm font-mono ${subnet && subnetError ? 'border-red-500/60' : ''}`} />
               {subnet && subnetError && <p className="text-xs text-red-400 mt-1">{subnetError}</p>}
@@ -180,7 +186,8 @@ export default function NewScanModal({ agents: allAgents, networks, initial, can
                   Use {agent.name}'s network ({lastNetwork[agentId]})
                 </button>
               )}
-            </div>
+              {passive && <p className="text-[11px] text-dark-500 mt-1">Only finds the agent listening there; a passive scan sends nothing onto the network.</p>}
+            </div>}
             <div className="flex gap-3 pt-1">
               <button type="button" onClick={onClose} className="btn-secondary flex-1 text-sm">Cancel</button>
               <button type="submit" disabled={submitting || scanTypes.length === 0 || !!subnetError || !agentId || (agentId === 'auto' && route && !route.agent_id)}

@@ -310,7 +310,8 @@ app.get('/route', authMiddleware, requireAction('scan.route.view'), async (c) =>
   const subnet = c.req.query('subnet') ?? ''
   if (!user.tenantId || !isValidSubnet(subnet)) return c.json({ detail: 'Enter an IPv4 address or range' }, 400)
   const db = getDb(c.env.DATABASE_URL)
-  return c.json(chooseAgent(subnet, await routeAgents(db, user.tenantId)))
+  const job = c.req.query('scan_type') === 'passive' ? 'passive' : 'active'
+  return c.json(chooseAgent(subnet, await routeAgents(db, user.tenantId), job))
 })
 
 app.get('/networks', authMiddleware, requireAction('scan.view'), async (c) => {
@@ -648,7 +649,7 @@ const activeScanSchema = z.object({
     .refine((v) => v === undefined || v === 'arp-discovery' || isValidSubnet(v), {
       message: 'Invalid subnet — must be a valid IPv4 address or CIDR range (e.g. 192.168.1.0/24)',
     }),
-  // 'auto' (or none, for an active scan): the server picks the agent on that network.
+  // 'auto' (or none): the server picks the agent on that network (`subnet`; for passive it only finds the agent).
   agent_id: z.union([z.string().uuid(), z.literal('auto')]).optional(),
   tenant_id: z.string().uuid().nullable().optional(),
   scan_type: z.enum(['active', 'passive']).optional().default('active'),
@@ -681,16 +682,22 @@ app.post('/active', authMiddleware, requireAction('scan.active.run', 'scan.passi
     // never checked, so any agent whose id was known could be told to scan).
     void tenant_id
     const effectiveTenantId = user.tenantId ?? null
-    const tenantAgents = effectiveTenantId && effectiveScanType === 'active' ? await routeAgents(db, effectiveTenantId) : []
+    let agent_id = requestedAgent === 'auto' ? undefined : requestedAgent
+    const tenantAgents = effectiveTenantId && (effectiveScanType === 'active' || !agent_id) ? await routeAgents(db, effectiveTenantId) : []
     if (effectiveScanType === 'active') {
       // Private ranges, or a network the tenant's agents are on, at most a /16 (lib/scanTarget.ts)
       const refusal = scanTargetRefusal(effectiveSubnet, tenantAgents.flatMap((a) => a.networks))
       if (refusal) return c.json({ detail: refusal }, 400)
     }
-    let agent_id = requestedAgent === 'auto' ? undefined : requestedAgent
-    if (effectiveScanType === 'active' && !agent_id) {
-      // Automatic: the online agent with the Scanner role that is on this network.
-      const decision = effectiveTenantId ? chooseAgent(effectiveSubnet, tenantAgents) : null
+    if (!agent_id) {
+      // Automatic: the online agent on this network with the Scanner role (active), or listening
+      // passively (passive). A passive request names the network only to find that agent: without one,
+      // the record had no agent, no agent ever picked it up, and it stayed pending.
+      const target = effectiveScanType === 'active' ? effectiveSubnet : subnet
+      if (!target || target === 'arp-discovery') {
+        return c.json({ detail: 'Choose the agent that listens, or enter its network so it can be found.' }, 400)
+      }
+      const decision = effectiveTenantId ? chooseAgent(target, tenantAgents, effectiveScanType) : null
       if (!decision?.agent_id) {
         return c.json({ detail: decision?.reason ?? 'Choose the agent that runs the scan',
           networks: decision?.networks, routed: decision?.routed }, 409)
@@ -707,10 +714,8 @@ app.post('/active', authMiddleware, requireAction('scan.active.run', 'scan.passi
       if (agent.kind === 'network') {
         return c.json({ detail: 'A network agent reads routers and switches; it does not run scans. Choose a computer agent.' }, 409)
       }
-      if (effectiveScanType === 'active') {
-        const refusal = jobRefusal((await agentPolicy(db, agent_id))?.resolved.effective ?? {}, 'active')
-        if (refusal) return c.json({ detail: `${refusal} Choose another agent, or change it on the Agents page.` }, 409)
-      }
+      const refusal = jobRefusal((await agentPolicy(db, agent_id))?.resolved.effective ?? {}, effectiveScanType)
+      if (refusal) return c.json({ detail: `${refusal} Choose another agent, or change it on the Agents page.` }, 409)
     }
 
     // The same scan already waiting for this agent: return it instead of queueing a
@@ -732,9 +737,9 @@ app.post('/active', authMiddleware, requireAction('scan.active.run', 'scan.passi
       }
     }
 
-    // Passive scans are ARP-driven on the agent side — they run continuously
-    // via the --passive flag. Triggering one from the UI just creates a record
-    // so the dashboard shows it; no nmap dispatch is needed.
+    // Passive listening runs all the time on an agent with it on. A passive scan asks that agent
+    // (always named by now) to upload what it has heard so far into this record (service.py
+    // run_passive); no nmap runs. Not picked up within 10 minutes, it fails (services/pendingJobs.ts).
     const scanRows = await db
       .insert(scanResults)
       .values({

@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { otxPulseAttack, threatFoxAttack } from './cti'
+import { feedRefresh, otxPulseAttack, threatFoxAttack } from './cti'
+
+test('feeds: on schedule in production, by hand only on staging (no crons there)', () => {
+  assert.deepEqual(feedRefresh('production'), { scheduled: true, manual: false })
+  assert.deepEqual(feedRefresh(undefined), { scheduled: true, manual: false })
+  assert.deepEqual(feedRefresh('staging'), { scheduled: false, manual: true })
+})
 
 test('an OTX pulse keeps the techniques its author tagged, as strings or objects, dropping unknown ids', () => {
   const r = otxPulseAttack({

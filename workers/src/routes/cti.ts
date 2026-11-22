@@ -8,7 +8,7 @@ import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } fro
 import type { Env } from '../types'
 import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { LAST_INGEST_KEY, type LastIngest } from '../services/cti'
+import { CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
   ATTACK, buildMatrix, expandTechniques, type MatrixGroup, softwareName, softwareUsing, techniqueName, techniquesFor,
@@ -200,7 +200,8 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       },
       ti_events: { total: eventRows[0]?.total ?? 0, published: eventRows[0]?.published ?? 0 },
       // Feed health: each feed's count, and when it last loaded (null before the first
-      // recorded run). next_ingest_at is the nightly run (production; staging has no crons).
+      // recorded run). next_ingest_at is the nightly run: null on staging, which has no crons;
+      // there can_ingest lets the Platform Superadmin load them (feedRefresh).
       feeds: bySource.map((r) => ({
         source:     r.source,
         count:      r.count,
@@ -208,7 +209,8 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
         last_ok_at: lastIngest?.feeds?.[r.source]?.last_ok_at ?? null,
       })),
       last_ingest_at: lastIngest?.at ?? null,
-      next_ingest_at: nextIngestAt(new Date()).toISOString(),
+      next_ingest_at: feedRefresh(c.env.APP_ENV).scheduled ? nextIngestAt(new Date()).toISOString() : null,
+      can_ingest: feedRefresh(c.env.APP_ENV).manual && isSuper,
     })
   } catch (err) {
     console.error('cti GET /stats error:', err)
@@ -502,6 +504,23 @@ app.get('/debug', authMiddleware, requirePlatformSuperadmin, async (c) => {
   }
 
   return c.json(results)
+})
+
+// ── POST /ingest ─── staging only: load the shared feeds now (feedRefresh) ──
+app.post('/ingest', authMiddleware, requirePlatformSuperadmin, async (c) => {
+  if (!feedRefresh(c.env.APP_ENV).manual) return c.json({ detail: 'Feeds load on schedule here.' }, 404)
+  try {
+    if (await c.env.KV_CACHE.get(CTI_INGEST_LOCK)) {
+      return c.json({ message: 'A feed update is already running or ran in the last hour', queued: false })
+    }
+    // The same lock and queue job as the nightly cron (cron/triggers.ts); the consumer clears the lock.
+    await c.env.KV_CACHE.put(CTI_INGEST_LOCK, '1', { expirationTtl: 3600 })
+    await c.env.ADVISORY_QUEUE.send({ type: 'cti_ingest', triggeredBy: c.get('user').userId })
+    return c.json({ message: 'Feed update queued', queued: true })
+  } catch (err) {
+    console.error('cti POST /ingest error:', err)
+    return c.json({ detail: 'Failed to queue the feed update' }, 500)
+  }
 })
 
 export default app

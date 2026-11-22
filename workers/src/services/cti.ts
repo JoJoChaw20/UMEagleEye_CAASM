@@ -214,7 +214,16 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
     throw new Error(`ThreatFox answered HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
   }
 
-  const data = await res.json() as { query_status?: string; data?: ThreatFoxIoc[] }
+  // Read as text first: an empty or cut-off body otherwise fails as a bare "Unexpected end of JSON input".
+  const text = await res.text()
+  const shape = `HTTP ${res.status}, ${res.headers.get('content-type') ?? 'no content-type'}, ${text.length} chars`
+  if (!text.trim()) throw new Error(`ThreatFox sent an empty answer (${shape})`)
+  let data: { query_status?: string; data?: ThreatFoxIoc[] }
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error(`ThreatFox sent something that is not JSON (${shape}): ${text.slice(0, 200)}`)
+  }
   console.log(`[ThreatFox] query_status=${data.query_status} records=${data.data?.length ?? 0}`)
   // 'ok', or 'no_result' for a quiet week; anything else (e.g. 'unknown_auth_key') is a failure
   if (data.query_status && data.query_status !== 'ok' && data.query_status !== 'no_result') {
@@ -315,6 +324,16 @@ export function describeError(err: unknown): string {
 export type CtiStep = 'kev' | 'threatfox' | 'otx' | 'finish'
 export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'otx', 'finish']
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
+
+/**
+ * How the shared feeds get loaded here. Production: the nightly cron only (the feeds are shared by
+ * every tenant, so nobody starts an early run: access-control spec, item 9). Staging has no crons, so
+ * there the Platform Superadmin loads them by hand (POST /cti/ingest), or they would never refresh.
+ */
+export function feedRefresh(appEnv: string | undefined): { scheduled: boolean; manual: boolean } {
+  const staging = appEnv === 'staging'
+  return { scheduled: !staging, manual: staging }
+}
 
 /** The step after this one; null after 'finish' (exported for tests). */
 export function nextCtiStep(step: CtiStep): CtiStep | null {

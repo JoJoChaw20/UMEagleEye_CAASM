@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Globe, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Globe, Search, X, Crosshair, Server, BookOpen, Database, CheckCircle2, AlertTriangle, RefreshCw } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TiEventsPanel from '../components/threatintel/TiEventsPanel'
@@ -28,7 +28,9 @@ function ConfBar({ score }) {
 }
 
 // One line per feed: count, when it last loaded, and a warning when it failed or is old.
-function FeedHealth({ stats }) {
+// Production loads the feeds nightly (next_ingest_at). Staging has no schedule: there the
+// Platform Superadmin loads them by hand (can_ingest, POST /cti/ingest).
+function FeedHealth({ stats, ingesting, onIngest }) {
   const feeds = stats?.feeds ?? []
   const hoursOld = (ts) => (ts ? (Date.now() - new Date(ts).getTime()) / 3600000 : Infinity)
   return (
@@ -54,6 +56,14 @@ function FeedHealth({ stats }) {
       })}
       <span className="ml-auto flex items-center gap-3 text-dark-500">
         {stats?.next_ingest_at && <span>Next update {new Date(stats.next_ingest_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+        {stats && !stats.next_ingest_at && <span>No schedule on this server</span>}
+        {stats?.can_ingest && (
+          <button onClick={onIngest} disabled={ingesting} className="btn-secondary text-xs py-1 px-2.5 inline-flex items-center gap-1.5 disabled:opacity-60"
+            title="Load all feeds now, for every tenant (staging has no nightly schedule)">
+            <RefreshCw className={`w-3.5 h-3.5 ${ingesting ? 'animate-spin' : ''}`} />
+            {ingesting ? 'Updating…' : 'Update feeds now'}
+          </button>
+        )}
       </span>
     </div>
   )
@@ -67,6 +77,7 @@ export default function ThreatIntelPage() {
   const canMatches = can('alert.view')
   const canEvents = can('ti_event.view')
   const [stats, setStats] = useState(null)
+  const [ingesting, setIngesting] = useState(false)
   const [tab, setTab] = useState(null)              // set once the stats say whether there are matches
   const [lookupInput, setLookupInput] = useState('')
   const [panelValue, setPanelValue] = useState(null)
@@ -124,6 +135,24 @@ export default function ThreatIntelPage() {
   }, [page, qDebounced, typeFilter, sourceFilter, matchedOnly, attackFilter, showToast])
   useEffect(() => { if (tab === 'indicators') loadIndicators() }, [tab, loadIndicators])
 
+  // Staging only (stats.can_ingest): the run takes a minute or two, one feed per queue job
+  const ingest = async () => {
+    setIngesting(true)
+    try {
+      const res = await client.post('/cti/ingest')
+      if (res.data?.queued === false) {
+        showToast('A feed update is already running or ran in the last hour.', 'info')
+        setIngesting(false)
+      } else {
+        showToast('Feed update queued. The counts refresh in about a minute.', 'success')
+        setTimeout(() => { loadStats(); if (tab === 'indicators') loadIndicators(); setIngesting(false) }, 60000)
+      }
+    } catch (err) {
+      showToast(err?.response?.data?.detail ?? 'Failed to queue the feed update', 'error')
+      setIngesting(false)
+    }
+  }
+
   const lookup = (e) => {
     e?.preventDefault()
     const v = lookupInput.trim()
@@ -179,7 +208,7 @@ export default function ThreatIntelPage() {
           onClick={() => { clearFilters(); setTab('indicators') }} />
       </div>
 
-      <FeedHealth stats={stats} />
+      <FeedHealth stats={stats} ingesting={ingesting} onIngest={ingest} />
 
       {tab && (
         <Tabs label="Threat intelligence views" active={tab} onChange={setTab} tabs={[

@@ -44,6 +44,21 @@ test('offline agents and agents whose Scanner role is off are never chosen', () 
   assert.match(d.reason, /No online agent runs dashboard scans/)
 })
 
+test('passive: only an online agent listening passively on that network; never through a router', () => {
+  const nets = ['192.168.36.0/24']
+  const scanner = agent({ agent_id: 'scanner', networks: nets, passive: false })
+  const unknown = agent({ agent_id: 'unknown', networks: nets, passive: null })
+  const sensor = agent({ agent_id: 'sensor', name: 'lab-sensor', networks: nets, passive: true, scanner: false })
+  assert.equal(chooseAgent('192.168.36.0/24', [scanner, unknown, sensor], 'passive').agent_id, 'sensor')
+  assert.match(chooseAgent('192.168.36.0/24', [scanner, unknown], 'passive').reason, /No online agent is listening passively/)
+  const away = chooseAgent('10.10.0.0/24', [sensor], 'passive')
+  assert.equal(away.agent_id, null)
+  assert.equal(away.routed, undefined)
+  assert.match(away.reason, /hears only the agent's own network/)
+  // the active choice is unchanged: the sensor's Scanner role is off
+  assert.equal(chooseAgent('192.168.36.0/24', [scanner, sensor]).agent_id, 'scanner')
+})
+
 test('an older agent is taken to be on the /24 around its address, and the reason says so', () => {
   const old = agent({ agent_id: 'old', name: 'agent-test-ubuntu', local_ip: '192.168.36.50' })
   const d = chooseAgent('192.168.36.0/24', [old])

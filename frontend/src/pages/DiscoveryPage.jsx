@@ -310,7 +310,9 @@ export default function DiscoveryPage() {
 
   const startScan = async ({ subnet, agent_id, scan_type = 'active' }) => {
     await client.post('/scans/active', { subnet, agent_id, scan_type })
-    showToast(`${scan_type === 'passive' ? 'Passive scan' : 'Full scan'} of ${subnet} queued`, 'success')
+    showToast(scan_type === 'passive'
+      ? 'Passive scan queued: the agent uploads what it has heard so far'
+      : `Full scan of ${subnet} queued`, 'success')
     setKind(''); setStatus(''); setNetworkFilter(''); setPage(1)
     setTab('history')
   }

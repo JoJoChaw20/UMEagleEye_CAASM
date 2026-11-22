@@ -74,13 +74,21 @@ const byPreference = (x: { a: RouteAgent; prefix: number }, y: { a: RouteAgent; 
   (y.prefix - x.prefix) || (Number(x.a.busy) - Number(y.a.busy))
   || String(y.a.last_heartbeat ?? '').localeCompare(String(x.a.last_heartbeat ?? ''))
 
-export function chooseAgent(target: string, agents: RouteAgent[]): RouteDecision {
+/**
+ * `job` 'passive': the agent that listens on the network uploads what it has heard. Only an online
+ * agent with passive listening on (Sensor role) and ON that network qualifies: listening hears its own
+ * network alone, so there is no "through a router" choice.
+ */
+export function chooseAgent(target: string, agents: RouteAgent[], job: 'active' | 'passive' = 'active'): RouteDecision {
   const t = parseCidr(target)
   if (!t) return { agent_id: null, name: null, reason: `${target} is not an IPv4 address or range`, on_link: false }
-  const eligible = agents.filter((a) => a.online && a.scanner !== false)
+  const passive = job === 'passive'
+  const eligible = agents.filter((a) => a.online && (passive ? a.passive === true : a.scanner !== false))
   if (!eligible.length) {
     return { agent_id: null, name: null, on_link: false,
-      reason: 'No online agent runs dashboard scans (an agent must be online with its Scanner role on).' }
+      reason: passive
+        ? 'No online agent is listening passively (an agent must be online with passive listening on).'
+        : 'No online agent runs dashboard scans (an agent must be online with its Scanner role on).' }
   }
   const onLink: { a: RouteAgent; prefix: number; net: Cidr; guessed: boolean }[] = []
   const inside = new Set<string>()
@@ -105,6 +113,10 @@ export function chooseAgent(target: string, agents: RouteAgent[]): RouteDecision
     const networks = [...inside].sort()
     return { agent_id: null, name: null, on_link: false, networks,
       reason: `${t.text} spans ${networks.length} networks with their own agents. Scan them one at a time: ${networks.join(', ')}.` }
+  }
+  if (passive) {
+    return { agent_id: null, name: null, on_link: false,
+      reason: `No online agent listening passively is on ${t.text}. Passive listening hears only the agent's own network.` }
   }
   return {
     agent_id: null, name: null, on_link: false,

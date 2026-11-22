@@ -262,9 +262,12 @@ export function policyVersion(managed: Partial<Record<PolicyKey, PolicyValue>>):
 
 /** Why the dashboard may not send this kind of job to an agent with this policy, or null.
  *  A value the agent has not reported does not block (an older agent decides itself). */
-export function jobRefusal(effective: Partial<Record<PolicyKey, PolicyValue>>, job: 'active' | 'inventory' | 'sbom' | 'snmp'): string | null {
+export function jobRefusal(effective: Partial<Record<PolicyKey, PolicyValue>>, job: 'active' | 'passive' | 'inventory' | 'sbom' | 'snmp'): string | null {
   if (job === 'active' && effective.scanner === false) {
     return 'This agent does not run scans from the dashboard (its Scanner role is off).'
+  }
+  if (job === 'passive' && effective.passive !== true) {
+    return 'This agent is not listening passively (its passive listening is off).'
   }
   if (job === 'inventory' && effective.inventory === false) {
     return 'Endpoint inventory is switched off for this agent.'
