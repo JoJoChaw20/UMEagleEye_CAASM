@@ -347,14 +347,15 @@ router.put(
     const { alerts } = c.req.valid('json')
     const [tenant] = await db.select({ alerts: tenants.sharedEventAlerts }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
-    if (tenant.alerts === alerts) return c.json({ shared_event_alerts: alerts, alerts_updated: 0 })
+    if (tenant.alerts === alerts) return c.json({ shared_event_alerts: alerts, alerts_updated: 0, alerts_change: null })
 
     await db.update(tenants).set({ sharedEventAlerts: alerts }).where(eq(tenants.tenantId, tenantId))
     await audit(db, c, {
       userId: user.userId, tenantId, actionType: 'tenant.shared_event_alerts', targetEntity: tenantId,
       previousState: { shared_event_alerts: tenant.alerts }, newState: { shared_event_alerts: alerts },
     })
-    return c.json({ shared_event_alerts: alerts, alerts_updated: await refreshIntelAlerts(db, { tenantId }) })
+    const change = await refreshIntelAlerts(db, { tenantId })
+    return c.json({ shared_event_alerts: alerts, alerts_updated: change.total, alerts_change: change })
   }
 )
 

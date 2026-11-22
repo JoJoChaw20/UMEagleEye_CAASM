@@ -144,8 +144,9 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       SELECT e.event_id, e.asset_id, a.tenant_id, e.status, e.details->>'indicator_type' AS itype, e.details->>'indicator_value' AS ivalue
       FROM events e JOIN assets a ON a.asset_id = e.asset_id
       WHERE e.event_type = 'cti_match' AND ${inScope}
-        -- Sightings (R7, routes/sightings.ts) come from the agent and are closed by people.
-        AND COALESCE(e.details->>'match_kind', '') <> 'sighting'
+        -- Sightings (R7, routes/sightings.ts) come from the agent and are closed by people; malicious
+        -- packages (R8) are kept by services/maliciousPackages.ts.
+        AND COALESCE(e.details->>'match_kind', '') NOT IN ('sighting', 'malicious_package')
     ),
     ins AS (
       INSERT INTO events (asset_id, event_type, severity, details)
@@ -196,23 +197,31 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
   return { created: Number(row.created ?? 0), reopened: Number(row.reopened ?? 0), resolved: Number(row.resolved ?? 0) }
 }
 
+/** What a refresh did, so the page can say it: threat-intel alerts opened, reopened and resolved, and
+ *  open CVE / service alerts that stayed open but gained or lost a threat-intel or KEV mark (those
+ *  do not show as new or closed on the Alerts page, so one total read as "missing" alerts). */
+export interface AlertChange { total: number; opened: number; reopened: number; resolved: number; marked: number }
+
 /** After a change to what intel `scope` may use (an event changed, a tenant opted in or out of shared
- *  events): refresh the CVE alerts and re-match the assets. Returns how many alerts changed; a
- *  failing half is logged, not thrown (the change itself is saved). */
-export async function refreshIntelAlerts(db: DB, scope: IntelScope): Promise<number> {
-  let changed = 0
+ *  events): refresh the CVE alerts and re-match the assets. A failing half is logged, not thrown
+ *  (the change itself is saved). */
+export async function refreshIntelAlerts(db: DB, scope: IntelScope): Promise<AlertChange> {
+  const out: AlertChange = { total: 0, opened: 0, reopened: 0, resolved: 0, marked: 0 }
   try {
-    changed += await refreshCveIntel(db, scope)
+    out.marked = await refreshCveIntel(db, scope)
   } catch (err) {
     console.error('threat intel: refreshing CVE alerts failed:', err)
   }
   try {
     const m = await matchIocs(db, scope)
-    changed += m.created + m.reopened + m.resolved
+    out.opened = m.created
+    out.reopened = m.reopened
+    out.resolved = m.resolved
   } catch (err) {
     console.error('threat intel: matching assets failed:', err)
   }
-  return changed
+  out.total = out.opened + out.reopened + out.resolved + out.marked
+  return out
 }
 
 /** Link each open cti_match alert to the matchable indicators it is about (shown on the

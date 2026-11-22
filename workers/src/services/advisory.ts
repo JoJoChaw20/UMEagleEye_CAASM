@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { isPackageAlert } from '../lib/packageAlerts'
 import { buildContent, type DeviceInfo, type AdvisoryContent } from '../lib/advisoryContent'
 import { softwareName, techniqueIds, techniqueName, techniquesFor } from '../lib/attack'
+import { exposureAttackOf } from '../lib/exposureAttack'
 import { kbLabel } from '../lib/alertSignals'
 
 import { CLOSED_STATUSES, OPEN_STATUSES } from '../lib/eventStatus'
@@ -228,6 +229,11 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
       .map((t) => { const name = techniqueName(t); return name ? `${t} ${name}` : null })
       .filter((x): x is string => x !== null)
     if (techs.length) other.techniques = sanitizeText(techs.slice(0, 4).join('; '), 240)
+  }
+  // An exposure or a vulnerable service: how attackers use the weakness (lib/exposureAttack.ts)
+  const exposure = exposureAttackOf(event.eventType, d, base.asset.internetFacing)
+  if (exposure) {
+    other.techniques = sanitizeText(exposure.techniques.slice(0, 4).map((t) => `${t.id} ${t.name}`).join('; '), 240)
   }
   // A missing Windows patch: the KB id and title
   if (event.eventType === 'os_patch_missing') {

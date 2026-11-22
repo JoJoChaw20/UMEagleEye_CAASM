@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm'
 import { KEV_SOURCE, refreshCveIntel } from './threatIntel'
 import { matchIocs } from './iocMatch'
 import { refreshEpss } from './epss'
+import { checkMaliciousPackages } from './maliciousPackages'
 import { CDN_CIDRS, TOP_DOMAINS_LIST, warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds, techniqueName } from '../lib/attack'
 import { inferredTechniques, malwareKind } from '../lib/malwareKind'
@@ -423,8 +424,10 @@ export function describeError(err: unknown): string {
 // AlienVault OTX was dropped on 22 Nov 2026 (only its 50 newest pulses, user-written, almost no ATT&CK,
 // a flat 70% confidence); URLhaus and Feodo Tracker replace it. Its stored rows stop matching at once
 // (RETIRED_SOURCES) and are deleted by retention.
-export type CtiStep = 'kev' | 'threatfox' | 'urlhaus' | 'feodo' | 'epss' | 'finish'
-export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'urlhaus', 'feodo', 'epss', 'finish']
+// 'malpkg' asks OSV whether any device's package versions were since published as malware
+// (services/maliciousPackages.ts; at most 10,000 a night, carrying on the next night).
+export type CtiStep = 'kev' | 'threatfox' | 'urlhaus' | 'feodo' | 'epss' | 'malpkg' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'urlhaus', 'feodo', 'epss', 'malpkg', 'finish']
 /** The feeds the chain loads, as their rows' `source`: the feed-health line shows these only. */
 export const ACTIVE_FEEDS = [KEV_SOURCE, 'ThreatFox', URLHAUS_SOURCE, FEODO_SOURCE]
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
@@ -468,7 +471,7 @@ export function nextCtiStep(step: CtiStep): CtiStep | null {
   return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
 }
 
-const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
+const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
   kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
   threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
   // the same abuse.ch Auth-Key as ThreatFox
@@ -514,6 +517,15 @@ export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, ste
       console.log(`[EPSS] ${r.updated} CVE(s) updated, ${r.waiting} waiting for the next run`)
     } catch (err) {
       console.error('[EPSS] Refresh failed:', describeError(err))
+    }
+    return nextCtiStep(step)
+  }
+  if (step === 'malpkg') {
+    try {
+      const r = await checkMaliciousPackages(db, kv, { nightly: true })
+      console.log(`[malpkg] ${r.checked} package(s) asked, ${r.malicious} malicious: ${r.created} new, ${r.reopened} reopened, ${r.resolved} resolved`)
+    } catch (err) {
+      console.error('[malpkg] Check failed:', describeError(err))
     }
     return nextCtiStep(step)
   }

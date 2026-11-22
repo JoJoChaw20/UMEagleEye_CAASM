@@ -31,7 +31,7 @@ import { auditLogs, ctiIndicators, tenants, tiEventAlertChoices, tiEvents, users
 import { IOC_TYPES, parseIocs, type IocType } from '../lib/iocParse'
 import { WARNINGLIST_LABELS, warninglistOf } from '../lib/warninglist'
 import { scopeForEvent } from '../services/threatIntel'
-import { refreshIntelAlerts } from '../services/iocMatch'
+import { refreshIntelAlerts, type AlertChange } from '../services/iocMatch'
 import { alertsHere, type AlertSetting } from '../lib/sharedEvents'
 import { resolveSoftware, softwareName, techniqueIds, techniqueName } from '../lib/attack'
 
@@ -116,10 +116,14 @@ function audit(db: DB, user: User, ev: EventRow, actionType: string, newState: u
 }
 
 /** After a change that can affect alerts: refresh the CVE alerts and re-match the assets
- *  of whoever can see the event. Returns how many alerts changed. */
-function refreshAfter(db: DB, ev: EventRow, previousDistribution?: string): Promise<number> {
-  return refreshIntelAlerts(db, scopeForEvent(ev, previousDistribution))
+ *  of whoever can see the event. Returns what changed, as the responses carry it. */
+async function refreshAfter(db: DB, ev: EventRow, previousDistribution?: string) {
+  return alertsOut(await refreshIntelAlerts(db, scopeForEvent(ev, previousDistribution)))
 }
+
+/** alerts_updated: the total (kept for older pages); alerts_change: its parts (services/iocMatch.ts). */
+export const alertsOut = (ch: AlertChange | null) => ({ alerts_updated: ch?.total ?? 0, alerts_change: ch })
+const NO_ALERTS = alertsOut(null)
 
 /** The viewer tenant's default for shared events and its choices per event (lib/sharedEvents.ts). */
 async function alertSetting(db: DB, user: User): Promise<AlertSetting> {
@@ -324,8 +328,8 @@ app.patch('/:id', authMiddleware, requireAction('ti_event.edit'), zValidator('js
     await audit(db, user, updated, 'ti_event.update', body, { title: ev.title, distribution: ev.distribution })
     // Sharing or the title (shown on alerts) changed on a published event: refresh alerts.
     const changed = updated.status === 'published' && (distribution !== ev.distribution || updated.title !== ev.title)
-    const alerts = changed ? await refreshAfter(db, updated, ev.distribution) : 0
-    return c.json(eventOut(updated, user, { alerts_updated: alerts }))
+    const alerts = changed ? await refreshAfter(db, updated, ev.distribution) : NO_ALERTS
+    return c.json(eventOut(updated, user, alerts))
   } catch (err) {
     console.error('ti event update error:', err)
     return c.json({ detail: 'Failed to update event' }, 500)
@@ -344,8 +348,8 @@ app.delete('/:id', authMiddleware, requireAction('ti_event.delete'), async (c) =
       db.delete(tiEvents).where(eq(tiEvents.tiEventId, ev.tiEventId)),   // attributes and their alert links cascade
       audit(db, user, ev, 'ti_event.delete', null, { title: ev.title, status: ev.status, distribution: ev.distribution }),
     ])
-    const alerts = ev.status === 'published' ? await refreshAfter(db, ev) : 0
-    return c.json({ deleted: true, alerts_updated: alerts })
+    const alerts = ev.status === 'published' ? await refreshAfter(db, ev) : NO_ALERTS
+    return c.json({ deleted: true, ...alerts })
   } catch (err) {
     console.error('ti event delete error:', err)
     return c.json({ detail: 'Failed to delete event' }, 500)
@@ -382,8 +386,8 @@ app.put('/:id/alerts', authMiddleware, requireAction('ti_event.publish'),
         previousState: { alerts: prev?.alerts ?? null }, newState: { alerts, title: ev.title },
       }),
     ])
-    const alertsUpdated = await refreshIntelAlerts(db, { tenantId })
-    return c.json(eventOut(ev, user, { ...alertsHere(ev, tenantId, await alertSetting(db, user)), alerts_updated: alertsUpdated }))
+    const changed = alertsOut(await refreshIntelAlerts(db, { tenantId }))
+    return c.json(eventOut(ev, user, { ...alertsHere(ev, tenantId, await alertSetting(db, user)), ...changed }))
   } catch (err) {
     console.error('ti event alert choice error:', err)
     return c.json({ detail: 'Failed to save the choice' }, 500)
@@ -397,15 +401,14 @@ async function setStatus(c: Context<{ Bindings: Env }>, status: 'draft' | 'publi
   const ev = await loadEvent(db, c.req.param('id') ?? '')
   if (!ev || !canView(user, ev)) return c.json({ detail: 'Event not found' }, 404)
   if (!canEdit(user, ev)) return c.json({ detail: 'You cannot change this event' }, 403)
-  if (ev.status === status) return c.json(eventOut(ev, user, { alerts_updated: 0 }))
+  if (ev.status === status) return c.json(eventOut(ev, user, NO_ALERTS))
   const now = new Date()
   const [updated] = await db.update(tiEvents)
     .set({ status, updatedAt: now, ...(status === 'published' ? { publishedAt: now } : {}) })
     .where(eq(tiEvents.tiEventId, ev.tiEventId)).returning()
   if (!updated) return c.json({ detail: 'Event not found' }, 404)
   await audit(db, user, updated, status === 'published' ? 'ti_event.publish' : 'ti_event.unpublish', { status }, { status: ev.status })
-  const alerts = await refreshAfter(db, updated)
-  return c.json(eventOut(updated, user, { alerts_updated: alerts }))
+  return c.json(eventOut(updated, user, await refreshAfter(db, updated)))
 }
 
 app.post('/:id/publish', authMiddleware, requireAction('ti_event.publish'), async (c) => {
@@ -484,14 +487,14 @@ app.post('/:id/attributes', authMiddleware, requireAction('ti_event.edit'), zVal
       ])
     }
     const touchesAlerts = ev.status === 'published' && added > 0
-    const alerts = touchesAlerts ? await refreshAfter(db, ev) : 0
+    const alerts = touchesAlerts ? await refreshAfter(db, ev) : NO_ALERTS
     return c.json({
       added,
       already_present: rows.length - added,
       on_warninglist: rows.filter(r => r.warning).length,
       rejected: rejected.slice(0, 50),
       rejected_count: rejected.length,
-      alerts_updated: alerts,
+      ...alerts,
     }, 201)
   } catch (err) {
     console.error('ti event add attributes error:', err)
@@ -515,8 +518,8 @@ app.patch('/:id/attributes/:attrId', authMiddleware, requireAction('ti_event.edi
       ...(body.comment !== undefined ? { comment: body.comment ?? null } : {}),
     }).where(and(eq(ctiIndicators.indicatorId, c.req.param('attrId')), eq(ctiIndicators.tiEventId, ev.tiEventId))).returning()
     if (!attr) return c.json({ detail: 'Attribute not found' }, 404)
-    const alerts = ev.status === 'published' && body.to_ids !== undefined ? await refreshAfter(db, ev) : 0
-    return c.json({ ...attributeOut(attr), alerts_updated: alerts })
+    const alerts = ev.status === 'published' && body.to_ids !== undefined ? await refreshAfter(db, ev) : NO_ALERTS
+    return c.json({ ...attributeOut(attr), ...alerts })
   } catch (err) {
     console.error('ti event update attribute error:', err)
     return c.json({ detail: 'Failed to update attribute' }, 500)
@@ -536,8 +539,8 @@ app.delete('/:id/attributes/:attrId', authMiddleware, requireAction('ti_event.ed
       .returning()
     if (!attr) return c.json({ detail: 'Attribute not found' }, 404)
     await audit(db, user, ev, 'ti_event.attribute_delete', null, { type: attr.indicatorType, value: attr.value })
-    const alerts = ev.status === 'published' ? await refreshAfter(db, ev) : 0
-    return c.json({ deleted: true, alerts_updated: alerts })
+    const alerts = ev.status === 'published' ? await refreshAfter(db, ev) : NO_ALERTS
+    return c.json({ deleted: true, ...alerts })
   } catch (err) {
     console.error('ti event delete attribute error:', err)
     return c.json({ detail: 'Failed to delete attribute' }, 500)

@@ -85,6 +85,7 @@ export const RISKY_PORTS = {
 
 export function alertLabel(e) {
   if (e.event_type === 'cti_match' && e.details?.match_kind === 'watchlist') return 'Watched Software Found'
+  if (isMaliciousPackage(e)) return e.details?.match_scope === 'name' ? 'Package Named as Malware' : 'Malicious Package'
   if (isSighting(e)) return 'Threat Contacted'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
   if (e.event_type === 'os_patch_missing' && e.details?.patch_status === 'unsupported') return 'Windows Out of Support'
@@ -128,6 +129,8 @@ export const isPackageAlert = (d) => d?.shape === 'package'
 /** The computer itself looked up or connected to a listed domain or IP (rule R7,
  *  workers/src/lib/sightings.ts), as its agent saw it. */
 export const isSighting = (e) => e?.event_type === 'cti_match' && e.details?.match_kind === 'sighting'
+/** A package version published as malware (rule R8, workers/src/lib/maliciousPackages.ts). */
+export const isMaliciousPackage = (e) => e?.event_type === 'cti_match' && e.details?.match_kind === 'malicious_package'
 
 const shortTime = (iso) => {
   if (!iso) return null
@@ -328,6 +331,12 @@ function basePlaybook(e) {
   const exposed = e.asset_internet_facing ?? e.asset?.internet_facing
   if (e.event_type === 'cti_match' && d.match_kind === 'watchlist') {
     return { urgency: '≤72h', text: `Your threat intel watches ${d.indicator_value} and ${d.observed} is on this asset. Read the event's description, then update or remove the software, or mark it accepted risk if this version is not affected.` }
+  }
+  if (isMaliciousPackage(e) && d.match_scope === 'name') {
+    return { urgency: 'Review', text: `A package named ${d.package_name} (${d.ecosystem}) was published as malware${d.summary ? ` (${d.summary})` : ''}, under that name in any version: often a squat of a company's internal package name. The copy on this device may be something else with the same name, such as a VS Code extension or an in-house package. Find where it is installed and where it came from. If it was downloaded from the public registry, treat the device as compromised: isolate it, remove the package and rotate its secrets. If not, mark the alert a false positive.` }
+  }
+  if (isMaliciousPackage(e)) {
+    return { urgency: 'Now', text: `${d.package_name} ${d.package_version} (${d.ecosystem}) is a release published as malware${d.summary ? `: ${d.summary}` : ''}. Its install scripts may already have run on this device. Isolate it, find which project or program pulled the package in, remove it, and rotate any secrets the device holds (tokens, SSH keys, cloud credentials). Escalate to a senior analyst.` }
   }
   if (isSighting(e)) {
     const who = d.process ? ` Find ${d.process} on the computer: where it was installed from, and whether anyone expects it to run.` : ' Find which program made it (the agent names the program only for connections).'

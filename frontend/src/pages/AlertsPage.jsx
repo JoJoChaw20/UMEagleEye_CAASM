@@ -855,7 +855,11 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 d.match_kind === 'sighting' && ['Contacts', `${(d.count ?? 1).toLocaleString()} (seen by ${(d.seen_via ?? [d.matched_on]).map(v => (v === 'dns' ? 'DNS answers' : 'the connection table')).join(' and ')})`],
                 d.match_kind === 'sighting' && d.first_seen_at && ['First contact', new Date(d.first_seen_at).toLocaleString()],
                 d.match_kind === 'sighting' && d.last_seen_at && ['Last contact', new Date(d.last_seen_at).toLocaleString()],
-                e.event_type === 'cti_match' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
+                d.match_kind === 'malicious_package' && ['Package', `${d.package_name} ${d.package_version} (${d.ecosystem})`],
+                d.match_kind === 'malicious_package' && Array.isArray(d.advisory_ids) && d.advisory_ids.length > 0 && ['Published as malware', <span>{d.advisory_ids.map((id, n) => (
+                  <span key={id}>{n > 0 && ', '}<a href={`https://osv.dev/vulnerability/${encodeURIComponent(id)}`} target="_blank" rel="noreferrer" className="text-red-300 hover:underline">{id}</a></span>
+                ))}{d.summary ? ` · ${d.summary}` : ''}</span>],
+                e.event_type === 'cti_match' && d.match_kind !== 'malicious_package' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
                 e.event_type === 'cti_match' && Array.isArray(d.sources) && d.sources.length > 0 && ['Listed by', d.sources.join(', ')],
                 e.event_type === 'cti_match' && Array.isArray(d.shared_by) && d.shared_by.length > 0 && ['Shared by', `${d.shared_by.join(', ')} (an event they share with all tenants)`],
                 e.event_type === 'os_patch_missing' && ['Windows', `${d.product ?? '—'}`],
@@ -967,6 +971,24 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                   {e.attack_kev.impact.length > 0 && <div><span className="text-dark-400">Leads to: </span><TechniqueChips list={e.attack_kev.impact} /></div>}
                   <p className="text-[11px] text-dark-500">Source: {e.attack_kev.source}</p>
                 </div>
+              </Section>
+            )}
+
+            {/* An exposure or a vulnerable service: how the weakness is used (lib/exposureAttack.ts) */}
+            {e.attack_exposure && (
+              <Section icon={Crosshair} title="How attackers use it (ATT&CK)">
+                <ul className="space-y-1.5 text-xs text-dark-300">
+                  {e.attack_exposure.techniques.map((t) => (
+                    <li key={t.id}>
+                      <a href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`} target="_blank" rel="noreferrer"
+                        className="px-1.5 py-0.5 rounded bg-dark-700/60 text-dark-200 hover:text-eagle-400">
+                        <span className="font-mono">{t.id}</span> {t.name}
+                      </a>
+                      <span className="text-dark-400">: {t.why}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[11px] text-dark-500 mt-1.5">Source: {e.attack_exposure.source}</p>
               </Section>
             )}
 

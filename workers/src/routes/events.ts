@@ -25,6 +25,7 @@ import { dueAtExpr, dueStatusExpr, priorityExpr, rankScoreExpr, slaHoursExpr, ti
 import { slaPolicy } from '../lib/alertRank'
 import { softwareName, techniqueName, techniquesFor } from '../lib/attack'
 import { kevTechniques } from '../lib/kevAttack'
+import { exposureAttackOf } from '../lib/exposureAttack'
 
 /** The exploited (KEV) CVEs an alert names, with how they are exploited and what they lead to; null if none is mapped. */
 function kevAttackOf(d: Record<string, unknown> | null) {
@@ -602,6 +603,8 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
       }),
       // An exploited CVE: how attackers exploit it and what it leads to (MITRE CTID's KEV mappings)
       attack_kev: kevAttackOf(event.details as Record<string, unknown> | null),
+      // exposures and non-KEV vulnerable services: UMEagleEye's mapping of the weakness (lib/exposureAttack.ts)
+      attack_exposure: exposureAttackOf(event.eventType, event.details as Record<string, unknown> | null, !!asset.isInternetFacing),
       // by: the user's current username; null when the system acted or the user was deleted.
       // actor_username: kept from a deleted user (the page shows "<name> (deleted)").
       history: history.map(h => ({ action: h.action, previous: h.prev, next: h.next, at: h.at, by: h.username, actor_username: h.actorUsername })),

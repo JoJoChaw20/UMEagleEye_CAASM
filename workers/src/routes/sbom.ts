@@ -752,6 +752,8 @@ app.post('/ingest', zValidator('json', sbomIngestSchema), async (c) => {
     } catch (err) {
       console.error('sbom ingest: threat-intel matching failed:', err)
     }
+    // ...or published as malware (OSV, services/maliciousPackages.ts): a queue job, OSV is asked there
+    await queueMaliciousCheck(c.env, assetId, true)
 
     return c.json({
       sbom_id: sbomRow.sbomId, dependencies_inserted: depRows.length, stored_in_r2: storedInR2,
@@ -818,6 +820,15 @@ async function fetchEpssScores(cveIds: string[]): Promise<Map<string, number>> {
     }
   }
   return scores
+}
+
+/** Queue the malicious-package check of one device; a failure to queue is logged (the nightly run catches up). */
+async function queueMaliciousCheck(env: Env, assetId: string, osv: boolean) {
+  try {
+    await env.ADVISORY_QUEUE.send({ type: 'malicious_packages', assetId, osv })
+  } catch (err) {
+    console.error('sbom: queueing the malicious-package check failed:', err)
+  }
 }
 
 app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
@@ -888,6 +899,8 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
 
     // Link each alert to the feed entries naming its CVEs (shown on the alert).
     await linkCveIndicators(db, { assetId })
+    // Findings of embedded malicious code (CWE-506/912) are malware, not a flaw (services/maliciousPackages.ts)
+    await queueMaliciousCheck(c.env, assetId, false)
 
     const created = plan.alerts.filter(a => a.isNew).length
     return c.json({

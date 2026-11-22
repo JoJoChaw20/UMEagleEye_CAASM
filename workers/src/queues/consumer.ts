@@ -8,6 +8,7 @@ import { savePostureSnapshot } from '../services/posture'
 import { CTI_INGEST_LOCK, runIngestStep, type CtiStep } from '../services/cti'
 import { runDriftAudit } from '../services/drift'
 import { runServiceCves, type ServiceCveJob } from '../services/serviceCves'
+import { checkMaliciousPackages } from '../services/maliciousPackages'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { handleKgSyncMessages, signalKgSyncSafe } from '../kg/sync'
@@ -50,7 +51,15 @@ interface KgSyncJob {
   type: 'kg_sync'
 }
 
-type Job = AdvisoryJob | ReportJob | CtiIngestJob | ServiceCveJob | KgSyncJob
+// One device's packages against the malicious-package records (services/maliciousPackages.ts);
+// osv false = only its package findings (sent after /sbom/ingest-cve, its SBOM was asked already)
+interface MaliciousPackagesJob {
+  type: 'malicious_packages'
+  assetId: string
+  osv?: boolean
+}
+
+type Job = AdvisoryJob | ReportJob | CtiIngestJob | ServiceCveJob | KgSyncJob | MaliciousPackagesJob
 
 // The same report as the dashboard's download: same data (services/reportData.ts), same
 // layout (frontend/src/utils/reportPdf.js). A queued report is always a tenant's (only tenant
@@ -151,6 +160,11 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         if (r.deferred.length && attempt <= 3) {
           await env.ADVISORY_QUEUE.send({ ...job, assetIds: r.deferred, attempt }, { delaySeconds: 60 })
         }
+        message.ack()
+      } else if (job.type === 'malicious_packages') {
+        const r = await checkMaliciousPackages(db, env.KV_CACHE, { assetId: job.assetId, osv: job.osv })
+        console.log(`[malpkg] ${r.checked} package(s) asked, ${r.malicious} malicious: ${r.created} new, ${r.reopened} reopened, ${r.resolved} resolved`)
+        if (r.created || r.reopened || r.resolved) wrote = true
         message.ack()
       } else if (job.type === 'cti_ingest') {
         const next = await runIngestStep(db, env.KV_CACHE, { threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')

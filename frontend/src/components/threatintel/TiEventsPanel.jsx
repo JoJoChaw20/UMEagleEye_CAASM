@@ -9,6 +9,7 @@ import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
 import { softwareFor, softwareUrl, techniqueUrl, useAttackCatalog } from './attackCatalog'
 import { alertLabel, SevBadge } from '../common/alertMeta'
+import { alertChangeText } from '../../utils/alertChange'
 
 const LEVELS = {
   high:   { label: 'High',   cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
@@ -289,7 +290,7 @@ function AddAttributes({ eventId, onAdded, showToast }) {
             {result.already_present > 0 && ` · ${result.already_present} already in this event`}
             {result.on_warninglist > 0 && ` · ${result.on_warninglist} on a warninglist (kept, never alert)`}
             {result.rejected_count > 0 && ` · ${result.rejected_count} not recognised`}
-            {result.alerts_updated > 0 && ` · ${result.alerts_updated} alert(s) updated`}
+            {result.alerts_updated > 0 && ` · ${alertChangeText(result).replace(/\.$/, '')}`}
           </p>
           {result.rejected?.length > 0 && (
             <p className="text-red-300 font-mono break-all">
@@ -362,8 +363,7 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
     setBusy(true)
     try {
       const res = await fn()
-      const n = res?.data?.alerts_updated
-      showToast(n ? `${okMsg} ${n} alert(s) updated.` : okMsg)
+      showToast(`${okMsg} ${alertChangeText(res?.data)}`.trim())
       await load()
       onChanged()
     } catch (err) {
@@ -384,8 +384,7 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
     setBusy(true)
     try {
       const res = await client.delete(`/cti/events/${ev.event_id}`)
-      const n = res.data?.alerts_updated
-      showToast(n ? `Event deleted. ${n} alert(s) updated.` : 'Event deleted.')
+      showToast(`Event deleted. ${alertChangeText(res.data)}`.trim())
       onChanged()
       onBack()
     } catch (err) {
@@ -548,7 +547,7 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
         <EventDialog initial={ev} onClose={() => setEditing(false)}
           onSaved={(saved, added) => {
             setEditing(false)
-            showToast(added?.error ? `Saved, but ${added.error}.` : added ? `Saved. ${added.added} indicator(s) added.` : saved.alerts_updated ? `Saved. ${saved.alerts_updated} alert(s) updated.` : 'Saved.',
+            showToast(added?.error ? `Saved, but ${added.error}.` : added ? `Saved. ${added.added} indicator(s) added.` : `Saved. ${alertChangeText(saved)}`.trim(),
               added?.error ? 'error' : 'success')
             load(); onChanged()
           }} />
@@ -593,7 +592,7 @@ export default function TiEventsPanel({ showToast }) {
     setSavingShared(true)
     try {
       const { data } = await client.put(`/tenants/${user?.tenantId}/shared-event-alerts`, { alerts: on })
-      showToast(`Alerts from shared events are ${on ? 'on' : 'off'} by default.${data.alerts_updated ? ` ${data.alerts_updated} alert(s) updated.` : ''}`)
+      showToast(`Alerts from shared events are ${on ? 'on' : 'off'} by default. ${alertChangeText(data)}`.trim())
       await load()
     } catch (err) {
       showToast(errorText(err, 'Failed to save the setting'), 'error')
