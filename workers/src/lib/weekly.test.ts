@@ -45,11 +45,11 @@ test('week against week: the change, and whether it is better (fewer open, more 
   assert.equal(compareWeeks(week({ posture_score: null }), week({})).find((x) => x.key === 'posture_score')!.delta, null)
 })
 
-test('0045 adds the weekly table and the baseline week, and changes no data', () => {
+test('0045 adds the weekly table only, and changes no data', () => {
   const code = readFileSync(join(process.cwd(), 'drizzle/0045_weekly_history.sql'), 'utf8')
     .split('\n').filter((l) => !l.trim().startsWith('--')).join('\n')
   assert.match(code, /CREATE TABLE IF NOT EXISTS "weekly_snapshots"/)
-  assert.match(code, /ALTER TABLE "tenants" ADD COLUMN "baseline_week" date;/)
+  assert.doesNotMatch(code, /ALTER TABLE "tenants"/)
   assert.match(code, /CREATE UNIQUE INDEX IF NOT EXISTS "idx_weekly_tenant_week" ON "weekly_snapshots" USING btree \("tenant_id","week_start"\)/)
   assert.doesNotMatch(code, /^\s*(UPDATE|DELETE)\b/im)
 })

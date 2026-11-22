@@ -3711,12 +3711,6 @@
           "notNull": true,
           "default": false
         },
-        "baseline_week": {
-          "name": "baseline_week",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",

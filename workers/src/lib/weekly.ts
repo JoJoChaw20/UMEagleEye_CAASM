@@ -87,7 +87,7 @@ export function valueOf(m: WeekMetrics, key: (typeof COMPARED)[number]['key']): 
 
 export interface Change { key: string; label: string; now: number | null; then: number | null; delta: number | null; trend: 'better' | 'worse' | 'same' | null }
 
-/** Each compared number now against `then` (last week, or the baseline week). */
+/** Each compared number now against `then` (the week before). */
 export function compareWeeks(now: WeekMetrics, then: WeekMetrics | null): Change[] {
   return COMPARED.map(({ key, label, better }) => {
     const a = valueOf(now, key)

@@ -11,7 +11,7 @@
  * counts each alert with its severity, tier and due date of today, and cannot know devices removed
  * since; a week recorded when it ends has the numbers of that moment.
  */
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
+import { desc, eq, gte, sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { tenants, weeklySnapshots } from '../db/schema'
 import { clockStartExpr, dueAtExpr, tierExpr } from '../lib/priority'
@@ -121,30 +121,17 @@ export async function recordWeeks(db: DB, now: Date = new Date()): Promise<{ wee
 export interface WeeklyView {
   weeks: Array<{ week_start: string; metrics: WeekMetrics; backfilled: boolean }>   // newest first
   current: { week_start: string; metrics: WeekMetrics }                              // this week so far
-  baseline_week: string | null
-  baseline: WeekMetrics | null
 }
 
-/** A tenant's recorded weeks (newest first), this week so far, and its baseline. */
+/** A tenant's recorded weeks (newest first) and this week so far. */
 export async function weeklyView(db: DB, tenantId: string, limit = 12): Promise<WeeklyView> {
-  const now = new Date()
-  const [rows, [tenant], current] = await Promise.all([
+  const cw = weekStartOf(new Date())
+  const [rows, current] = await Promise.all([
     db.select().from(weeklySnapshots).where(eq(weeklySnapshots.tenantId, tenantId)).orderBy(desc(weeklySnapshots.weekStart)).limit(limit),
-    db.select({ baseline: tenants.baselineWeek }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1),
-    computeWeeks(db, tenantId, [weekStartOf(now)]),
+    computeWeeks(db, tenantId, [cw]),
   ])
-  const baselineWeek = tenant?.baseline ?? null
-  let baseline = rows.find((r) => r.weekStart === baselineWeek)?.metrics as WeekMetrics | undefined
-  if (baselineWeek && !baseline) {
-    const [b] = await db.select({ metrics: weeklySnapshots.metrics }).from(weeklySnapshots)
-      .where(and(eq(weeklySnapshots.tenantId, tenantId), inArray(weeklySnapshots.weekStart, [baselineWeek]))).limit(1)
-    baseline = b?.metrics as WeekMetrics | undefined
-  }
-  const cw = weekStartOf(now)
   return {
     weeks: rows.map((r) => ({ week_start: r.weekStart, metrics: r.metrics as WeekMetrics, backfilled: r.backfilled })),
     current: { week_start: cw, metrics: current.get(cw)! },
-    baseline_week: baselineWeek,
-    baseline: baseline ?? null,
   }
 }

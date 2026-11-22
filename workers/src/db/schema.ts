@@ -89,9 +89,6 @@ export const tenants = pgTable('tenants', {
   // a shared event is read-only context until this tenant opts in (here, or per event:
   // tiEventAlertChoices). services/threatIntel.ts matchableSql.
   sharedEventAlerts: boolean('shared_event_alerts').notNull().default(false),
-  // The week (its Monday, Malaysia time) this tenant compares later weeks against (weekly_snapshots);
-  // null: none chosen
-  baselineWeek: date('baseline_week'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 

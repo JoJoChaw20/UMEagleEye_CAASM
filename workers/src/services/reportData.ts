@@ -105,15 +105,13 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
   // fix-time figures for management (services/fixTime.ts, the same as the Dashboard)
   const [story, fixTime, weekly] = await Promise.all([
     buildReportStory(db, tenantId, reportType), fixTimeSummary(db, tenantId),
-    // a tenant's weekly report: last finished week against the week before and the baseline (services/weekly.ts)
+    // a tenant's weekly report: last finished week against the week before (services/weekly.ts)
     reportType === 'weekly' && tenantId ? weeklyView(db, tenantId, 2) : Promise.resolve(null),
   ])
   const lastWeek = weekly?.weeks[0] ?? null
   const weekOverWeek = weekly && lastWeek ? {
     week_start: lastWeek.week_start, iso_week: isoWeek(lastWeek.week_start), backfilled: lastWeek.backfilled,
     vs_last_week: compareWeeks(lastWeek.metrics, weekly.weeks[1]?.metrics ?? null),
-    baseline_week: weekly.baseline_week ? isoWeek(weekly.baseline_week) : null,
-    vs_baseline: weekly.baseline ? compareWeeks(lastWeek.metrics, weekly.baseline) : [],
   } : null
 
   const posture    = postureRows[0]

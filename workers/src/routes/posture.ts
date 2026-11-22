@@ -172,9 +172,10 @@ app.get('/history', authMiddleware, requireAction('dashboard.view'), async (c) =
 })
 
 // ── GET /weekly ──────────────────────────────────────────────────
-// A tenant's weekly history (services/weekly.ts): its recorded weeks newest first, this week so far,
-// the change from last week and from its baseline week. Per tenant: the platform superadmin names one.
-app.get('/weekly', authMiddleware, requireAction('dashboard.view'), async (c) => {
+// A tenant's weekly history (services/weekly.ts), shown as a card on the Alerts page: its recorded weeks
+// newest first, this week so far, and the last finished week against the one before. Per tenant: the
+// platform superadmin names one.
+app.get('/weekly', authMiddleware, requireAction('alert.view', 'dashboard.view'), async (c) => {
   try {
     const user = c.get('user')
     const tenantId = user.role === 'superadmin' ? c.req.query('tenant_id') : user.tenantId
@@ -187,10 +188,8 @@ app.get('/weekly', authMiddleware, requireAction('dashboard.view'), async (c) =>
       ...view,
       weeks: view.weeks.map((w) => ({ ...w, iso_week: isoWeek(w.week_start) })),
       current: { ...view.current, iso_week: isoWeek(view.current.week_start) },
-      // the last finished week against the one before it, and against the baseline
+      // the last finished week against the one before it
       vs_last_week: last ? compareWeeks(last, before) : [],
-      vs_baseline: last && view.baseline ? compareWeeks(last, view.baseline) : [],
-      can_set_baseline: user.role === 'tenant_superadmin',
     })
   } catch (err) {
     console.error('posture GET /weekly error:', err)
