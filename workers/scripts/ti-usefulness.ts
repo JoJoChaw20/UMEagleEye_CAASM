@@ -12,6 +12,10 @@
  *                      because of threat intel (the +100/+200 boosts of lib/priority.ts)
  *  5. Events           MISP-style events written and the alerts they drive
  *  6. Use              audit-log actions on threat intel
+ *  7. Current rules    (added 22 Nov 2026, step 11) the same data under today's rules: what each
+ *                      indicator is used for, ATT&CK coverage of family-named indicators, threat-intel
+ *                      alerts by kind, the tiers at the top of each queue, shared-event opt-ins.
+ *                      Sections 1-6 keep their first definitions, so reruns compare like with like.
  *
  * Run from workers/ (reads .env.<target>; DB_TARGET must match, as in scripts/db):
  *   npx esbuild scripts/ti-usefulness.ts --bundle --platform=node --format=cjs --outfile=.ti-usefulness.cjs
@@ -23,6 +27,11 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { neon } from '@neondatabase/serverless'
+import { drizzle } from 'drizzle-orm/neon-http'
+import { sql as dsql } from 'drizzle-orm'
+import { assets, events } from '../src/db/schema'
+import { indicatorUseSql } from '../src/services/threatIntel'
+import { priorityExpr, tierExpr } from '../src/lib/priority'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
@@ -204,6 +213,42 @@ async function main() {
   console.log('\n6. USE (audit log)')
   console.table(audit)
   if (alertActions.length) console.table(alertActions)
+
+  // ── 7. Under the current rules (the 22 Nov 2026 changes; sections 1-6 keep their first definitions,
+  //       so a rerun compares like with like) ──
+  const db = drizzle(neon(url))
+  const usage = (await db.execute(dsql`SELECT ${indicatorUseSql('c')} AS use, count(*)::int AS n
+    FROM cti_indicators c WHERE c.ti_event_id IS NULL GROUP BY 1 ORDER BY 2 DESC`)).rows as Row[]
+  const attackCov = (await db.execute(dsql`SELECT source, count(*)::int AS with_family,
+      count(*) FILTER (WHERE attack_software IS NOT NULL OR attack_techniques IS NOT NULL)::int AS with_attack,
+      count(*) FILTER (WHERE attack_software IS NOT NULL)::int AS documented
+    FROM cti_indicators WHERE ti_event_id IS NULL AND malware_family IS NOT NULL GROUP BY 1 ORDER BY 2 DESC`)).rows as Row[]
+  const kinds = (await db.execute(dsql`SELECT COALESCE(e.details->>'match_kind', 'ioc') AS kind, e.details->>'matched_on' AS matched_on,
+      count(*)::int AS total, count(*) FILTER (WHERE e.status IN ('open', 'in_progress'))::int AS open
+    FROM events e WHERE e.event_type = 'cti_match' GROUP BY 1, 2 ORDER BY 3 DESC`)).rows as Row[]
+  const tierRows = (await db.execute(dsql`SELECT ${assets.tenantId} AS tenant_id, ${tierExpr} AS tier, ${priorityExpr} AS p, ${events.eventType}::text AS type
+    FROM ${events} JOIN ${assets} ON ${assets.assetId} = ${events.assetId}
+    WHERE ${events.status} IN ('open', 'in_progress')`)).rows as Row[]
+  const queueNow: Record<string, unknown>[] = []
+  for (const [tid, name] of label) {
+    const rows = tierRows.filter((r) => r['tenant_id'] === tid).sort((a, b) => Number(b['p']) - Number(a['p']))
+    if (!rows.length) continue
+    const t: Record<string, unknown> = { tenant: name, open_alerts: rows.length }
+    for (const k of [1, 2, 3, 4]) t[`tier${k}`] = rows.filter((r) => Number(r['tier']) === k).length
+    // the top 10 by tier: possible compromise (tier 1, threat intel seen on a host) and exploited (tier 2, KEV)
+    t['top10_tier1'] = rows.slice(0, 10).filter((r) => Number(r['tier']) === 1).length
+    t['top10_tier2'] = rows.slice(0, 10).filter((r) => Number(r['tier']) === 2).length
+    queueNow.push(t)
+  }
+  const shared = (await db.execute(dsql`SELECT count(*) FILTER (WHERE shared_event_alerts)::int AS tenants_opted_in,
+      (SELECT count(*)::int FROM ti_event_alert_choices) AS per_event_choices FROM tenants`)).rows[0]
+  report['current_rules'] = { indicator_use: usage, attack_coverage: attackCov, alert_kinds: kinds, queue_tiers: queueNow, shared_events: shared }
+  console.log('\n7. UNDER THE CURRENT RULES')
+  console.table(usage)
+  console.table(attackCov.map((r) => ({ ...r, coverage: pct(Number(r['with_attack']), Number(r['with_family'])) })))
+  console.table(kinds)
+  console.table(queueNow)
+  console.log('Shared events:', JSON.stringify(shared))
 
   if (outDir) {
     mkdirSync(outDir, { recursive: true })
