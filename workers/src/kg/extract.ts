@@ -183,7 +183,8 @@ const OPEN_EVENT = ['open', 'in_progress']
 // cve_count ... max_epss: an SBOM package alert (one per vulnerable package, its CVEs inside)
 const FACT_KEYS = ['cve_id', 'package_name', 'package_version', 'fix_versions', 'cvss_base_score', 'epss_score', 'kev',
   'cve_count', 'kev_count', 'no_fix_count', 'fix_to', 'max_cvss', 'max_epss',
-  'port', 'protocol', 'service', 'match_kind', 'indicator', 'missing_kb', 'exploited', 'product', 'changed_attribute',
+  'port', 'protocol', 'service', 'match_kind', 'indicator_type', 'indicator_value', 'matched_on', 'kb', 'patch_status',
+  'exploited', 'product', 'changed_attribute',
   'from', 'to', 'package', 'old_value', 'new_value', 'description']
 
 function eventFacts(details: unknown): string {

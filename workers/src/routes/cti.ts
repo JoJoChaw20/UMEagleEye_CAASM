@@ -60,6 +60,9 @@ function toSnake(row: typeof ctiIndicators.$inferSelect) {
     indicator_type:     row.indicatorType,
     value:              row.value,
     confidence_score:   row.confidenceScore != null ? Number(row.confidenceScore) : null,
+    // why a listed value raises no alert: on the safe list (warning), or not for detection (to_ids)
+    warning:            row.warning,
+    to_ids:             row.toIds,
     malware_family:     row.malwareFamily,
     attack_software:    row.attackSoftware,
     attack_software_name: softwareName(row.attackSoftware),
@@ -325,6 +328,10 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
     const user  = c.get('user')
     const value = c.req.query('value')?.trim()
     if (!value) return c.json({ detail: 'value query param required' }, 422)
+    // Feeds store domains, URLs and hashes in lower case; analysts paste them in any case, and
+    // often defanged ("evil[.]com", "hxxp://"). Both spellings are looked up, so the index is used.
+    const refanged = value.replace(/\[\.\]/g, '.').replace(/^hxxp/i, 'http')
+    const spellings = [...new Set([value, refanged, refanged.toLowerCase()])]
 
     // Find indicator: a feed entry, else an attribute of an event this user may see
     // (own tenant's, or a published shared/platform one; superadmins see all).
@@ -335,7 +342,7 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
       .select({ indicator: ctiIndicators, eventTitle: tiEvents.title })
       .from(ctiIndicators)
       .leftJoin(tiEvents, eq(tiEvents.tiEventId, ctiIndicators.tiEventId))
-      .where(and(eq(ctiIndicators.value, value), or(FEED, visibleEvent)))
+      .where(and(inArray(ctiIndicators.value, spellings), or(FEED, visibleEvent)))
       .orderBy(sql`${ctiIndicators.tiEventId} IS NOT NULL`)     // feed entries first
       .limit(1)
     const indicator = hit?.indicator
@@ -361,10 +368,10 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
         .leftJoin(assetAddresses, and(
           eq(assetAddresses.assetId, assets.assetId),
           isNull(assetAddresses.endedAt),
-          eq(assetAddresses.ipAddress, value),
+          eq(assetAddresses.ipAddress, refanged),
         ))
         .where(and(
-          or(eq(assets.ipAddress, value), eq(assetAddresses.ipAddress, value)),
+          or(eq(assets.ipAddress, refanged), eq(assetAddresses.ipAddress, refanged)),
           // only the user's own tenant's assets (superadmins: any)
           user.role === 'superadmin' ? undefined : eq(assets.tenantId, user.tenantId ?? ''),
         ))
@@ -403,7 +410,7 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
       .where(and(
         eq(events.eventType, 'cti_match'),
         inArray(events.status, [...OPEN]),
-        sql`lower(${events.details}->>'indicator_value') = lower(${value})`,
+        sql`lower(${events.details}->>'indicator_value') = lower(${refanged})`,
         user.role === 'superadmin' ? undefined : eq(assets.tenantId, user.tenantId ?? NO_TENANT),
       ))
       .orderBy(desc(assets.criticalityScore))

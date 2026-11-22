@@ -1,6 +1,10 @@
 // Services that are routinely abused when exposed: clear-text admin protocols,
-// remote desktop, file sharing, and databases/caches that ship without auth.
-// Used to score new-port drift and to build the dashboard exposure panel.
+// remote desktop and remote management, file sharing, databases/caches that ship without
+// auth, and container/cluster control APIs. The one list for "risky service": new-port drift,
+// the dashboard exposure panel and the assistant's rules (kg/rules.ts) all read it.
+// Two lists stay separate on purpose: exposureRules.ts ADMIN_PORTS (what is an exposure when
+// reachable from the internet, SSH included) and criticalityV2.ts (importance signals that feed
+// the validated risk score, so changing them would change every score).
 export const RISKY_PORTS: Record<number, string> = {
   21:    'FTP',
   23:    'Telnet',
@@ -9,13 +13,19 @@ export const RISKY_PORTS: Record<number, string> = {
   161:   'SNMP',
   445:   'SMB',
   1433:  'MS SQL',
+  1521:  'Oracle',
   2375:  'Docker API',
+  2379:  'etcd',
   3306:  'MySQL',
   3389:  'RDP',
   5432:  'PostgreSQL',
   5900:  'VNC',
+  5984:  'CouchDB',
+  5985:  'WinRM',
+  5986:  'WinRM (TLS)',
   6379:  'Redis',
   9200:  'Elasticsearch',
+  10250: 'Kubelet',
   11211: 'Memcached',
   27017: 'MongoDB',
 }

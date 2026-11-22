@@ -37,6 +37,7 @@ export default function IndicatorPanel({ value, onClose }) {
   }, [value])
 
   const ind = result?.indicator
+  const notForAlerts = !!ind && (!!ind.warning || ind.to_ids === false)
   const assets = result?.matched_assets ?? []
 
   return (
@@ -50,15 +51,22 @@ export default function IndicatorPanel({ value, onClose }) {
 
       {result && (
         <>
-          <div className={`flex items-start gap-3 p-3 rounded-lg border ${result.found
-            ? 'bg-red-500/10 border-red-500/40 text-red-400' : 'bg-green-500/10 border-green-500/40 text-green-500'}`}>
+          {/* A listed value that raises no alert (on the safe list, or marked not for detection) is shown
+              as listed, not as a threat: the server never alerts on it (services/threatIntel.ts). */}
+          <div className={`flex items-start gap-3 p-3 rounded-lg border ${!result.found
+            ? 'bg-green-500/10 border-green-500/40 text-green-500'
+            : notForAlerts ? 'bg-amber-500/10 border-amber-500/40 text-amber-400' : 'bg-red-500/10 border-red-500/40 text-red-400'}`}>
             {result.found ? <AlertTriangle className="w-5 h-5 shrink-0" /> : <CheckCircle2 className="w-5 h-5 shrink-0" />}
             <div>
-              <p className="font-semibold text-sm">{result.found ? 'Known threat indicator' : 'Not in threat intelligence'}</p>
+              <p className="font-semibold text-sm">
+                {!result.found ? 'Not in threat intelligence' : notForAlerts ? 'Listed, but not used for alerts' : 'Known threat indicator'}
+              </p>
               <p className="text-xs opacity-80 mt-0.5">
-                {result.found
-                  ? `Listed by ${ind.source}${ind.event_title ? ` (event “${ind.event_title}”)` : ''}.`
-                  : 'This does not mean it is safe: it may not be tracked yet.'}
+                {!result.found
+                  ? 'This does not mean it is safe: it may not be tracked yet.'
+                  : `Listed by ${ind.source}${ind.event_title ? ` (event “${ind.event_title}”)` : ''}.${
+                    ind.warning ? ` It is on the safe list (${ind.warning}), so it never raises an alert.`
+                      : ind.to_ids === false ? ' Its source marks it as not for detection, so it never raises an alert.' : ''}`}
               </p>
             </div>
           </div>
@@ -67,7 +75,7 @@ export default function IndicatorPanel({ value, onClose }) {
             <div className="grid grid-cols-2 gap-2">
               {[
                 ['Type', <TypeLabel key="t" type={ind.indicator_type} />],
-                ['Confidence', `${((ind.confidence_score ?? 0) * 100).toFixed(0)}%`],
+                ['Confidence', ind.confidence_score == null ? '—' : `${(ind.confidence_score * 100).toFixed(0)}%`],
                 ['Malware family', ind.malware_family || '—'],
                 ['ATT&CK software', ind.attack_software ? `${ind.attack_software_name} (${ind.attack_software})` : '—'],
                 ['First seen', new Date(ind.first_seen).toLocaleString()],

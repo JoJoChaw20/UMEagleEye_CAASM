@@ -15,7 +15,9 @@ const PAGE_SIZE = 20
 const STALE_HOURS = 36       // the feeds load nightly: older than this means a run was missed
 
 function ConfBar({ score }) {
-  const pct = ((score ?? 0) * 100).toFixed(0)
+  // a threat event's own attributes carry no confidence: show that, not "0%"
+  if (score == null) return <span className="text-xs text-dark-500">—</span>
+  const pct = (score * 100).toFixed(0)
   const color = score >= 0.8 ? 'rgb(var(--sev-critical))' : score >= 0.6 ? 'rgb(var(--sev-high))' : 'rgb(var(--sev-medium))'
   return (
     <div className="flex items-center gap-1.5">

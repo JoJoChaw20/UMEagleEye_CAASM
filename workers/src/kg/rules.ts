@@ -10,6 +10,7 @@ export interface ScanFact { key: string; agentKey: string | null; status: string
 
 import type { PerfWindow } from './perf'
 import { MIN_ROUTE_REQUESTS, SLOW_ROUTE_MS } from './perf'
+import { RISKY_PORTS } from '../lib/exposure'
 
 export interface Facts {
   assets: AssetFact[]
@@ -34,7 +35,6 @@ export interface Problem {
 }
 
 const DAY = 86_400_000
-const RISKY_PORTS: Record<number, string> = { 21: 'FTP', 23: 'Telnet', 445: 'SMB', 3389: 'RDP', 5900: 'VNC' }
 export const ALERT_AGE_DAYS = 7
 const AGENT_SILENT_HOURS = 24
 const FAILED_SCANS = 3
@@ -64,7 +64,7 @@ export function evaluateRules(f: Facts, now: Date): Problem[] {
         problems.push({
           id: `port:${a.key}`, rule: 'exposed_risky_port', rank: 80, severity: 'high',
           title: `${a.title} exposes ${risky.map(p => `${RISKY_PORTS[p]} (${p})`).join(', ')} to the internet`,
-          detail: `${a.title} is internet-facing with remote-access or file-sharing ports open.`,
+          detail: `${a.title} is internet-facing with remote-access, file-sharing, database or management ports open.`,
           solution: 'Close these ports at the firewall, or allow them only through a VPN. Then run New scan on the Discovery page to confirm.',
           evidence: [a.key], count: risky.length,
         })

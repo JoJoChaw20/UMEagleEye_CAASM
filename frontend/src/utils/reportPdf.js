@@ -155,7 +155,8 @@ export function buildPdf(data, reportType) {
       color: score >= 80 ? C.green : score >= 50 ? C.amber : C.red },
     { value: String(risk.critical ?? 0), label: 'Open critical alerts', color: risk.critical ? C.red : C.ink },
     { value: String(risk.high ?? 0), label: 'Open high alerts', color: risk.high ? SEV.high : C.ink },
-    { value: String((risk.kev ?? 0) + (risk.threat_intel ?? 0)), label: 'Exploited (KEV) or threat-intel matches', color: (risk.kev || risk.threat_intel) ? C.red : C.ink },
+    // exploited_or_intel counts each alert once (a KEV alert can also be a threat-intel match); older stories lack it
+    { value: String(risk.exploited_or_intel ?? ((risk.kev ?? 0) + (risk.threat_intel ?? 0))), label: 'Exploited (KEV) or threat-intel matches', color: (risk.kev || risk.threat_intel) ? C.red : C.ink },
     { value: String(risk.exposed_assets ?? 0), label: 'Internet-facing assets with critical/high', color: risk.exposed_assets ? C.red : C.ink },
     { value: String(data.sla_breaches ?? 0), label: 'Advisories past the 72h SLA', color: data.sla_breaches ? C.amber : C.ink },
   ])

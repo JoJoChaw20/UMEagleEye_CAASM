@@ -102,8 +102,9 @@ function alertFacts(details: unknown) {
   // SBOM package alerts (one per vulnerable package) add cve_count ... top_cves
   for (const k of ['cve_id', 'package_name', 'package_version', 'package_type', 'fix_versions', 'cvss_base_score',
     'epss_score', 'cve_count', 'kev_count', 'no_fix_count', 'fix_to', 'max_cvss', 'max_epss', 'top_cves',
-    'kev', 'has_cti_match', 'ti_event_titles', 'port', 'protocol', 'service', 'match_kind', 'indicator',
-    'missing_kb', 'exploited', 'product', 'changed_attribute', 'from', 'to', 'package', 'old_value', 'new_value',
+    'kev', 'has_cti_match', 'ti_event_titles', 'port', 'protocol', 'service', 'match_kind', 'indicator_type',
+    'indicator_value', 'matched_on', 'kb', 'patch_status', 'latest_build', 'exploited', 'product', 'changed_attribute',
+    'from', 'to', 'package', 'old_value', 'new_value',
     'description']) {
     if (d[k] !== undefined && d[k] !== null && d[k] !== '') {
       const v = d[k]

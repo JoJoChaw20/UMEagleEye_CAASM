@@ -101,7 +101,42 @@ export async function refreshCveIntel(db: DB, scope: IntelScope): Promise<number
   const changed = [...new Set((res.rows as { event_id: string }[]).map((r) => r.event_id))]
   const alerts = await recomputePackageAlerts(db, { eventIds: changed })
   await linkCveIndicators(db, scope)
-  return alerts
+  return alerts + await refreshServiceKev(db, scope)
+}
+
+/**
+ * The same for vulnerable services (scan banners, services/serviceCves.ts): mark each listed CVE
+ * that is on CISA KEV now, and update kev_count / kev / has_cti_match. A service that gains a KEV
+ * CVE goes up to at least high, as serviceFinding() rates a new one. Without this, a CVE added to
+ * KEV after the scan stayed unflagged until the next active scan. Returns how many alerts changed.
+ */
+export async function refreshServiceKev(db: DB, scope: IntelScope): Promise<number> {
+  const where = scopeSql(scope)
+  const res = await db.execute(sql`
+    WITH s AS (
+      SELECT e.event_id,
+        (SELECT jsonb_agg(CASE WHEN EXISTS (
+                  SELECT 1 FROM cti_indicators c
+                  WHERE c.indicator_type = 'cve' AND c.value = x->>'id' AND c.ti_event_id IS NULL AND c.source = ${KEV_SOURCE})
+                THEN x || '{"kev": true}'::jsonb ELSE x - 'kev' END ORDER BY t.ord)
+         FROM jsonb_array_elements(e.details->'cves') WITH ORDINALITY AS t(x, ord)) AS cves
+      FROM events e
+      JOIN assets a ON a.asset_id = e.asset_id
+      WHERE e.event_type = 'vulnerable_service' AND e.status IN ('open', 'in_progress')
+        AND jsonb_typeof(e.details->'cves') = 'array' ${where}
+    ), k AS (
+      SELECT event_id, cves, (SELECT count(*) FROM jsonb_array_elements(cves) x WHERE x->>'kev' = 'true')::int AS n FROM s
+    )
+    UPDATE events e SET
+      details = e.details || jsonb_build_object('cves', k.cves, 'kev_count', k.n, 'kev', k.n > 0, 'has_cti_match', k.n > 0),
+      severity = CASE WHEN k.n > 0 AND e.severity IN ('low', 'medium') THEN 'high'::severity ELSE e.severity END,
+      updated_at = now()
+    FROM k
+    WHERE e.event_id = k.event_id
+      AND (COALESCE((e.details->>'kev_count')::int, 0) <> k.n OR (e.details->>'kev') IS DISTINCT FROM (k.n > 0)::text)
+    RETURNING e.event_id
+  `)
+  return res.rows.length
 }
 
 /** Link package alerts to the matchable 'cve' indicators naming one of their present CVEs, and

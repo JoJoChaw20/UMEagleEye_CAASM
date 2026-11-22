@@ -17,6 +17,7 @@ import type { DB } from '../db/client'
 import { advisories, assets, events } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
 import { priorityExpr } from '../lib/priority'
+import { DIRECT_INTEL, KEV_ALERT, isDirectIntel, isKevAlert } from '../lib/alertSignals'
 import { fixTarget } from '../lib/fixTarget'
 import { isPackageAlert } from '../lib/packageAlerts'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
@@ -55,7 +56,7 @@ function actionText(type: string, d: Record<string, unknown>, group?: { pkg: str
     case 'cti_match': return 'Investigate the threat-intelligence match on this host'
     case 'vulnerable_service': return `Update ${String(d.product ?? 'the service')}${d.version ? ` ${String(d.version)}` : ''} on port ${d.port ?? '?'} (${d.cve_count ?? '?'} known CVEs${d.kev_count ? `, ${d.kev_count} exploited` : ''})`
     case 'exposure': return `${String(d.title ?? 'Fix the exposure')} on port ${d.port ?? '?'}: ${String(d.fix ?? '').slice(0, 160)}`
-    case 'os_patch_missing': return `Install the missing Windows updates${d.missing_kb ? ` (${String(d.missing_kb).slice(0, 40)})` : ''}`
+    case 'os_patch_missing': return `Install the missing Windows updates${d.kb ? ` (${String(d.kb).slice(0, 40)})` : ''}`
     case 'version_downgrade': return `Check the downgrade of ${d.changed_attribute ?? 'a component'}${d.from ? ` from ${d.from} to ${d.to}` : ''}`
     case 'config_change': return `Review the configuration change${d.changed_attribute ? ` (${d.changed_attribute})` : ''}`
     default: return `Review the ${type.replace(/_/g, ' ')} alert`
@@ -64,8 +65,8 @@ function actionText(type: string, d: Record<string, unknown>, group?: { pkg: str
 
 function whyAndDue(type: string, severity: string, d: Record<string, unknown>, a: { isInternetFacing: boolean | null; criticalityScore: number | null }) {
   const why: string[] = []
-  const kev = d.kev === true
-  const ti = type === 'cti_match' || d.has_cti_match === true
+  const kev = isKevAlert(d)
+  const ti = isDirectIntel(type, d)
   // an SBOM package alert keeps its worst CVE's values as max_epss / max_cvss
   const epss = num(d.max_epss) ?? num(d.epss_score) ?? 0
   const cvss = num(d.max_cvss) ?? num(d.cvss_base_score)
@@ -108,8 +109,13 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
       high: sql<number>`count(*) FILTER (WHERE ${events.severity} = 'high')::int`,
       medium: sql<number>`count(*) FILTER (WHERE ${events.severity} = 'medium')::int`,
       low: sql<number>`count(*) FILTER (WHERE ${events.severity} = 'low')::int`,
-      kev: sql<number>`count(*) FILTER (WHERE ${events.details}->>'kev' = 'true')::int`,
-      threat_intel: sql<number>`count(*) FILTER (WHERE ${events.eventType} = 'cti_match' OR ${events.details}->>'has_cti_match' = 'true')::int`,
+      // Exploited: a package alert's kev flag, or a vulnerable service with a KEV CVE (kev_count)
+      kev: sql<number>`count(*) FILTER (WHERE ${KEV_ALERT})::int`,
+      // Threat intel seen on a host (an indicator match or sighting). A watchlist hit (software a
+      // threat event watches is installed) is not evidence of a threat, so it is not counted here.
+      threat_intel: sql<number>`count(*) FILTER (WHERE ${DIRECT_INTEL})::int`,
+      // Each alert once, however many of the two it is (a KEV CVE is also named by the KEV feed)
+      exploited_or_intel: sql<number>`count(*) FILTER (WHERE ${KEV_ALERT} OR ${DIRECT_INTEL})::int`,
       exposed_assets: sql<number>`count(DISTINCT ${assets.assetId}) FILTER (WHERE ${assets.isInternetFacing} AND ${events.severity} IN ('critical', 'high'))::int`,
       affected_assets: sql<number>`count(DISTINCT ${assets.assetId}) FILTER (WHERE ${events.severity} IN ('critical', 'high'))::int`,
       unassigned_critical: sql<number>`count(*) FILTER (WHERE ${events.severity} = 'critical' AND ${events.assignedTo} IS NULL)::int`,
@@ -130,12 +136,12 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
       critical: sql<number>`count(*) FILTER (WHERE ${events.severity} = 'critical')::int`,
       high: sql<number>`count(*) FILTER (WHERE ${events.severity} = 'high')::int`,
       total: sql<number>`count(*)::int`,
-      kev: sql<number>`count(*) FILTER (WHERE ${events.details}->>'kev' = 'true')::int`,
+      kev: sql<number>`count(*) FILTER (WHERE ${KEV_ALERT})::int`,
       cveChecked: sql<boolean>`EXISTS (SELECT 1 FROM sboms s WHERE s.asset_id = assets.asset_id)`,
     }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
       .where(and(af, open))
       .groupBy(assets.assetId)
-      .orderBy(desc(sql`count(*) FILTER (WHERE ${events.details}->>'kev' = 'true')`),
+      .orderBy(desc(sql`count(*) FILTER (WHERE ${KEV_ALERT})`),
         desc(sql`count(*) FILTER (WHERE ${events.severity} = 'critical')`),
         desc(sql`count(*) FILTER (WHERE ${events.severity} = 'high')`), desc(assets.criticalityScore))
       .limit(8),
@@ -203,14 +209,14 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
   }
 
   // ── the verdict ──
-  const r0 = risk[0] ?? { critical: 0, high: 0, medium: 0, low: 0, kev: 0, threat_intel: 0, exposed_assets: 0, affected_assets: 0, unassigned_critical: 0 }
+  const r0 = risk[0] ?? { critical: 0, high: 0, medium: 0, low: 0, kev: 0, threat_intel: 0, exploited_or_intel: 0, exposed_assets: 0, affected_assets: 0, unassigned_critical: 0 }
   const cov = coverage[0] ?? { total: 0, cve_checked: 0, with_agent: 0, not_seen_recently: 0, no_owner: 0 }
   const level: 'critical' | 'elevated' | 'stable' =
     r0.kev > 0 || r0.threat_intel > 0 || r0.exposed_assets > 0 ? 'critical'
       : r0.critical > 0 || r0.high > 0 ? 'elevated' : 'stable'
   const parts: string[] = []
   if (r0.kev) parts.push(`${r0.kev} alert${r0.kev === 1 ? ' is' : 's are'} on CVEs exploited in the wild`)
-  if (r0.threat_intel) parts.push(`${r0.threat_intel} match${r0.threat_intel === 1 ? 'es' : ''} threat intelligence`)
+  if (r0.threat_intel) parts.push(`${r0.threat_intel} alert${r0.threat_intel === 1 ? ' shows' : 's show'} threat intelligence seen on a host`)
   if (r0.exposed_assets) parts.push(`${r0.exposed_assets} internet-facing asset${r0.exposed_assets === 1 ? ' has' : 's have'} critical or high alerts`)
   const headline = level === 'critical'
     ? `Act now: ${parts.join('; ')}. ${r0.critical} critical and ${r0.high} high alerts are open on ${r0.affected_assets} assets.`

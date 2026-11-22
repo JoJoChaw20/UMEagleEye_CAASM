@@ -144,7 +144,9 @@ export function serviceFinding(s: IdentifiedService, cves: CveRef[], internetFac
     details: {
       source: 'network', confidence: 'banner', key: productKey(s),
       product: s.product, vendor: s.vendor, version: s.version, cpe: s.cpe, port: s.port, seen: s.seen,
-      distro: s.distro, cve_count: cves.length, max_cvss: max || null, kev_count: kev,
+      // kev / has_cti_match as on an SBOM package alert, so every view that looks for an exploited
+      // CVE (priority, the exploitable view, reports, dashboard) also finds this one
+      distro: s.distro, cve_count: cves.length, max_cvss: max || null, kev_count: kev, kev: kev > 0, has_cti_match: kev > 0,
       cves: sorted.slice(0, 25).map((c) => ({ id: c.id, cvss: c.cvss, ...(c.kev ? { kev: true } : {}) })),
     },
   }

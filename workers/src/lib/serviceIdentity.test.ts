@@ -49,6 +49,12 @@ test('the alert: worst CVSS, at least high when exploited, lower for a distribut
   assert.equal(f.severity, 'medium')                                  // high (8.1, KEV) minus one: Ubuntu may have patched
   assert.equal((f.details.cves as { id: string }[])[0]!.id, 'CVE-2024-6387')   // exploited first
   assert.equal(f.details.kev_count, 1)
+  // flagged like an SBOM package alert, so the exploitable view, reports and priority find it
+  assert.equal(f.details.kev, true)
+  assert.equal(f.details.has_cti_match, true)
+  const plain = serviceFinding(nginx!, [{ id: 'CVE-2021-23017', cvss: 9.4 }], true)!
+  assert.equal(plain.details.kev, false)
+  assert.equal(plain.details.has_cti_match, false)
   assert.equal(serviceFinding(nginx!, [{ id: 'CVE-2021-23017', cvss: 9.4 }], true)!.severity, 'critical')
   assert.equal(serviceFinding(nginx!, [{ id: 'CVE-x', cvss: 3.1 }], false)!.severity, 'low')
   assert.equal(serviceFinding(nginx!, [], false), null)

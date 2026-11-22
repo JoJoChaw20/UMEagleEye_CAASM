@@ -32,6 +32,10 @@ test('alertWhat describes an alert in one line', () => {
   assert.equal(alertWhat('cve_detected', { package_name: 'openssl', package_version: '1.0.0-1', cve_count: 2, kev_count: 1, fix_to: '1.0.1-1' }), 'openssl 1.0.0-1: 2 CVE(s), 1 known exploited, fixed in 1.0.1-1')
   assert.equal(alertWhat('port_opened', { port: 3389, service: 'ms-wbt-server' }), 'port 3389/tcp (ms-wbt-server) open')
   assert.equal(alertWhat('weird_type', {}), 'weird type')
+  // the stored keys: indicator_value (iocMatch / sightings) and kb (windowsPatch)
+  assert.equal(alertWhat('cti_match', { indicator_type: 'domain', indicator_value: 'bad.example', matched_on: 'dns' }), 'threat-intel match: bad.example (dns)')
+  assert.equal(alertWhat('os_patch_missing', { kb: 'KB5070773', exploited: 1 }), 'missing Windows update KB5070773')
+  assert.equal(alertWhat('os_patch_missing', { kb: null }), 'missing Windows updates')
 })
 
 test('buildOverview gives every dashboard area and the priorities, with the dashboard posture formula', () => {

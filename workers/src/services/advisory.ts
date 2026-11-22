@@ -1,10 +1,10 @@
 import type { KVNamespace } from '@cloudflare/workers-types'
 import type { DB } from '../db/client'
-import { advisories, events, assets, assetRelationships, cveFindings, agents } from '../db/schema'
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm'
+import { advisories, events, assets, assetRelationships, cveFindings, agents, ctiIndicators } from '../db/schema'
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { isPackageAlert } from '../lib/packageAlerts'
 import { buildContent, type DeviceInfo, type AdvisoryContent } from '../lib/advisoryContent'
-import { techniqueIds, techniqueName } from '../lib/attack'
+import { softwareName, techniqueIds, techniqueName, techniquesFor } from '../lib/attack'
 
 import { CLOSED_STATUSES, OPEN_STATUSES } from '../lib/eventStatus'
 import { insertAdvisoryIfNoneSql, liveAdvisoryOf } from '../lib/advisoryScope'
@@ -206,12 +206,27 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
   for (const [k, v] of Object.entries(d).slice(0, 12)) {
     other[sanitizeText(k, 40)] = typeof v === 'object' ? sanitizeText(JSON.stringify(v), 160) : sanitizeText(v, 160)
   }
-  // A threat-intel match: the ATT&CK technique when the alert's details carry one
+  // A threat-intel match: the matched indicator's malware family and its ATT&CK techniques. The alert's
+  // details name only the indicator (indicator_type / indicator_value); the family and ATT&CK software
+  // live on the indicator row (services/cti.ts), so they are read from there.
   if (event.eventType === 'cti_match') {
-    const tech = techniqueIds([...(Array.isArray(d.attack_techniques) ? d.attack_techniques : []), d.attack_technique, d.technique_id]
-      .filter((x): x is string => typeof x === 'string'))[0]
-    const tname = tech ? techniqueName(tech) : null
-    if (tech && tname) other.technique = sanitizeText(`${tech} ${tname}`, 120)
+    const named = techniqueIds([...(Array.isArray(d.attack_techniques) ? d.attack_techniques : []), d.attack_technique, d.technique_id]
+      .filter((x): x is string => typeof x === 'string'))
+    let fromIndicator: string[] = []
+    if (typeof d.indicator_type === 'string' && typeof d.indicator_value === 'string') {
+      const [ind] = await db.select({
+        family: ctiIndicators.malwareFamily, software: ctiIndicators.attackSoftware, techniques: ctiIndicators.attackTechniques,
+      }).from(ctiIndicators)
+        .where(and(sql`${ctiIndicators.indicatorType}::text = ${d.indicator_type}`, eq(ctiIndicators.value, d.indicator_value)))
+        .limit(1)
+      if (ind?.family) other.malware_family = sanitizeText(ind.family, 80)
+      if (ind?.software) other.attack_software = sanitizeText(softwareName(ind.software) ?? ind.software, 80)
+      fromIndicator = ind ? techniquesFor(ind.software, ind.techniques) : []
+    }
+    const techs = [...new Set([...named, ...fromIndicator])]
+      .map((t) => { const name = techniqueName(t); return name ? `${t} ${name}` : null })
+      .filter((x): x is string => x !== null)
+    if (techs.length) other.techniques = sanitizeText(techs.slice(0, 4).join('; '), 240)
   }
   // A missing Windows patch: the KB id and title
   if (event.eventType === 'os_patch_missing') {
