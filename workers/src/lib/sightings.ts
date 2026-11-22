@@ -20,6 +20,8 @@
  * resolved reopens it, while false positives and accepted risks stay closed (still counted).
  */
 
+import { confidenceLevel } from './confidence'
+
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type IndicatorType = 'ip' | 'domain' | 'url'
 export type Via = 'dns' | 'connection'
@@ -36,8 +38,10 @@ const PG_TIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}(:\d{2
 export const MAX_HITS = 200
 export const LIST_PAGE = 2000
 // Which values go on the agents' list (listItem). Raised when that changes: an agent seeing another
-// number fetches the whole list again. 2: URLs only on IPv4 hosts (17 Nov 2026).
-export const LIST_RULES = 2
+// number fetches the whole list again. 2: URLs only on IPv4 hosts (17 Nov 2026). 3: shared CDN
+// addresses and the top 1,000 sites off the list, feed values expire 30 days (IP) or 90 days
+// (domain, URL) after a feed last listed them (22 Nov 2026).
+export const LIST_RULES = 3
 const MAX_COUNT = 1_000_000
 const HIT_WINDOW_MS = 7 * 86400_000
 
@@ -168,6 +172,7 @@ export interface IndicatorRow {
   tiEventId: string | null
   title: string | null
   level: string | null      // the event's threat level; null for a feed entry
+  confidence?: number | null  // a feed entry's confidence 0-1 (ThreatFox's own; KEV 1); null for an event
 }
 
 export interface Matched {
@@ -205,11 +210,13 @@ export function matchHits(hits: Hit[], rows: IndicatorRow[]): { matched: Matched
   return { matched: [...groups.values()], dropped }
 }
 
-/** S1: a contact is stronger evidence than R5's listing. Feed entries and high-level events
- *  give critical, medium events high, low events medium; a URL's host one step lower. */
+/** S1: a contact is stronger evidence than R5's listing. A feed entry by its source's confidence
+ *  (lib/confidence.ts: 75%+ critical, 50%+ high, below medium), a high-level event critical, medium
+ *  high, low medium; a URL's host one step lower. Medium and below are reviewed, not investigated
+ *  at once (lib/alertRank.ts: tier 1 needs high or critical). */
 export function sightingSeverity(indicators: IndicatorRow[]): Severity {
   const rank = (r: IndicatorRow) =>
-    (r.tiEventId === null ? 4 : r.level === 'high' ? 4 : r.level === 'medium' ? 3 : 2) - (r.type === 'url' ? 1 : 0)
+    (r.tiEventId === null ? 1 + confidenceLevel(r.confidence) : r.level === 'high' ? 4 : r.level === 'medium' ? 3 : 2) - (r.type === 'url' ? 1 : 0)
   const best = Math.max(1, ...indicators.map(rank))
   return SEVERITIES[best - 1]!
 }

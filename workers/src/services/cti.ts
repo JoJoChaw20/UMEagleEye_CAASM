@@ -5,8 +5,10 @@ import { sql } from 'drizzle-orm'
 import { KEV_SOURCE, refreshCveIntel } from './threatIntel'
 import { matchIocs } from './iocMatch'
 import { refreshEpss } from './epss'
-import { warninglistOf } from '../lib/warninglist'
-import { resolveSoftware, techniqueIds } from '../lib/attack'
+import { CDN_CIDRS, TOP_DOMAINS_LIST, warninglistOf } from '../lib/warninglist'
+import { resolveSoftware, techniqueIds, techniqueName } from '../lib/attack'
+import { inferredTechniques, malwareKind } from '../lib/malwareKind'
+import { kevTechniques } from '../lib/kevAttack'
 
 // Rows per INSERT statement. Every statement is one HTTP request to Neon, and a Worker
 // on the free plan may make only 50 per run (cron or queue job): with 100 rows per
@@ -59,16 +61,19 @@ export function otxPulseAttack(pulse: Pick<OtxPulse, 'attack_ids' | 'malware_fam
   return { named, software, family }
 }
 
-/** A ThreatFox IOC's family, and its ATT&CK software from the printable name, aliases or Malpedia key. */
-export function threatFoxAttack(ioc: Pick<ThreatFoxIoc, 'malware' | 'malware_printable' | 'malware_alias'>) {
+/** A ThreatFox IOC's family, its ATT&CK software from the printable name, aliases or Malpedia key,
+ *  and, when ATT&CK does not describe the family, techniques inferred from the malware's kind and the
+ *  indicator's role (lib/malwareKind.ts; shown as inferred). */
+export function threatFoxAttack(ioc: Pick<ThreatFoxIoc, 'malware' | 'malware_printable' | 'malware_alias' | 'threat_type'>) {
   const family = familyName(ioc.malware_printable)
+  const names = [ioc.malware_printable, ...(ioc.malware_alias ?? '').split(','), ioc.malware?.split('.').slice(1).join('.')]
+  const attackSoftware = family ? resolveSoftware(names) : null
+  const inferred = inferredTechniques({ names: family ? [...names, ioc.malware] : [], inAttack: !!attackSoftware, role: ioc.threat_type })
+    .filter((t) => techniqueName(t) !== null)
   return {
     malwareFamily:  family,
-    attackSoftware: family ? resolveSoftware([
-      ioc.malware_printable,
-      ...(ioc.malware_alias ?? '').split(','),
-      ioc.malware?.split('.').slice(1).join('.'),    // Malpedia key without the platform
-    ]) : null,
+    attackSoftware,
+    attackTechniques: inferred.length ? inferred : null,
   }
 }
 
@@ -143,7 +148,10 @@ export async function batchUpsert(db: DB, rows: CtiRow[]): Promise<void> {
         malware_family    = coalesce(excluded.malware_family, c.malware_family),
         attack_software   = CASE WHEN excluded.malware_family IS NULL THEN c.attack_software ELSE excluded.attack_software END,
         attack_techniques = coalesce(excluded.attack_techniques, c.attack_techniques),
-        confidence_score  = excluded.confidence_score,
+        -- the feed that first listed it keeps its own confidence: another feed listing the same
+        -- value only raises it (OTX's flat 70% used to overwrite ThreatFox's real level)
+        confidence_score  = CASE WHEN c.source = excluded.source THEN excluded.confidence_score
+                                 ELSE GREATEST(c.confidence_score, excluded.confidence_score) END,
         warning           = excluded.warning`)
   }
 }
@@ -265,6 +273,92 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
   return rows.length
 }
 
+// ── abuse.ch URLhaus and Feodo Tracker (replace AlienVault OTX, 22 Nov 2026) ──
+// URLhaus: URLs that deliver malware, recent days, with their status and tags; the API needs the
+// abuse.ch Auth-Key ThreatFox uses (the free bulk download was withdrawn). A URL on an IP address
+// lets the agents match the connection (lib/sightings.ts listItem); its tags name the malware.
+// Feodo Tracker: botnet command-and-control servers (Emotet, QakBot, Pikabot...): few entries since
+// the 2024 takedowns, but each is precise. Confidence follows whether the entry is still online.
+const URLHAUS_URL = 'https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/'
+const FEODO_URL = 'https://feodotracker.abuse.ch/downloads/ipblocklist.json'
+export const URLHAUS_SOURCE = 'URLhaus'
+export const FEODO_SOURCE = 'Feodo Tracker'
+
+interface UrlhausUrl { url?: string; url_status?: string; host?: string; threat?: string; tags?: string[] | null }
+// URLhaus tags that describe where or what, not which malware
+const URLHAUS_TOPIC_TAGS = new Set(['github', 'gitlab', 'bitbucket', 'discord', 'dropbox', 'googledrive', 'onedrive', 'crypto',
+  'opendir', 'encrypted', 'ascii', 'base64', 'powershell', 'payload', 'dropped', 'malware', 'botnet', 'phishing', 'stealer',
+  'rat', 'loader', 'trojan', 'malicious', 'exploit', 'cve', 'mirror', 'cdn', 'telegram', 'bitbucket'])
+interface FeodoEntry { ip_address?: string; status?: string; malware?: string }
+
+/** How sure an abuse.ch entry is, from whether it was still online when last checked. */
+export function statusConfidence(status: string | undefined, online: number, offline: number): string {
+  return (status === 'online' ? online : status === 'offline' ? offline : (online + offline) / 2).toFixed(2)
+}
+
+/** A URLhaus entry as an indicator row (null when it is not a usable URL). PURE. */
+export function urlhausRow(u: UrlhausUrl, now: Date): CtiRow | null {
+  const value = u.url?.trim()
+  if (!value || !/^https?:\/\//i.test(value)) return null
+  const tags = (u.tags ?? []).filter((t) => typeof t === 'string' && !/^(elf|exe|dll|zip|rar|js|apk|doc|xls|ps1|sh|arm|mips|x86|32-bit|64-bit|mozi\.m)$/i.test(t))
+  const software = resolveSoftware(tags)
+  // Tags also name hosts, platforms and topics ("github", "crypto", "206-189-84-190"): the family is a
+  // tag ATT&CK or the kind rules know, else the first that looks like a name.
+  const family = familyName(tags.find((t) => resolveSoftware([t]) || malwareKind([t]))
+    ?? tags.find((t) => /^[A-Za-z][A-Za-z0-9_.-]{3,}$/.test(t) && !/^\d/.test(t) && !URLHAUS_TOPIC_TAGS.has(t.toLowerCase())))
+  const techniques = inferredTechniques({ names: tags, inAttack: !!software, role: u.threat ?? 'malware_download' })
+    .filter((t) => techniqueName(t) !== null)
+  return {
+    source: URLHAUS_SOURCE, indicatorType: 'url', value, warning: warninglistOf('url', value),
+    confidenceScore: statusConfidence(u.url_status, 0.9, 0.5), malwareFamily: family, attackSoftware: software,
+    attackTechniques: techniques.length ? techniques : null, lastSeen: now,
+  }
+}
+
+/** A Feodo Tracker entry as an indicator row. PURE. */
+export function feodoRow(f: FeodoEntry, now: Date): CtiRow | null {
+  const ip = f.ip_address?.trim()
+  if (!ip || !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return null
+  const software = resolveSoftware([f.malware])
+  const techniques = inferredTechniques({ names: [f.malware], inAttack: !!software, role: 'botnet_cc' })
+    .filter((t) => techniqueName(t) !== null)
+  return {
+    source: FEODO_SOURCE, indicatorType: 'ip', value: ip, warning: warninglistOf('ip', ip),
+    confidenceScore: statusConfidence(f.status, 0.95, 0.6), malwareFamily: familyName(f.malware), attackSoftware: software,
+    attackTechniques: techniques.length ? techniques : null, lastSeen: now,
+  }
+}
+
+export async function ingestUrlhaus(db: DB, apiKey: string): Promise<number> {
+  if (!apiKey) throw new Error('URLhaus needs the abuse.ch Auth-Key (THREATFOX_API_KEY)')
+  // this endpoint answers GET only ("http_get_expected" to a POST)
+  const res = await fetch(URLHAUS_URL, { headers: { 'Auth-Key': apiKey } })
+  if (!res.ok) throw new Error(`URLhaus answered HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
+  const text = await res.text()
+  let data: { query_status?: string; urls?: UrlhausUrl[] }
+  try { data = JSON.parse(text) } catch { throw new Error(`URLhaus sent something that is not JSON (${text.length} chars): ${text.slice(0, 200)}`) }
+  if (data.query_status && data.query_status !== 'ok' && data.query_status !== 'no_results') {
+    throw new Error(`URLhaus refused the query: ${data.query_status}`)
+  }
+  const now = new Date()
+  const seen = new Set<string>()
+  const rows = (data.urls ?? []).map((u) => urlhausRow(u, now)).filter((r): r is CtiRow => !!r && !seen.has(r.value) && !!seen.add(r.value))
+  console.log(`[URLhaus] ${rows.length} URL(s)`)
+  await batchUpsert(db, rows)
+  return rows.length
+}
+
+export async function ingestFeodo(db: DB): Promise<number> {
+  const res = await fetch(FEODO_URL)
+  if (!res.ok) throw new Error(`Feodo Tracker answered HTTP ${res.status}`)
+  const list = await res.json() as FeodoEntry[]
+  const now = new Date()
+  const rows = (Array.isArray(list) ? list : []).map((f) => feodoRow(f, now)).filter((r): r is CtiRow => !!r)
+  console.log(`[Feodo] ${rows.length} C2 address(es)`)
+  await batchUpsert(db, rows)
+  return rows.length
+}
+
 // ── CISA Known Exploited Vulnerabilities ─────────────────────────────
 // CVEs with confirmed exploitation in the wild (free JSON, no key, about 1.7k
 // entries). Stored as 'cve' indicators, so /sboms/ingest-cve flags matching CVE
@@ -286,11 +380,14 @@ export async function ingestKev(db: DB): Promise<number> {
     if (!id || !/^CVE-\d{4}-\d{4,}$/.test(id) || seen.has(id)) continue
     seen.add(id)
     const added = v.dateAdded ? new Date(v.dateAdded) : now
+    // ATT&CK: how it is exploited and what it leads to (MITRE CTID's KEV mappings, lib/kevAttack.ts)
+    const techniques = kevTechniques(id).all
     rows.push({
       source: KEV_SOURCE,
       indicatorType: 'cve',
       value: id,
       confidenceScore: '1.00',
+      attackTechniques: techniques.length ? techniques : null,
       firstSeen: Number.isNaN(added.getTime()) ? now : added,
       lastSeen: now,
     })
@@ -300,7 +397,7 @@ export async function ingestKev(db: DB): Promise<number> {
     await db.insert(ctiIndicators).values(rows.slice(i, i + KEV_BATCH)).onConflictDoUpdate({
       target: ctiIndicators.value,
       targetWhere: FEED_ROW,
-      set: { lastSeen: sql`excluded.last_seen` },
+      set: { lastSeen: sql`excluded.last_seen`, attackTechniques: sql`excluded.attack_techniques` },
     })
   }
   return rows.length
@@ -323,8 +420,13 @@ export function describeError(err: unknown): string {
 // 17k rows were saved. So each feed is its own queue job, which queues the next one;
 // 'epss' fills in and refreshes EPSS on the devices' CVEs (services/epss.ts); 'finish'
 // refreshes the CVE alerts and the asset matches against the new data.
-export type CtiStep = 'kev' | 'threatfox' | 'otx' | 'epss' | 'finish'
-export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'otx', 'epss', 'finish']
+// AlienVault OTX was dropped on 22 Nov 2026 (only its 50 newest pulses, user-written, almost no ATT&CK,
+// a flat 70% confidence); URLhaus and Feodo Tracker replace it. Its stored rows stop matching at once
+// (RETIRED_SOURCES) and are deleted by retention.
+export type CtiStep = 'kev' | 'threatfox' | 'urlhaus' | 'feodo' | 'epss' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'urlhaus', 'feodo', 'epss', 'finish']
+/** The feeds the chain loads, as their rows' `source`: the feed-health line shows these only. */
+export const ACTIVE_FEEDS = [KEV_SOURCE, 'ThreatFox', URLHAUS_SOURCE, FEODO_SOURCE]
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
 
 /**
@@ -337,6 +439,30 @@ export function feedRefresh(appEnv: string | undefined): { scheduled: boolean; m
   return { scheduled: !staging, manual: staging }
 }
 
+/**
+ * Mark stored indicators (feeds and events alike) that are on a warninglist added after they were
+ * saved: IPs and URL hosts in the shared CDN ranges, domains that are exactly a top-1,000 site
+ * (lib/warninglist.ts). Only rows without a warning yet; returns how many were marked.
+ */
+export async function reflagWarninglists(db: DB): Promise<number> {
+  const cidrs = JSON.stringify(CDN_CIDRS)
+  const domains = JSON.stringify(TOP_DOMAINS_LIST)
+  const ipHost = `substring(c.value from '^[A-Za-z][A-Za-z0-9+.-]*://((?:[0-9]{1,3}\\.){3}[0-9]{1,3})(?:[:/?#]|$)')`
+  const res = await db.execute(sql`
+    WITH cdn AS (SELECT array_agg(x::inet) AS r FROM jsonb_array_elements_text(${cidrs}::jsonb) x),
+         top AS (SELECT array_agg(x) AS d FROM jsonb_array_elements_text(${domains}::jsonb) x)
+    UPDATE cti_indicators c SET warning = CASE WHEN c.indicator_type = 'domain' THEN 'top-domain' ELSE 'cdn' END
+    FROM cdn, top
+    WHERE c.warning IS NULL AND (
+      (c.indicator_type = 'ip' AND c.value ~ '^([0-9]{1,3}\\.){3}[0-9]{1,3}$' AND c.value::inet <<= ANY(cdn.r))
+      OR (c.indicator_type = 'url' AND ${sql.raw(ipHost)} IS NOT NULL AND ${sql.raw(ipHost)}::inet <<= ANY(cdn.r))
+      OR (c.indicator_type = 'domain'
+          AND regexp_replace(lower(trim(trailing '.' from c.value)), '^www\\.', '') = ANY(top.d))
+    )
+    RETURNING c.indicator_id`)
+  return res.rows.length
+}
+
 /** The step after this one; null after 'finish' (exported for tests). */
 export function nextCtiStep(step: CtiStep): CtiStep | null {
   return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
@@ -345,10 +471,12 @@ export function nextCtiStep(step: CtiStep): CtiStep | null {
 const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
   kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
   threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
-  otx:       { source: 'AlienVault OTX', run: (db, k) => ingestOtx(db, k.otx) },
+  // the same abuse.ch Auth-Key as ThreatFox
+  urlhaus:   { source: URLHAUS_SOURCE,   run: (db, k) => ingestUrlhaus(db, k.threatFox) },
+  feodo:     { source: FEODO_SOURCE,     run: (db) => ingestFeodo(db) },
 }
 
-export interface FeedKeys { otx: string; threatFox: string }
+export interface FeedKeys { threatFox: string }
 
 /**
  * Run one step and record it for the feed-health line. A feed that fails is recorded as
@@ -356,6 +484,14 @@ export interface FeedKeys { otx: string; threatFox: string }
  */
 export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, step: CtiStep): Promise<CtiStep | null> {
   if (step === 'finish') {
+    // Stored indicators get the warninglists added since they were saved (CDN ranges, top sites):
+    // a value a feed no longer lists would otherwise keep its old (empty) warning.
+    try {
+      const flagged = await reflagWarninglists(db)
+      if (flagged) console.log(`[CTI] ${flagged} stored indicator(s) put on a warninglist`)
+    } catch (err) {
+      console.error('[CTI] Warninglist re-check failed:', describeError(err))
+    }
     // CVE alerts follow the refreshed feeds (KEV additions, entries that aged out).
     try {
       const flagged = await refreshCveIntel(db, { all: true })
@@ -380,6 +516,11 @@ export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, ste
       console.error('[EPSS] Refresh failed:', describeError(err))
     }
     return nextCtiStep(step)
+  }
+  // A queued job from before a step was dropped (the old 'otx' step): carry on with EPSS and finish.
+  if (!(step in FEED_OF)) {
+    console.log(`[CTI] Step '${step}' is no longer run; going on`)
+    return 'epss'
   }
   const feed = FEED_OF[step]
   let result: { ok: boolean; count: number }

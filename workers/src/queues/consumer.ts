@@ -153,7 +153,7 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         }
         message.ack()
       } else if (job.type === 'cti_ingest') {
-        const next = await runIngestStep(db, env.KV_CACHE, { otx: env.OTX_API_KEY, threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')
+        const next = await runIngestStep(db, env.KV_CACHE, { threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')
         if (next) {
           await env.ADVISORY_QUEUE.send({ type: 'cti_ingest', step: next, triggeredBy: job.triggeredBy })
         } else {

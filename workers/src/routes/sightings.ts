@@ -21,7 +21,7 @@ import { and, eq, sql, type SQL } from 'drizzle-orm'
 import type { Env } from '../types'
 import { getDb } from '../db/client'
 import { agents, auditLogs, eventCtiIndicators, events } from '../db/schema'
-import { matchableSql } from '../services/threatIntel'
+import { FEED_FRESH, matchableSql } from '../services/threatIntel'
 import {
   LIST_PAGE, LIST_RULES, cleanHits, decodeCursor, encodeCursor, listItems, lookupValues, matchHits, planSightings,
   type ExistingSighting, type IndicatorRow,
@@ -82,11 +82,12 @@ app.get('/indicators', async (c) => {
   const after = decodeCursor(rawAfter)
   if (rawAfter && !after) return c.json({ detail: 'Invalid cursor' }, 400)
   const limit = Math.min(Math.max(Number(c.req.query('limit')) || LIST_PAGE, 100), LIST_PAGE)
-  // Feed entries only (ti_event_id NULL): matchable when to_ids and not on a warninglist.
+  // Feed entries only (ti_event_id NULL): matchable when to_ids, not on a warninglist, and still
+  // listed by a feed recently (services/threatIntel.ts FEED_FRESH).
   const res = await db.execute(sql`
     SELECT c.indicator_type::text AS type, c.value, c.last_seen::text AS seen, c.indicator_id::text AS id
     FROM cti_indicators c
-    WHERE c.ti_event_id IS NULL AND c.to_ids AND c.warning IS NULL AND c.indicator_type IN ('ip', 'domain', 'url')
+    WHERE c.ti_event_id IS NULL AND c.to_ids AND c.warning IS NULL AND c.indicator_type IN ('ip', 'domain', 'url') AND ${FEED_FRESH}
       ${after ? sql`AND (c.last_seen, c.indicator_id) > (${after.seen}::timestamptz, ${after.id}::uuid)` : sql``}
     ORDER BY c.last_seen, c.indicator_id
     LIMIT ${limit}
@@ -117,7 +118,8 @@ app.post('/', zValidator('json', z.object({ hits: z.array(z.unknown()).max(1000)
   const { ips, names } = lookupValues(hits)
   const res = await db.execute(sql`
     SELECT c.indicator_id::text AS "indicatorId", c.indicator_type::text AS type, c.value, c.source,
-           c.ti_event_id::text AS "tiEventId", te.title, te.threat_level::text AS level
+           c.ti_event_id::text AS "tiEventId", te.title, te.threat_level::text AS level,
+           c.confidence_score::float AS confidence
     FROM cti_indicators c LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
     WHERE ${matchableSql(sql`${agent.tenantId}::uuid`)} AND (
       (c.indicator_type = 'ip' AND ${inList(sql`c.value`, ips)})

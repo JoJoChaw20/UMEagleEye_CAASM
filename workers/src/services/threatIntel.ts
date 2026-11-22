@@ -22,12 +22,30 @@ type DB = ReturnType<typeof getDb>
 
 export const KEV_SOURCE = 'CISA KEV'
 
+/**
+ * How long a feed's IP, domain or URL keeps raising alerts after the feed last listed it. Feeds
+ * list an indicator while it is active (ThreatFox: its last 7 days), so one that has not been
+ * listed for this long is most likely cleaned up or reassigned: an IP is often handed to someone
+ * else within weeks, a domain lasts longer. Kept in the table (and on old alerts) until retention
+ * deletes it (services/retention.ts, 90 days); it just stops matching. KEV CVEs and a tenant's own
+ * event attributes do not expire.
+ */
+export const FEED_FRESH_DAYS = { ip: 30, domain: 90, url: 90 } as const
+// The day counts as SQL literals (constants above): bound as parameters they arrive as text,
+// and "text * interval" fails (it broke the agents' list download on 22 Nov until fixed).
+// A retired feed's rows (AlienVault OTX, dropped 22 Nov 2026) stop matching at once; retention deletes them.
+export const RETIRED_SOURCES = ['AlienVault OTX']
+export const FEED_FRESH = sql`(c.ti_event_id IS NOT NULL OR (c.source NOT IN (${sql.raw(RETIRED_SOURCES.map((s) => `'${s.replace(/'/g, "''")}'`).join(', '))})
+  AND (c.indicator_type NOT IN ('ip', 'domain', 'url')
+  OR c.last_seen > now() - (CASE WHEN c.indicator_type = 'ip' THEN ${sql.raw(String(Number(FEED_FRESH_DAYS.ip)))}
+                                 ELSE ${sql.raw(String(Number(FEED_FRESH_DAYS.domain)))} END) * interval '1 day')))`
+
 /** SQL: indicator `c` (joined to its event `te`, LEFT JOIN) is matchable for tenant `tenant`. */
 // An event a tenant shares with all tenants can be READ by every tenant, but raises alerts only in
 // its own tenant: otherwise one tenant admin could flood every tenant with alerts (an event naming
 // "Microsoft Edge" or "edu.my"). Only platform events (the superadmin's) alert every tenant.
 export function matchableSql(tenant: SQL): SQL {
-  return sql`(c.to_ids AND c.warning IS NULL AND (
+  return sql`(c.to_ids AND c.warning IS NULL AND ${FEED_FRESH} AND (
     c.ti_event_id IS NULL
     OR (te.status = 'published' AND (te.tenant_id = ${tenant} OR te.distribution = 'platform'))
   ))`

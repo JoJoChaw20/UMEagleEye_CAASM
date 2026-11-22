@@ -23,7 +23,28 @@ import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline 
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
 import { dueAtExpr, dueStatusExpr, priorityExpr, rankScoreExpr, slaHoursExpr, tierExpr } from '../lib/priority'
 import { slaPolicy } from '../lib/alertRank'
-import { softwareName, techniquesFor } from '../lib/attack'
+import { softwareName, techniqueName, techniquesFor } from '../lib/attack'
+import { kevTechniques } from '../lib/kevAttack'
+
+/** The exploited (KEV) CVEs an alert names, with how they are exploited and what they lead to; null if none is mapped. */
+function kevAttackOf(d: Record<string, unknown> | null) {
+  if (!d) return null
+  const list = (v: unknown) => (Array.isArray(v) ? v as Array<Record<string, unknown>> : [])
+  const ids = [
+    ...list(d.top_cves).filter((c) => c.kev).map((c) => String(c.id)),          // an SBOM package alert
+    ...list(d.cves).filter((c) => c.kev).map((c) => String(c.id)),              // a vulnerable service
+    ...(d.kev === true && typeof d.cve_id === 'string' ? [d.cve_id] : []),      // a single-CVE alert
+  ]
+  const mapped = [...new Set(ids)].map((id) => ({ id, t: kevTechniques(id) })).filter((c) => c.t.all.length)
+  if (!mapped.length) return null
+  const named = (ids: string[]) => [...new Set(ids)].map((id) => ({ id, name: techniqueName(id) }))
+  return {
+    cves: mapped.map((c) => c.id),
+    exploit: named(mapped.flatMap((c) => c.t.exploit)),
+    impact: named(mapped.flatMap((c) => [...c.t.primary, ...c.t.secondary])),
+    source: 'MITRE Center for Threat-Informed Defense, KEV mappings',
+  }
+}
 import { cweList } from '../lib/cwe'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
 import { loadMsrcMonth } from '../services/windowsPatch'
@@ -563,12 +584,21 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
         direction: r.direction, relationship: r.type, asset_id: r.assetId,
         hostname: r.hostname, ip: r.ip, device_type: r.deviceType,
       })),
-      cti_indicators: cti.map(({ named_techniques, ...i }) => ({
-        ...i,
-        confidence: i.confidence != null ? Number(i.confidence) : null,
-        attack_software_name: softwareName(i.attack_software),
-        technique_count: techniquesFor(i.attack_software, named_techniques).length,
-      })),
+      cti_indicators: cti.map(({ named_techniques, ...i }) => {
+        // documented: ATT&CK's own entry for the family; inferred: from the malware's kind or the
+        // indicator's role (lib/malwareKind.ts), or named by the feed
+        const documented = new Set(techniquesFor(i.attack_software, []))
+        const all = techniquesFor(i.attack_software, named_techniques)
+        return {
+          ...i,
+          confidence: i.confidence != null ? Number(i.confidence) : null,
+          attack_software_name: softwareName(i.attack_software),
+          technique_count: all.length,
+          techniques: all.slice(0, 12).map((id) => ({ id, name: techniqueName(id), how: documented.has(id) ? 'documented' : 'inferred' })),
+        }
+      }),
+      // An exploited CVE: how attackers exploit it and what it leads to (MITRE CTID's KEV mappings)
+      attack_kev: kevAttackOf(event.details as Record<string, unknown> | null),
       // by: the user's current username; null when the system acted or the user was deleted.
       // actor_username: kept from a deleted user (the page shows "<name> (deleted)").
       history: history.map(h => ({ action: h.action, previous: h.prev, next: h.next, at: h.at, by: h.username, actor_username: h.actorUsername })),

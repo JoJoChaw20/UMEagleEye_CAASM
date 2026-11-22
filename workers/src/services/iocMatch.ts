@@ -21,6 +21,7 @@
 import { sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { matchableSql, type IntelScope } from './threatIntel'
+import { CONFIDENCE_LEVEL_SQL } from '../lib/confidence'
 
 type DB = ReturnType<typeof getDb>
 
@@ -33,6 +34,8 @@ const SPECIAL_V4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '
   '192.0.2.0/24', '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4']
 const OCTET = '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 const IPV4_RE = `^${OCTET}(\\.${OCTET}){3}$`
+// A feed entry's confidence as 3 sure / 2 likely / 1 weak: the severity of its match (lib/confidence.ts)
+const CONF = sql.raw(CONFIDENCE_LEVEL_SQL)
 
 function assetScope(scope: MatchScope): SQL {
   if ('assetIds' in scope) {
@@ -86,23 +89,24 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
     ),
     hit AS (
       SELECT ips.asset_id, ips.tenant_id, c.indicator_type::text AS itype, c.value AS ivalue,
-             'ip' AS matched_on, ips.ip AS observed, 'ioc' AS kind, c.source, c.ti_event_id, te.title, te.threat_level::text AS level
+             'ip' AS matched_on, ips.ip AS observed, 'ioc' AS kind, c.source, c.ti_event_id, te.title, te.threat_level::text AS level,
+             ${CONF} AS conf_level
       FROM ips JOIN cti_indicators c ON c.indicator_type = 'ip' AND c.value = ips.ip
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE ${visibleTo('ips')}
       UNION ALL
-      SELECT sx.asset_id, sx.tenant_id, 'domain', c.value, 'hostname', sx.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text
+      SELECT sx.asset_id, sx.tenant_id, 'domain', c.value, 'hostname', sx.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}
       FROM suffixes sx JOIN cti_indicators c ON c.indicator_type = 'domain' AND c.value = sx.name
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE ${visibleTo('sx')}
       UNION ALL
-      SELECT h.asset_id, h.tenant_id, 'url', c.value, 'hostname', h.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text
+      SELECT h.asset_id, h.tenant_id, 'url', c.value, 'hostname', h.host, 'ioc', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}
       FROM hosts h JOIN url_iocs c ON c.url_host = h.host
       LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
       WHERE ${visibleTo('h')}
       UNION ALL
       SELECT so.asset_id, so.tenant_id, 'software', c.value, so.matched_on,
-             so.name || COALESCE(' ' || so.version, ''), 'watchlist', c.source, c.ti_event_id, te.title, te.threat_level::text
+             so.name || COALESCE(' ' || so.version, ''), 'watchlist', c.source, c.ti_event_id, te.title, te.threat_level::text, ${CONF}
       FROM soft so
       JOIN cti_indicators c ON c.indicator_type = 'software'
         AND (lower(so.name) = lower(substring(c.value from '^(@?[^@]+)'))
@@ -114,12 +118,13 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       WHERE ${visibleTo('so')}
     ),
     -- One alert per (asset, indicator): its severity is the highest any source gives it
-    -- (feed entries: high; events: their threat level, one step up for IOCs).
+    -- (feed entries by their confidence, lib/confidence.ts: high, medium or low; events: their
+    -- threat level, one step up for IOCs).
     d AS (
       SELECT asset_id, itype, ivalue,
              min(matched_on) AS matched_on, min(observed) AS observed, min(kind) AS kind,
              (ARRAY['low', 'medium', 'high', 'critical'])[max(
-               CASE WHEN ti_event_id IS NULL THEN 3
+               CASE WHEN ti_event_id IS NULL THEN conf_level
                     ELSE (CASE level WHEN 'high' THEN 4 WHEN 'medium' THEN 3 ELSE 2 END) END
                - CASE WHEN kind = 'watchlist' AND ti_event_id IS NOT NULL AND level = 'high' THEN 1 ELSE 0 END)]::severity AS severity,
              jsonb_build_object(

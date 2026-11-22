@@ -951,8 +951,21 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                     <span className="font-mono text-accent-red">{i.value}</span>{' '}
                     <span className="text-dark-500">({i.type}, {i.event_title ? `event "${i.event_title}"` : i.source})</span>
                     {i.family && <div className="text-dark-400">Malware family: {i.family}{i.attack_software ? ` (ATT&CK ${i.attack_software}, ${i.technique_count} techniques)` : ''}</div>}
+                    {i.techniques?.length > 0 && <TechniqueChips list={i.techniques} />}
                   </li>
                 ))}</ul>
+              </Section>
+            )}
+
+            {/* An exploited CVE in MITRE ATT&CK */}
+            {e.attack_kev && (
+              <Section icon={Crosshair} title="How attackers use it (ATT&CK)">
+                <div className="space-y-1.5 text-xs text-dark-300">
+                  <p className="text-dark-400">For {e.attack_kev.cves.join(', ')}, on CISA&apos;s list of exploited vulnerabilities:</p>
+                  {e.attack_kev.exploit.length > 0 && <div><span className="text-dark-400">Exploited through: </span><TechniqueChips list={e.attack_kev.exploit} /></div>}
+                  {e.attack_kev.impact.length > 0 && <div><span className="text-dark-400">Leads to: </span><TechniqueChips list={e.attack_kev.impact} /></div>}
+                  <p className="text-[11px] text-dark-500">Source: {e.attack_kev.source}</p>
+                </div>
               </Section>
             )}
 
@@ -994,6 +1007,21 @@ function serviceOn(asset, port) {
   const s = asset?.services?.find(x => Number(x.port) === Number(port))
   if (!s) return null
   return [s.service, s.product, s.version].filter(Boolean).join(' ') || null
+}
+
+// ATT&CK techniques as chips: documented ones plain, inferred ones (from the malware's kind or the
+// indicator's role, backend lib/malwareKind.ts) dashed and marked
+function TechniqueChips({ list }) {
+  return (
+    <span className="mt-1 inline-flex flex-wrap gap-1 align-middle">
+      {list.map((t) => (
+        <span key={t.id} title={t.how === 'inferred' ? 'Inferred from the kind of malware or the indicator\'s role, not documented in ATT&CK for this family' : t.name ?? t.id}
+          className={`rounded border px-1.5 py-0.5 text-[11px] ${t.how === 'inferred' ? 'border-dashed border-dark-600 text-dark-400' : 'border-dark-600 bg-dark-800 text-dark-200'}`}>
+          <span className="font-mono">{t.id}</span>{t.name ? ` ${t.name}` : ''}{t.how === 'inferred' ? ' · inferred' : ''}
+        </span>
+      ))}
+    </span>
+  )
 }
 
 function Section({ icon: Icon, title, children }) {

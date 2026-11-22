@@ -9,6 +9,9 @@
  * Tested by scripts/ti-events-demo.ts.
  */
 import { hostOf, type IocType } from './iocParse'
+// Shared CDN edge ranges (Cloudflare, Fastly, Amazon CloudFront, from their official lists) and the
+// Tranco top 1,000 domains: data/warninglists.json says where and when each list was taken.
+import LISTS from '../data/warninglists.json'
 
 const PUBLIC_DNS = new Set([
   '8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1', '9.9.9.9', '149.112.112.112',
@@ -46,6 +49,21 @@ function ipv4ToInt(ip: string): number | null {
   return n
 }
 
+/** [first, last] address of each CDN range, as integers */
+const CDN_RANGES: Array<[number, number]> = Object.values(LISTS.cdn.cidrs).flat().flatMap((cidr) => {
+  const [net, bits] = cidr.split('/')
+  const base = ipv4ToInt(net ?? '')
+  const n = Number(bits)
+  if (base === null || !Number.isInteger(n) || n < 8 || n > 32) return []
+  return [[base, base + 2 ** (32 - n) - 1] as [number, number]]
+})
+const TOP_DOMAINS = new Set(LISTS.top_domains.domains)
+
+function inCdnRange(ip: string): boolean {
+  const n = ipv4ToInt(ip)
+  return n !== null && CDN_RANGES.some(([lo, hi]) => n >= lo && n <= hi)
+}
+
 function inSpecialRange(ip: string): boolean {
   const n = ipv4ToInt(ip)
   if (n === null) {
@@ -59,24 +77,35 @@ function inSpecialRange(ip: string): boolean {
   })
 }
 
-/** The warninglist a value is on ('public-dns', 'special-ip', 'well-known-domain'), or null. */
+/** The warninglist a value is on ('public-dns', 'special-ip', 'cdn', 'well-known-domain',
+ *  'top-domain'), or null. */
 export function warninglistOf(type: IocType, value: string): string | null {
   if (type === 'ip') {
     if (PUBLIC_DNS.has(value.toLowerCase())) return 'public-dns'
     if (inSpecialRange(value)) return 'special-ip'
+    if (inCdnRange(value)) return 'cdn'
     return null
   }
   if (type === 'domain' || type === 'url' || type === 'email') {
-    const host = hostOf(type, value).toLowerCase()
+    const host = hostOf(type, value).toLowerCase().replace(/\.$/, '')
     if (PUBLIC_DNS.has(host)) return 'public-dns'
     if (/^[\d.]+$/.test(host) && inSpecialRange(host)) return 'special-ip'
+    if (/^[\d.]+$/.test(host) && inCdnRange(host)) return 'cdn'
     if (WELL_KNOWN_DOMAINS.some(d => host === d || host.endsWith(`.${d}`))) return 'well-known-domain'
+    // a domain indicator that is exactly a top-1,000 site; a URL keeps its path (a page can be bad)
+    if (type === 'domain' && (TOP_DOMAINS.has(host) || TOP_DOMAINS.has(host.replace(/^www\./, '')))) return 'top-domain'
   }
   return null
 }
 
+/** The CDN ranges as CIDR strings, for the nightly re-check of stored indicators (services/cti.ts). */
+export const CDN_CIDRS: string[] = Object.values(LISTS.cdn.cidrs).flat()
+export const TOP_DOMAINS_LIST: string[] = LISTS.top_domains.domains
+
 export const WARNINGLIST_LABELS: Record<string, string> = {
   'public-dns': 'Public DNS resolver',
   'special-ip': 'Private or special-use address',
+  'cdn': 'Shared CDN address (Cloudflare, Fastly, CloudFront)',
   'well-known-domain': 'Well-known platform domain',
+  'top-domain': 'One of the 1,000 most visited sites',
 }

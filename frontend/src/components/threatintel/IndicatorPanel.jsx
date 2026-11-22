@@ -92,12 +92,16 @@ export default function IndicatorPanel({ value, onClose }) {
           {ind?.techniques?.length > 0 && (
             <div>
               <p className="text-xs text-dark-400 mb-1.5">
-                ATT&CK techniques ({ind.techniques.length}){ind.attack_software ? `, as MITRE documents for ${ind.attack_software_name}` : ', named by the feed'}
+                ATT&CK techniques ({ind.techniques.length})
+                {ind.attack_software ? `: as MITRE documents for ${ind.attack_software_name}` : ''}
+                {ind.techniques.some((t) => t.how === 'mapped') ? ': how this exploited CVE is used (MITRE CTID mappings)' : ''}
+                {ind.techniques.some((t) => t.how === 'inferred') ? ' (dashed: inferred from the kind of malware or the indicator\'s role)' : ''}
               </p>
               <div className="flex flex-wrap gap-1">
                 {ind.techniques.map((t) => (
                   <a key={t.id} href={`https://attack.mitre.org/techniques/${t.id.replace('.', '/')}/`} target="_blank" rel="noreferrer"
-                    className="text-[11px] px-1.5 py-0.5 rounded bg-dark-700/60 text-dark-200 hover:text-eagle-400" title={t.name}>
+                    className={`text-[11px] px-1.5 py-0.5 rounded hover:text-eagle-400 ${t.how === 'inferred' ? 'border border-dashed border-dark-600 text-dark-400' : 'bg-dark-700/60 text-dark-200'}`}
+                    title={t.how === 'inferred' ? `${t.name}: inferred, not documented for this family` : t.name}>
                     <span className="font-mono">{t.id}</span> {t.name}
                   </a>
                 ))}

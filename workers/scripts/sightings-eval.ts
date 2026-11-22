@@ -22,6 +22,10 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { neon } from '@neondatabase/serverless'
+import { warninglistOf } from '../src/lib/warninglist'
+
+// The planted feed entries' source: removed by "remove"; it never collides with a real feed
+const FEED_SOURCE = 'Sightings evaluation feed'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
@@ -50,6 +54,11 @@ const sql = neon(vars['DATABASE_URL'] ?? die('DATABASE_URL missing'))
 const TITLE = 'Sightings evaluation (planted indicators)'
 const PLANTED_IP = '188.184.67.127'          // info.cern.ch
 const DOMAINS = 20
+// Round 5 (22 Nov 2026), the accuracy rules: values a person might put in an event that must raise
+// no alert (a shared CDN address, a top-1,000 site), and two feed entries of lower confidence.
+const CDN_IP = '104.16.132.229'              // Cloudflare edge (cloudflare.com), on the CDN warninglist
+const TOP_DOMAIN = 'wikipedia.org'           // Tranco top 1,000
+const FEED_CONFIDENCE = [0.25, 0.6]          // expected: medium, high
 
 type Row = Record<string, unknown>
 
@@ -57,7 +66,14 @@ async function plant() {
   const existing = await sql`SELECT ti_event_id FROM ti_events WHERE tenant_id = ${tenant}::uuid AND title = ${TITLE}`
   if (existing.length) die('a planted event already exists in this tenant: run "remove" first')
   const domains = Array.from({ length: DOMAINS }, () => `ue-sight-${randomBytes(6).toString('hex')}.com`)
-  const planted = { tenant, title: TITLE, domains, ip: PLANTED_IP, planted_at: new Date().toISOString() }
+  const feed = FEED_CONFIDENCE.map((confidence) => ({ value: `ue-sight-feed${Math.round(confidence * 100)}-${randomBytes(5).toString('hex')}.com`, confidence }))
+  const planted = {
+    tenant, title: TITLE, domains, ip: PLANTED_IP, planted_at: new Date().toISOString(),
+    // must not alert: put in the event as a person would, the event route's warninglist marks them
+    should_not_alert: { cdn_ip: CDN_IP, top_domain: TOP_DOMAIN },
+    // feed entries (ThreatFox-like) of lower confidence: their sightings' severity
+    feed,
+  }
   console.log(JSON.stringify(planted, null, 2))
   if (!apply) { console.log('\nDry run: nothing written (add --apply)'); return }
   const [ev] = await sql`
@@ -66,15 +82,24 @@ async function plant() {
             'high', 'published', 'organisation', now())
     RETURNING ti_event_id` as Row[]
   const id = String(ev!['ti_event_id'])
-  for (const [type, value] of [...domains.map(d => ['domain', d]), ['ip', PLANTED_IP]] as [string, string][]) {
+  const eventValues = [...domains.map(d => ['domain', d]), ['ip', PLANTED_IP], ['ip', CDN_IP], ['domain', TOP_DOMAIN]] as ['ip' | 'domain', string][]
+  for (const [type, value] of eventValues) {
+    // the warninglist the event route applies (routes/tiEvents.ts) to what a person adds
+    const warning = warninglistOf(type, value)
     await sql`
-      INSERT INTO cti_indicators (source, indicator_type, value, tenant_id, ti_event_id, to_ids, first_seen, last_seen)
-      VALUES (${`Event: ${TITLE}`.slice(0, 100)}, ${type}::indicator_type, ${value}, ${tenant}::uuid, ${id}::uuid, true, now(), now())`
+      INSERT INTO cti_indicators (source, indicator_type, value, tenant_id, ti_event_id, to_ids, warning, first_seen, last_seen)
+      VALUES (${`Event: ${TITLE}`.slice(0, 100)}, ${type}::indicator_type, ${value}, ${tenant}::uuid, ${id}::uuid, true, ${warning}, now(), now())`
+  }
+  for (const f of feed) {
+    await sql`
+      INSERT INTO cti_indicators (source, indicator_type, value, to_ids, confidence_score, malware_family, first_seen, last_seen)
+      VALUES (${FEED_SOURCE}, 'domain'::indicator_type, ${f.value}, true, ${f.confidence}, 'Sightings evaluation', now(), now())`
   }
   if (outDir) {
     mkdirSync(outDir, { recursive: true })
     writeFileSync(path.join(outDir, 'sightings-planted.json'), JSON.stringify({ ...planted, ti_event_id: id }, null, 2))
-    writeFileSync(path.join(outDir, 'planted-domains.txt'), domains.join('\n') + '\n')
+    // looked up on the VMs: the event's domains, the feed entries, and the top site (which must not alert)
+    writeFileSync(path.join(outDir, 'planted-domains.txt'), [...domains, ...feed.map(f => f.value), TOP_DOMAIN].join('\n') + '\n')
   }
   console.log(`\nPlanted event ${id}: ${DOMAINS} domains and 1 IP (agents fetch it within 30 minutes, or at their next start)`)
 }
@@ -82,7 +107,10 @@ async function plant() {
 async function measure() {
   const plantedFile = outDir ? path.join(outDir, 'sightings-planted.json') : null
   if (!plantedFile || !existsSync(plantedFile)) die('--out must hold sightings-planted.json from "plant"')
-  const planted = JSON.parse(readFileSync(plantedFile, 'utf8')) as { domains: string[]; ip: string; planted_at: string }
+  const planted = JSON.parse(readFileSync(plantedFile, 'utf8')) as {
+    domains: string[]; ip: string; planted_at: string
+    should_not_alert?: { cdn_ip: string; top_domain: string }; feed?: { value: string; confidence: number }[]
+  }
   // --since <ISO time>: only alerts raised or updated since then (one test round)
   const since = arg('since') ?? planted.planted_at
   if (isNaN(Date.parse(since))) die('--since must be an ISO time')
@@ -97,7 +125,9 @@ async function measure() {
       -- contacts in this round (not alerts a person edited: marking one false positive changes updated_at)
       AND (e.details->>'last_seen_at')::timestamptz >= ${since}::timestamptz
     ORDER BY a.hostname, e.timestamp` as Row[]
-  const plantedSet = new Set([...planted.domains, planted.ip])
+  const feedValues = (planted.feed ?? []).map(f => f.value)
+  const plantedSet = new Set([...planted.domains, planted.ip, ...feedValues])
+  const mustNot = planted.should_not_alert ? [planted.should_not_alert.cdn_ip, planted.should_not_alert.top_domain] : []
   const hosts = [...new Set(rows.map(r => String(r['hostname'])))]
   const perHost = hosts.map(host => {
     const mine = rows.filter(r => r['hostname'] === host)
@@ -116,6 +146,9 @@ async function measure() {
       ip_via: mine.filter(r => r['listed'] === planted.ip).map(r => r['seen_via']),
       ip_process: mine.find(r => r['listed'] === planted.ip)?.['process'] ?? null,
       false_alerts: mine.filter(r => !plantedSet.has(String(r['listed']))).map(r => ({ listed: r['listed'], via: r['matched_on'] })),
+      // round 5: the warninglisted values (should be none) and the feed entries' severity by confidence
+      warninglisted_alerted: mine.filter(r => mustNot.includes(String(r['listed']))).map(r => r['listed']),
+      feed_severity: (planted.feed ?? []).map(f => ({ confidence: f.confidence, severity: mine.find(r => r['listed'] === f.value)?.['severity'] ?? 'not detected' })),
       seconds_contact_to_alert: delays.length ? { median: delays[Math.floor(delays.length / 2)], max: delays[delays.length - 1] } : null,
       severities: [...new Set(mine.map(r => r['severity']))],
     }
@@ -131,7 +164,8 @@ async function remove() {
   console.log(`${evs.length} planted event(s)`)
   if (!apply) { console.log('Dry run: nothing deleted (add --apply)'); return }
   for (const ev of evs) await sql`DELETE FROM ti_events WHERE ti_event_id = ${String(ev['ti_event_id'])}::uuid`
-  console.log('Deleted (their indicators go with them); the sighting alerts stay for people to close.')
+  const feed = await sql`DELETE FROM cti_indicators WHERE ti_event_id IS NULL AND source = ${FEED_SOURCE} RETURNING indicator_id` as Row[]
+  console.log(`Deleted (their indicators go with them) and ${feed.length} planted feed entr${feed.length === 1 ? 'y' : 'ies'}; the sighting alerts stay for people to close.`)
 }
 
 (cmd === 'plant' ? plant() : cmd === 'measure' ? measure() : remove()).catch(err => die(String(err?.stack ?? err)))

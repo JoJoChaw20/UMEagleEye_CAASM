@@ -85,6 +85,18 @@ test('S1 severity: feed and high events critical, medium high, low medium; a URL
   assert.equal(sightingSeverity([row('domain', 'a.com', { tiEventId: 'e', level: 'low' }), row('domain', 'a.com')]), 'critical')
 })
 
+test('S1 severity follows a feed entry\'s confidence: 75%+ critical, 50%+ high, below medium', () => {
+  assert.equal(sightingSeverity([row('domain', 'a.com', { confidence: 1 })]), 'critical')
+  assert.equal(sightingSeverity([row('domain', 'a.com', { confidence: 0.75 })]), 'critical')
+  assert.equal(sightingSeverity([row('domain', 'a.com', { confidence: 0.5 })]), 'high')
+  assert.equal(sightingSeverity([row('domain', 'a.com', { confidence: 0.25 })]), 'medium')
+  assert.equal(sightingSeverity([row('url', 'http://a.com/x', { confidence: 0.25 })]), 'low')
+  // the surest source wins
+  assert.equal(sightingSeverity([row('domain', 'a.com', { confidence: 0.25 }), row('domain', 'a.com', { confidence: 0.9 })]), 'critical')
+  // an event's level does not depend on a confidence
+  assert.equal(sightingSeverity([row('domain', 'a.com', { tiEventId: 'e', level: 'high', confidence: null })]), 'critical')
+})
+
 test('a first sighting: one alert with what the computer did and who lists it', () => {
   const { matched } = matchHits([
     hit('c2.evil.com', { count: 3 }),

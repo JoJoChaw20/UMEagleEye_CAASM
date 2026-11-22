@@ -8,7 +8,7 @@ import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } fro
 import type { Env } from '../types'
 import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
+import { ACTIVE_FEEDS, CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
   ATTACK, buildMatrix, expandTechniques, type MatrixGroup, softwareName, softwareUsing, techniqueName, techniquesFor,
@@ -205,11 +205,12 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       // Feed health: each feed's count, and when it last loaded (null before the first
       // recorded run). next_ingest_at is the nightly run: null on staging, which has no crons;
       // there can_ingest lets the Platform Superadmin load them (feedRefresh).
-      feeds: bySource.map((r) => ({
-        source:     r.source,
-        count:      r.count,
-        ok:         lastIngest?.feeds?.[r.source]?.ok ?? null,
-        last_ok_at: lastIngest?.feeds?.[r.source]?.last_ok_at ?? null,
+      // The feeds the nightly chain loads, in its order (a retired feed's rows are counted above, not here)
+      feeds: ACTIVE_FEEDS.map((source) => ({
+        source,
+        count:      bySource.find((r) => r.source === source)?.count ?? 0,
+        ok:         lastIngest?.feeds?.[source]?.ok ?? null,
+        last_ok_at: lastIngest?.feeds?.[source]?.last_ok_at ?? null,
       })),
       last_ingest_at: lastIngest?.at ?? null,
       next_ingest_at: feedRefresh(c.env.APP_ENV).scheduled ? nextIngestAt(new Date()).toISOString() : null,
@@ -437,8 +438,13 @@ app.get('/lookup', authMiddleware, requireAction('cti.view'), async (c) => {
         indicator: {
           ...toSnake(indicator),
           event_title: hit?.eventTitle ?? null,
-          techniques: techniquesFor(indicator.attackSoftware, indicator.attackTechniques)
-            .map((id) => ({ id, name: techniqueName(id) })),
+          // documented for the family in ATT&CK, or inferred from its kind or role (lib/malwareKind.ts),
+          // or for a KEV CVE from MITRE CTID's mappings
+          techniques: techniquesFor(indicator.attackSoftware, indicator.attackTechniques).map((id) => ({
+            id, name: techniqueName(id),
+            how: techniquesFor(indicator.attackSoftware, []).includes(id) ? 'documented'
+              : indicator.source === 'CISA KEV' ? 'mapped' : 'inferred',
+          })),
         },
         matched_internal_asset,
         matched_assets,
