@@ -65,6 +65,22 @@ test('exempt account without MFA passes outside /auth; non-exempt is still refus
   assert.equal(sessionGate({ iat: 1 }, row, DATA, new Date(), false)?.status, 403)
 })
 
+test('starting password: refused outside /auth until changed, MFA-exempt or not', () => {
+  const row = { ...ROW, passwordChangeRequired: true }
+  const r = sessionGate({ iat: 1 }, row, DATA)
+  assert.equal(r?.status, 403)
+  assert.deepEqual(r?.body, { detail: 'Choose your own password to continue.', password_change_required: true })
+  assert.equal(sessionGate({ iat: 1 }, row, DATA, new Date(), true)?.status, 403)
+  assert.equal(sessionGate({ iat: 1 }, row, '/api/v1/auth/me'), null)
+  assert.equal(sessionGate({ iat: 1 }, row, '/api/v1/auth/change-password'), null)
+  assert.equal(sessionGate({ iat: 1 }, { ...ROW, passwordChangeRequired: false }, DATA), null)
+})
+
+test('MFA setup is asked before the password change', () => {
+  const r = sessionGate({ iat: 1 }, { ...ROW, mfaEnabled: false, passwordChangeRequired: true }, DATA)
+  assert.equal(r?.body.mfa_setup_required, true)
+})
+
 test('exempt account is still refused when deactivated or session ended', () => {
   const row = { ...ROW, mfaEnabled: false }
   assert.equal(sessionGate({ iat: 1 }, { ...row, isActive: false }, DATA, new Date(), true)?.status, 401)

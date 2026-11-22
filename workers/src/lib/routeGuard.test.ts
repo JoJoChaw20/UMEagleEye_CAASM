@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // Routes that need a login but no permission: they act only on the caller's own account.
 const SELF_SERVICE = new Set([
   'auth.ts:/mfa/status', 'auth.ts:/mfa/recovery-codes', 'auth.ts:/change-password', 'auth.ts:/set-password',
-  'auth.ts:/me', 'auth.ts:/actions',
+  'auth.ts:/me', 'auth.ts:/actions', 'auth.ts:/google/connect',
   // Ownership handover: the caller's own tenant and own pending transfer are checked in the handler.
   'ownership.ts:/:tenantId/ownership', 'ownership.ts:/:tenantId/ownership/transfer/accept',
   'ownership.ts:/:tenantId/ownership/transfer/decline',

@@ -1,33 +1,75 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Users, Shield, Clock, Eye, EyeOff, Lock, Check, LifeBuoy } from 'lucide-react'
+import { useGoogleLogin } from '@react-oauth/google'
+import { Users, Shield, Clock, Eye, EyeOff, Lock, Check, LifeBuoy, Link2 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import client from '../api/client'
 import { roleLabel } from '../utils/actions'
 import { isMfaExemptUser, lostMfaAdvice, recoveryCodesLeftLabel } from '../utils/mfa'
+import { isStrongPassword } from '../utils/password'
 import { FormAlert, errorText } from '../components/auth/AuthParts'
 import StepUpDialog from '../components/auth/StepUpDialog'
 import RecoveryCodes from '../components/auth/RecoveryCodes'
+import PasswordChecklist from '../components/auth/PasswordChecklist'
 
-const passwordRequirements = [
-  ['length', 'At least 12 characters'],
-  ['lowercase', 'A lowercase letter'],
-  ['uppercase', 'An uppercase letter'],
-  ['number', 'A number'],
-  ['special', 'A special character'],
-  ['space', 'No spaces'],
-]
+// ── Connect Google: Google proves the address, which becomes the account's email ──
+// For an account created with a username and starting password (no email), or one whose email is a
+// placeholder. Google is picked first, then the step-up dialog confirms it is the account's owner.
+function ConnectGoogle({ user, onConnected }) {
+  const [googleToken, setGoogleToken] = useState(null)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+  const pickGoogle = useGoogleLogin({
+    onSuccess: (r) => { setError(''); setGoogleToken(r.access_token) },
+    onError: () => setError('Google sign-in did not finish. Try again.'),
+  })
+  const connect = async (stepUp) => {
+    const res = await client.post('/auth/google/connect', { access_token: googleToken, ...stepUp })
+    setGoogleToken(null)
+    setDone(res.data.detail)
+    await onConnected()
+  }
+  const configured = !!import.meta.env.VITE_GOOGLE_CLIENT_ID
 
-const passwordChecks = (password) => ({
-  length: password.length >= 12,
-  lowercase: /[a-z]/.test(password),
-  uppercase: /[A-Z]/.test(password),
-  number: /[0-9]/.test(password),
-  special: /[^A-Za-z0-9\s]/.test(password),
-  space: !/\s/.test(password),
-})
+  return (
+    <div className="glass-card p-6">
+      <div className="mb-4 flex items-center gap-3">
+        <Link2 className="h-5 w-5 text-eagle-400" />
+        <h2 className="text-lg font-semibold text-dark-50">Google sign-in</h2>
+      </div>
+      <FormAlert tone="success" className="mb-3">{done}</FormAlert>
+      <FormAlert className="mb-3">{error}</FormAlert>
+      {user?.google_connected ? (
+        <p className="text-sm text-dark-300">
+          Connected to <span className="font-medium text-dark-50">{user.email}</span>. You can sign in with Google or with your username and password.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-dark-400">
+            {user?.email
+              ? 'Connect your Google account to also sign in with Google. Its address replaces the email shown above.'
+              : 'This account has no email yet. Connect your Google account: its address becomes your email, and you can then also sign in with Google.'}
+          </p>
+          {configured ? (
+            <button type="button" onClick={() => pickGoogle()} className="btn-primary flex items-center gap-2">
+              <Link2 className="h-4 w-4" /> Connect Google account
+            </button>
+          ) : (
+            <p className="text-sm text-dark-500">Google sign-in is not set up on this server.</p>
+          )}
+        </div>
+      )}
+      {googleToken && (
+        <StepUpDialog title="Connect Google account" idPrefix="google" confirmLabel="Connect"
+          onSubmit={connect} onCancel={() => setGoogleToken(null)}>
+          Confirm it is you. The Google account you just chose will be able to sign in to this account.
+        </StepUpDialog>
+      )}
+    </div>
+  )
+}
 
 export default function SettingsPage() {
-  const { user } = useAuth()
+  const { user, refreshUser } = useAuth()
 
   // MFA state
   const [mfaStatus, setMfaStatus] = useState(null)      // { mfa_enabled, recovery_codes_left }
@@ -63,8 +105,7 @@ export default function SettingsPage() {
   const [pwLoading, setPwLoading] = useState(false)
   const [passwordSet, setPasswordSet] = useState(false)
   const hasPassword = passwordSet || user?.hasPassword !== false
-  const newPasswordChecks = passwordChecks(newPassword)
-  const newPasswordIsStrong = Object.values(newPasswordChecks).every(Boolean)
+  const newPasswordIsStrong = isStrongPassword(newPassword)
 
   const handleChangePassword = async (e) => {
     e.preventDefault()
@@ -138,7 +179,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <p className="text-dark-400 mb-1">Email</p>
-            <p className="text-dark-50 font-medium">{user?.email || '—'}</p>
+            <p className="text-dark-50 font-medium">{user?.email || <span className="text-dark-400 font-normal">Not connected</span>}</p>
           </div>
           <div>
             <p className="text-dark-400 mb-1">Role</p>
@@ -152,6 +193,8 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+
+      <ConnectGoogle user={user} onConnected={refreshUser} />
 
       {/* Password */}
       <div className="glass-card p-6">
@@ -212,13 +255,7 @@ export default function SettingsPage() {
                 {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
-              {passwordRequirements.map(([key, label]) => (
-                <span key={key} className={`text-[11px] ${newPasswordChecks[key] ? 'text-green-400' : 'text-dark-500'}`}>
-                  {newPasswordChecks[key] ? '✓' : '○'} {label}
-                </span>
-              ))}
-            </div>
+            <PasswordChecklist password={newPassword} />
           </div>
           <div>
             <label className="block text-xs text-dark-400 mb-1">Confirm New Password</label>

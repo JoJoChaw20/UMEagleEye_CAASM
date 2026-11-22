@@ -5,6 +5,8 @@ import {
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import ActionPicker from '../components/users/ActionPicker'
+import StartingPasswordFields from '../components/users/StartingPasswordFields'
+import { inviteBody, inviteDoneText, isStrongPassword } from '../utils/password'
 import { SidePanel, RowMenu, Toast, useToast, Spinner } from '../components/common/PageParts'
 import StepUpDialog from '../components/auth/StepUpDialog'
 import { MFA_RESET_GUIDANCE, mfaResetToast } from '../utils/mfa'
@@ -87,7 +89,7 @@ function EditAccessPanel({ tenantId, target, onClose, onSaved }) {
   return (
     <SidePanel
       title={`Edit access for ${target.username}`}
-      subtitle={target.email}
+      subtitle={target.email || target.username}
       onClose={onClose}
       width="sm:w-[640px]"
       dirty={dirty}
@@ -105,37 +107,38 @@ function EditAccessPanel({ tenantId, target, onClose, onSaved }) {
   )
 }
 
-// ── Invite (new or existing account by email) or add an existing account by username ──
+// ── Invite (new or existing account by email), create one with a starting password, or add an existing account ──
 function InvitePanel({ tenantId, onClose, onDone }) {
   const { catalog } = useAuth()
   const [mode, setMode] = useState('email')
   const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [actions, setActions] = useState([])
   const [assignUsername, setAssignUsername] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
-  const dirty = !!(email || username || actions.length || assignUsername)
+  const dirty = !!(email || username || password || actions.length || assignUsername)
+  const creating = mode === 'email' || mode === 'password'
 
   const submit = async (e) => {
     e.preventDefault()
+    if (mode === 'password' && !isStrongPassword(password)) {
+      setError('Choose a starting password that meets every rule.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
-      if (mode === 'email') {
-        const res = await client.post(`/tenants/${tenantId}/users/invite`, {
-          email: email.trim(), username: username.trim() || undefined, actions,
-        })
-        const d = res.data
-        onDone(d.action === 'created'
-          ? `Invited ${d.email}. They sign in with Google using this email.`
-          : `${d.username} added to this tenant.`)
+      if (creating) {
+        const res = await client.post(`/tenants/${tenantId}/users/invite`, inviteBody(mode, { email, username, password, actions }))
+        onDone(inviteDoneText(mode, res.data))
       } else {
         const res = await client.post(`/tenants/${tenantId}/users`, { username: assignUsername.trim() })
         onDone(`${res.data.username || assignUsername.trim()} added to this tenant with no access.`)
       }
     } catch (err) {
-      setError(errorDetail(err, mode === 'email' ? 'Could not invite this user.' : 'Could not add this user.'))
+      setError(errorDetail(err, creating ? 'Could not create this user.' : 'Could not add this user.'))
       setSubmitting(false)
     }
   }
@@ -147,11 +150,12 @@ function InvitePanel({ tenantId, onClose, onDone }) {
       width="sm:w-[640px]"
       dirty={dirty}
       footer={(requestClose) => (
-        <PanelButtons form="invite-user" onCancel={requestClose} submitting={submitting} label={mode === 'email' ? 'Invite' : 'Add user'} error={error} />
+        <PanelButtons form="invite-user" onCancel={requestClose} submitting={submitting}
+          label={mode === 'email' ? 'Invite' : mode === 'password' ? 'Create user' : 'Add user'} error={error} />
       )}
     >
       <div className="flex gap-1 rounded-lg border border-dark-700/50 bg-dark-800/60 p-1" role="tablist" aria-label="How to add">
-        {[['email', 'Invite by email'], ['username', 'Existing account']].map(([m, label]) => (
+        {[['email', 'Invite by email'], ['password', 'Username and password'], ['username', 'Existing account']].map(([m, label]) => (
           <button key={m} type="button" role="tab" aria-selected={mode === m}
             onClick={() => { setMode(m); setError(null) }}
             className={`flex-1 rounded-md py-1.5 text-xs transition-colors ${mode === m ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}>
@@ -161,23 +165,30 @@ function InvitePanel({ tenantId, onClose, onDone }) {
       </div>
 
       <form id="invite-user" onSubmit={submit} className="space-y-4">
-        {mode === 'email' ? (
+        {creating ? (
           <>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label htmlFor="invite-email" className="mb-1 block text-xs text-dark-400">Email</label>
-                <input id="invite-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@example.com" className="input-field w-full text-sm" required autoFocus />
-              </div>
-              <div>
-                <label htmlFor="invite-username" className="mb-1 block text-xs text-dark-400">
-                  Username <span className="text-dark-600">(optional)</span>
-                </label>
-                <input id="invite-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
-                  placeholder="From the email" className="input-field w-full text-sm" minLength={3} maxLength={100} />
-              </div>
-            </div>
-            <p className="text-xs text-dark-500">They sign in with Google using this email.</p>
+            {mode === 'email' ? (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="invite-email" className="mb-1 block text-xs text-dark-400">Email</label>
+                    <input id="invite-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@example.com" className="input-field w-full text-sm" required autoFocus />
+                  </div>
+                  <div>
+                    <label htmlFor="invite-username" className="mb-1 block text-xs text-dark-400">
+                      Username <span className="text-dark-600">(optional)</span>
+                    </label>
+                    <input id="invite-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
+                      placeholder="From the email" className="input-field w-full text-sm" minLength={3} maxLength={100} />
+                  </div>
+                </div>
+                <p className="text-xs text-dark-500">They sign in with Google using this email.</p>
+              </>
+            ) : (
+              <StartingPasswordFields idPrefix="invite" username={username} onUsername={setUsername}
+                password={password} onPassword={setPassword} />
+            )}
             <div className="space-y-3 border-t border-dark-700/60 pt-4">
               <div>
                 <h3 className="text-sm font-semibold text-dark-100">Access</h3>
@@ -453,7 +464,7 @@ export default function TenantSettingsPage() {
                         <span className="font-medium text-dark-50">{u.username}</span>
                         {isSelf && <span className="ml-2 rounded bg-dark-700 px-1 py-0.5 text-[11px] text-dark-400">you</span>}
                       </td>
-                      <td className="text-sm text-dark-300">{u.email}</td>
+                      <td className="text-sm text-dark-300">{u.email || <span className="text-dark-500">No email yet</span>}</td>
                       <td>
                         {catalogFailed ? (
                           <span className="flex items-center gap-2 text-sm text-dark-500">

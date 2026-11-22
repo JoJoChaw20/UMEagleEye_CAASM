@@ -1,6 +1,7 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import PermissionsError from './PermissionsError'
+import ChoosePasswordScreen from '../auth/ChoosePasswordScreen'
 
 // `action` needs that action; `check(user)` is for role-only pages (users, tenants).
 export default function ProtectedRoute({ children, action, check }) {
@@ -15,6 +16,9 @@ export default function ProtectedRoute({ children, action, check }) {
   }
 
   if (!token) return <Navigate to="/login" replace />
+
+  // A starting password from whoever created the account: nothing else until it is replaced.
+  if (user?.password_change_required) return <ChoosePasswordScreen />
 
   if (user?.role === 'superadmin' && catalogError && action) return <PermissionsError />
 

@@ -23,6 +23,9 @@ import { applyDueBreakGlass } from '../services/breakGlass'
 import { settleOwnership } from '../services/ownership'
 import { isDeactivated } from '../lib/sessionGate'
 import { flipIfDue } from '../services/deactivation'
+import { connectRefusal } from '../lib/googleConnect'
+import { passwordSchema } from '../lib/passwordRules'
+import { isUniqueViolation } from '../lib/fkViolation'
 import { HOLD_HOURS, breakGlassEligible, nextState } from '../lib/breakGlass'
 import { ACTIONS, GROUPS, PRESETS } from '../lib/actions'
 import { enrolsTwoDevices, signIn, withAccount } from '../lib/accountRows'
@@ -39,13 +42,6 @@ const app = new Hono<{ Bindings: Env }>()
 type Ctx = Context<{ Bindings: Env }>
 type UserRow = typeof users.$inferSelect
 
-const passwordSchema = z.string()
-  .min(12, 'Password must be at least 12 characters')
-  .regex(/[a-z]/, 'Password must contain a lowercase letter')
-  .regex(/[A-Z]/, 'Password must contain an uppercase letter')
-  .regex(/[0-9]/, 'Password must contain a number')
-  .regex(/[^A-Za-z0-9\s]/, 'Password must contain a special character')
-  .refine((password) => !/\s/.test(password), 'Password must not contain spaces')
 
 // A password hash to check against when the username does not exist, so a wrong username takes
 // as long as a wrong password and cannot be told apart by timing.
@@ -511,36 +507,42 @@ app.post('/mfa/enrol/finish', zValidator('json', enrolFinishSchema), async (c) =
 // ID, or by email only when Google has verified that email.
 const googleSchema = z.object({ access_token: z.string() })
 
+type GoogleIdentity = { sub: string; email: string; name?: string; email_verified?: boolean }
+
+/** The Google account behind an access token issued to EagleEye's own client, or the refusal to send. */
+async function googleIdentity(c: Ctx, googleToken: string): Promise<{ id: GoogleIdentity; refused?: undefined } | { refused: Response }> {
+  // The token must have been issued to EagleEye's own Google client: userinfo alone accepts a
+  // token from ANY site the user signed in to with Google, which could then sign in here as them.
+  // tokeninfo names the client (aud/azp); the token goes in the body, not the URL, so it is not logged.
+  if (!c.env.GOOGLE_CLIENT_ID) return { refused: c.json({ detail: 'Google sign-in is not set up on this server' }, 503) }
+  const infoRes = await fetch('https://oauth2.googleapis.com/tokeninfo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ access_token: googleToken }),
+  })
+  const info = infoRes.ok ? await infoRes.json() as { aud?: string; azp?: string } : null
+  if (!info || (info.aud !== c.env.GOOGLE_CLIENT_ID && info.azp !== c.env.GOOGLE_CLIENT_ID)) {
+    return { refused: c.json({ detail: 'Invalid Google access token' }, 401) }
+  }
+
+  // The account's details from Google's userinfo endpoint (the token in a header, not the URL)
+  const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${googleToken}` },
+  })
+  if (!userinfoRes.ok) return { refused: c.json({ detail: 'Invalid Google access token' }, 401) }
+  const id = await userinfoRes.json() as GoogleIdentity
+  if (!id.sub || !id.email) return { refused: c.json({ detail: 'Invalid Google user info' }, 401) }
+  return { id }
+}
+
 app.post('/google', zValidator('json', googleSchema), async (c) => {
   try {
     const { access_token: googleToken } = c.req.valid('json')
     const db = getDb(c.env.DATABASE_URL)
 
-    // The token must have been issued to EagleEye's own Google client: userinfo alone accepts a
-    // token from ANY site the user signed in to with Google, which could then sign in here as them.
-    // tokeninfo names the client (aud/azp); the token goes in the body, not the URL, so it is not logged.
-    if (!c.env.GOOGLE_CLIENT_ID) return c.json({ detail: 'Google sign-in is not set up on this server' }, 503)
-    const infoRes = await fetch('https://oauth2.googleapis.com/tokeninfo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ access_token: googleToken }),
-    })
-    const info = infoRes.ok ? await infoRes.json() as { aud?: string; azp?: string } : null
-    if (!info || (info.aud !== c.env.GOOGLE_CLIENT_ID && info.azp !== c.env.GOOGLE_CLIENT_ID)) {
-      return c.json({ detail: 'Invalid Google access token' }, 401)
-    }
-
-    // The account's details from Google's userinfo endpoint (the token in a header, not the URL)
-    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${googleToken}` },
-    })
-    if (!userinfoRes.ok) {
-      return c.json({ detail: 'Invalid Google access token' }, 401)
-    }
-    const googlePayload = await userinfoRes.json() as { sub: string; email: string; name?: string; email_verified?: boolean }
-    if (!googlePayload.sub || !googlePayload.email) {
-      return c.json({ detail: 'Invalid Google user info' }, 401)
-    }
+    const google = await googleIdentity(c, googleToken)
+    if (google.refused) return google.refused
+    const googlePayload = google.id
 
     // The account this Google login belongs to: the one it is linked to, else the one with its
     // email, but only an email Google has verified (otherwise anyone could add an admin's address
@@ -582,6 +584,62 @@ app.post('/google', zValidator('json', googleSchema), async (c) => {
   }
 })
 
+// ── POST /google/connect ─────────────────────────────────────────
+// The signed-in owner of an account (often one created with a username and starting password, so
+// with no email) connects their Google account: Google's verified address becomes the account's
+// email and Google sign-in works from then on. Confirmed with step-up (password and MFA code), so a
+// stolen session cannot add its own way in. Rules: lib/googleConnect.ts.
+const googleConnectSchema = z.object({
+  access_token: z.string(),
+  password: z.string().optional(),
+  code: z.string().optional(),
+})
+
+app.post('/google/connect', authMiddleware, zValidator('json', googleConnectSchema), async (c) => {
+  try {
+    const { access_token: googleToken, password, code } = c.req.valid('json')
+    const authUser = c.get('user')
+    const db = getDb(c.env.DATABASE_URL)
+
+    const [user] = await db.select().from(users).where(eq(users.userId, authUser.userId)).limit(1)
+    if (!user) return c.json({ detail: 'User not found' }, 404)
+    if (user.googleId) return c.json({ detail: 'A Google account is already connected to this account.' }, 409)
+
+    // Google first: it changes nothing, while step-up uses up the MFA code.
+    const google = await googleIdentity(c, googleToken)
+    if (google.refused) return google.refused
+    const id = google.id
+
+    const refused = await stepUp(c, db, user, { password, code })
+    if (refused) return refused
+
+    const [byGoogleId] = await db.select({ userId: users.userId }).from(users).where(eq(users.googleId, id.sub)).limit(1)
+    const [byEmail] = await db.select({ userId: users.userId }).from(users).where(eq(users.email, id.email)).limit(1)
+    const refusal = connectRefusal(user, id, byGoogleId, byEmail)
+    if (refusal) return c.json({ detail: refusal.detail }, refusal.status)
+
+    try {
+      // google_id IS NULL in the WHERE: two connects at once cannot both win.
+      const done = await db.update(users).set({ googleId: id.sub, email: id.email })
+        .where(and(eq(users.userId, user.userId), isNull(users.googleId)))
+        .returning({ userId: users.userId })
+      if (done.length === 0) return c.json({ detail: 'A Google account is already connected to this account.' }, 409)
+    } catch (err) {
+      // Another account took the Google ID or the address between the check and the write.
+      if (isUniqueViolation(err)) return c.json({ detail: 'That Google account or email address belongs to another EagleEye account.' }, 409)
+      throw err
+    }
+    await audit(db, c, {
+      userId: user.userId, tenantId: user.tenantId, actionType: 'auth.google_connected', targetEntity: user.userId,
+      previousState: { email: user.email }, newState: { email: id.email },
+    })
+    return c.json({ detail: 'Google account connected. You can now also sign in with Google.', email: id.email })
+  } catch (err) {
+    console.error('google connect error:', err)
+    return c.json({ detail: 'Could not connect the Google account' }, 500)
+  }
+})
+
 // ── POST /change-password ────────────────────────────────────────
 const changePasswordSchema = z.object({
   current_password: z.string(),
@@ -599,9 +657,13 @@ app.post('/change-password', authMiddleware, zValidator('json', changePasswordSc
 
     const valid = await verifyPassword(current_password, user.passwordHash)
     if (!valid) return c.json({ detail: 'Current password is incorrect' }, 400)
+    // A starting password set by an administrator must really be replaced.
+    if (user.passwordChangeRequired && new_password === current_password) {
+      return c.json({ detail: 'Choose a password different from the one you were given.' }, 400)
+    }
 
     const newHash = await hashPassword(new_password)
-    await db.update(users).set({ passwordHash: newHash }).where(eq(users.userId, authUser.userId))
+    await db.update(users).set({ passwordHash: newHash, passwordChangeRequired: false }).where(eq(users.userId, authUser.userId))
     await audit(db, c, { userId: authUser.userId, tenantId: authUser.tenantId ?? null, actionType: 'auth.password_changed', targetEntity: authUser.userId })
 
     return c.json({ detail: 'Password changed successfully' })
@@ -663,6 +725,8 @@ app.get('/me', authMiddleware, async (c) => {
         telegramChatId: users.telegramChatId,
         passwordHash:   users.passwordHash,
         actions:        users.actions,
+        googleId:       users.googleId,
+        passwordChangeRequired: users.passwordChangeRequired,
       })
       .from(users)
       .leftJoin(tenants, eq(users.tenantId, tenants.tenantId))
@@ -674,8 +738,12 @@ app.get('/me', authMiddleware, async (c) => {
     }
 
     // Role and actions as normalized (a legacy role reads as a tenant user): lib/accountRows.ts
-    const { passwordHash, ...profile } = withAccount(row)
-    return c.json({ ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH, mfa_exempt: isMfaExempt(c.env, row.username, row.role) })
+    // The Google ID itself is never sent, only whether one is connected.
+    const { passwordHash, googleId, passwordChangeRequired, ...profile } = withAccount(row)
+    return c.json({
+      ...profile, hasPassword: passwordHash !== NO_PASSWORD_HASH, mfa_exempt: isMfaExempt(c.env, row.username, row.role),
+      google_connected: !!googleId, password_change_required: passwordChangeRequired,
+    })
   } catch (err) {
     console.error('me error:', err)
     return c.json({ detail: 'Failed to fetch user profile' }, 500)

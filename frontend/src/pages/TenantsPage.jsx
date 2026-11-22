@@ -7,6 +7,8 @@ import { accessSummary, countActions } from '../utils/actions'
 import StepUpDialog from '../components/auth/StepUpDialog'
 import { stepUpReady } from '../utils/mfa.js'
 import { RESTORE_VERIFICATION, restoreReady, restoreBody } from '../utils/notices'
+import { inviteBody, inviteDoneText, isStrongPassword } from '../utils/password'
+import StartingPasswordFields from '../components/users/StartingPasswordFields'
 
 // ── Status badge ──────────────────────────────────────────────────
 function ActiveBadge({ active }) {
@@ -106,17 +108,25 @@ function CreateTenantModal({ onClose, onSubmit }) {
 // tenant's first Tenant Superadmin (POST .../users/invite with as_tenant_superadmin).
 function InviteOwner({ tenantId, onInvited }) {
   const [open, setOpen] = useState(false)
+  const [mode, setMode] = useState('email')   // 'email' | 'password' (username + starting password, no email)
   const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
   const submit = async (e) => {
     e.preventDefault()
+    if (mode === 'password' && !isStrongPassword(password)) {
+      setError('Choose a starting password that meets every rule.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
-      const res = await client.post(`/tenants/${tenantId}/users/invite`, { email: email.trim(), as_tenant_superadmin: true })
-      await onInvited(res.data)
+      const res = await client.post(`/tenants/${tenantId}/users/invite`,
+        inviteBody(mode, { email, username: mode === 'password' ? username : '', password, as_tenant_superadmin: true }))
+      await onInvited(inviteDoneText(mode, res.data, ' as Tenant Superadmin'))
     } catch (err) {
       const d = err?.response?.data?.detail
       setError(typeof d === 'string' && d ? d : 'Could not invite this user.')
@@ -141,21 +151,35 @@ function InviteOwner({ tenantId, onInvited }) {
         )}
       </div>
       {open && (
-        <form onSubmit={submit} className="space-y-2">
+        <form onSubmit={submit} className="space-y-3">
           {error && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-400">{error}</p>}
-          <label htmlFor="owner-email" className="block text-xs text-dark-400">Email</label>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input id="owner-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@example.com" className="input-field flex-1 text-sm" required autoFocus />
-            <div className="flex gap-2">
-              <button type="button" onClick={() => { setOpen(false); setError(null) }} className="btn-secondary text-xs py-1.5">Cancel</button>
-              <button type="submit" disabled={submitting} className="btn-primary flex items-center gap-1 text-xs py-1.5">
-                {submitting ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                Invite Tenant Superadmin
+          <div className="flex gap-1 rounded-lg border border-dark-700/50 bg-dark-800/60 p-1" role="tablist" aria-label="How to create the account">
+            {[['email', 'By email'], ['password', 'Username and password']].map(([m, label]) => (
+              <button key={m} type="button" role="tab" aria-selected={mode === m}
+                onClick={() => { setMode(m); setError(null) }}
+                className={`flex-1 rounded-md py-1.5 text-xs transition-colors ${mode === m ? 'bg-eagle-500/20 text-eagle-400' : 'text-dark-400 hover:text-dark-50'}`}>
+                {label}
               </button>
-            </div>
+            ))}
           </div>
-          <p className="text-xs text-dark-500">They sign in with Google using this email.</p>
+          {mode === 'email' ? (
+            <div className="space-y-2">
+              <label htmlFor="owner-email" className="block text-xs text-dark-400">Email</label>
+              <input id="owner-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                placeholder="name@example.com" className="input-field w-full text-sm" required autoFocus />
+              <p className="text-xs text-dark-500">They sign in with Google using this email.</p>
+            </div>
+          ) : (
+            <StartingPasswordFields idPrefix="owner" username={username} onUsername={setUsername}
+              password={password} onPassword={setPassword} />
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => { setOpen(false); setError(null) }} className="btn-secondary text-xs py-1.5">Cancel</button>
+            <button type="submit" disabled={submitting} className="btn-primary flex items-center gap-1 text-xs py-1.5">
+              {submitting ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+              {mode === 'email' ? 'Invite Tenant Superadmin' : 'Create Tenant Superadmin'}
+            </button>
+          </div>
         </form>
       )}
     </div>
@@ -208,8 +232,8 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
 
   const hasOwner = users.some((u) => u.role === 'tenant_superadmin')
 
-  const onInvited = async (data) => {
-    showToast(`Invited ${data.email} as Tenant Superadmin.`)
+  const onInvited = async (message) => {
+    showToast(message)
     await refreshUsers()
     if (onAssigned) onAssigned()
   }
@@ -252,7 +276,7 @@ function UsersPanel({ tenant, onClose, onAssigned }) {
                       <tr key={u.user_id}>
                         <td>
                           <p className="text-sm font-medium text-dark-50">{u.username}</p>
-                          <p className="break-all text-xs text-dark-400">{u.email}</p>
+                          <p className="break-all text-xs text-dark-400">{u.email || 'No email yet'}</p>
                           <p className="mt-0.5 break-all font-mono text-[11px] text-dark-500" title="User ID">{u.user_id}</p>
                         </td>
                         <td className={`text-sm ${tone}`}>

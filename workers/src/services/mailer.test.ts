@@ -19,6 +19,14 @@ test('sendMail with a fake binding passes to/from/subject/text', async () => {
   assert.deepEqual(sent, [{ to: 'a@example.com', from: { email: 'no-reply@example.com', name: 'UMEagleEye' }, subject: 'Hi', text: 'Body' }])
 })
 
+test('an account with no email: nothing is sent', async () => {
+  const sent: unknown[] = []
+  const configured = env({ EMAIL: { send: async (m) => { sent.push(m) } }, MAIL_FROM: 'no-reply@example.com' })
+  assert.deepEqual(await sendMail(configured, { ...msg, to: null }), { sent: false })
+  assert.deepEqual(await sendMail(configured, { ...msg, to: undefined }), { sent: false })
+  assert.deepEqual(sent, [])
+})
+
 test('binding that throws gives sent:false', async () => {
   const r = await sendMail(env({ EMAIL: { send: async () => { throw new Error('boom') } }, MAIL_FROM: 'x@example.com' }), msg)
   assert.deepEqual(r, { sent: false })

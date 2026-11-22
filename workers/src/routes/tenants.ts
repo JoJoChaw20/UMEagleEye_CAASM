@@ -11,7 +11,7 @@ import { tenants, users, assets, auditLogs } from '../db/schema'
 import { AGENT_KINDS, DEFAULTS, POLICY_SPECS, ROLE_KEYS, applyChange, kindKeys, tenantDefaultsFor, type PolicyKey, type PolicyValue } from '../lib/agentPolicy'
 import { actionChanges, addRefusal, parseActionList, type Refusal } from '../lib/userAdmin'
 import { defaultsChangeActions, tenantPatchRefusal } from '../lib/policyChange'
-import { isFkViolation, isNotNullViolation, isOwnerIndexViolation } from '../lib/fkViolation'
+import { isFkViolation, isNotNullViolation, isOwnerIndexViolation, isUniqueViolation } from '../lib/fkViolation'
 import { decide, normalizeAccount, refusalMessage } from '../lib/actions'
 import { planActionsUpdate, roleOf, tenantUserItem } from '../lib/accountRows'
 import { audit } from '../services/audit'
@@ -20,9 +20,12 @@ import { ACCOUNT_CHANGED, deleteUserStatements } from '../services/userDelete'
 import { sendMail } from '../services/mailer'
 import { stillOwner } from '../lib/ownership'
 import { isDeactivated } from '../lib/sessionGate'
-import { ALREADY_OWNED, OWNERSHIP_ONLY, auditOwnerInvite, ownerInviteStatement, planOwnerInvite } from '../services/ownerInvite'
+import { ALREADY_OWNED, OWNERSHIP_ONLY, auditOwnerInvite, ownerInviteStatement, planOwnerInvite, usernameFor } from '../services/ownerInvite'
 import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
-import { NO_PASSWORD_HASH } from '../lib/auth'
+import { NO_PASSWORD_HASH, hashPassword } from '../lib/auth'
+import { inviteCredentials } from '../lib/passwordRules'
+
+const USERNAME_TAKEN = { detail: 'That username is already taken. Choose another one.' }
 import { networkTargetErrors } from '../services/scanTargets'
 
 const router = new Hono<{ Bindings: Env }>()
@@ -366,24 +369,32 @@ router.post(
   }
 )
 
-// ── POST /:tenantId/users/invite — Create or assign user by email ──
+// ── POST /:tenantId/users/invite — Create or assign user by email, or create one with a starting password ──
 // The Tenant Superadmin of this tenant invites tenant users, with the actions to grant (closed over
 // their requirements). Until the provisioning flow exists (spec, section 5), the Platform Superadmin
 // may only invite a tenant's first Tenant Superadmin: as_tenant_superadmin, into a tenant that has none.
+// Without an email, `username` and `password` create a new account with that starting password; its owner
+// must choose their own at first sign-in and may connect Google later (POST /auth/google/connect).
 router.post(
   '/:tenantId/users/invite',
   authMiddleware,
   (c, next) => (c.get('user').role === 'superadmin' ? requirePlatformSuperadmin : requireTenantSuperadmin)(c, next),
   zValidator('json', z.object({
-    email: z.string().email(),
-    username: z.string().min(3).max(100).optional(),
+    email: z.string().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
     actions: z.array(z.string()).optional(),
     as_tenant_superadmin: z.boolean().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
     const { tenantId } = c.req.param()
-    const { email, username, actions: requested, as_tenant_superadmin } = c.req.valid('json')
+    const body = c.req.valid('json')
+    const { actions: requested, as_tenant_superadmin } = body
+    const creds = inviteCredentials(body)
+    if (!creds.ok) return c.json({ detail: creds.detail }, 400)
+    const { email, username } = creds
+    const startingHash = creds.password ? await hashPassword(creds.password) : undefined
     const caller = c.get('user')
     const byPlatform = caller.role === 'superadmin'
 
@@ -411,7 +422,7 @@ router.post(
         return c.json({ detail: 'That account is deactivated. Choose an active account or a new email.' }, 409)
       }
       try {
-        const [added] = await ownerInviteStatement(db, plan, tenantId, email)
+        const [added] = await ownerInviteStatement(db, plan, tenantId, email, undefined, startingHash)
         if (!added) return c.json(ALREADY_OWNED, 409)
         await auditOwnerInvite(db, c, caller, tenantId, plan, added, email)
         return c.json({
@@ -423,6 +434,7 @@ router.post(
         if (isOwnerIndexViolation(err) || isNotNullViolation(err)) {
           return c.json(ALREADY_OWNED, 409)
         }
+        if (isUniqueViolation(err)) return c.json(USERNAME_TAKEN, 409)
         throw err
       }
     }
@@ -431,7 +443,7 @@ router.post(
     if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
 
     try {
-      const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
+      const [existing] = email === null ? [] : await db.select().from(users).where(eq(users.email, email)).limit(1)
       if (existing) {
         const refusal = addRefusal(caller, { ...existing, role: roleOf(existing) }, tenantId)
         if (refusal) {
@@ -459,11 +471,13 @@ router.post(
         })
       }
 
-      const uname = username ?? (email.split('@')[0] ?? email).toLowerCase().replace(/[^a-z0-9_]/g, '_')
+      const uname = username ?? usernameFor(email ?? '')
       const inserted = await db.insert(users).values({
         username: uname,
         email,
-        passwordHash: NO_PASSWORD_HASH,
+        // A starting password must be replaced at first sign-in (lib/sessionGate.ts).
+        passwordHash: startingHash ?? NO_PASSWORD_HASH,
+        passwordChangeRequired: !!startingHash,
         role,
         actions,
         tenantId,
@@ -473,7 +487,7 @@ router.post(
       if (!newUser) return c.json({ detail: 'Failed to create user' }, 500)
       await audit(db, c, {
         userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: newUser.userId,
-        newState: { email, username: newUser.username, role: newUser.role, actions: newUser.actions },
+        newState: { email, username: newUser.username, role: newUser.role, actions: newUser.actions, starting_password: !!startingHash },
       })
       if (actions.length) await auditActions(db, c, caller.userId, tenantId, newUser.userId, [], actions)
 
@@ -487,6 +501,7 @@ router.post(
         action: 'created',
       }, 201)
     } catch (err) {
+      if (isUniqueViolation(err)) return c.json(USERNAME_TAKEN, 409)
       throw err
     }
   }

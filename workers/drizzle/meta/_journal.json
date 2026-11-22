@@ -288,6 +288,13 @@
       "when": 1794966655292,
       "tag": "0040_advisory_content",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1795320231223,
+      "tag": "0041_optional_email",
+      "breakpoints": true
     }
   ]
 }

@@ -1,9 +1,12 @@
 // Per-request checks on a verified access token and its freshly loaded users row (middleware/auth.ts).
 // Pure, so it is tested without a database (sessionGate.test.ts).
 
-export type GateResult = null | { status: 401 | 403; body: { detail: string; mfa_setup_required?: true } }
+export type GateResult = null | {
+  status: 401 | 403; body: { detail: string; mfa_setup_required?: true; password_change_required?: true }
+}
 
 export const DEACTIVATED_DETAIL = 'Your account is deactivated. Contact your Tenant Superadmin.'
+export const CHOOSE_PASSWORD_DETAIL = 'Choose your own password to continue.'
 
 /** Switched off, or its scheduled deactivation time (users.scheduled_deactivation_at) has come. */
 export function isDeactivated(
@@ -15,7 +18,10 @@ export function isDeactivated(
 
 export function sessionGate(
   payload: { iat?: number; purpose?: unknown },
-  row: { isActive: boolean; mfaEnabled: boolean; sessionsValidAfter: Date | null; scheduledDeactivationAt?: Date | null },
+  row: {
+    isActive: boolean; mfaEnabled: boolean; sessionsValidAfter: Date | null; scheduledDeactivationAt?: Date | null
+    passwordChangeRequired?: boolean
+  },
   path: string,
   now: Date = new Date(),
   mfaExempt = false,
@@ -28,6 +34,10 @@ export function sessionGate(
   }
   if (!row.mfaEnabled && !mfaExempt && !path.startsWith('/api/v1/auth/')) {
     return { status: 403, body: { detail: 'Set up MFA to continue.', mfa_setup_required: true } }
+  }
+  // A starting password set by an administrator: only /auth (where /change-password lives) until it is replaced.
+  if (row.passwordChangeRequired && !path.startsWith('/api/v1/auth/')) {
+    return { status: 403, body: { detail: CHOOSE_PASSWORD_DETAIL, password_change_required: true } }
   }
   return null
 }

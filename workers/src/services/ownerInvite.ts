@@ -33,9 +33,10 @@ export function usernameFor(email: string, username?: string): string {
 /**
  * Checks an owner invite and finds the account it applies to (null = a new account will be created).
  * `replacingOwner` (restore) skips the "tenant already has an owner" refusal: the caller demotes the owner in the same batch.
+ * `email` null: a new account with a username and starting password (the route requires both), never an existing one.
  */
 export async function planOwnerInvite(
-  db: DB, caller: Caller, tenantId: string, email: string, username: string | undefined, replacingOwner: boolean,
+  db: DB, caller: Caller, tenantId: string, email: string | null, username: string | undefined, replacingOwner: boolean,
 ): Promise<OwnerInvitePlan> {
   const [tenant] = await db.select({ tenantId: tenants.tenantId }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
   if (!tenant) return { ok: false, error: { detail: 'Tenant not found', status: 404 } }
@@ -44,6 +45,7 @@ export async function planOwnerInvite(
       .where(and(eq(users.tenantId, tenantId), eq(users.role, 'tenant_superadmin'))).limit(1)
     if (owner) return { ok: false, error: { ...ALREADY_OWNED, status: 409 } }
   }
+  if (email === null) return { ok: true, existing: null, username: username ?? '' }
   const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1)
   if (existing) {
     const refusal = addRefusal(caller as never, { ...existing, role: roleOf(existing) } as never, tenantId)
@@ -66,7 +68,10 @@ export function candidateEligible(userId: string, tenantId: string): SQL {
  * insert raises NOT NULL (see below), so a surrounding batch rolls back and writes nothing. The unique index
  * uq_users_one_tenant_superadmin stays the final backstop.
  */
-export function ownerInviteStatement(db: any, plan: Extract<OwnerInvitePlan, { ok: true }>, tenantId: string, email: string, guard?: SQL) {
+export function ownerInviteStatement(
+  db: any, plan: Extract<OwnerInvitePlan, { ok: true }>, tenantId: string, email: string | null, guard?: SQL,
+  startingPasswordHash?: string,
+) {
   if (plan.existing) {
     const o = alias(users, 'o')
     return db.update(users).set({ tenantId, role: 'tenant_superadmin', actions: [] as string[], scheduledDeactivationAt: null }).where(and(
@@ -83,16 +88,18 @@ export function ownerInviteStatement(db: any, plan: Extract<OwnerInvitePlan, { o
   const holds = and(
     sql`not exists (select 1 from users where tenant_id = ${tenantId}::uuid and role = 'tenant_superadmin')`, guard,
   )
+  // A starting password (no email): the owner must replace it at first sign-in.
   return db.insert(users).values({
     username: sql`(select ${plan.username}::varchar where ${holds})`,
-    email, passwordHash: NO_PASSWORD_HASH, role: 'tenant_superadmin', actions: [] as string[], tenantId,
+    email, passwordHash: startingPasswordHash ?? NO_PASSWORD_HASH, passwordChangeRequired: !!startingPasswordHash,
+    role: 'tenant_superadmin', actions: [] as string[], tenantId,
   }).returning({ userId: users.userId, username: users.username, email: users.email })
 }
 
 /** Audit of an owner invite, as the interim invite wrote it: user.assign for an existing account, user.invite for a new one. */
 export async function auditOwnerInvite(
   db: DB, c: Context | null, caller: Caller, tenantId: string,
-  plan: Extract<OwnerInvitePlan, { ok: true }>, added: { userId: string; username: string; email: string | null }, email: string,
+  plan: Extract<OwnerInvitePlan, { ok: true }>, added: { userId: string; username: string; email: string | null }, email: string | null,
 ) {
   if (plan.existing) {
     await audit(db, c, {
@@ -103,7 +110,7 @@ export async function auditOwnerInvite(
   } else {
     await audit(db, c, {
       userId: caller.userId, tenantId, actionType: 'user.invite', targetEntity: added.userId,
-      newState: { email, username: added.username, role: 'tenant_superadmin', actions: [] },
+      newState: { email, username: added.username, role: 'tenant_superadmin', actions: [], starting_password: email === null },
     })
   }
 }

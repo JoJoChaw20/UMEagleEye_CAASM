@@ -90,8 +90,13 @@ export const tenants = pgTable('tenants', {
 export const users = pgTable('users', {
   userId: uuid('user_id').primaryKey().default(newUuid()),
   username: varchar('username', { length: 100 }).notNull().unique(),
-  email: varchar('email', { length: 255 }).notNull().unique(),
+  // NULL for an account created with a username and starting password; set when its owner connects
+  // Google (POST /auth/google/connect), which also proves the address.
+  email: varchar('email', { length: 255 }).unique(),
   passwordHash: varchar('password_hash', { length: 512 }).notNull(),
+  // A starting password chosen by whoever created the account: every request outside /auth is
+  // refused until the owner sets their own (lib/sessionGate.ts).
+  passwordChangeRequired: boolean('password_change_required').notNull().default(false),
   role: userRoleEnum('role').notNull().default('tenant_user'),
   // Actions granted to a tenant_user (lib/actions.ts). Empty for a Tenant Superadmin and the
   // Platform Superadmin, which ignore it.
