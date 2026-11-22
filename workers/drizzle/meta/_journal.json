@@ -295,6 +295,13 @@
       "when": 1795320231223,
       "tag": "0041_optional_email",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1795339972627,
+      "tag": "0042_alert_ranking_sla",
+      "breakpoints": true
     }
   ]
 }

@@ -31,8 +31,9 @@ function RemediationProgress({ remediation, loading, onManage, tenantId }) {
       </div>
       <div className="mt-4 flex items-center justify-between border-t border-dark-700/50 pt-4">
         <Link to={dashboardHref('/advisories', { status: 'open' }, tenantId)} className="text-xs text-dark-400 hover:text-eagle-400">Unassigned: <span className="font-semibold text-dark-100">{fmt(remediation.unassigned)}</span></Link>
-        <Link to={dashboardHref('/advisories', { status: 'open' }, tenantId)} className={`inline-flex items-center gap-1.5 text-sm ${remediation.sla_breaches > 0 ? 'text-red-400' : 'text-dark-300'}`}>
-          <Clock3 className="h-4 w-4" />{fmt(remediation.sla_breaches)} past 72h SLA
+        <Link to={dashboardHref('/alerts', { view: 'overdue' }, tenantId)} className={`inline-flex items-center gap-1.5 text-sm ${remediation.sla_breaches > 0 ? 'text-red-400' : 'text-dark-300'}`}
+          title="Open alerts past their fix-time target">
+          <Clock3 className="h-4 w-4" />{fmt(remediation.sla_breaches)} alerts overdue
         </Link>
       </div>
     </>}

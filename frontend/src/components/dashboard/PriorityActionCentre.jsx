@@ -1,14 +1,15 @@
 import { AlertTriangle, ArrowUpRight, CircleCheck, ListFilter } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { alertLabel, playbook, renderDetail, SevBadge, timeAgo } from '../common/alertMeta'
+import { alertLabel, dueInfo, playbook, renderDetail, SevBadge, timeAgo } from '../common/alertMeta'
+import { DueLabel } from '../common/triageViz'
 import { dashboardHref, operationalTier, priorityContext } from './dashboardUtils'
 import SectionHeader from '../ui/SectionHeader'
 
 const tierStyle = {
-  P0: 'border-red-500/40 bg-red-500/10 text-red-300',
-  P1: 'border-red-500/30 bg-red-500/5 text-red-400',
-  P2: 'border-amber-500/30 bg-amber-500/5 text-amber-400',
-  P3: 'border-dark-600 bg-dark-900 text-dark-300',
+  T1: 'border-red-500/40 bg-red-500/10 text-red-300',
+  T2: 'border-orange-500/30 bg-orange-500/5 text-orange-400',
+  T3: 'border-amber-500/30 bg-amber-500/5 text-amber-400',
+  T4: 'border-dark-600 bg-dark-900 text-dark-300',
 }
 
 function itemHref(item, tenantId) {
@@ -20,7 +21,7 @@ function Context({ item }) {
   const reasons = priorityContext(item)
   return reasons.length ? <div className="flex flex-wrap gap-1.5">
     {reasons.map(reason => <span key={reason} className="rounded-md border border-dark-700 bg-dark-900 px-2 py-0.5 text-[11px] text-dark-300">{reason}</span>)}
-  </div> : <span className="text-xs text-dark-500">Priority score {Math.round(item.priority_score ?? 0)}</span>
+  </div> : <span className="text-xs text-dark-500">Risk score {Math.round(Number(item.priority_score ?? 0) % 1000)}</span>
 }
 
 export default function PriorityActionCentre({ actions, loading, available, tenantId }) {
@@ -60,9 +61,10 @@ export default function PriorityActionCentre({ actions, loading, available, tena
                   <tr key={item.key} className="align-top transition-colors hover:bg-eagle-500/[0.04]">
                     <td className="px-5 py-4">
                       <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${tierStyle[tier.id]}`}>
-                        {tier.id === 'P0' && <AlertTriangle className="h-3.5 w-3.5" />}{tier.id} · {tier.label}
+                        {tier.id === 'T1' && <AlertTriangle className="h-3.5 w-3.5" />}{tier.label}
                       </span>
-                      {tier.id === 'P0' && <span className="mt-1 block text-[11px] text-dark-500">Possible compromise</span>}
+                      {tier.id === 'T1' && <span className="mt-1 block text-[11px] text-dark-500">Possible compromise</span>}
+                      {dueInfo(item) && <span className="mt-1 block"><DueLabel e={item} /></span>}
                     </td>
                     <td className="px-4 py-4">
                       <Link to={dashboardHref(`/inventory/${encodeURIComponent(item.asset?.asset_id ?? '')}`, {}, tenantId)} className="font-medium text-dark-50 hover:text-eagle-400">

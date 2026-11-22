@@ -83,6 +83,8 @@ export const tenants = pgTable('tenants', {
   // value}}, lib/agentPolicy.ts tenantDefaultsFor). A setting not here is the built-in default
   // (DEFAULTS) unless the agent has an override.
   agentPolicy: jsonb('agent_policy').notNull().default({}),
+  // Fix-time targets in hours that differ from the defaults (lib/alertRank.ts SLA_DEFAULTS)
+  slaPolicy: jsonb('sla_policy').notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -344,6 +346,10 @@ export const events = pgTable('events', {
   resolvedBy: uuid('resolved_by').references(() => users.userId, { onDelete: 'set null' }),
   resolutionNote: text('resolution_note'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
+  // Set by the trigger events_reopen (migration 0042) whenever a closed alert becomes open again,
+  // whichever producer reopened it: the fix-time clock restarts here (lib/alertRank.ts).
+  reopenedAt: timestamp('reopened_at', { withTimezone: true }),
+  reopenCount: integer('reopen_count').notNull().default(0),
 }, (t) => [
   index('idx_events_timestamp').on(t.timestamp),
   index('idx_events_status').on(t.status),
@@ -367,7 +373,10 @@ export const cveFindings = pgTable('cve_findings', {
   packageVersion: varchar('package_version', { length: 100 }).notNull().default(''),
   severity: severityEnum('severity').notNull(),
   cvss: numeric('cvss', { precision: 3, scale: 1 }).notNull().default('0'),
-  epss: numeric('epss', { precision: 6, scale: 5 }).notNull().default('0'),
+  // NULL until FIRST.org has been asked (ingest asks for at most 300 CVEs per upload; the nightly
+  // refresh asks for the rest and re-asks every week, services/epss.ts). 0 is a real score.
+  epss: numeric('epss', { precision: 6, scale: 5 }),
+  epssCheckedAt: timestamp('epss_checked_at', { withTimezone: true }),
   fixVersions: text('fix_versions').array().notNull().default(sql`'{}'::text[]`),
   cweIds: text('cwe_ids').array().notNull().default(sql`'{}'::text[]`),
   description: varchar('description', { length: 500 }).notNull().default(''),

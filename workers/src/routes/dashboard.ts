@@ -13,7 +13,8 @@ import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { assets, agents, scanResults, sboms, events, advisories, users, cveFindings } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
-import { priorityExpr } from '../lib/priority'
+import { dueAtExpr, dueStatusExpr, priorityExpr, rankScoreExpr, tierExpr } from '../lib/priority'
+import { DIRECT_INTEL, KEV_ALERT } from '../lib/alertSignals'
 import { RISKY_PORTS, compareVersions } from '../lib/exposure'
 import { CONCERN_IDS, concernCondition, concernCountColumns } from '../lib/concerns'
 import { extractPorts } from '../services/drift'
@@ -82,7 +83,7 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
           occurrences: events.occurrences, assignedTo: events.assignedTo, assignee: users.username,
           assetId: assets.assetId, hostname: assets.hostname, owner: assets.owner, ip: assets.ipAddress,
           internetFacing: assets.isInternetFacing, criticality: assets.criticalityScore, deviceType: assets.deviceType,
-          priority: priorityExpr,
+          priority: priorityExpr, dueAt: dueAtExpr, dueStatus: dueStatusExpr,
         })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .leftJoin(users, eq(events.assignedTo, users.userId))
@@ -149,22 +150,20 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
         .limit(6),
       // Dashboard-only aggregate signals use the same open-event and priority rules as the queue.
       db.select({
-          urgent: sql<number>`count(*) filter (where ${priorityExpr} >= 100)::int`,
-          urgentNew7d: sql<number>`count(*) filter (where ${priorityExpr} >= 100 and ${events.firstSeen} >= ${sevenDaysAgo})::int`,
+          // urgent: tier 1 (possible compromise) and tier 2 (exploited), lib/alertRank.ts
+          urgent: sql<number>`count(*) filter (where ${tierExpr} <= 2)::int`,
+          urgentNew7d: sql<number>`count(*) filter (where ${tierExpr} <= 2 and ${events.firstSeen} >= ${sevenDaysAgo})::int`,
+          overdue: sql<number>`count(*) filter (where now() > ${dueAtExpr})::int`,
           highRiskExposureAssets: sql<number>`count(distinct ${assets.assetId}) filter (
             where ${assets.isInternetFacing} = true and ${events.severity} in ('critical','high'))::int`,
-          kevAssets: sql<number>`count(distinct ${assets.assetId}) filter (
-            where ${events.eventType} = 'cve_detected' and ${events.details}->'kev' = 'true'::jsonb)::int`,
-          threatIntelMatches: sql<number>`count(*) filter (where
-            (${events.eventType} = 'cti_match' and COALESCE(${events.details}->>'match_kind', '') <> 'watchlist') or
-            (${events.eventType} <> 'cve_detected' and ${events.eventType} <> 'cti_match' and ${events.details}->'has_cti_match' = 'true'::jsonb))::int`,
-          threatIntelAssets: sql<number>`count(distinct ${assets.assetId}) filter (where
-            (${events.eventType} = 'cti_match' and COALESCE(${events.details}->>'match_kind', '') <> 'watchlist') or
-            (${events.eventType} <> 'cve_detected' and ${events.eventType} <> 'cti_match' and ${events.details}->'has_cti_match' = 'true'::jsonb))::int`,
-          // vulnerable packages (one SBOM alert each) that rank high
+          // exploited: SBOM packages and vulnerable services (scan banners) alike
+          kevAssets: sql<number>`count(distinct ${assets.assetId}) filter (where ${KEV_ALERT})::int`,
+          threatIntelMatches: sql<number>`count(*) filter (where ${DIRECT_INTEL})::int`,
+          threatIntelAssets: sql<number>`count(distinct ${assets.assetId}) filter (where ${DIRECT_INTEL})::int`,
+          // vulnerable packages (one SBOM alert each) that rank high: exploited, or a fix scoring 60+
           highPriorityFixGroups: sql<number>`count(distinct (${events.assetId},
             COALESCE(${events.details}->>'package_name', ''), COALESCE(${events.details}->>'package_version', '')))
-            filter (where ${events.eventType} = 'cve_detected' and ${priorityExpr} >= 75)::int`,
+            filter (where ${events.eventType} = 'cve_detected' and (${tierExpr} <= 2 or ${rankScoreExpr} >= 60))::int`,
         })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(openScope),
       db.select({
@@ -211,6 +210,7 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
         risk_score: r.riskScore != null ? Number(r.riskScore) : null, status: r.status,
         first_seen: r.firstSeen, last_seen: r.lastSeen, occurrences: r.occurrences,
         priority_score: r.priority != null ? Number(r.priority) : null,
+        due_at: r.dueAt ? new Date(r.dueAt).toISOString() : null, due_status: r.dueStatus ?? null,
         assigned_to: r.assignedTo, assignee: r.assignee,
         asset: { asset_id: r.assetId, hostname: r.hostname, owner: r.owner, ip: r.ip, internet_facing: r.internetFacing, criticality: r.criticality, device_type: r.deviceType },
         advisory_id: adv?.advisoryId ?? null,
@@ -387,7 +387,9 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
       remediation: {
         by_status: Object.fromEntries(advisoryMetrics.map(a => [a.status, a.count])),
         unassigned: advisoryMetrics.reduce((sum, a) => sum + a.unassigned, 0),
-        sla_breaches: advisoryMetrics.reduce((sum, a) => sum + a.slaBreaches, 0),
+        // open alerts past their fix-time target (the same rule as the Alerts page and reports)
+        sla_breaches: priorityMetrics[0]?.overdue ?? 0,
+        advisories_open_over_72h: advisoryMetrics.reduce((sum, a) => sum + a.slaBreaches, 0),
       },
     })
   } catch (err) {

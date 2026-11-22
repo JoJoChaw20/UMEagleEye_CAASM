@@ -217,15 +217,26 @@ export const TONE = {
   good:     { text: 'text-emerald-400', bg: 'bg-emerald-500/5', border: 'border-dark-700/50',  bar: 'rgb(var(--sev-low))' },
 }
 
-// Priority score (backend lib/priority.ts) → a tier a human can act on.
-// ≥100 needs internet exposure, a critical asset or a threat-intel hit on top
-// of a severe finding, so P1 stays rare.
-export function priorityTier(score) {
+// The tiers of backend lib/alertRank.ts: why an alert is urgent. The priority number is
+// (5 - tier) x 1000 + a 0-100 score, so the tier is read back from it.
+export const TIERS = {
+  1: { tier: 1, label: 'Compromise', hint: 'Threat intelligence seen on this device: investigate within 24 hours', cls: 'bg-red-500/20 text-red-300 border-red-500/50' },
+  2: { tier: 2, label: 'Exploited',  hint: 'A vulnerability attackers are exploiting (CISA KEV): 7 days if internet-facing, otherwise 14', cls: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
+  3: { tier: 3, label: 'Fix',        hint: 'Fix by its target: critical 15, high 30, medium 90, low 180 days', cls: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30' },
+  4: { tier: 4, label: 'Review',     hint: 'A change or new device to confirm within 7 days', cls: 'bg-dark-700 text-dark-300 border-dark-600' },
+}
+
+export function tierOfPriority(score) {
   if (score == null) return null
-  if (score >= 100) return { tier: 'P1', label: 'Urgent',   cls: 'bg-red-500/20 text-red-300 border-red-500/50' }
-  if (score >= 75)  return { tier: 'P2', label: 'High',     cls: 'bg-orange-500/15 text-orange-300 border-orange-500/40' }
-  if (score >= 45)  return { tier: 'P3', label: 'Normal',   cls: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30' }
-  return              { tier: 'P4', label: 'Low',      cls: 'bg-dark-700 text-dark-300 border-dark-600' }
+  const t = 5 - Math.floor(Number(score) / 1000)
+  return t >= 1 && t <= 4 ? t : 4
+}
+
+/** The tier badge for an alert: its `tier` field, else read from its priority number. */
+export function priorityTier(score, tier) {
+  const t = tier ?? tierOfPriority(score)
+  if (t == null) return null
+  return { ...TIERS[t], score: score == null ? null : Math.round((Number(score) % 1000) * 10) / 10 }
 }
 
 // The facts that pushed an alert up the queue, as short chips. `e` may be a
@@ -277,6 +288,15 @@ export function isCtiHit(e) {
 
 // Deadline from the playbook urgency, measured from first_seen.
 export function dueInfo(e) {
+  // The server's fix-time target (lib/alertRank.ts, the tenant's own targets) when it sent one
+  if (e.due_at) {
+    const left = new Date(e.due_at).getTime() - Date.now()
+    const h = Math.abs(left) / 3600000
+    const t = h < 48 ? `${Math.max(1, Math.round(h))}h` : `${Math.round(h / 24)}d`
+    return left < 0
+      ? { label: `Overdue ${t}`, overdue: true, soon: false }
+      : { label: `Due in ${t}`, overdue: false, soon: e.due_status === 'due_soon' }
+  }
   const hours = playbook(e).hours
   if (hours == null || !e.first_seen) return null
   if (hours === 0) return { label: 'Act now', overdue: true }

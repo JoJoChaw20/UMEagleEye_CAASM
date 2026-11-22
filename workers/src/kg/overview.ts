@@ -13,7 +13,9 @@ import { advisories, agents, assets, events, scanResults } from '../db/schema'
 import { agentLiveness } from '../lib/agentLiveness'
 import { ACTIVE_ADVISORY_STATUSES } from '../lib/advisoryScope'
 import { OPEN_STATUSES, postureScore } from '../lib/eventStatus'
-import { priorityExpr } from '../lib/priority'
+import { dueAtExpr, priorityExpr, tierExpr } from '../lib/priority'
+import { kbLabel } from '../lib/alertSignals'
+import { TIER_LABEL, tierOfPriority } from '../lib/alertRank'
 
 type DB = ReturnType<typeof getDb>
 
@@ -25,17 +27,13 @@ const DAY = 86_400_000
 export interface OverviewScope { tenantId?: string; detail: boolean }
 
 export interface PriorityItem {
-  tier: 'P0' | 'P1' | 'P2' | 'P3'; priority_score: number; severity: string; alert_type: string; status: string
+  tier: string; priority_score: number; due: string | null; severity: string; alert_type: string; status: string
   device?: string; internet_facing?: boolean; what?: string; advisory?: string | null; first_seen: string | null
 }
 
-/** PURE. The dashboard's tier for an open alert (frontend components/dashboard/dashboardUtils.js operationalTier). */
-export function tierOf(alertType: string, details: Record<string, unknown>, score: number): PriorityItem['tier'] {
-  const directIntel = alertType === 'cti_match' ? details.match_kind !== 'watchlist' : alertType !== 'cve_detected' && Boolean(details.has_cti_match)
-  if (directIntel) return 'P0'
-  if (score >= 100) return 'P1'
-  if (score >= 75) return 'P2'
-  return 'P3'
+/** PURE. The tier name of an alert's priority number (lib/alertRank.ts): Compromise, Exploited, Fix, Review. */
+export function tierOf(priority: number): string {
+  return TIER_LABEL[tierOfPriority(priority)]
 }
 
 const short = (v: unknown, max = 80): string => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
@@ -49,15 +47,13 @@ export function alertWhat(alertType: string, d: Record<string, unknown>): string
   if (d.cve_id) return short(`${d.cve_id}${d.kev ? ' (known exploited)' : ''}`)
   if (d.port) return short(`port ${d.port}/${d.protocol ?? 'tcp'}${d.service ? ` (${d.service})` : ''} open`)
   if (d.indicator_value) return short(`threat-intel match: ${d.indicator_value}${d.matched_on ? ` (${d.matched_on})` : ''}`)
-  if (alertType === 'os_patch_missing') return short(`missing Windows update${d.kb ? ` ${d.kb}` : 's'}`)
+  if (alertType === 'os_patch_missing') return short(`missing Windows update${kbLabel(d.kb) ? ` ${kbLabel(d.kb)}` : 's'}`)
   return short(alertType.replace(/_/g, ' '))
 }
 
 export async function loadOverview(db: DB, scope: OverviewScope, now = Date.now()) {
   const assetScope = scope.tenantId ? eq(assets.tenantId, scope.tenantId) : undefined
   const open = inArray(events.status, [...OPEN_STATUSES])
-  const directIntel = sql`(CASE WHEN ${events.eventType} = 'cti_match' THEN COALESCE(${events.details}->>'match_kind', '') <> 'watchlist'
-    ELSE ${events.eventType} <> 'cve_detected' AND COALESCE((${events.details}->>'has_cti_match')::boolean, false) END)`
 
   const [assetRow, agentRows, scanRow, alertRow, advisoryRows, top] = await Promise.all([
     db.select({
@@ -80,9 +76,10 @@ export async function loadOverview(db: DB, scope: OverviewScope, now = Date.now(
       medium: sql<number>`count(*) filter (where ${events.severity} = 'medium')::int`,
       low: sql<number>`count(*) filter (where ${events.severity} = 'low')::int`,
       newWeek: sql<number>`count(*) filter (where ${events.firstSeen} >= ${new Date(now - 7 * DAY)})::int`,
-      p0: sql<number>`count(*) filter (where ${directIntel})::int`,
-      p1: sql<number>`count(*) filter (where not ${directIntel} and ${priorityExpr} >= 100)::int`,
-      p2: sql<number>`count(*) filter (where not ${directIntel} and ${priorityExpr} >= 75 and ${priorityExpr} < 100)::int`,
+      p0: sql<number>`count(*) filter (where ${tierExpr} = 1)::int`,
+      p1: sql<number>`count(*) filter (where ${tierExpr} = 2)::int`,
+      p2: sql<number>`count(*) filter (where ${tierExpr} = 3)::int`,
+      overdue: sql<number>`count(*) filter (where now() > ${dueAtExpr})::int`,
     }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(and(assetScope, open)),
     db.select({ status: advisories.status, n: sql<number>`count(*)::int` }).from(advisories)
       .innerJoin(events, eq(advisories.eventId, events.eventId)).innerJoin(assets, eq(events.assetId, assets.assetId))
@@ -90,12 +87,12 @@ export async function loadOverview(db: DB, scope: OverviewScope, now = Date.now(
     scope.detail
       ? db.select({
           eventId: events.eventId, type: events.eventType, severity: events.severity, status: events.status, details: events.details,
-          firstSeen: events.firstSeen, score: priorityExpr, hostname: assets.hostname, ip: assets.ipAddress,
+          firstSeen: events.firstSeen, score: priorityExpr, dueAt: dueAtExpr, hostname: assets.hostname, ip: assets.ipAddress,
           internet: sql<boolean>`COALESCE(${assets.internetFacingOverride}, ${assets.isInternetFacing})`,
           advisory: sql<string | null>`(SELECT a.advisory_id::text FROM advisories a WHERE a.event_id = ${events.eventId}
             AND a.status IN (${sql.join(ACTIVE_ADVISORY_STATUSES.map(s => sql`${s}`), sql`, `)}) ORDER BY a.created_at DESC LIMIT 1)`,
         }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
-          .where(and(assetScope, open)).orderBy(desc(directIntel), desc(priorityExpr), desc(events.firstSeen)).limit(TOP_PRIORITIES)
+          .where(and(assetScope, open)).orderBy(desc(priorityExpr), desc(events.firstSeen)).limit(TOP_PRIORITIES)
       : Promise.resolve([]),
   ])
   return buildOverview({ assets: assetRow[0], agents: agentRows, scans: scanRow[0], alerts: alertRow[0], advisories: advisoryRows, top }, scope, now)
@@ -105,7 +102,7 @@ type Counts = Record<string, number | string | null | undefined>
 export interface OverviewRows {
   assets?: Counts; agents: Array<{ kind: string | null; lastHeartbeat: Date | string | null }>; scans?: Counts; alerts?: Counts
   advisories: Array<{ status: string; n: number }>
-  top: Array<{ eventId: string; type: string; severity: string; status: string; details: unknown; firstSeen: Date | string | null; score: number; hostname: string | null; ip: string; internet: boolean; advisory: string | null }>
+  top: Array<{ eventId: string; type: string; severity: string; status: string; details: unknown; firstSeen: Date | string | null; score: number; dueAt?: Date | string | null; hostname: string | null; ip: string; internet: boolean; advisory: string | null }>
 }
 
 const num = (v: unknown) => Number(v ?? 0) || 0
@@ -131,17 +128,19 @@ export function buildOverview(rows: OverviewRows, scope: OverviewScope, now = Da
     scans_last_7_days: { total: num(rows.scans?.total), failed: num(rows.scans?.failed), in_progress: num(rows.scans?.running), last_completed: iso(rows.scans?.last) },
     open_alerts: { total: openTotal, critical: openCritical, high: openHigh, medium: num(rows.alerts?.medium), low: num(rows.alerts?.low), new_last_7_days: num(rows.alerts?.newWeek) },
     advisories: { active: activeAdvisories, by_status: byStatus },
-    priority_tiers: { P0_investigate: p0, P1_urgent: p1, P2_high: p2, P3_routine: Math.max(0, openTotal - p0 - p1 - p2) },
+    priority_tiers: { compromise: p0, exploited: p1, fix: p2, review: Math.max(0, openTotal - p0 - p1 - p2) },
+    overdue_alerts: num(rows.alerts?.overdue),
     ...(scope.detail ? {
       top_priorities: rows.top.map((t): PriorityItem => {
         const d = (t.details ?? {}) as Record<string, unknown>
         return {
-          tier: tierOf(t.type, d, num(t.score)), priority_score: num(t.score), severity: t.severity, alert_type: t.type, status: t.status,
+          tier: tierOf(num(t.score)), priority_score: Math.round((num(t.score) % 1000) * 10) / 10, due: iso(t.dueAt),
+          severity: t.severity, alert_type: t.type, status: t.status,
           device: short(t.hostname || t.ip, 80), internet_facing: Boolean(t.internet), what: alertWhat(t.type, d),
           advisory: t.advisory ? t.advisory.slice(0, 8) : null, first_seen: iso(t.firstSeen),
         }
       }),
     } : { note: 'Counts only for this role: device names and individual alerts are not shown.' }),
-    tiers_explained: 'P0 = direct threat-intelligence match (investigate now); P1 = priority score 100+ (urgent); P2 = 75-99 (high); P3 = the rest.',
+    tiers_explained: 'compromise = threat intelligence seen on a device (investigate within 24 hours); exploited = a CVE on CISA KEV (fix within 7 days if internet-facing, otherwise 14); fix = other vulnerabilities and exposures (15/30/90/180 days by severity); review = changes and new devices to confirm (7 days). priority_score is 0-100 within the tier; due is the fix-time target.',
   }
 }

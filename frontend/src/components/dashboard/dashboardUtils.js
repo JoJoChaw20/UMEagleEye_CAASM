@@ -4,12 +4,13 @@ const isDirectThreatIntel = (item) => {
   return item.event_type !== 'cve_detected' && Boolean(details.has_cti_match)
 }
 
+// The tier of backend lib/alertRank.ts, read from the priority number ((5 - tier) x 1000 + score)
+const TIER_IDS = { 1: { id: 'T1', label: 'Compromise', tone: 'critical' }, 2: { id: 'T2', label: 'Exploited', tone: 'critical' },
+  3: { id: 'T3', label: 'Fix', tone: 'high' }, 4: { id: 'T4', label: 'Review', tone: 'routine' } }
+
 export function operationalTier(item) {
-  if (isDirectThreatIntel(item)) return { id: 'P0', label: 'Investigate', tone: 'critical' }
-  const score = Number(item.priority_score ?? 0)
-  if (score >= 100) return { id: 'P1', label: 'Urgent', tone: 'critical' }
-  if (score >= 75) return { id: 'P2', label: 'High', tone: 'high' }
-  return { id: 'P3', label: 'Routine', tone: 'routine' }
+  const t = item.tier ?? 5 - Math.floor(Number(item.priority_score ?? 0) / 1000)
+  return TIER_IDS[t] ?? TIER_IDS[4]
 }
 
 // SBOM alerts are one per vulnerable package (its CVEs inside), so they arrive with the

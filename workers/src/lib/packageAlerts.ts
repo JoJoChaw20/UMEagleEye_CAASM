@@ -38,7 +38,7 @@ export interface Finding {
   packageVersion: string
   severity: Severity
   cvss: number
-  epss: number
+  epss: number | null              // null: FIRST.org not asked yet (scores treat it as 0)
   fixVersions: string[]
   cweIds: string[]
   description: string
@@ -97,15 +97,16 @@ export function summarisePackage(findings: Finding[], criticality: number): Pack
   let rank = 0
   for (const f of findings) {
     rank = Math.max(rank, SEVERITY_RANK[f.severity])
-    const score = computeRiskScore(f.cvss, f.epss, criticality, f.hasCtiMatch)
+    const epss = f.epss ?? 0
+    const score = computeRiskScore(f.cvss, epss, criticality, f.hasCtiMatch)
     const fix = fixFor(f.packageVersion, f.fixVersions)
     const c = cves.get(f.cveId)
     cves.set(f.cveId, c ? {
-      cvss: Math.max(c.cvss, f.cvss), epss: Math.max(c.epss, f.epss), kev: c.kev || f.kev, cti: c.cti || f.hasCtiMatch,
+      cvss: Math.max(c.cvss, f.cvss), epss: Math.max(c.epss, epss), kev: c.kev || f.kev, cti: c.cti || f.hasCtiMatch,
       // the fix of the oldest copy matters most; keep the highest so every copy is covered
       fix: c.fix && fix ? (compareVersions(fix, c.fix) > 0 ? fix : c.fix) : (c.fix ?? fix),
       fixable: c.fixable || fix !== null, score: Math.max(c.score, score),
-    } : { cvss: f.cvss, epss: f.epss, kev: f.kev, cti: f.hasCtiMatch, fix, fixable: fix !== null, score })
+    } : { cvss: f.cvss, epss, kev: f.kev, cti: f.hasCtiMatch, fix, fixable: fix !== null, score })
     const v = versions.get(f.packageVersion) ?? { cves: new Set<string>(), fixLists: [] }
     v.cves.add(f.cveId)
     v.fixLists.push(f.fixVersions)

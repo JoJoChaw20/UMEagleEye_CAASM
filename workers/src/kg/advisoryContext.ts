@@ -27,7 +27,7 @@ export interface AdvisoryRows {
   event: { eventId: string; eventType: string; severity: string; status: string; firstSeen: Date | string | null; lastSeen: Date | string | null; occurrences: number; details: unknown }
   asset: { assetId: string; hostname: string | null; ipAddress: string; deviceType: string; osInfo: unknown; endpointInventory: unknown; criticalityScore: number | null; isInternetFacing: boolean; internetFacingOverride: boolean | null }
   device: DeviceInfo
-  cves: Array<{ cveId: string; packageName: string; packageVersion: string; severity: string; cvss: string | number; epss: string | number; kev: boolean; fixVersions: string[]; description: string }>
+  cves: Array<{ cveId: string; packageName: string; packageVersion: string; severity: string; cvss: string | number; epss: string | number | null; kev: boolean; fixVersions: string[]; description: string }>
 }
 
 export type FetchAdvisoryRows = (db: DB, advisoryId: string) => Promise<AdvisoryRows | null>
@@ -115,7 +115,7 @@ export function buildAdvisorySources(rows: AdvisoryRows): AdvisorySource[] {
       key: `cve:${cveId}:${clean(c.packageName, 120)}:${clean(c.packageVersion, 60)}`, title: `${cveId} in ${clean(c.packageName, 80)}`, type: 'cve',
       text: lines(
         line('CVE', cveId), line('Package', clean(c.packageName, 120)), line('Installed version', clean(c.packageVersion, 60) || 'unknown'),
-        line('Severity', c.severity), line('CVSS', String(c.cvss)), line('EPSS', String(c.epss)),
+        line('Severity', c.severity), line('CVSS', String(c.cvss)), line('EPSS', c.epss == null ? 'not checked yet' : String(c.epss)),
         line('Known exploited (CISA KEV)', c.kev ? 'yes' : 'no'),
         line('Fixed in', c.fixVersions.length ? c.fixVersions.map(v => clean(v, 40)).filter(Boolean).join(', ') : 'no fixed version listed'),
         line('Description', clean(c.description, 500)),

@@ -24,6 +24,7 @@ import { ALREADY_OWNED, OWNERSHIP_ONLY, auditOwnerInvite, ownerInviteStatement, 
 import { confirmMatches, deleteTarget, resetTarget } from '../lib/mfaFlow'
 import { NO_PASSWORD_HASH, hashPassword } from '../lib/auth'
 import { inviteCredentials } from '../lib/passwordRules'
+import { SLA_DEFAULTS, SLA_KEYS, SLA_MAX_HOURS, SLA_MIN_HOURS, cleanSlaPolicy, slaPolicy, type SlaKey } from '../lib/alertRank'
 
 const USERNAME_TAKEN = { detail: 'That username is already taken. Choose another one.' }
 import { networkTargetErrors } from '../services/scanTargets'
@@ -276,6 +277,55 @@ router.patch(
       newState: { agent_policy: policy },
     }).catch(err => console.error('tenant agent policy audit failed:', err))
     return c.json(agentPolicyOut(updated, true))
+  }
+)
+
+// ── Fix-time targets (lib/alertRank.ts) ──────────────────────────
+// How long each kind of alert may stay open: the defaults, the tenant's own values (hours), and
+// what is in force. Anyone who may view the tenant's settings sees them; the tenant's Tenant
+// Superadmin changes them (the platform superadmin only reads).
+function slaPolicyOut(stored: unknown, canEdit: boolean) {
+  return { defaults: SLA_DEFAULTS, overrides: cleanSlaPolicy(stored), effective: slaPolicy(stored), can_edit: canEdit,
+    min_hours: SLA_MIN_HOURS, max_hours: SLA_MAX_HOURS }
+}
+
+router.get('/:tenantId/sla-policy', authMiddleware, requireAction('settings.view'), requireOwnTenant, async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+  const [tenant] = await db.select({ slaPolicy: tenants.slaPolicy }).from(tenants).where(eq(tenants.tenantId, c.req.param('tenantId'))).limit(1)
+  if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+  return c.json(slaPolicyOut(tenant.slaPolicy, c.get('user').role === 'tenant_superadmin'))
+})
+
+// {targets: {key: hours | null}}: null goes back to the default
+router.put(
+  '/:tenantId/sla-policy',
+  authMiddleware,
+  requireTenantSuperadmin,
+  requireOwnTenant,
+  zValidator('json', z.object({ targets: z.record(z.string(), z.number().int().nullable()) })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { tenantId } = c.req.param()
+    const [tenant] = await db.select({ slaPolicy: tenants.slaPolicy }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+
+    const next: Record<string, number> = { ...cleanSlaPolicy(tenant.slaPolicy) }
+    const errors: string[] = []
+    for (const [key, hours] of Object.entries(c.req.valid('json').targets)) {
+      if (!(SLA_KEYS as readonly string[]).includes(key)) { errors.push(`${key}: not a fix-time target`); continue }
+      if (hours === null || hours === SLA_DEFAULTS[key as SlaKey]) { delete next[key]; continue }
+      if (hours < SLA_MIN_HOURS || hours > SLA_MAX_HOURS) { errors.push(`${key}: must be between 1 hour and 365 days`); continue }
+      next[key] = hours
+    }
+    if (errors.length) return c.json({ detail: errors.join('; ') }, 400)
+
+    await db.update(tenants).set({ slaPolicy: next }).where(eq(tenants.tenantId, tenantId))
+    await audit(db, c, {
+      userId: user.userId, tenantId, actionType: 'tenant.sla_policy', targetEntity: tenantId,
+      previousState: { sla_policy: cleanSlaPolicy(tenant.slaPolicy) }, newState: { sla_policy: next },
+    })
+    return c.json(slaPolicyOut(next, true))
   }
 )
 

@@ -44,7 +44,7 @@ const rowToFinding = (r: Record<string, unknown>): Finding => ({
   cveId: r['cve_id'] as string, advisoryId: (r['advisory_id'] as string | null) ?? null,
   packageType: (r['package_type'] as string | null) ?? null, packageName: r['package_name'] as string,
   packageVersion: (r['package_version'] as string) ?? '', severity: r['severity'] as Severity,
-  cvss: Number(r['cvss'] ?? 0), epss: Number(r['epss'] ?? 0),
+  cvss: Number(r['cvss'] ?? 0), epss: r['epss'] == null ? null : Number(r['epss']),
   fixVersions: (r['fix_versions'] as string[] | null) ?? [], cweIds: (r['cwe_ids'] as string[] | null) ?? [],
   description: (r['description'] as string | null) ?? '', kev: r['kev'] === true, hasCtiMatch: r['has_cti_match'] === true,
   tiEventTitles: (r['ti_event_titles'] as string[] | null) ?? [], dismissed: r['dismissed'] === true,
@@ -93,7 +93,8 @@ export function planStatements(db: DB, assetId: string, plan: PackagePlan, findi
     return eventId ? [{
       eventId, assetId, cveId: f.cveId.slice(0, 40), advisoryId: f.advisoryId, packageType: f.packageType,
       packageName: f.packageName.slice(0, 255), packageVersion: f.packageVersion.slice(0, 100), severity: f.severity,
-      cvss: String(f.cvss), epss: String(f.epss), fixVersions: f.fixVersions, cweIds: f.cweIds,
+      cvss: String(f.cvss), epss: f.epss == null ? null : String(f.epss), epssCheckedAt: f.epss == null ? null : now,
+      fixVersions: f.fixVersions, cweIds: f.cweIds,
       description: f.description.slice(0, 500), kev: f.kev, hasCtiMatch: f.hasCtiMatch, tiEventTitles: f.tiEventTitles,
       dismissed: f.dismissed || plan.dismiss.has(findingKey(f)), firstSeen: now, lastSeen: now, fixedAt: null,
     }] : []
@@ -104,7 +105,9 @@ export function planStatements(db: DB, assetId: string, plan: PackagePlan, findi
       target: [cveFindings.assetId, cveFindings.cveId, cveFindings.packageName, cveFindings.packageVersion],
       set: {
         eventId: ex('event_id'), advisoryId: ex('advisory_id'), packageType: ex('package_type'), severity: ex('severity'),
-        cvss: ex('cvss'), epss: ex('epss'), fixVersions: ex('fix_versions'), cweIds: ex('cwe_ids'), description: ex('description'),
+        // an upload without an EPSS value (lookups are capped) keeps the one the nightly refresh found
+        cvss: ex('cvss'), epss: sql`COALESCE(excluded.epss, ${cveFindings.epss})`,
+        epssCheckedAt: sql`COALESCE(excluded.epss_checked_at, ${cveFindings.epssCheckedAt})`, fixVersions: ex('fix_versions'), cweIds: ex('cwe_ids'), description: ex('description'),
         kev: ex('kev'), hasCtiMatch: ex('has_cti_match'), tiEventTitles: ex('ti_event_titles'),
         // a dismissal is kept; a CVE that comes back after a fix is present again
         dismissed: sql`${cveFindings.dismissed} OR excluded.dismissed`, lastSeen: ex('last_seen'), fixedAt: sql`NULL`,

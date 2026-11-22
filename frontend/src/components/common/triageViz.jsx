@@ -106,7 +106,9 @@ export function ConcernFilterBar({ counts, loading, active, onPick }) {
 
 // Severity × "how long has it been open" grid. Cell shade = count (one hue,
 // log scale); cells past the SLA target are flagged with a clock + red outline.
-const SLA_PAST = { critical: ['d3_7', 'd7_30', 'gt30'], high: ['d7_30', 'gt30'] }
+// Cells where every alert is past its fix-time target (backend lib/alertRank.ts): critical and
+// high after 30 days. Exploited and compromise alerts are due sooner: the Overdue view has them all.
+const SLA_PAST = { critical: ['gt30'], high: ['gt30'] }
 const BUCKET_LABELS = { lt1d: '< 1 day', d1_3: '1–3 days', d3_7: '3–7 days', d7_30: '7–30 days', gt30: '> 30 days' }
 
 export function AgingHeatmap({ aging, onCell }) {
@@ -140,7 +142,7 @@ export function AgingHeatmap({ aging, onCell }) {
                   return (
                     <td key={b} className="p-0">
                       <button type="button" disabled={!n} onClick={() => onCell?.(sev, b)}
-                        title={`${fmtNum(n)} ${sev} alert${n === 1 ? '' : 's'} open ${BUCKET_LABELS[b]}${late ? ' — past SLA' : ''}`}
+                        title={`${fmtNum(n)} ${sev} alert${n === 1 ? '' : 's'} open ${BUCKET_LABELS[b]}${late ? ' (past the fix-time target)' : ''}`}
                         className={`w-full h-11 rounded-lg text-center tabular-nums transition-colors
                           ${n ? 'text-dark-50 font-semibold hover:ring-2 hover:ring-eagle-400/60 cursor-pointer' : 'text-dark-600 cursor-default'}
                           ${late ? 'ring-1 ring-inset ring-red-500/70' : ''}`}
@@ -164,7 +166,7 @@ export function AgingHeatmap({ aging, onCell }) {
         </tbody>
       </table>
       <p className="text-xs text-dark-500 mt-3 flex items-center gap-3 flex-wrap">
-        <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3 text-red-400" />red outline = past SLA (critical &gt; 3 days, high &gt; 7 days)</span>
+        <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3 text-red-400" />red outline = all past their fix-time target (critical or high, over 30 days); see Overdue for every late alert</span>
         <span>Darker = more alerts · click a cell to list them</span>
       </p>
     </div>
@@ -187,13 +189,14 @@ export function ReasonChips({ reasons, max = 4 }) {
   )
 }
 
-export function PriorityTier({ score }) {
-  const t = priorityTier(score)
+// The alert's tier (why it is urgent) and its 0-100 score within the tier (backend lib/alertRank.ts)
+export function PriorityTier({ score, tier }) {
+  const t = priorityTier(score, tier)
   if (!t) return <span className="text-dark-500">—</span>
   return (
     <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border font-semibold whitespace-nowrap ${t.cls}`}
-      title={`Priority score ${Math.round(score)} = risk × internet exposure × asset criticality (+ threat intel)`}>
-      {t.tier}<span className="font-normal opacity-80">{t.label}</span>
+      title={`${t.hint}.${t.score != null ? ` Risk score ${t.score} of 100 orders alerts within the tier.` : ''}`}>
+      {t.label}{t.score != null && <span className="font-normal opacity-80 tabular-nums">{Math.round(t.score)}</span>}
     </span>
   )
 }
@@ -202,7 +205,8 @@ export function DueLabel({ e }) {
   const d = dueInfo(e)
   if (!d) return null
   return (
-    <span className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${d.overdue ? 'text-red-400' : 'text-dark-300'}`}>
+    <span className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${d.overdue ? 'text-red-400' : d.soon ? 'text-amber-400' : 'text-dark-300'}`}
+      title={e.due_at ? `Fix-time target: ${new Date(e.due_at).toLocaleString()}` : undefined}>
       <Clock className="w-3 h-3" />{d.label}
     </span>
   )

@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
-import { eq, and, lt, desc, isNull } from 'drizzle-orm'
+import { eq, and, desc, inArray, isNull } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { advisories, agents } from '../db/schema'
+import { advisories, agents, assets, events } from '../db/schema'
+import { dueAtExpr } from '../lib/priority'
 import { advisoryScope } from '../lib/advisoryScope'
 import { agentLiveness, livenessMinutes } from '../lib/agentLiveness'
 
@@ -24,6 +25,16 @@ interface Notification {
 }
 
 const agentStatus = (lastHeartbeat: Date | null, kind: string | null) => agentLiveness(lastHeartbeat, kind)
+
+/** Open alerts past their fix-time target, in the user's tenant (the platform superadmin: all). */
+function overdueAlerts(db: ReturnType<typeof getDb>, user: { role: string; tenantId?: string | null }) {
+  return db.select({ count: sql<number>`count(*)::int` })
+    .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+    .where(and(
+      inArray(events.status, ['open', 'in_progress']), sql`now() > ${dueAtExpr}`,
+      user.role === 'superadmin' ? undefined : eq(assets.tenantId, user.tenantId ?? '00000000-0000-0000-0000-000000000000'),
+    ))
+}
 
 // ── GET / — aggregated notification feed ─────────────────────────
 app.get('/', authMiddleware, requireAction('dashboard.view'), async (c) => {
@@ -71,20 +82,17 @@ app.get('/', authMiddleware, requireAction('dashboard.view'), async (c) => {
       }
     }
 
-    // 2. SLA breach: advisories open > 72 hours
-    const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000)
-    const [breachRow] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(advisories)
-      .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff), advisoryScope(db, user)))
+    // 2. SLA breach: open alerts past their fix-time target (lib/alertRank.ts, the same rule as
+    //    the Alerts page and the report)
+    const [breachRow] = await overdueAlerts(db, user)
 
     const breachCount = breachRow?.count ?? 0
     if (breachCount > 0) {
       items.push({
         id: 'sla-breach-current',
         type: 'sla_breach',
-        title: '⚠️ SLA Breach Alert',
-        message: `${breachCount} ${breachCount === 1 ? 'advisory has' : 'advisories have'} been open for more than 72 hours.`,
+        title: '⚠️ Alerts past their fix-time target',
+        message: `${breachCount} ${breachCount === 1 ? 'alert is' : 'alerts are'} past the fix-time target. Filter Alerts by "Overdue" to see them.`,
         timestamp: new Date().toISOString(),
         severity: 'critical',
         metadata: { breach_count: breachCount },
@@ -138,14 +146,11 @@ app.get('/count', authMiddleware, requireAction('dashboard.view'), async (c) => 
   const db = getDb(c.env.DATABASE_URL)
   const scope = advisoryScope(db, c.get('user'))
   try {
-    const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000)
     const [recent, breach] = await Promise.all([
       db.select({ count: sql<number>`count(*)::int` })
         .from(advisories)
         .where(and(sql`${advisories.createdAt} > now() - interval '7 days'`, scope)),
-      db.select({ count: sql<number>`count(*)::int` })
-        .from(advisories)
-        .where(and(eq(advisories.status, 'open'), lt(advisories.createdAt, cutoff), scope)),
+      overdueAlerts(db, c.get('user')),
     ])
     return c.json({
       recent_advisories: recent[0]?.count ?? 0,

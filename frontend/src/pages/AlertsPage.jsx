@@ -30,8 +30,9 @@ const DRIFT_CSV = [...DRIFT_TYPES].join(',')
 const VIEWS = [
   { id: 'open',      label: 'All open',                   params: { status: 'open' } },
   { id: 'mine',      label: 'My queue',                   params: { status: 'open', assigned_to: 'me' } },
-  { id: 'overdue',   label: 'Past SLA',                   params: { status: 'open', overdue: 'true' } },
-  { id: 'exposed',   label: 'Critical on internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
+  { id: 'overdue',   label: 'Overdue',                    params: { status: 'open', overdue: 'true' } },
+  { id: 'due-soon',  label: 'Due soon',                   params: { status: 'open', due: 'soon' } },
+  { id: 'exposed',   label: 'Critical or high on internet-facing', params: { status: 'open', severity: 'critical,high', internet_facing: 'true' } },
   { id: 'drift',     label: 'Drift to review',            params: { status: 'open', event_type: DRIFT_CSV } },
   // one alert per vulnerable package (its CVEs inside): each row is one upgrade
   { id: 'cve',       label: 'Vulnerable packages',        params: { status: 'open', event_type: 'cve_detected' } },
@@ -285,7 +286,7 @@ export default function AlertsPage() {
           { label: 'Open alerts', value: stats?.open_total, tone: '', sub: 'Current active queue' },
           { label: 'Critical', value: stats?.by_severity?.critical, tone: 'text-red-400', sub: 'Open, critical severity' },
           { label: 'High', value: stats?.by_severity?.high, tone: 'text-orange-400', sub: 'Open, high severity' },
-          { label: 'Past SLA', value: stats?.sla_breaches, tone: 'text-red-400', sub: 'Older than the response target' },
+          { label: 'Overdue', value: stats?.sla_breaches, tone: 'text-red-400', sub: 'Past their fix-time target' },
         ].map(metric => (
           <div key={metric.label} className="glass-card p-5 xl:p-6">
             <p className="flex items-center gap-2.5 text-sm font-medium text-dark-200"><span aria-hidden="true" className="trace-node" />{metric.label}</p>
@@ -307,7 +308,7 @@ export default function AlertsPage() {
           </h3>
           <p className="text-sm text-dark-400 mt-2 mb-5">
             Older critical and high alerts are past their response target.
-            {stats?.sla_breaches > 0 && <> <button onClick={() => pickView('overdue')} className="text-red-400 hover:underline">{fmtNum(stats.sla_breaches)} past SLA<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></button></>}
+            {stats?.sla_breaches > 0 && <> <button onClick={() => pickView('overdue')} className="text-red-400 hover:underline">{fmtNum(stats.sla_breaches)} overdue<ArrowRight aria-hidden="true" className="ml-1 inline h-3.5 w-3.5 align-[-3px]" /></button></>}
           </p>
           <AgingHeatmap aging={stats?.aging} onCell={pickCell} />
         </div>
@@ -483,7 +484,7 @@ export default function AlertsPage() {
             <thead>
               <tr>
                 {canBulk && <th className="w-8"><input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} aria-label="Select all" /></th>}
-                <th title="P1 urgent → P4 low. Score = risk × internet exposure × asset criticality (+ threat intel)">Priority</th>
+                <th title="Compromise (threat intel seen on the device), Exploited (CISA KEV), Fix, Review. The number is the risk score within the tier.">Priority</th>
                 <th>Alert &amp; why it matters</th>
                 <th>Evidence</th>
                 <th>Asset</th>
@@ -504,7 +505,7 @@ export default function AlertsPage() {
                   )}
                   <td>
                     <div className="flex flex-col items-start gap-1">
-                      <PriorityTier score={e.priority_score} />
+                      <PriorityTier score={e.priority_score} tier={e.tier} />
                       <SevBadge sev={e.severity} />
                     </div>
                   </td>
@@ -754,7 +755,14 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
               <p className="text-xs text-dark-400 mt-1">
                 First seen {new Date(e.first_seen).toLocaleString()} · last seen {timeAgo(e.last_seen)}
                 {e.occurrences > 1 ? ` · detected ${e.occurrences}×` : ''}
+                {e.reopen_count > 0 ? ` · reopened ${e.reopen_count}×, the fix-time clock restarted ${timeAgo(e.reopened_at)}` : ''}
               </p>
+              {(e.tier || e.due_at) && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <PriorityTier score={e.priority_score} tier={e.tier} />
+                  <DueLabel e={e} />
+                </div>
+              )}
             </div>
 
             <WhyAlert event={e} />
@@ -764,7 +772,8 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
               <div className="rounded-lg border border-eagle-500/30 bg-eagle-500/5 p-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-eagle-300 mb-1">
                   <Lightbulb className="w-4 h-4" /> Next step
-                  <span className="ml-auto text-[11px] font-mono px-1.5 py-0.5 rounded bg-dark-800 text-dark-200">{guide.urgency}</span>
+                  {/* the fix-time target when the server sent one; the playbook's own hint otherwise */}
+                  {!e.due_at && <span className="ml-auto text-[11px] font-mono px-1.5 py-0.5 rounded bg-dark-800 text-dark-200">{guide.urgency}</span>}
                 </div>
                 <p className="text-sm text-dark-200">{guide.text}</p>
               </div>

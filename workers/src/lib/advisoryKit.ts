@@ -19,6 +19,7 @@
  *   Basis: AI + NVD, OSV | Rule-based
  */
 import { fixTarget } from './fixTarget'
+import { SLA_DEFAULTS } from './alertRank'
 import { unsafeRecommendations } from '../kg/safety'
 
 // ── Untrusted text ───────────────────────────────────────────────
@@ -109,12 +110,21 @@ export function urgencyFor(f: {
   if ((f.criticality ?? 0) >= 8) reasons.push(`the asset is critical (${f.criticality}/10)`)
   if (f.cvss != null && f.cvss >= 9) reasons.push(`CVSS ${f.cvss}`)
 
-  if (f.threatIntel || f.kev) return { level: 'now', window: 'within 72 hours', reasons }
-  const severe = f.severity === 'critical' || f.severity === 'high'
+  // The windows are the default fix-time targets (lib/alertRank.ts), so an advisory and the
+  // alert's due date say the same thing.
+  if (f.threatIntel) return { level: 'now', window: `investigate ${within(SLA_DEFAULTS.compromise)}`, reasons }
+  if (f.kev) return { level: 'now', window: within(f.internetFacing ? SLA_DEFAULTS.kev_exposed : SLA_DEFAULTS.kev), reasons }
+  const sev = (['critical', 'high', 'medium', 'low'] as const).find((s) => s === f.severity) ?? 'low'
+  const severe = sev === 'critical' || sev === 'high'
   if ((f.epss ?? 0) >= 0.1 || (f.internetFacing && severe) || ((f.criticality ?? 0) >= 8 && severe)) {
-    return { level: 'soon', window: 'within 7 days', reasons }
+    return { level: 'soon', window: within(SLA_DEFAULTS[sev]), reasons }
   }
-  return { level: 'planned', window: 'in the next maintenance window', reasons }
+  return { level: severe ? 'soon' : 'planned', window: within(SLA_DEFAULTS[sev]), reasons }
+}
+
+/** "within 24 hours", "within 14 days" */
+function within(hours: number): string {
+  return hours < 48 ? `within ${hours} hours` : `within ${Math.round(hours / 24)} days`
 }
 
 // ── Facts handed to the model and to the rule-based writer ───────

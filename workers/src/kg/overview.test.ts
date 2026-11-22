@@ -15,17 +15,15 @@ const rows = (over: Partial<OverviewRows> = {}): OverviewRows => ({
   scans: { total: 12, failed: 1, running: 0, last: '2026-11-18T09:18:42.116Z' },
   alerts: { total: 25, critical: 2, high: 5, medium: 10, low: 8, newWeek: 4, p0: 1, p1: 2, p2: 3 },
   advisories: [{ status: 'open', n: 4 }, { status: 'in_progress', n: 1 }, { status: 'resolved', n: 9 }],
-  top: [{ eventId: 'e1', type: 'cve_detected', severity: 'critical', status: 'open', details: { package_name: 'openssl', package_version: '1.0.0-1', cve_count: 2, kev_count: 1, fix_to: '1.0.1-1' }, firstSeen: new Date(NOW - 86_400_000), score: 145, hostname: 'web-01', ip: '10.0.0.5', internet: true, advisory: '7c9e6679-7425-40de-944b-e07fc1f90ae7' }],
+  top: [{ eventId: 'e1', type: 'cve_detected', severity: 'critical', status: 'open', details: { package_name: 'openssl', package_version: '1.0.0-1', cve_count: 2, kev_count: 1, fix_to: '1.0.1-1' }, firstSeen: new Date(NOW - 86_400_000), score: 3066.5, hostname: 'web-01', ip: '10.0.0.5', internet: true, advisory: '7c9e6679-7425-40de-944b-e07fc1f90ae7' }],
   ...over,
 })
 
-test('tierOf follows the dashboard tiers', () => {
-  assert.equal(tierOf('cti_match', { match_kind: 'ioc' }, 10), 'P0')
-  assert.equal(tierOf('cti_match', { match_kind: 'watchlist' }, 110), 'P1')
-  assert.equal(tierOf('port_opened', { has_cti_match: true }, 10), 'P0')
-  assert.equal(tierOf('cve_detected', { has_cti_match: true }, 80), 'P2')
-  assert.equal(tierOf('port_opened', {}, 100), 'P1')
-  assert.equal(tierOf('port_opened', {}, 74.9), 'P3')
+test('tierOf reads the tier back from the priority number (lib/alertRank.ts)', () => {
+  assert.equal(tierOf(4085), 'Compromise')
+  assert.equal(tierOf(3066.5), 'Exploited')
+  assert.equal(tierOf(2051), 'Fix')
+  assert.equal(tierOf(1050), 'Review')
 })
 
 test('alertWhat describes an alert in one line', () => {
@@ -35,6 +33,7 @@ test('alertWhat describes an alert in one line', () => {
   // the stored keys: indicator_value (iocMatch / sightings) and kb (windowsPatch)
   assert.equal(alertWhat('cti_match', { indicator_type: 'domain', indicator_value: 'bad.example', matched_on: 'dns' }), 'threat-intel match: bad.example (dns)')
   assert.equal(alertWhat('os_patch_missing', { kb: 'KB5070773', exploited: 1 }), 'missing Windows update KB5070773')
+  assert.equal(alertWhat('os_patch_missing', { kb: '5132061' }), 'missing Windows update KB5132061')   // as MSRC data stores it
   assert.equal(alertWhat('os_patch_missing', { kb: null }), 'missing Windows updates')
 })
 
@@ -44,10 +43,11 @@ test('buildOverview gives every dashboard area and the priorities, with the dash
   assert.deepEqual(o.agents, { total: 3, online: 2, degraded: 0, offline: 1 })
   assert.equal(o.open_alerts.total, 25)
   assert.equal(o.advisories.active, 5)
-  assert.deepEqual(o.priority_tiers, { P0_investigate: 1, P1_urgent: 2, P2_high: 3, P3_routine: 19 })
+  assert.deepEqual(o.priority_tiers, { compromise: 1, exploited: 2, fix: 3, review: 19 })
   assert.equal(typeof o.posture_score, 'number')
   const top = (o as { top_priorities: Array<Record<string, unknown>> }).top_priorities
-  assert.equal(top[0]!.tier, 'P1')
+  assert.equal(top[0]!.tier, 'Exploited')
+  assert.equal(top[0]!.priority_score, 66.5)                     // the score within the tier
   assert.equal(top[0]!.device, 'web-01')
   assert.equal(top[0]!.advisory, '7c9e6679')
 })
@@ -88,7 +88,7 @@ function setup(kind: string, replies: ModelReply[], overview?: GraphCtx['overvie
 
 test('overview: "what should we prioritise" is answered from get_overview, cited, with no fix format and no reviewer', async () => {
   const ov = buildOverview(rows(), { tenantId: 't', detail: true }, NOW)
-  const answer = `## Overall status\n- Posture score: ${ov.posture_score} [S1]\n- Open alerts: 2 critical, 5 high [S1]\n- Priority tiers: P0 1, P1 2 [S1]\n\n## What to fix first\n1. P1: \`web-01\` openssl 1.0.0-1, advisory 7c9e6679 [S1].`
+  const answer = `## Overall status\n- Posture score: ${ov.posture_score} [S1]\n- Open alerts: 2 critical, 5 high [S1]\n- Priority tiers: compromise 1, exploited 2 [S1]\n\n## What to fix first\n1. Exploited: \`web-01\` openssl 1.0.0-1, advisory 7c9e6679 [S1].`
   const s = setup('fix', [{ text: '', toolCalls: [call('get_overview', {})], truncated: false }, text(answer)], async () => ov)
   const r = await runGraphAgent(s.ctx, 'give me overall status of current scanning, is it all good? what should we prioritize now', [], s.emit)
   assert.equal(r.kind, 'system')
@@ -114,7 +114,7 @@ const toolNames = (t: unknown[] | undefined) => (t as Array<{ function: { name: 
 
 test('overview: "what should I fix first" is not offered the knowledge search and is told to point to advisories', async () => {
   const ov = buildOverview(rows(), { tenantId: 't', detail: true }, NOW)
-  const answer = `## Overall status\n- Posture score: ${ov.posture_score} [S1]\n\n## What to fix first\n1. P1: \`web-01\` openssl 1.0.0-1, advisory 7c9e6679 [S1].`
+  const answer = `## Overall status\n- Posture score: ${ov.posture_score} [S1]\n\n## What to fix first\n1. Exploited: \`web-01\` openssl 1.0.0-1, advisory 7c9e6679 [S1].`
   const s = setup('fix', [{ text: '', toolCalls: [call('get_overview', {})], truncated: false }, text(answer)], async () => ov)
   const r = await runGraphAgent(s.ctx, 'What should I fix first?', [], s.emit)
   assert.equal(r.content, answer)

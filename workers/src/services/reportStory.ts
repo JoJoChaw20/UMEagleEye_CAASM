@@ -16,18 +16,15 @@ import { and, desc, eq, gte, inArray, lt, or, sql, type SQL } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { advisories, assets, events } from '../db/schema'
 import { isOpenEvent } from '../lib/eventStatus'
-import { priorityExpr } from '../lib/priority'
-import { DIRECT_INTEL, KEV_ALERT, isDirectIntel, isKevAlert } from '../lib/alertSignals'
+import { dueAtExpr, dueStatusExpr, priorityExpr, tierExpr } from '../lib/priority'
+import { DIRECT_INTEL, KEV_ALERT, isDirectIntel, isKevAlert, kbLabel } from '../lib/alertSignals'
 import { fixTarget } from '../lib/fixTarget'
 import { isPackageAlert } from '../lib/packageAlerts'
 import { ACTIVE_ADVISORY_STATUSES, advisoryInTenant } from '../lib/advisoryScope'
 
-const SLA_HOURS = 72
 const STALE_DAYS = 14
 
 export const PERIOD_DAYS: Record<string, number> = { weekly: 7, monthly: 30, executive: 30 }
-
-type Due = 'within 72 hours' | 'within 7 days' | 'next maintenance window'
 
 export interface ReportAction {
   rank: number
@@ -36,9 +33,26 @@ export interface ReportAction {
   ip: string | null
   why: string[]
   severity: string
-  due: Due
+  // the alert's fix-time target (lib/alertRank.ts): "12 Dec", or "3 days overdue"
+  due: string
+  due_at: string | null
+  due_status: string | null
+  tier: number
   owner: string | null
   assigned: boolean
+}
+
+/** PURE. The due date as a report shows it. */
+export function dueLabel(dueAt: Date | string | null, status: string | null, now: Date = new Date()): string {
+  if (!dueAt) return '—'
+  const d = new Date(dueAt)
+  if (status === 'overdue') {
+    const days = Math.max(1, Math.floor((now.getTime() - d.getTime()) / 86400_000))
+    return `${days} day${days === 1 ? '' : 's'} overdue`
+  }
+  const hoursLeft = (d.getTime() - now.getTime()) / 3600_000
+  if (hoursLeft < 48) return `in ${Math.max(1, Math.round(hoursLeft))} hours`
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Asia/Kuala_Lumpur' })
 }
 
 const label = (a: { hostname: string | null; ipAddress: string | null }) => a.hostname || a.ipAddress || 'unknown asset'
@@ -56,14 +70,16 @@ function actionText(type: string, d: Record<string, unknown>, group?: { pkg: str
     case 'cti_match': return 'Investigate the threat-intelligence match on this host'
     case 'vulnerable_service': return `Update ${String(d.product ?? 'the service')}${d.version ? ` ${String(d.version)}` : ''} on port ${d.port ?? '?'} (${d.cve_count ?? '?'} known CVEs${d.kev_count ? `, ${d.kev_count} exploited` : ''})`
     case 'exposure': return `${String(d.title ?? 'Fix the exposure')} on port ${d.port ?? '?'}: ${String(d.fix ?? '').slice(0, 160)}`
-    case 'os_patch_missing': return `Install the missing Windows updates${d.kb ? ` (${String(d.kb).slice(0, 40)})` : ''}`
+    case 'os_patch_missing': return `Install the missing Windows updates${kbLabel(d.kb) ? ` (latest ${kbLabel(d.kb)!.slice(0, 40)})` : ''}`
     case 'version_downgrade': return `Check the downgrade of ${d.changed_attribute ?? 'a component'}${d.from ? ` from ${d.from} to ${d.to}` : ''}`
     case 'config_change': return `Review the configuration change${d.changed_attribute ? ` (${d.changed_attribute})` : ''}`
     default: return `Review the ${type.replace(/_/g, ' ')} alert`
   }
 }
 
-function whyAndDue(type: string, severity: string, d: Record<string, unknown>, a: { isInternetFacing: boolean | null; criticalityScore: number | null }) {
+function whyAndDue(type: string, severity: string, d: Record<string, unknown>, a: {
+  isInternetFacing: boolean | null; criticalityScore: number | null; dueAt?: string | Date | null; dueStatus?: string | null; tier?: number | null
+}) {
   const why: string[] = []
   const kev = isKevAlert(d)
   const ti = isDirectIntel(type, d)
@@ -77,19 +93,16 @@ function whyAndDue(type: string, severity: string, d: Record<string, unknown>, a
   if (cvss != null && cvss >= 9) why.push(`CVSS ${cvss}`)
   if (a.isInternetFacing) why.push('internet-facing')
   if ((a.criticalityScore ?? 0) >= 8) why.push(`critical asset (${a.criticalityScore}/10)`)
-  const severe = severity === 'critical' || severity === 'high'
-  const due: Due = kev || ti || (type === 'os_patch_missing' && (num(d.exploited) ?? 0) > 0) ? 'within 72 hours'
-    : (severe && (a.isInternetFacing || (a.criticalityScore ?? 0) >= 8)) || epss >= 0.1 || severity === 'critical' ? 'within 7 days'
-    : 'next maintenance window'
   if (why.length === 0) why.push(`${severity} severity`)
-  return { why, due }
+  // when it is due comes from the fix-time policy (lib/priority.ts dueAtExpr), not from here
+  const due = dueLabel(a.dueAt ?? null, a.dueStatus ?? null)
+  return { why, due, due_at: a.dueAt ? new Date(a.dueAt).toISOString() : null, due_status: a.dueStatus ?? null, tier: Number(a.tier ?? 4) }
 }
 
 export async function buildReportStory(db: DB, tenantId: string | undefined, reportType: string) {
   const days = PERIOD_DAYS[reportType] ?? 30
   const now = new Date()
   const since = new Date(now.getTime() - days * 86400_000)
-  const slaCut = new Date(now.getTime() - SLA_HOURS * 3600_000)
   const staleCut = new Date(now.getTime() - STALE_DAYS * 86400_000)
   const af: SQL | undefined = tenantId ? eq(assets.tenantId, tenantId) : undefined
   const advTenant = tenantId ? advisoryInTenant(db, tenantId) : undefined
@@ -101,6 +114,7 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
       type: events.eventType, severity: events.severity, details: events.details, assignedTo: events.assignedTo,
       assetId: assets.assetId, hostname: assets.hostname, ipAddress: assets.ipAddress, owner: assets.owner,
       isInternetFacing: assets.isInternetFacing, criticalityScore: assets.criticalityScore,
+      dueAt: dueAtExpr, dueStatus: dueStatusExpr, tier: tierExpr,
     }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
       .where(and(af, open)).orderBy(desc(priorityExpr), desc(events.firstSeen)).limit(400),
     // how bad: one row of counts over the open alerts
@@ -158,12 +172,15 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
       .where(advTenant).groupBy(advisories.status),
     db.select({ n: sql<number>`count(*)::int` }).from(advisories)
       .where(and(advTenant, eq(advisories.status, 'resolved'), gte(advisories.resolvedAt, since))),
-    db.select({ summary: advisories.summary, createdAt: advisories.createdAt, assignedTo: advisories.assignedTo })
-      .from(advisories)
-      .where(and(advTenant, inArray(advisories.status, [...ACTIVE_ADVISORY_STATUSES]), lt(advisories.createdAt, slaCut)))
-      .orderBy(advisories.createdAt).limit(5),
-    db.select({ n: sql<number>`count(*)::int` }).from(advisories)
-      .where(and(advTenant, inArray(advisories.status, [...ACTIVE_ADVISORY_STATUSES]), lt(advisories.createdAt, slaCut))),
+    // open alerts past their fix-time target (lib/alertRank.ts), the longest overdue first
+    db.select({
+      type: events.eventType, details: events.details, assignedTo: events.assignedTo, dueAt: dueAtExpr,
+      hostname: assets.hostname, ipAddress: assets.ipAddress,
+    }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+      .where(and(af, open, sql`now() > ${dueAtExpr}`))
+      .orderBy(sql`${dueAtExpr}`).limit(5),
+    db.select({ n: sql<number>`count(*)::int` }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
+      .where(and(af, open, sql`now() > ${dueAtExpr}`)),
   ])
 
   // ── top actions: one per CVE package and asset, one per other alert ──
@@ -174,7 +191,7 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
     // an SBOM package alert is already one package with its CVEs and fix target
     if (r.type === 'cve_detected' && isPackageAlert(d)) {
       if (actions.length >= 8) continue
-      const { why, due } = whyAndDue(r.type, r.severity, d, r)
+      const { why, ...dueInfo } = whyAndDue(r.type, r.severity, d, r)
       const ver = typeof d.package_version === 'string' ? ` ${d.package_version}` : ''
       actions.push({
         rank: actions.length + 1, asset: label(r), ip: r.hostname ? r.ipAddress : null,
@@ -182,7 +199,7 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
         action: actionText('cve_detected', {}, typeof d.fix_to === 'string' && d.fix_to
           ? { pkg: `${String(d.package_name ?? '')}${ver}`, to: d.fix_to, count: num(d.fixable_count) ?? 1 }
           : { pkg: `${String(d.package_name ?? '')}${ver}`, to: null, count: num(d.cve_count) ?? 1 }),
-        why, severity: r.severity, due, owner: r.owner?.trim() || null, assigned: !!r.assignedTo,
+        why, severity: r.severity, ...dueInfo, owner: r.owner?.trim() || null, assigned: !!r.assignedTo,
       })
       continue
     }
@@ -195,10 +212,10 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
       continue
     }
     if (actions.length >= 8) continue
-    const { why, due } = whyAndDue(r.type, r.severity, d, r)
+    const { why, ...dueInfo } = whyAndDue(r.type, r.severity, d, r)
     actions.push({
       rank: actions.length + 1, action: actionText(r.type, d), asset: label(r), ip: r.hostname ? r.ipAddress : null,
-      why, severity: r.severity, due, owner: r.owner?.trim() || null, assigned: !!r.assignedTo,
+      why, severity: r.severity, ...dueInfo, owner: r.owner?.trim() || null, assigned: !!r.assignedTo,
     })
     if (key) grouped.set(key, { idx: actions.length - 1, installed: typeof d.package_version === 'string' ? d.package_version : null, fixes: [d.fix_versions], count: 1 })
   }
@@ -243,8 +260,10 @@ export async function buildReportStory(db: DB, tenantId: string | undefined, rep
       open: statusCount.open ?? 0, acknowledged: statusCount.acknowledged ?? 0, in_progress: statusCount.in_progress ?? 0,
       resolved_in_period: advResolved[0]?.n ?? 0,
       sla_total: slaTotal[0]?.n ?? 0,
+      // open alerts past their fix-time target (was: advisories older than 72 hours)
       sla_breaches: slaList.map(s => ({
-        summary: s.summary, age_days: Math.floor((now.getTime() - new Date(s.createdAt).getTime()) / 86400_000), assigned: !!s.assignedTo,
+        summary: `${actionText(s.type, (s.details ?? {}) as Record<string, unknown>)} (${label(s)})`,
+        age_days: Math.max(1, Math.floor((now.getTime() - new Date(s.dueAt).getTime()) / 86400_000)), assigned: !!s.assignedTo,
       })),
       unassigned_critical: r0.unassigned_critical,
     },

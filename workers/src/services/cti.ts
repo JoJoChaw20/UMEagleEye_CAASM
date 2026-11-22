@@ -4,6 +4,7 @@ import { ctiIndicators } from '../db/schema'
 import { sql } from 'drizzle-orm'
 import { KEV_SOURCE, refreshCveIntel } from './threatIntel'
 import { matchIocs } from './iocMatch'
+import { refreshEpss } from './epss'
 import { warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds } from '../lib/attack'
 
@@ -320,9 +321,10 @@ export function describeError(err: unknown): string {
 // A Worker on the free plan has a small CPU and request allowance per run: all three
 // feeds in one run went over the CPU limit (2 s, killed and retried) once ThreatFox's
 // 17k rows were saved. So each feed is its own queue job, which queues the next one;
-// 'finish' refreshes the CVE alerts and the asset matches against the new data.
-export type CtiStep = 'kev' | 'threatfox' | 'otx' | 'finish'
-export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'otx', 'finish']
+// 'epss' fills in and refreshes EPSS on the devices' CVEs (services/epss.ts); 'finish'
+// refreshes the CVE alerts and the asset matches against the new data.
+export type CtiStep = 'kev' | 'threatfox' | 'otx' | 'epss' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'otx', 'epss', 'finish']
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
 
 /**
@@ -340,7 +342,7 @@ export function nextCtiStep(step: CtiStep): CtiStep | null {
   return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
 }
 
-const FEED_OF: Record<Exclude<CtiStep, 'finish'>, { source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
+const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
   kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
   threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
   otx:       { source: 'AlienVault OTX', run: (db, k) => ingestOtx(db, k.otx) },
@@ -369,6 +371,15 @@ export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, ste
       console.error('[CTI] Matching assets failed:', describeError(err))
     }
     return null
+  }
+  if (step === 'epss') {
+    try {
+      const r = await refreshEpss(db)
+      console.log(`[EPSS] ${r.updated} CVE(s) updated, ${r.waiting} waiting for the next run`)
+    } catch (err) {
+      console.error('[EPSS] Refresh failed:', describeError(err))
+    }
+    return nextCtiStep(step)
   }
   const feed = FEED_OF[step]
   let result: { ok: boolean; count: number }

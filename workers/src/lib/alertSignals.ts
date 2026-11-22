@@ -20,5 +20,12 @@ export function isDirectIntel(type: string, d: Details): boolean {
   return type === 'cti_match' && d.match_kind !== 'watchlist'
 }
 
-export const KEV_ALERT = sql`(${events.details}->>'kev' = 'true' OR COALESCE((${events.details}->>'kev_count')::int, 0) > 0)`
+/** PURE. A Windows update id as people write it: MSRC data stores "5132061", shown as "KB5132061". */
+export function kbLabel(kb: unknown): string | null {
+  if (kb == null || kb === '') return null
+  const s = String(kb).trim()
+  return /^\d+$/.test(s) ? `KB${s}` : s
+}
+
+export const KEV_ALERT =sql`(${events.details}->>'kev' = 'true' OR COALESCE((${events.details}->>'kev_count')::int, 0) > 0)`
 export const DIRECT_INTEL = sql`(${events.eventType} = 'cti_match' AND COALESCE(${events.details}->>'match_kind', '') <> 'watchlist')`

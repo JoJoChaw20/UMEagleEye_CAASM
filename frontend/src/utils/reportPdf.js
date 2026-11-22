@@ -158,7 +158,7 @@ export function buildPdf(data, reportType) {
     // exploited_or_intel counts each alert once (a KEV alert can also be a threat-intel match); older stories lack it
     { value: String(risk.exploited_or_intel ?? ((risk.kev ?? 0) + (risk.threat_intel ?? 0))), label: 'Exploited (KEV) or threat-intel matches', color: (risk.kev || risk.threat_intel) ? C.red : C.ink },
     { value: String(risk.exposed_assets ?? 0), label: 'Internet-facing assets with critical/high', color: risk.exposed_assets ? C.red : C.ink },
-    { value: String(data.sla_breaches ?? 0), label: 'Advisories past the 72h SLA', color: data.sla_breaches ? C.amber : C.ink },
+    { value: String(data.sla_breaches ?? 0), label: 'Alerts past their fix-time target', color: data.sla_breaches ? C.amber : C.ink },
   ])
 
   const ch = story.changes ?? {}
@@ -166,11 +166,12 @@ export function buildPdf(data, reportType) {
   const cv = story.coverage ?? {}
   // decisions, from the facts above
   const decisions = []
-  const urgent = (story.actions ?? []).filter(a => a.due === 'within 72 hours').length
-  if (urgent) decisions.push(`Fix the ${plural(urgent, 'action')} due in 72 hours (section 2): they involve exploited or threat-intel-named weaknesses.`)
+  // tier 1 (possible compromise) and 2 (exploited) among the top actions: the ones to start with
+  const urgent = (story.actions ?? []).filter(a => a.tier === 1 || a.tier === 2).length
+  if (urgent) decisions.push(`Start with the ${plural(urgent, 'action')} on a possible compromise or an exploited weakness (section 2): they have the shortest fix-time targets.`)
   if (risk.exposed_assets) decisions.push(`Reduce exposure on ${plural(risk.exposed_assets, 'internet-facing asset')} with critical or high alerts: patch, or restrict access until patched.`)
   if (pr.unassigned_critical) decisions.push(`Assign an owner to the ${plural(pr.unassigned_critical, 'critical alert')} nobody is working on (Alerts page, filter Critical).`)
-  if (data.sla_breaches) decisions.push(`Escalate the ${plural(data.sla_breaches, 'advisory', 'advisories')} past the 72-hour SLA, or record why they wait.`)
+  if (data.sla_breaches) decisions.push(`Escalate the ${plural(data.sla_breaches, 'alert')} past their fix-time target, or record why they wait.`)
   if (ch.new_devices) decisions.push(`Review the ${plural(ch.new_devices, 'new device')} found this period: add the known ones to My Assets with an owner, isolate the unknown.`)
   if (cv.total && cv.cve_checked < cv.total) decisions.push(`Deploy the EagleEye agent on the computers among the ${cv.total - cv.cve_checked} assets that are not CVE-checked.`)
   if (cv.no_owner) decisions.push(`Give owners to ${plural(cv.no_owner, 'asset')} so alerts reach someone.`)
@@ -187,14 +188,15 @@ export function buildPdf(data, reportType) {
   })
 
   y += 2
-  sectionTitle(2, 'Do these first', 'Ranked like the Alerts page: exploited, threat intel, risk, exposure')
+  sectionTitle(2, 'Do these first', 'Ranked like the Alerts page: possible compromise, exploited, then by risk')
   table([
     { label: '#', w: 7, get: r => r.rank, bold: true },
     { label: 'Action', w: 58, get: r => r.action, bold: true, color: () => C.ink },
     { label: 'Asset', w: 33, get: r => (r.ip ? `${r.asset} (${r.ip})` : r.asset) },
     { label: 'Why', w: 44, get: r => r.why },
-    { label: 'Due', w: 20, get: r => ({ 'within 72 hours': '72 hours', 'within 7 days': '7 days' }[r.due] ?? 'Next window'),
-      color: r => (r.due === 'within 72 hours' ? C.red : r.due === 'within 7 days' ? C.amber : C.body), bold: true },
+    // the fix-time target: a date, "in N hours", or "N days overdue"
+    { label: 'Due', w: 20, get: r => r.due ?? '—',
+      color: r => (r.due_status === 'overdue' ? C.red : r.due_status === 'due_soon' ? C.amber : C.body), bold: true },
     { label: 'Owner', w: 20, get: r => r.owner ?? (r.assigned ? 'Assigned' : 'Unassigned'), color: r => (r.owner || r.assigned ? C.body : C.amber) },
   ], story.actions ?? [], { empty: 'No open alerts: nothing needs fixing now.' })
 
@@ -236,10 +238,10 @@ export function buildPdf(data, reportType) {
     { value: String(pr.unassigned_critical ?? 0), label: 'Critical alerts with no assignee', color: pr.unassigned_critical ? C.red : C.ink },
   ], 15)
   if ((pr.sla_breaches ?? []).length) {
-    font(8.5, 'bold', C.ink); ensure(8); doc.text('Oldest advisories past the 72-hour SLA', M, y); y += 4
+    font(8.5, 'bold', C.ink); ensure(8); doc.text('Longest overdue: alerts past their fix-time target', M, y); y += 4
     table([
-      { label: 'Age', w: 18, get: r => `${r.age_days} days`, color: () => C.red, bold: true },
-      { label: 'Advisory', w: 140, get: r => ((r.summary ?? '').length > 200 ? `${r.summary.slice(0, 200).replace(/\s+\S*$/, '')}...` : r.summary) },
+      { label: 'Overdue', w: 18, get: r => `${r.age_days} days`, color: () => C.red, bold: true },
+      { label: 'Alert', w: 140, get: r => ((r.summary ?? '').length > 200 ? `${r.summary.slice(0, 200).replace(/\s+\S*$/, '')}...` : r.summary) },
       { label: 'Assigned', w: 24, get: r => (r.assigned ? 'Yes' : 'No'), color: r => (r.assigned ? C.body : C.amber) },
     ], pr.sla_breaches)
   }

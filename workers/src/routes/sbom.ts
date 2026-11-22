@@ -867,7 +867,9 @@ app.post('/ingest-cve', zValidator('json', cveIngestSchema), async (c) => {
       const f: Finding = {
         cveId: r.cve_id, advisoryId: r.advisory_id ?? null, packageType: r.package_type ?? null,
         packageName: r.package_name, packageVersion: r.package_version, severity: mapSeverity(r.cvss_base_score, r.severity),
-        cvss: r.cvss_base_score, epss: epssMap.get(r.cve_id) ?? 0, fixVersions: r.fix_versions, cweIds: r.cwe_ids,
+        // not looked up (over the cap, or FIRST.org failed): null, filled in by the nightly refresh
+        cvss: r.cvss_base_score, epss: epssMap.get(r.cve_id) ?? storedByKey.get(`${r.cve_id}::${r.package_name}::${r.package_version}`)?.epss ?? null,
+        fixVersions: r.fix_versions, cweIds: r.cwe_ids,
         description: r.description.slice(0, 500), kev: kevMatches.has(r.cve_id), hasCtiMatch: intel.has(r.cve_id),
         tiEventTitles: intel.get(r.cve_id)?.titles ?? [], dismissed: false,
       }

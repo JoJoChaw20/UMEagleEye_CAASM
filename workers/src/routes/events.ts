@@ -16,12 +16,13 @@ import { authMiddleware, requireAction } from '../middleware/auth'
 import { assignableUsers, canBeAssignedAlerts } from '../lib/accountRows'
 import { getDb, type DB } from '../db/client'
 import {
-  events, assets, advisories, users, auditLogs,
+  events, assets, advisories, users, auditLogs, tenants,
   assetRelationships, eventCtiIndicators, ctiIndicators, tiEvents, cveFindings,
 } from '../db/schema'
 import { buildBaseline, baselinePackagesKnown, extractPorts, type AssetBaseline } from '../services/drift'
 import { OPEN_STATUSES, CLOSED_STATUSES, isOpenEvent, type EventStatus } from '../lib/eventStatus'
-import { priorityExpr } from '../lib/priority'
+import { dueAtExpr, dueStatusExpr, priorityExpr, rankScoreExpr, slaHoursExpr, tierExpr } from '../lib/priority'
+import { slaPolicy } from '../lib/alertRank'
 import { softwareName, techniquesFor } from '../lib/attack'
 import { cweList } from '../lib/cwe'
 import { concernCondition, concernCountColumns, isConcernId } from '../lib/concerns'
@@ -54,11 +55,8 @@ const DRIFT_TYPES = new Set([
   'config_change', 'new_package', 'removed_package',
 ])
 
-// Response-time targets for open alerts, by severity (hours).
-const SLA_HOURS = { critical: 72, high: 168 } as const
-
-// How long an alert has been open, by first_seen. Bucket edges line up with the
-// SLA targets so a severity × age grid shows overdue work as whole cells.
+// How long an alert has been open, by first_seen. Fix-time targets (when an alert is due) are
+// per tier and severity and a tenant may change them: lib/alertRank.ts, lib/priority.ts.
 const AGE_BUCKETS = [
   { id: 'lt1d',  minH: 0,   maxH: 24 },
   { id: 'd1_3',  minH: 24,  maxH: 72 },
@@ -76,12 +74,9 @@ function ageCondition(id: string | undefined, now: number) {
   )
 }
 
-// Open critical/high alerts older than their SLA target
-function overdueCondition(now: number) {
-  return or(
-    and(eq(events.severity, 'critical'), sql`${events.firstSeen} < ${new Date(now - SLA_HOURS.critical * 3600000)}`),
-    and(eq(events.severity, 'high'), sql`${events.firstSeen} < ${new Date(now - SLA_HOURS.high * 3600000)}`),
-  )
+// Past its fix-time target (needs assets joined; callers also require the alert to be open)
+function overdueCondition() {
+  return sql`now() > ${dueAtExpr}`
 }
 
 type User = { userId: string; role: string; tenantId?: string }
@@ -136,7 +131,10 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
       q('package') ? sql`${events.details}->>'package_name' = ${q('package')}` : undefined,
       ageCondition(q('age'), now),
       q('closed') === 'unreviewed' ? eq(events.resolutionNote, UNSEEN_NOTE) : undefined,
-      q('overdue') === 'true' ? and(isOpenEvent(), overdueCondition(now)) : undefined,
+      q('overdue') === 'true' ? and(isOpenEvent(), overdueCondition()) : undefined,
+      // tier=1..4 (lib/alertRank.ts): Compromise, Exploited, Fix, Review
+      /^[1-4]$/.test(q('tier') ?? '') ? sql`${tierExpr} = ${Number(q('tier'))}` : undefined,
+      q('due') === 'soon' ? and(isOpenEvent(), sql`${dueStatusExpr} = 'due_soon'`) : undefined,
       assignedTo === 'me' ? eq(events.assignedTo, user.userId)
         : assignedTo === 'unassigned' ? isNull(events.assignedTo)
         : assignedTo && z.string().uuid().safeParse(assignedTo).success ? eq(events.assignedTo, assignedTo)
@@ -193,6 +191,13 @@ app.get('/', authMiddleware, requireAction('alert.view'), async (c) => {
           assetCriticality:   assets.criticalityScore,
           assetInternetFacing: assets.isInternetFacing,
           priority:           priorityExpr,
+          tier:               tierExpr,
+          rankScore:          rankScoreExpr,
+          dueAt:              dueAtExpr,
+          dueStatus:          dueStatusExpr,
+          slaHours:           slaHoursExpr,
+          reopenedAt:         events.reopenedAt,
+          reopenCount:        events.reopenCount,
         })
         .from(events)
         .innerJoin(assets, eq(events.assetId, assets.assetId))
@@ -239,9 +244,12 @@ function serializeEvent(
     resolvedAt: Date | null; resolutionNote: string | null; assetHostname: string | null
     assetIp: string | null; assetDeviceType: string | null; assetCriticality: number | null
     assetInternetFacing: boolean | null; priority: number | null
+    tier?: number | null; rankScore?: number | null; dueAt?: string | Date | null; dueStatus?: string | null
+    slaHours?: number | null; reopenedAt?: Date | null; reopenCount?: number | null
   },
   advisory?: { advisoryId: string; status: string },
 ) {
+  const open = row.status === 'open' || row.status === 'in_progress'
   return {
     event_id:              row.eventId,
     asset_id:              row.assetId,
@@ -264,6 +272,15 @@ function serializeEvent(
     asset_criticality:     row.assetCriticality,
     asset_internet_facing: row.assetInternetFacing ?? false,
     priority_score:        row.priority != null ? Number(row.priority) : null,
+    // tier 1 Compromise / 2 Exploited / 3 Fix / 4 Review, the 0-100 score within it, and the
+    // fix-time target (due only while the alert is open)
+    tier:                  row.tier != null ? Number(row.tier) : null,
+    rank_score:            row.rankScore != null ? Number(row.rankScore) : null,
+    due_at:                open && row.dueAt ? new Date(row.dueAt).toISOString() : null,
+    due_status:            open ? row.dueStatus ?? null : null,
+    sla_hours:             row.slaHours != null ? Number(row.slaHours) : null,
+    reopened_at:           row.reopenedAt ?? null,
+    reopen_count:          row.reopenCount ?? 0,
     has_advisory:          !!advisory,
     advisory_id:           advisory?.advisoryId ?? null,
     advisory_status:       advisory?.status ?? null,
@@ -294,7 +311,7 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
 
     const [
       byStatus, bySeverity, byType, avgRisk, newCount, resolvedCount,
-      mttr, recent30, slaBreaches, dailyNew, dailyResolved, agingRows, concernRows,
+      mttr, recent30, slaBreaches, dailyNew, dailyResolved, agingRows, concernRows, policyRow,
     ] = await Promise.all([
       db.select({ status: events.status, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
@@ -320,7 +337,7 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
         })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, gte(events.firstSeen, days30))),
-      base().where(and(tenantCond, isOpenEvent(), overdueCondition(now))),
+      base().where(and(tenantCond, isOpenEvent(), overdueCondition())),
       db.select({ day: sql<string>`date_trunc('day', ${events.firstSeen})::date::text`, count: sql<number>`count(*)::int` })
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, gte(events.firstSeen, days7)))
@@ -336,6 +353,10 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
       db.select(concernCountColumns)
         .from(events).innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(tenantCond, isOpenEvent())),
+      // the tenant's own fix-time targets (none for the platform view: the defaults)
+      tenantId
+        ? db.select({ policy: tenants.slaPolicy }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+        : Promise.resolve([] as { policy: unknown }[]),
     ])
 
     const by_status: Record<string, number> = { open: 0, in_progress: 0, resolved: 0, false_positive: 0, accepted_risk: 0 }
@@ -376,8 +397,8 @@ app.get('/stats/summary', authMiddleware, requireAction('alert.view'), async (c)
       new_7d:           newCount[0]?.count ?? 0,
       resolved_7d:      resolvedCount[0]?.count ?? 0,
       mttr_hours:       mttr[0]?.hours ?? null,
-      sla_breaches:     slaBreaches[0]?.count ?? 0,
-      sla_hours:        SLA_HOURS,
+      sla_breaches:     slaBreaches[0]?.count ?? 0,     // open alerts past their fix-time target
+      sla_policy:       slaPolicy(policyRow[0]?.policy),  // the targets in force, hours
       resolution_rate:  total30 > 0 ? Math.round((closed30 / total30) * 100) : 100,
       daily_trend,
       aging,
@@ -475,8 +496,21 @@ app.get('/:eventId', authMiddleware, requireAction('alert.view'), async (c) => {
 
     const osInfo = (asset.osInfo ?? {}) as Record<string, unknown>
     const advisory = advisoryRows[0]
+    // its tier, score and fix-time target, as the queue shows them (lib/priority.ts)
+    const [rank] = await db.select({
+      priority: priorityExpr, tier: tierExpr, rankScore: rankScoreExpr, dueAt: dueAtExpr, dueStatus: dueStatusExpr, slaHours: slaHoursExpr,
+    }).from(events).innerJoin(assets, eq(events.assetId, assets.assetId)).where(eq(events.eventId, event.eventId)).limit(1)
+    const open = event.status === 'open' || event.status === 'in_progress'
 
     return c.json({
+      priority_score:       rank ? Number(rank.priority) : null,
+      tier:                 rank ? Number(rank.tier) : null,
+      rank_score:           rank ? Number(rank.rankScore) : null,
+      due_at:               open && rank?.dueAt ? new Date(rank.dueAt).toISOString() : null,
+      due_status:           open ? rank?.dueStatus ?? null : null,
+      sla_hours:            rank ? Number(rank.slaHours) : null,
+      reopened_at:          event.reopenedAt,
+      reopen_count:         event.reopenCount,
       event_id:             event.eventId,
       asset_id:             event.assetId,
       event_type:           event.eventType,
@@ -795,13 +829,13 @@ app.get('/:eventId/cves', authMiddleware, requireAction('alert.view'), async (c)
           first_seen: cveFindings.firstSeen, fixed_at: cveFindings.fixedAt,
         })
         .from(cveFindings).where(where)
-        .orderBy(desc(cveFindings.kev), desc(cveFindings.epss), desc(cveFindings.cvss), cveFindings.cveId, cveFindings.packageVersion)
+        .orderBy(desc(cveFindings.kev), sql`${cveFindings.epss} DESC NULLS LAST`, desc(cveFindings.cvss), cveFindings.cveId, cveFindings.packageVersion)
         .limit(pageSize).offset((page - 1) * pageSize),
       db.select({ n: sql<number>`count(*)::int` }).from(cveFindings).where(where),
     ])
     return c.json({
       total: total?.n ?? 0, page, page_size: pageSize,
-      items: items.map((f) => ({ ...f, cvss: Number(f.cvss), epss: Number(f.epss), cwes: cweList(f.cwe_ids) })),
+      items: items.map((f) => ({ ...f, cvss: Number(f.cvss), epss: f.epss == null ? null : Number(f.epss), cwes: cweList(f.cwe_ids) })),
     })
   } catch (err) {
     console.error('events GET /:eventId/cves error:', err)

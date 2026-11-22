@@ -213,8 +213,8 @@ function groundedPrompt(kind: Kind, access: Access, restricted: boolean, canProp
 /** How an overview answer is laid out: the dashboard's numbers per area, then what to fix first. */
 const OVERVIEW_RULE = [
   'This question is about the overall situation. Call get_overview first.',
-  'Answer with "## Overall status": one line per area with its exact numbers (posture score; assets: total, critical, internet-facing; agents: online, offline; scans in the last 7 days: total, failed; open alerts: critical, high, medium, low, new this week; advisories active; priority tiers P0, P1, P2, P3), each cited.',
-  'Then "## What to fix first": the P0 items, then the P1 items from top_priorities, each with its device, what it is about and its advisory ID if it has one, cited. If there are no P0 or P1 items, say so and list the P2 items. If the overview gives counts only, give the tier counts and say individual items are not shown for this role.',
+  'Answer with "## Overall status": one line per area with its exact numbers (posture score; assets: total, critical, internet-facing; agents: online, offline; scans in the last 7 days: total, failed; open alerts: critical, high, medium, low, new this week; advisories active; priority tiers compromise, exploited, fix, review; overdue alerts), each cited.',
+  'Then "## What to fix first": the compromise items, then the exploited items from top_priorities, each with its device, what it is about, its due date and its advisory ID if it has one, cited. If there are none, say so and list the first fix items. If the overview gives counts only, give the tier counts and say individual items are not shown for this role.',
   'Then one or two sentences on what stands out, using only these numbers. Copy every number exactly as given: never calculate percentages, sums or differences. Never call this an all-clear while alerts are open.',
   'Write no "## Expert guidance" section and no how-to-fix steps: how to fix an item is in its advisory, so give the advisory ID for the user to open.',
 ].join('\n')
@@ -496,7 +496,7 @@ const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_overview', title: 'Reading the overall status',
-    description: 'The overall status as the dashboard shows it, with exact numbers: posture score, assets, agents online and offline, scans in the last 7 days, open alerts by severity, advisories, priority tiers (P0 investigate, P1 urgent, P2 high, P3 routine), and the top open alerts to fix first. Call it first for "how are we doing", "what is going on", "summarise", "status" or "what should we fix first".',
+    description: 'The overall status as the dashboard shows it, with exact numbers: posture score, assets, agents online and offline, scans in the last 7 days, open alerts by severity, advisories, priority tiers (compromise, exploited, fix, review) with overdue alerts, and the top open alerts to fix first with their due dates. Call it first for "how are we doing", "what is going on", "summarise", "status" or "what should we fix first".',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     args: z.object({}).strict(),
     cost: OVERVIEW_SUBREQUESTS,

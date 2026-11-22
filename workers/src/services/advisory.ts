@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { isPackageAlert } from '../lib/packageAlerts'
 import { buildContent, type DeviceInfo, type AdvisoryContent } from '../lib/advisoryContent'
 import { softwareName, techniqueIds, techniqueName, techniquesFor } from '../lib/attack'
+import { kbLabel } from '../lib/alertSignals'
 
 import { CLOSED_STATUSES, OPEN_STATUSES } from '../lib/eventStatus'
 import { insertAdvisoryIfNoneSql, liveAdvisoryOf } from '../lib/advisoryScope'
@@ -230,7 +231,7 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
   }
   // A missing Windows patch: the KB id and title
   if (event.eventType === 'os_patch_missing') {
-    if (d.kb != null) other.kb = sanitizeText(d.kb, 40)
+    if (kbLabel(d.kb)) other.kb = sanitizeText(kbLabel(d.kb), 40)
     const title = d.kb_title ?? d.kbTitle
     if (title != null) other.kbTitle = sanitizeText(title, 160)
   }
