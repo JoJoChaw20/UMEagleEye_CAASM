@@ -656,6 +656,20 @@ def _shadow(sys_: System) -> Optional[dict[str, Any]]:
     return {"empty_passwords": empty, "root_locked": root_locked}
 
 
+def _sysctl_configured(sys_: System, key: str, value: str) -> bool:
+    """Whether a sysctl configuration file sets `key = value` (the last setting read wins, as systemd-sysctl applies them)."""
+    texts = [sys_.read("/etc/sysctl.conf") or ""]
+    for d in ("/usr/lib/sysctl.d", "/run/sysctl.d", "/etc/sysctl.d"):
+        texts += [sys_.read(f"{d}/{n}") or "" for n in sys_.listdir(d) if n.endswith(".conf")]
+    found = None
+    for text in texts:
+        for line in text.splitlines():
+            m = re.match(rf"^\s*{re.escape(key)}\s*=\s*(\S+)", line)
+            if m:
+                found = m.group(1)
+    return found == value
+
+
 def _mode(sys_: System, *paths: str) -> Optional[dict[str, int]]:
     for p in paths:
         st = sys_.stat_mode(p)
@@ -700,6 +714,8 @@ def _baseline(sys_: System, software: list[dict[str, Any]], firewall: list[dict[
         "sshd": _sshd(sys_),
         "insecure_servers": sorted(names & _INSECURE_SERVERS),
         "aslr": sysctl("kernel/randomize_va_space"),
+        # in effect above; written in the sysctl configuration here (so a reboot keeps it), as the CIS Benchmark reads it
+        "aslr_configured": _sysctl_configured(sys_, "kernel.randomize_va_space", "2"),
         "ip_forward": sysctl("net/ipv4/ip_forward"),
         "accept_redirects": [sysctl("net/ipv4/conf/all/accept_redirects"), sysctl("net/ipv4/conf/default/accept_redirects")],
         "container_host": sys_.exists("/var/run/docker.sock") or sys_.exists("/run/containerd/containerd.sock")

@@ -380,6 +380,14 @@ def test_security_updates_on_rpm_systems():
     assert linux.parse_security_updates() is None                  # could not ask: not "none waiting"
 
 
+def test_aslr_in_the_sysctl_configuration_not_only_in_effect():
+    assert inv()["baseline"]["aslr_configured"] is False                    # the running value alone (CIS fails it)
+    files = {"/etc/sysctl.d/60-hardening.conf": "# CIS 1.5.9\nkernel.randomize_va_space = 2\n"}
+    assert inv(files=files, dirs={"/etc/sysctl.d": ["60-hardening.conf"]})["baseline"]["aslr_configured"] is True
+    later = {**files, "/etc/sysctl.d/99-local.conf": "kernel.randomize_va_space=0\n"}   # a later file wins
+    assert inv(files=later, dirs={"/etc/sysctl.d": ["60-hardening.conf", "99-local.conf"]})["baseline"]["aslr_configured"] is False
+
+
 def test_insecure_servers_come_from_the_package_list():
     dpkg = DPKG + "telnetd\t0.17-44\tUbuntu Developers <x@y>\tamd64\tinstalled\n"
     cmd = ("dpkg-query", "-W", "-f", "${Package}\t${Version}\t${Maintainer}\t${Architecture}\t${db:Status-Status}\n")

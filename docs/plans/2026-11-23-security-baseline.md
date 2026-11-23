@@ -100,6 +100,37 @@ redistribution at all.
 Item 2 built 23 Nov: macOS collector facts (collectors/macos.py `_baseline`) and 30 `mac.*` rules; not yet
 run on a real Mac (TESTING-MACOS.md step 4 asks the tester for the inventory JSON).
 
+## Step 5 results (23 Nov): agreement with CIS-CAT Lite 4.68.0
+
+Files: C:\FYP\AP2\eval\security-baseline\ (reports, parsed results, comparison scripts).
+
+**Windows**: LAB-WIN11 (Windows 11 26H2 Enterprise Evaluation), CIS Microsoft Windows 11 Enterprise
+v5.1.1, Level 1; our inventory 10:32 UTC, CIS-CAT 10:39 UTC. 21 of our 30 checks have a Level 1
+counterpart (the other 9: update age, OS support, admin count, BitLocker (its own profile), Secure Boot,
+TPM, PowerShell logging, antivirus, signatures). Strict agreement 12 of 21 (57.1%). Every difference was
+"we pass, CIS-CAT fails":
+- 7 "in effect vs locked in": firewall state and inbound (3 profiles each), SMBv1, SMB signing, WinRM
+  Basic, NLA, automatic updates are on by Windows default but not set by Group Policy, which is what
+  CIS-CAT reads.
+- 2 rules of ours softer than CIS: the built-in Administrator (CIS: renamed, even when disabled) and
+  SmartScreen (CIS: "Warn and prevent bypass" by policy).
+Counting the 7 as explained: 19 of 21 (90.5%).
+
+**Linux**: one Ubuntu 24.04.5 container read by our collector (as root) and by CIS-CAT (CIS Ubuntu Linux
+24.04 LTS v2.0.0, Level 1 - Server), as shipped and after a few changes (password expiry, pwquality and
+faillock values). 14 checks judged by both: 12 agree (85.7%) in both states; with "does not apply"
+(no SSH server, no GRUB) counted as CIS's pass, 16 of 18 (88.9%). Differences: ASLR (in effect, not in
+the sysctl configuration: the same "locked in" question) and persistent logs (ours stricter: journald
+"auto" with no /var/log/journal keeps logs in memory only; CIS passes Storage when not set badly).
+CIS-CAT could not judge ufw, IP forwarding or auditd in a container.
+
+CIS-CAT's own score is not comparable with ours: LAB-WIN11 23% (86 of 371 rules) against our 66.6%, because
+most of its 373 rules are policy settings with no effect on a default install.
+
+**Decided (23 Nov)**: tighten the two softer rules to CIS's wording; keep judging what is in effect, and
+say "on by default, not enforced by policy" on a pass that is not locked in (agent facts: firewall,
+NLA, SMB, WinRM, update policies; Linux: ASLR in sysctl configuration).
+
 ## Decisions needed
 
 1. **Beside or instead of the 10-check device score?** Recommended: beside for now (the posture history stays

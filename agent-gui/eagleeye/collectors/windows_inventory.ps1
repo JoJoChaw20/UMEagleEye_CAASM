@@ -210,6 +210,15 @@ $baseline = Section 'baseline' {
         autorun_drive_types   = (RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoDriveTypeAutoRun')
         ps_scriptblock_logging = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' 'EnableScriptBlockLogging')
         smartscreen_policy    = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableSmartScreen')
+        smartscreen_level     = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'ShellSmartScreenLevel')
+        # Set by Group Policy (or the registry values the CIS Benchmark reads), apart from what is in
+        # effect: a setting on only by Windows default is not locked in (step-5 comparison with CIS-CAT).
+        firewall_policy       = @(foreach ($p in 'Domain', 'Private', 'Public') {
+                                    $k = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\${p}Profile"
+                                    [ordered]@{ profile = $p; enabled = (RegValue $k 'EnableFirewall'); inbound = (RegValue $k 'DefaultInboundAction') } })
+        rdp_nla_policy        = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication')
+        smb1_registry         = (RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'SMB1')
+        smb_signing_registry  = (RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'RequireSecuritySignature')
         smartscreen_local     = (RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'SmartScreenEnabled')
         audit_logon           = $auditLogon
         security_log_kb       = $securityLogKb

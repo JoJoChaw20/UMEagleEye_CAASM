@@ -170,7 +170,9 @@ const WINDOWS: Rule[] = [
     judge: c => {
       if (c.facts['no_auto_update'] === 1) return no('turned off by policy (NoAutoUpdate)')
       if (c.facts['update_service_disabled'] === true) return no('Windows Update service disabled')
-      return c.facts['update_service_disabled'] == null && c.facts['no_auto_update'] == null ? unread(c, false) : yes('on')
+      if (c.facts['update_service_disabled'] == null && c.facts['no_auto_update'] == null) return unread(c, false)
+      // "Configure Automatic Updates: Enabled" writes NoAutoUpdate = 0
+      return yes(`on${unenforced(c, 'no_auto_update', policyOn(0))}`)
     } },
   { id: 'win.os_supported', area: 'updates', label: 'Windows version still supported', expected: 'a version Microsoft still sends security updates for',
     cis: 'Use a supported operating system version', fix: 'Upgrade to a supported Windows version (Settings > Windows Update).',
@@ -186,7 +188,9 @@ const WINDOWS: Rule[] = [
     judge: c => {
       const fw = list(c.sec['firewall'])
       const on = bool(c.sec['firewall_all_enabled'])
-      return on == null ? unread(c, false) : passIf(on, fw.map(f => `${f['profile']} ${f['enabled'] ? 'on' : 'off'}`).join(', ') || null)
+      if (on == null) return unread(c, false)
+      const text = fw.map(f => `${f['profile']} ${f['enabled'] ? 'on' : 'off'}`).join(', ')
+      return passIf(on, `${text}${on ? unenforced(c, 'firewall_policy', v => list(v).length === 3 && list(v).every(p => p['enabled'] === 1)) : ''}`)
     } },
   { id: 'win.firewall_inbound', area: 'firewall', label: 'Inbound blocked by default', expected: 'unsolicited inbound connections blocked in every profile',
     cis: "Ensure 'Windows Firewall: <profile>: Inbound connections' is set to 'Block (default)'", fix: 'Set the default inbound action to Block in every firewall profile.',
@@ -194,7 +198,8 @@ const WINDOWS: Rule[] = [
       const fw = list(c.facts['firewall_inbound'])
       if (!fw.length) return unread(c, false)
       const open = fw.filter(f => !['Block', 'NotConfigured'].includes(String(f['action'])))
-      return passIf(!open.length, open.length ? `allowed in ${open.map(f => f['profile']).join(', ')}` : 'blocked in every profile')
+      if (open.length) return no(`allowed in ${open.map(f => f['profile']).join(', ')}`)
+      return yes(`blocked in every profile${unenforced(c, 'firewall_policy', v => list(v).length === 3 && list(v).every(p => p['inbound'] === 1))}`)
     } },
 
   { id: 'win.bitlocker', area: 'disk', label: 'System drive encrypted', expected: 'BitLocker protection on for the system drive',
@@ -223,21 +228,22 @@ const WINDOWS: Rule[] = [
       if (rdp == null) return unread(c, false)
       if (!rdp) return yes('off')
       const nla = num(c.facts['rdp_nla'])
-      return nla == null ? unread(c, false) : passIf(nla === 1, nla === 1 ? 'on, with NLA' : 'on, without NLA')
+      return nla == null ? unread(c, false) : passIf(nla === 1, nla === 1 ? `on, with NLA${unenforced(c, 'rdp_nla_policy', policyOn(1))}` : 'on, without NLA')
     } },
   { id: 'win.smb1', area: 'remote', label: 'SMBv1 off', expected: 'the SMBv1 server protocol disabled', cis: "Ensure 'Configure SMB v1 server' is set to 'Disabled'",
-    fix: 'Run: Set-SmbServerConfiguration -EnableSMB1Protocol $false',
-    judge: c => { const v = bool(c.sec['smb1_enabled']); return v == null ? unread(c) : passIf(!v, v ? 'enabled' : 'disabled') } },
+    fix: 'Run: Set-SmbServerConfiguration -EnableSMB1Protocol $false (or Group Policy: MS Security Guide > Configure SMB v1 server = Disabled)',
+    judge: c => { const v = bool(c.sec['smb1_enabled']); return v == null ? unread(c) : passIf(!v, v ? 'enabled' : `disabled${unenforced(c, 'smb1_registry', policyOn(0))}`) } },
   { id: 'win.smb_signing', area: 'remote', label: 'SMB signing required', expected: 'the SMB server requires signing',
     cis: "Ensure 'Microsoft network server: Digitally sign communications (always)' is set to 'Enabled'", fix: 'Run: Set-SmbServerConfiguration -RequireSecuritySignature $true',
-    judge: c => { const v = bool(c.facts['smb_signing_required']); return v == null ? unread(c) : passIf(v, v ? 'required' : 'not required') } },
+    judge: c => { const v = bool(c.facts['smb_signing_required']); return v == null ? unread(c) : passIf(v, v ? `required${unenforced(c, 'smb_signing_registry', policyOn(1))}` : 'not required') } },
   { id: 'win.llmnr', area: 'remote', label: 'LLMNR off', expected: 'multicast name resolution turned off by policy',
     cis: "Ensure 'Turn off multicast name resolution' is set to 'Enabled'", fix: 'Group Policy: Network > DNS Client > Turn off multicast name resolution = Enabled.',
     judge: c => (hasFacts(c) ? passIf(c.facts['llmnr_policy'] === 0, c.facts['llmnr_policy'] === 0 ? 'off' : 'on (Windows default)') : unread(c, false)) },
   { id: 'win.winrm_basic', area: 'remote', label: 'WinRM Basic authentication off', expected: 'the WinRM service does not accept Basic authentication',
     cis: "Ensure 'Allow Basic authentication' (WinRM Service) is set to 'Disabled'", fix: 'Group Policy: Windows Remote Management > WinRM Service > Allow Basic authentication = Disabled.',
     judge: c => (!hasFacts(c) ? unread(c, false)
-      : passIf(c.facts['winrm_basic_policy'] !== 1 && c.facts['winrm_basic_local'] !== 1, c.facts['winrm_basic_policy'] === 1 || c.facts['winrm_basic_local'] === 1 ? 'allowed' : 'not allowed')) },
+      : c.facts['winrm_basic_policy'] === 1 || c.facts['winrm_basic_local'] === 1 ? no('allowed')
+        : yes(`not allowed${unenforced(c, 'winrm_basic_policy', policyOn(0))}`)) },
 
   { id: 'win.uac', area: 'hardening', label: 'User Account Control on', expected: 'UAC enabled', cis: "Ensure 'User Account Control: Run all administrators in Admin Approval Mode' is set to 'Enabled'",
     fix: 'Set UAC to at least the default level (Control Panel > User Accounts).',
@@ -276,10 +282,17 @@ const WINDOWS: Rule[] = [
       if (active.some(a => a['up_to_date'] === true)) return yes('up to date')
       return active.some(a => a['up_to_date'] === false) ? no('out of date') : unread(c, false)
     } },
-  { id: 'win.smartscreen', area: 'integrity', label: 'SmartScreen on', expected: 'SmartScreen not turned off',
-    cis: "Ensure 'Configure Windows Defender SmartScreen' is set to 'Enabled'", fix: 'Turn on "Check apps and files" in Windows Security > App & browser control.',
-    judge: c => (!hasFacts(c) ? unread(c, false)
-      : c.facts['smartscreen_policy'] === 0 || String(c.facts['smartscreen_local'] ?? '').toLowerCase() === 'off' ? no('off') : yes('on')) },
+  // Tightened after the step-5 comparison: CIS wants the policy on with "Warn and prevent bypass"; Windows'
+  // own default warns but lets the user run the file anyway.
+  { id: 'win.smartscreen', area: 'integrity', label: 'SmartScreen blocks bypassing', expected: 'SmartScreen on by policy, with "Warn and prevent bypass"',
+    cis: "Ensure 'Configure Windows Defender SmartScreen' is set to 'Enabled: Warn and prevent bypass'",
+    fix: 'Group Policy: Windows Components > File Explorer > Configure Windows Defender SmartScreen = Enabled, Warn and prevent bypass.',
+    judge: c => {
+      if (!hasFacts(c)) return unread(c, false)
+      if (c.facts['smartscreen_policy'] === 0 || String(c.facts['smartscreen_local'] ?? '').toLowerCase() === 'off') return no('off')
+      if (c.facts['smartscreen_policy'] === 1 && String(c.facts['smartscreen_level'] ?? '') === 'Block') return yes('on, bypass blocked')
+      return no(c.facts['smartscreen_policy'] === 1 ? 'on by policy, but the user can bypass it' : 'on (Windows default: warns, the user can bypass it)')
+    } },
 
   { id: 'win.audit_logon', area: 'logging', label: 'Logons audited', expected: 'logon success and failure audited',
     cis: "Ensure 'Audit Logon' is set to 'Success and Failure'", fix: 'Run: auditpol /set /subcategory:"Logon" /success:enable /failure:enable',
@@ -298,6 +311,18 @@ const WINDOWS: Rule[] = [
 function hasFacts(c: Ctx): boolean {
   return Object.keys(c.facts).length > 0
 }
+
+/**
+ * A setting in effect only by default, not set by Group Policy (or, on Linux, not written in the
+ * configuration): still a pass, since it protects the machine now, but the finding says so, because
+ * nothing stops a user or an update from changing it. CIS-CAT fails these: it checks the policy, not
+ * the effect (the step-5 comparison on LAB-WIN11, docs/plans/2026-11-23-security-baseline.md).
+ * An agent older than these facts (key absent) gets no note rather than a guess.
+ */
+export const NOT_ENFORCED = ' · on by default, not enforced by policy'
+const unenforced = (c: Ctx, key: string, locked: (v: unknown) => boolean): string =>
+  (key in c.facts && !locked(c.facts[key]) ? NOT_ENFORCED : '')
+const policyOn = (want: number) => (v: unknown) => v === want
 
 function secpolRules(): Rule[] {
   const sp = (c: Ctx) => (c.facts['secpol'] && typeof c.facts['secpol'] === 'object' ? rec(c.facts['secpol']) : null)
@@ -326,13 +351,15 @@ function secpolRules(): Rule[] {
     rule('win.guest', 'Guest account disabled', 'the Guest account disabled', "Ensure 'Accounts: Guest account status' is set to 'Disabled'",
       'Run: net user Guest /active:no',
       p => { const v = n(p, 'guest_enabled'); return v == null ? ['unknown', null] : passIf(v === 0, v === 0 ? 'disabled' : 'enabled') }),
-    rule('win.admin_account', 'Built-in Administrator disabled or renamed', 'the built-in Administrator account disabled or renamed',
-      "Ensure 'Accounts: Administrator account status' is set to 'Disabled' / 'Rename administrator account'", 'Run: net user Administrator /active:no',
+    // Tightened after the step-5 comparison: CIS wants it renamed even when disabled (a well-known name
+    // is the first one tried).
+    rule('win.admin_account', 'Built-in Administrator renamed', 'the built-in Administrator account renamed',
+      "Configure 'Accounts: Rename administrator account'", 'Local Security Policy: Security Options > Accounts: Rename administrator account.',
       p => {
         const on = n(p, 'admin_enabled'); const name = str(p['admin_name'])
-        if (on == null) return ['unknown', null]
-        if (on === 0) return yes('disabled')
-        return passIf(!!name && name.toLowerCase() !== 'administrator', `enabled as "${name ?? '?'}"`)
+        if (name == null) return ['unknown', null]
+        const state = on === 0 ? ', disabled' : on === 1 ? ', enabled' : ''
+        return passIf(name.toLowerCase() !== 'administrator', name.toLowerCase() === 'administrator' ? `still named "Administrator"${state}` : `renamed to "${name}"${state}`)
       }),
   ]
 }
@@ -424,7 +451,11 @@ const LINUX_RULES: Rule[] = [
 
   { id: 'linux.aslr', area: 'hardening', label: 'Address space randomisation full', expected: 'kernel.randomize_va_space = 2',
     cis: 'Ensure address space layout randomization is enabled', fix: 'Set kernel.randomize_va_space = 2 in /etc/sysctl.d/60-hardening.conf.',
-    judge: c => { const v = num(c.facts['aslr']); return v == null ? unread(c, false) : passIf(v === 2, `randomize_va_space ${v}`) } },
+    judge: c => {
+      const v = num(c.facts['aslr'])
+      if (v == null) return unread(c, false)
+      return passIf(v === 2, `randomize_va_space ${v}${v === 2 ? unenforced(c, 'aslr_configured', x => x === true).replace('policy', 'sysctl configuration') : ''}`)
+    } },
   { id: 'linux.ip_forward', area: 'hardening', label: 'IP forwarding off', expected: 'net.ipv4.ip_forward = 0 (not a router or container host)',
     cis: 'Ensure ip forwarding is disabled', fix: 'Set net.ipv4.ip_forward = 0 in /etc/sysctl.d/60-hardening.conf.',
     judge: c => {

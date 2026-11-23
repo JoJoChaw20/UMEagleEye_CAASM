@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  AREAS, CHECKS_PER_OS, RULES, baselineColumns, compactBaseline, evaluateBaseline, linuxSupport, planBaselineAlert, windowsSupport,
+  AREAS, CHECKS_PER_OS, NOT_ENFORCED, RULES, baselineColumns, compactBaseline, evaluateBaseline, linuxSupport, planBaselineAlert, windowsSupport,
   type BaselineResult,
 } from './baseline'
 
@@ -124,8 +124,11 @@ test('as the service sees it, the PC is assessed and scored', () => {
   assert.equal(r.assessed, true)
   assert.equal(r.checks.filter(c => c.state === 'admin' || c.state === 'unknown').length, 0)
   for (const id of ['win.pw_length', 'win.pw_complexity', 'win.lockout_threshold', 'win.lockout_duration', 'win.bitlocker',
-    'win.llmnr', 'win.autorun', 'win.ps_logging', 'win.audit_logon', 'win.security_log']) assert.equal(state(r, id), 'fail', id)
-  for (const id of ['win.guest', 'win.admin_account', 'win.smb_signing', 'win.tpm', 'win.rdp', 'win.smb1', 'win.winrm_basic']) assert.equal(state(r, id), 'pass', id)
+    'win.llmnr', 'win.autorun', 'win.ps_logging', 'win.audit_logon', 'win.security_log',
+    'win.admin_account', 'win.smartscreen']) assert.equal(state(r, id), 'fail', id)      // the two rules tightened after CIS-CAT
+  for (const id of ['win.guest', 'win.smb_signing', 'win.tpm', 'win.rdp', 'win.smb1', 'win.winrm_basic']) assert.equal(state(r, id), 'pass', id)
+  assert.equal(found(r, 'win.admin_account'), 'still named "Administrator", disabled')
+  assert.equal(found(r, 'win.smartscreen'), 'on (Windows default: warns, the user can bypass it)')
   assert.equal(r.passed + r.failed, 30)
   assert.equal(r.percent, Math.floor((1000 * r.passed) / 30) / 10)
   assert.equal(found(r, 'win.lockout_threshold'), '10 tries')
@@ -195,7 +198,31 @@ test('secedit values: password never expires and lockout off are failures with p
   assert.equal(found(r, 'win.pw_max_age'), 'never expire')
   assert.equal(found(r, 'win.lockout_threshold'), 'never locks')
   assert.deepEqual([state(r, 'win.lockout_duration'), found(r, 'win.lockout_duration')], ['fail', 'lockout off'])
-  assert.deepEqual([state(r, 'win.admin_account'), found(r, 'win.admin_account')], ['pass', 'enabled as "it-admin"'])
+  assert.deepEqual([state(r, 'win.admin_account'), found(r, 'win.admin_account')], ['pass', 'renamed to "it-admin", enabled'])
+})
+
+test('in effect only by default: still a pass, and the finding says it is not enforced by policy', () => {
+  // LAB-WIN11, 23 Nov 2026: CIS-CAT failed these seven because no Group Policy sets them
+  const policyFacts = {
+    no_auto_update: null, rdp_nla_policy: null, smb1_registry: null, smb_signing_registry: null, winrm_basic_policy: null,
+    firewall_policy: ['Domain', 'Private', 'Public'].map(profile => ({ profile, enabled: null, inbound: null })),
+  }
+  const lab = { ...PC_AS_SERVICE, security: { ...PC_AS_SERVICE.security, rdp_enabled: true },
+    baseline: { ...PC_AS_SERVICE.baseline, ...policyFacts, smb_signing_required: true } }
+  const r = evaluateBaseline(lab, NOW)!
+  for (const id of ['win.auto_updates', 'win.firewall_on', 'win.firewall_inbound', 'win.rdp', 'win.smb1', 'win.smb_signing', 'win.winrm_basic']) {
+    assert.equal(state(r, id), 'pass', id)
+    assert.ok(found(r, id)!.endsWith(NOT_ENFORCED), `${id}: ${found(r, id)}`)
+  }
+  // set by policy: no note
+  const enforced = evaluateBaseline({ ...lab, baseline: { ...lab.baseline, no_auto_update: 0, smb1_registry: 0,
+    firewall_policy: ['Domain', 'Private', 'Public'].map(profile => ({ profile, enabled: 1, inbound: 1 })) } }, NOW)!
+  for (const id of ['win.auto_updates', 'win.firewall_on', 'win.firewall_inbound', 'win.smb1']) assert.ok(!found(enforced, id)!.includes('not enforced'), id)
+  // an agent older than these facts: no note rather than a guess
+  assert.equal(found(evaluateBaseline(PC_AS_SERVICE, NOW)!, 'win.smb1'), 'disabled')
+  // Linux: ASLR in effect but not in the sysctl configuration (CIS Ubuntu 1.5.9 failed it in the container)
+  const vm = evaluateBaseline({ ...VM, baseline: { ...VM.baseline, aslr_configured: false } }, NOW)!
+  assert.deepEqual([state(vm, 'linux.aslr'), found(vm, 'linux.aslr')], ['pass', 'randomize_va_space 2 · on by default, not enforced by sysctl configuration'])
 })
 
 test('stored per asset: compact, and cleared with the inventory', () => {
