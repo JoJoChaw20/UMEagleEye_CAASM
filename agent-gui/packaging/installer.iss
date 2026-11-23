@@ -98,6 +98,8 @@ Filename: "{sys}\taskkill.exe"; Parameters: "/IM EagleEyeAgent.exe /F"; Flags: r
 var
   EnrolFailed: Boolean;
   CodeFileName: String;
+  ServiceStopped: Boolean;    // Setup stopped a running service (PrepareToInstall)
+  FilesInstalled: Boolean;    // reached ssPostInstall: the new files are in place
 
 function HasCode: Boolean;
 begin
@@ -127,6 +129,8 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
 begin
+  if CurStep = ssPostInstall then
+    FilesInstalled := True;
   if (CurStep = ssPostInstall) and HasCode then
   begin
     WizardForm.StatusLabel.Caption := 'Connecting the agent to your EagleEye dashboard...';
@@ -158,6 +162,9 @@ end;
 // asked to close, it only hides in the tray, so its EagleEyeAgent.exe stayed in use
 // ("DeleteFile failed; code 5", 2026-11-07). The app holds nothing: the agent is the
 // service, and the app opens again at the end and at the next sign-in.
+// STOPPED comes a moment before eagleeye.exe has exited: Restart Manager then found it still
+// running, could not close it, and a silent install aborted ("Some applications could not be
+// shut down", dashboard update 2026-11-23). So wait for the process too, and end it after 30 s.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code, I: Integer;
@@ -165,6 +172,8 @@ begin
   Result := '';
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM EagleEyeAgent.exe /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
   if Exec(ExpandConstant('{sys}\sc.exe'), 'stop EagleEyeAgent', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+  begin
+    ServiceStopped := True;
     for I := 1 to 90 do
     begin
       Exec(ExpandConstant('{cmd}'), '/c sc.exe query EagleEyeAgent | find "STOPPED" > nul', '', SW_HIDE,
@@ -173,6 +182,34 @@ begin
         Break;
       Sleep(1000);
     end;
+  end;
+  for I := 1 to 30 do
+  begin
+    Exec(ExpandConstant('{cmd}'), '/c tasklist /FI "IMAGENAME eq eagleeye.exe" /NH | find /I "eagleeye.exe" > nul', '', SW_HIDE,
+         ewWaitUntilTerminated, Code);
+    if Code <> 0 then
+      Break;
+    Sleep(1000);
+  end;
+  if Code = 0 then
+  begin
+    Log('eagleeye.exe still running 30 s after the service stopped: ending it');
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM eagleeye.exe /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Sleep(1000);
+  end;
+end;
+
+// A cancelled or failed install leaves the old files in place: start the service Setup stopped,
+// so the computer is never left without its agent.
+procedure DeinitializeSetup;
+var
+  Code: Integer;
+begin
+  if ServiceStopped and not FilesInstalled then
+  begin
+    Log('Setup did not finish: starting the EagleEye Agent service again');
+    Exec(ExpandConstant('{sys}\sc.exe'), 'start EagleEyeAgent', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  end;
 end;
 
 [Messages]

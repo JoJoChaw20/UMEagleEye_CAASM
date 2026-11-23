@@ -202,6 +202,48 @@ def test_a_windows_installer_that_never_finished_is_reported(state_dir, monkeypa
     assert client.failed[0][0] == "j3"
 
 
+# The developer PC's update of 23 Nov 2026: Restart Manager found eagleeye.exe still exiting.
+ABORTED_SETUP_LOG = """2026-11-23 15:39:11.216   RestartManager found an application using one of our files: eagleeye
+2026-11-23 15:39:11.218   Starting the installation process.
+2026-11-23 15:39:11.218   Shutting down applications using our files.
+2026-11-23 15:39:11.279   Some applications could not be shut down.
+2026-11-23 15:39:11.279   Defaulting to Abort for suppressed message box (Abort/Retry/Ignore):
+                          Setup was unable to automatically close all applications.
+2026-11-23 15:39:11.279   User canceled the installation process.
+2026-11-23 15:39:11.279   Rolling back changes.
+2026-11-23 15:39:11.295   Log closed.
+"""
+
+
+def test_a_cancelled_windows_installer_fails_the_job_at_once(state_dir, monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "BUILD", "B1")
+    setup_log = tmp_path / "install-1.log"
+    setup_log.write_text(ABORTED_SETUP_LOG, encoding="utf-8")
+    install.write_state({"job": "j5", "build": "B2", "state": "installing", "at": 0, "log": str(setup_log)})
+    client = FakeClient()
+    assert install.report_outcome(client, clock=lambda: 60) == "failed"        # not after the 30-minute wait
+    assert client.failed == [("j5", "Update failed: the installer could not close the running agent and cancelled; "
+                                    "the previous build is still running")]
+
+
+def test_an_unsettled_update_stays_pending_until_reported(state_dir, monkeypatch):
+    # The developer PC, 23 Nov: checked once inside the 30-minute wait, then never again.
+    monkeypatch.setattr(install, "BUILD", "B1")
+    assert install.update_pending() is False                                      # no update at all
+    install.write_state({"job": "j6", "build": "B2", "state": "installing", "at": 0})
+    client = FakeClient()
+    assert install.report_outcome(client, clock=lambda: 60) is None and install.update_pending() is True
+    assert install.report_outcome(client, clock=lambda: 60 + install.WINDOWS_GIVE_UP) == "failed"
+    assert install.update_pending() is False
+
+
+def test_setup_log_reading():
+    assert install.setup_gave_up(None) is None
+    assert install.setup_gave_up("Starting the installation process.\n") is None                  # still running
+    assert install.setup_gave_up("Installation process succeeded.\nLog closed.\n") is None
+    assert "rolled back" in install.setup_gave_up("Rolling back changes.\nLog closed.\n")
+
+
 def test_a_refused_package_fails_the_job_without_downloading(state_dir, monkeypatch, signer):
     monkeypatch.setattr(install, "install_kind", lambda: "windows")
     client = FakeClient()

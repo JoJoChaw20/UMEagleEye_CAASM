@@ -777,14 +777,16 @@ class AgentService:
         self.last_heartbeat_at = datetime.now()
         self.rejected = getattr(self.client, "rejected", None)
         if self.last_heartbeat_ok and not self._update_settled:
-            # The first heartbeat after an update: mark it healthy (stops a Linux rollback), or fail
-            # its job when the install did not work.
-            self._update_settled = True
+            # After an update: mark it healthy (stops a Linux rollback), or fail its job when the
+            # install did not work. Checked at every heartbeat until settled, not only the first:
+            # an installer that never finished is given up on only after WINDOWS_GIVE_UP.
             try:
                 outcome = update_install.report_outcome(self.client)
                 if outcome:
                     log.info("Update outcome: %s", outcome)
+                self._update_settled = not update_install.update_pending()
             except Exception as exc:  # noqa: BLE001 - never stops the agent
+                self._update_settled = True
                 log.warning("Could not settle the last update: %s", exc)
         if getattr(self.client, "jobs_in_heartbeat", False) and self.client.has_jobs():
             self._wake.set()                            # run what it brought now, not at the next poll

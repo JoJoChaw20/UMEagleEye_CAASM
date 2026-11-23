@@ -37,7 +37,7 @@ from .package import Refused, check_manifest, install_kind, install_root
 log = logging.getLogger("eagleeye.update")
 
 ROLLBACK_AFTER = 300
-WINDOWS_GIVE_UP = 30 * 60                       # an installer that never brought the new build up
+WINDOWS_GIVE_UP = 15 * 60                       # an installer that never brought the new build up (they take 1-4 minutes)
 
 
 def state_path() -> Path:
@@ -83,7 +83,9 @@ DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP, CREATE_BREAKAWAY_FROM_JOB = 0x8, 0x2
 
 
 def launch_windows_installer(setup: Path, log_file: Path) -> None:  # pragma: no cover - needs Windows
-    args = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/LOG={log_file}"]
+    # FORCECLOSEAPPLICATIONS: a silent Setup that cannot close a program answers its own question
+    # with Abort; this makes it end the program instead.
+    args = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/FORCECLOSEAPPLICATIONS", f"/LOG={log_file}"]
     base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     try:                    # out of the service's job object, so stopping the service leaves it running
         subprocess.Popen(args, creationflags=base | CREATE_BREAKAWAY_FROM_JOB, close_fds=True)
@@ -220,9 +222,11 @@ def run_update(client: Any, job_id: str, manifest: Any) -> None:
         check_file(path, info)
         state = {"job": job_id, "build": info["build"], "from": BUILD, "state": "installing", "at": time.time()}
         if kind == "windows":
+            setup_log = folder / f"install-{int(time.time())}.log"
+            state["log"] = str(setup_log)
             write_state(state)
             log.info("Update %s: package checked, starting the installer", info["build"])
-            launch_windows_installer(path, folder / f"install-{int(time.time())}.log")
+            launch_windows_installer(path, setup_log)
         else:
             previous = install_root()
             target = prepare_linux(path, info["build"])
@@ -238,6 +242,24 @@ def run_update(client: Any, job_id: str, manifest: Any) -> None:
         client.mark_scan_failed(job_id, f"Update failed: {str(exc)[:300]}")
 
 
+def update_pending() -> bool:
+    """An update whose outcome has not been reported yet."""
+    state = read_state()
+    return bool(state) and not state.get("reported")
+
+
+def setup_gave_up(log_text: Optional[str]) -> Optional[str]:
+    """Why a finished Windows Setup did not install, from its log; None while it runs or when it
+    installed."""
+    if not log_text or "Log closed." not in log_text or "Installation process succeeded" in log_text:
+        return None
+    if "could not be shut down" in log_text or "unable to automatically close" in log_text:
+        return "the installer could not close the running agent and cancelled; the previous build is still running"
+    if "Rolling back changes" in log_text:
+        return "the installer cancelled and rolled back; the previous build is still running"
+    return None
+
+
 def report_outcome(client: Any, clock: Callable[[], float] = time.time) -> Optional[str]:
     """After a successful heartbeat: settle an update in progress. Returns what was done."""
     state = read_state()
@@ -248,6 +270,14 @@ def report_outcome(client: Any, clock: Callable[[], float] = time.time) -> Optio
         state.update(state="healthy", reported=True)
         write_state(state)
         return "healthy"
+    if state.get("state") == "installing" and state.get("log") and state.get("build") != BUILD:
+        try:
+            text = Path(state["log"]).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = None
+        reason = setup_gave_up(text)
+        if reason:
+            state.update(state="failed", error=reason)
     failed = state.get("state") in ("rolled_back", "failed") or (
         state.get("state") == "installing" and clock() - float(state.get("at") or 0) > WINDOWS_GIVE_UP)
     if failed and job and state.get("build") != BUILD:
