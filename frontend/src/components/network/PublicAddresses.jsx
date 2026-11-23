@@ -39,33 +39,6 @@ function Listings({ row }) {
   )
 }
 
-/** What Shodan InternetDB sees on the address: open ports (those that alert on an address marked ours,
- *  workers/src/lib/internetView.ts, in red), its tags and the CVEs it guesses. */
-function InternetView({ row, lookup, alertPorts }) {
-  if (!lookup) return <span className="text-dark-500">check off</span>
-  if (row.ip.includes(':')) return <span className="text-dark-500">IPv4 only</span>
-  if (row.status === 'not_ours') return <span className="text-dark-500">—</span>
-  const v = row.internetdb
-  if (!v || !row.internetdb_at) return <span className="text-dark-400">not asked yet</span>
-  const when = `Shodan InternetDB, asked ${new Date(row.internetdb_at).toLocaleString()}`
-  if (!v.found || v.ports.length === 0) return <span className="text-emerald-400" title={when}>no open port known</span>
-  return (
-    <div className="space-y-0.5" title={when}>
-      <p className="font-mono">
-        {v.ports.map((p, i) => (
-          <span key={p} className={alertPorts.has(p) ?'text-red-400 font-semibold' : 'text-dark-200'}>{i > 0 && ', '}{p}</span>
-        ))}
-      </p>
-      {v.tags?.length > 0 && <p className="text-dark-400">{v.tags.slice(0, 4).join(', ')}</p>}
-      {v.vulns?.length > 0 && (
-        <p className="text-dark-400" title={v.vulns.slice(0, 20).join(', ')}>
-          {plural(v.vulns.length, 'CVE')} reported by Shodan, unverified
-        </p>
-      )}
-    </div>
-  )
-}
-
 export default function PublicAddresses({ tenantId }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
@@ -121,19 +94,6 @@ export default function PublicAddresses({ tenantId }) {
 
   const items = data?.items ?? []
   const canEdit = !!data?.can_edit
-  const alertPorts = new Set(data?.alert_ports ?? [])
-
-  const setLookup = async (enabled) => {
-    if (!enabled && !confirm("Stop asking Shodan InternetDB about the organisation's addresses?\n\nWhat it said is deleted and its alerts close.")) return
-    setBusy(true)
-    try {
-      await client.put('/network/public-addresses/lookup', { enabled })
-      show(enabled ? 'Asking Shodan InternetDB about the addresses' : 'Shodan InternetDB check turned off')
-      await load()
-    } catch (err) {
-      show(errorOf(err, 'Could not change the setting'), 'error')
-    } finally { setBusy(false) }
-  }
   const unconfirmed = items.filter((r) => r.status === 'unconfirmed').length
 
   return (
@@ -184,7 +144,6 @@ export default function PublicAddresses({ tenantId }) {
                 <th className="px-2 py-2 font-semibold">Address</th>
                 <th className="px-2 py-2 font-semibold">Status</th>
                 <th className="px-2 py-2 font-semibold">Blocklists</th>
-                <th className="px-2 py-2 font-semibold">Seen from the internet</th>
                 <th className="px-2 py-2 font-semibold">Agents connecting from it</th>
                 <th className="px-2 py-2 font-semibold">Seen</th>
                 <th className="px-2 py-2 font-semibold">Note</th>
@@ -218,7 +177,6 @@ export default function PublicAddresses({ tenantId }) {
                     )}
                   </td>
                   <td className="px-2 py-2 align-top text-xs"><Listings row={row} /></td>
-                  <td className="px-2 py-2 align-top text-xs"><InternetView row={row} lookup={data.lookup} alertPorts={alertPorts} /></td>
                   <td className="px-2 py-2 align-top text-dark-200">
                     {row.agents_now.length > 0
                       ? row.agents_now.slice(0, 4).map((a) => a.name).join(', ') + (row.agents_now.length > 4 ? ` and ${row.agents_now.length - 4} more` : '')
@@ -244,21 +202,7 @@ export default function PublicAddresses({ tenantId }) {
           </table>
         </div>
       )}
-      {data && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-dark-700/60 pt-3 text-xs text-dark-400">
-          <label className={`inline-flex items-center gap-2 ${data.can_switch ? 'cursor-pointer text-dark-200' : ''}`}>
-            <input type="checkbox" checked={!!data.lookup} disabled={!data.can_switch || busy}
-              onChange={(e) => setLookup(e.target.checked)} className="accent-eagle-500" />
-            Check what the internet sees (Shodan InternetDB, weekly)
-          </label>
-          <span>
-            Sends these addresses to Shodan, the only place they go. An open management port on an address marked ours raises an alert.
-            {!data.can_switch && ' Only the Tenant Superadmin can change this.'}
-          </span>
-        </div>
-      )}
       <p className="text-[11px] text-dark-500">
-        Open ports from <a href="https://internetdb.shodan.io/" target="_blank" rel="noreferrer" className="hover:text-dark-300 underline">Shodan InternetDB</a>.
         Network ranges from <a href="https://www.spamhaus.org/drop/" target="_blank" rel="noreferrer" className="hover:text-dark-300 underline">Spamhaus DROP</a>, © The Spamhaus Project.
       </p>
     </section>

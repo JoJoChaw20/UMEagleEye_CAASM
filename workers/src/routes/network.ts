@@ -10,7 +10,6 @@
 //   GET  /network/public-addresses           the organisation's public addresses (D4)
 //   POST /network/public-addresses           add one by hand (the organisation's own)
 //   PATCH/DELETE /network/public-addresses/:id   mark ours / not ours / unconfirmed, note; remove
-//   PUT  /network/public-addresses/lookup    the tenant's Shodan InternetDB switch (Tenant Superadmin)
 
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
@@ -23,8 +22,6 @@ import { agents, assetAddresses, assetIdentifiers, assets, auditLogs, networkLin
 import { audit } from '../services/audit'
 import { PUBLIC_ADDRESS_STATUSES, publicIpOf } from '../lib/publicAddress'
 import { checkTenantAddresses, listPublicAddresses } from '../services/publicAddresses'
-import { refreshInternetViews, syncInternetAlerts } from '../services/internetView'
-import { ALERT_PORTS } from '../lib/internetView'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
 import { cleanSelf, pickHostAsset } from '../lib/networkAgentHost'
@@ -310,17 +307,12 @@ app.get('/public-addresses', authMiddleware, requireAction('network.view'), asyn
   const user = c.get('user')
   const tenantId = user.role === 'superadmin' ? c.req.query('tenant_id') : user.tenantId
   if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
-    return c.json({ items: [], lookup: false, can_edit: false, can_switch: false })
+    return c.json({ items: [], can_edit: false })
   }
   const db = getDb(c.env.DATABASE_URL)
-  const [items, [tenant]] = await Promise.all([
-    listPublicAddresses(db, tenantId),
-    db.select({ lookup: tenants.publicAddressLookup }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1),
-  ])
   return c.json({
-    items, lookup: tenant?.lookup ?? false, alert_ports: ALERT_PORTS,
+    items: await listPublicAddresses(db, tenantId),
     can_edit: hasAction(user, 'network.public_address.edit'),
-    can_switch: user.role === 'tenant_superadmin',
   })
 })
 
@@ -348,8 +340,7 @@ app.post('/public-addresses', authMiddleware, requireAction('network.public_addr
       previousState: null, newState: { ip, status: 'ours', note },
     })
     const check = await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!)
-    const view = row?.id ? await internetViewNow(db, user.tenantId!, row.id, 'ours') : null
-    return c.json({ public_address_id: row?.id, ip, status: 'ours', check, internet_view: view }, 201)
+    return c.json({ public_address_id: row?.id, ip, status: 'ours', check }, 201)
   })
 
 // {status?, note?}
@@ -377,9 +368,7 @@ app.patch('/public-addresses/:id', authMiddleware, requireAction('network.public
     // A status change changes its alert: firm, a review item, or none (R11)
     const changed = next.status !== undefined && next.status !== current.status
     const check = changed ? await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!) : null
-    // marked ours: what the internet sees on it now, with its alerts; otherwise those alerts close
-    const view = changed ? await internetViewNow(db, user.tenantId!, id, next.status!) : null
-    return c.json({ public_address_id: id, ip: current.ip, status: next.status ?? current.status, note: 'note' in next ? next.note : current.note, check, internet_view: view })
+    return c.json({ public_address_id: id, ip: current.ip, status: next.status ?? current.status, note: 'note' in next ? next.note : current.note, check })
   })
 
 // An address agents still connect from comes back as unconfirmed at their next hourly refresh.
@@ -396,48 +385,9 @@ app.delete('/public-addresses/:id', authMiddleware, requireAction('network.publi
     userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'public_address.delete', targetEntity: id,
     previousState: gone, newState: null,
   })
-  // its alerts close (R11, and the internet view's)
+  // its alerts close (R11)
   const check = await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!)
-  await syncInternetAlerts(db, user.tenantId!).catch((err) => console.error('public addresses: internet alerts failed:', err))
   return c.json({ ok: true, check })
 })
-
-// {enabled}: off stops asking Shodan InternetDB and clears what it said.
-app.put('/public-addresses/lookup', authMiddleware, requireTenantSuperadmin,
-  zValidator('json', z.object({ enabled: z.boolean() })),
-  async (c) => {
-    const user = c.get('user')
-    const { enabled } = c.req.valid('json')
-    const db = getDb(c.env.DATABASE_URL)
-    const [tenant] = await db.select({ lookup: tenants.publicAddressLookup }).from(tenants)
-      .where(eq(tenants.tenantId, user.tenantId!)).limit(1)
-    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
-    await db.update(tenants).set({ publicAddressLookup: enabled }).where(eq(tenants.tenantId, user.tenantId!))
-    if (!enabled) {
-      await db.update(publicAddresses).set({ internetdb: null, internetdbAt: null })
-        .where(eq(publicAddresses.tenantId, user.tenantId!))
-    }
-    // on: ask about the addresses now; off: their alerts close
-    const view = enabled
-      ? await refreshInternetViews(db, { tenantId: user.tenantId! }).catch((err) => { console.error('internet view failed:', err); return null })
-      : await syncInternetAlerts(db, user.tenantId!).catch((err) => { console.error('internet alerts failed:', err); return null })
-    await audit(db, c, {
-      userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'tenant.public_address_lookup', targetEntity: user.tenantId ?? null,
-      previousState: { enabled: tenant.lookup }, newState: { enabled },
-    })
-    return c.json({ lookup: enabled, internet_view: view })
-  })
-
-/** After an address was added or its status changed: ask InternetDB about it when it is now the
- *  organisation's (or still unconfirmed and never asked), else bring the alerts in line. Logged, never thrown. */
-async function internetViewNow(db: Db, tenantId: string, id: string, status: string) {
-  try {
-    if (status === 'ours') return await refreshInternetViews(db, { tenantId, ids: [id] })
-    return await syncInternetAlerts(db, tenantId)
-  } catch (err) {
-    console.error('public addresses: internet view failed:', err)
-    return null
-  }
-}
 
 export default app

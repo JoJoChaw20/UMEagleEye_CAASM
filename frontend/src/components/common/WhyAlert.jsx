@@ -122,13 +122,6 @@ function chain(e) {
     }
     case 'exposure': {
       const ev = d.evidence ?? {}
-      if (d.rule === 'internet_view') {
-        return {
-          evidence: `Shodan InternetDB sees port ${d.port} (${ev.service ?? 'a service'}) open on the organisation's public address ${ev.public_ip}${ev.checked_at ? ` (asked ${new Date(ev.checked_at).toLocaleDateString()})` : ''}; the alert sits on ${where}, its gateway or the computer that reported it`,
-          knowledge: [d.fix ?? 'A management or remote-access service open to the internet is a way in'],
-          rule: `Exposure · ${d.title ?? 'Open to the internet'} (closes when Shodan no longer sees it; Shodan rebuilds its data weekly)`,
-        }
-      }
       const seen = [
         ev.product && `${ev.product}${ev.version ? ` ${ev.version}` : ''}`,
         ev.realm && `a login prompt (realm "${ev.realm}")`, ev.title && `a page titled "${ev.title}"`,

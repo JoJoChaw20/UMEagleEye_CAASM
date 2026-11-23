@@ -1,5 +1,5 @@
 {
-  "id": "b9a01c9b-ffc7-4d32-9b71-261a51387464",
+  "id": "ebcb1866-0e82-44e5-9821-1e43d2bdea65",
   "prevId": "e996d817-bb00-4afd-8843-c7d8f7b7b6b4",
   "version": "7",
   "dialect": "postgresql",
@@ -3297,18 +3297,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "internetdb": {
-          "name": "internetdb",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "internetdb_at": {
-          "name": "internetdb_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3919,13 +3907,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": 95
-        },
-        "public_address_lookup": {
-          "name": "public_address_lookup",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         },
         "created_at": {
           "name": "created_at",

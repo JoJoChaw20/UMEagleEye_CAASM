@@ -180,7 +180,6 @@ export function vulnerableServiceSummary(d) {
 // "Port 80 · realm "Router"" / "Port 443 · expired 8 days ago (nas.lab)" (workers/src/lib/exposureRules.ts)
 export function exposureSummary(d) {
   const ev = d.evidence ?? {}
-  if (d.rule === 'internet_view') return `Port ${d.port} ${ev.service ?? ''} on ${ev.public_ip} · seen by Shodan`
   const what = ev.product ? ` ${ev.product}${ev.version ? ` ${ev.version}` : ''}` : RISKY_PORTS[d.port] ? ` ${RISKY_PORTS[d.port]}` : ''
   const extra = ev.realm ? `login realm "${ev.realm}"`
     : ev.title ? `page "${ev.title}"`

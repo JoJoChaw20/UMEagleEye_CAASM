@@ -77,7 +77,6 @@ export default function ExposureAndChanges({ overview, surface, recentChanges, c
               <p className="text-dark-400">
                 Public addresses: <span className="font-semibold text-dark-100">{fmt(surface.public_addresses.total)}</span>
                 {' · '}<span className={surface.public_addresses.listed > 0 ? 'font-semibold text-red-400' : ''}>{fmt(surface.public_addresses.listed)} on a blocklist</span>
-                {' · '}<span className={surface.public_addresses.open_ports > 0 ? 'font-semibold text-amber-400' : ''}>{fmt(surface.public_addresses.open_ports)} with risky ports open to the internet</span>
                 {surface.public_addresses.unconfirmed > 0 && <span> · {fmt(surface.public_addresses.unconfirmed)} to confirm</span>}
               </p>
               <Link to={dashboardHref('/network-map', {}, tenantId)} className="inline-flex items-center gap-1 font-medium text-eagle-400 hover:text-eagle-300">Review public addresses <ArrowRight className="h-3.5 w-3.5" /></Link>

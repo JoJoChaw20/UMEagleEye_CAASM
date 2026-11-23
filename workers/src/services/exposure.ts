@@ -5,8 +5,6 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { assets, events } from '../db/schema'
 import { exposuresOf, planExposure, type ExposureFinding, type OpenExposure } from '../lib/exposureRules'
-import { INTERNET_RULE } from '../lib/internetView'
-
 export interface ExposureResult { created: number; refreshed: number; reopened: number; resolved: number }
 
 const detailsOf = (f: ExposureFinding) => ({ rule: f.rule, port: f.port, title: f.title, fix: f.fix, evidence: f.evidence })
@@ -21,9 +19,7 @@ export async function applyExposures(db: DB, assetIds: string[], scannedPorts: n
       criticality: assets.criticalityScore, deviceType: assets.deviceType })
       .from(assets).where(inArray(assets.assetId, ids)),
     db.select({ eventId: events.eventId, assetId: events.assetId, status: events.status, details: events.details })
-      // what Shodan sees from the internet is kept by services/internetView.ts, not by scans
-      .from(events).where(and(eq(events.eventType, 'exposure'), inArray(events.assetId, ids),
-        sql`COALESCE(${events.details}->>'rule', '') <> ${INTERNET_RULE}`)),
+      .from(events).where(and(eq(events.eventType, 'exposure'), inArray(events.assetId, ids))),
   ])
   const byAsset = new Map<string, OpenExposure[]>()
   for (const e of existing) {

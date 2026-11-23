@@ -51,8 +51,7 @@ async function dropRanges(kv: KVNamespace | null): Promise<DropRange[] | null> {
 export type AddressScope = { tenantId: string } | { all: true }
 
 export interface AddressWithAsset {
-  public_address_id: string; tenant_id: string; ip: string; status: string; blocklists: unknown
-  internetdb: unknown; internetdb_at: string | null; lookup: boolean; asset_id: string | null
+  public_address_id: string; tenant_id: string; ip: string; status: string; blocklists: unknown; asset_id: string | null
 }
 
 /** The addresses matching `where` (on alias p), each with the asset its alerts go on: the network's
@@ -60,8 +59,7 @@ export interface AddressWithAsset {
  *  that agent's own computer, else an asset holding the address itself; null when none. */
 export async function addressesWithAsset(db: DB, where: SQL): Promise<AddressWithAsset[]> {
   const res = await db.execute(sql`
-    SELECT p.public_address_id, p.tenant_id, p.ip, p.status, p.blocklists, p.internetdb, p.internetdb_at,
-      t.public_address_lookup AS lookup,
+    SELECT p.public_address_id, p.tenant_id, p.ip, p.status, p.blocklists,
       COALESCE(
         (SELECT ad.asset_id FROM asset_addresses ad JOIN assets s ON s.asset_id = ad.asset_id
           WHERE s.tenant_id = p.tenant_id AND ad.ended_at IS NULL AND ad.ip_address = la.config->>'default_gateway'
@@ -71,11 +69,11 @@ export async function addressesWithAsset(db: DB, where: SQL): Promise<AddressWit
         (SELECT s.asset_id FROM assets s WHERE s.tenant_id = p.tenant_id AND s.ip_address = p.ip LIMIT 1)
       ) AS asset_id
     FROM public_addresses p
-    JOIN tenants t ON t.tenant_id = p.tenant_id
     LEFT JOIN agents la ON la.agent_id = p.last_agent_id AND la.tenant_id = p.tenant_id
     WHERE ${where}`)
   return res.rows as unknown as AddressWithAsset[]
 }
+
 export interface CheckResult { addresses: number; listed: number; created: number; updated: number; reopened: number; resolved: number }
 
 /**
@@ -251,8 +249,6 @@ export interface PublicAddressRow {
   shared: boolean
   blocklists: unknown
   checked_at: string | null
-  internetdb: unknown
-  internetdb_at: string | null
 }
 
 /** The tenant's addresses for the Network page: confirmed and hand-added ones, and those an agent used in
@@ -262,7 +258,7 @@ export interface PublicAddressRow {
 export async function listPublicAddresses(db: DB, tenantId: string): Promise<PublicAddressRow[]> {
   const res = await db.execute(sql`
     SELECT p.public_address_id, p.ip, p.source, p.status, p.note, p.first_seen, p.last_seen,
-           p.blocklists, p.checked_at, p.internetdb, p.internetdb_at,
+           p.blocklists, p.checked_at,
            CASE WHEN la.agent_id IS NULL THEN NULL
                 ELSE json_build_object('agent_id', la.agent_id, 'name', la.name) END AS last_agent,
            COALESCE((
