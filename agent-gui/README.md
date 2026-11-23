@@ -112,6 +112,25 @@ left out; apps in a user's folder only with `user_software`. Tested against reco
 (`tests/test_macos_inventory.py`), not yet on a real Mac: [TESTING-MACOS.md](TESTING-MACOS.md) is the guide for a
 first run (install, built-in capture, a side-by-side listen with libpcap, the dashboard checks).
 
+**Security baseline facts** (`inventory.baseline`): the raw values the server's 30 CIS-based checks per OS judge
+(`workers/src/lib/baseline.ts`); the agent never decides pass or fail. Windows (`windows_inventory.ps1`): the
+`secedit` export (password and lockout policy, Guest, the built-in Administrator's name), the firewall's
+ActiveStore, RDP NLA, SMB signing, LLMNR, WinRM Basic, UAC secure desktop, AutoRun, PowerShell script block
+logging, SmartScreen, logon auditing (`auditpol` by GUID), the Security log size, and which of those Group
+Policy sets (the dashboard says "on by default, not enforced by policy" otherwise). Linux (`collectors/linux.py
+_baseline`): security updates waiting (`apt-get -s dist-upgrade`, with `apt-cache madison` for fixes hidden
+behind a newer `-updates` version; `dnf updateinfo` on the RHEL family), automatic updates, pwquality,
+faillock, `PASS_MAX_DAYS`, empty passwords, UID 0, the firewall's default, boot loader file mode, `sshd -T`,
+telnet/rsh/tftp, ASLR and its sysctl configuration, IP forwarding, ICMP redirects, AppArmor/SELinux, AIDE,
+`/etc/shadow` mode, auditd, persistent journal and time sync. macOS (`collectors/macos.py _baseline`): the
+managed password profile, then local settings. Needs root / Administrator, like the rest of the posture facts.
+
+**OpenSCAP** (`eagleeye/openscap.py`, Linux only, setting `openscap`, off by default): when `oscap` and SCAP
+Security Guide content for this exact OS version are installed (the agent's `scap-content` folder first, then
+`/usr/share/xml/scap/ssg/content`), the CIS Level 1 profile runs at most once a week and its per-rule result goes
+up as `inventory.openscap`, shown beside the baseline without changing it. Ubuntu's own `ssg-*` packages carry
+content only up to the previous LTS, so the newest Ubuntu reports "no content".
+
 ## Desktop app
 `python -m eagleeye gui`, or `EagleEyeAgent.exe` from the installer. One copy runs per user; it keeps running in the
 system tray when the window is closed (right-click the tray icon to quit).
