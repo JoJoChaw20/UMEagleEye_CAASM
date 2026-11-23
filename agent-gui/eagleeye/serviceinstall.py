@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import time
 from pathlib import Path
 from typing import Optional
@@ -45,8 +46,15 @@ def _command(instance: str) -> list[str]:
 
 
 def _source_root() -> Optional[str]:
-    """The folder holding the eagleeye package when run from source (for PYTHONPATH)."""
-    return None if getattr(sys, "frozen", False) else str(Path(__file__).resolve().parent.parent)
+    """The folder holding the eagleeye package when run from source (for PYTHONPATH). None when
+    frozen or pip-installed: the interpreter finds the package itself, and a PYTHONPATH pointing at
+    one install's site-packages would leak into the next (an update's new venv)."""
+    if getattr(sys, "frozen", False):
+        return None
+    root = Path(__file__).resolve().parent.parent
+    if any(root == Path(p).resolve() for p in {sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]}):
+        return None
+    return str(root)
 
 
 def unit_name(instance: str = "") -> str:

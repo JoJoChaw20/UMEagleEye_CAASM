@@ -11,9 +11,11 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import VERSION, httpclient
+from . import BUILD, VERSION, httpclient
+from .update.package import install_kind as update_kind
 from .netinfo import default_gateway, lan_ip
 
 log = logging.getLogger("eagleeye.api")
@@ -126,7 +128,8 @@ class AgentClient:
     def send_heartbeat(self, report: Optional[dict[str, Any]] = None) -> bool:
         """`report`: what this agent says about itself (kind, its own settings, what it
         can do, the policy version it applied; see AgentService._report)."""
-        payload: dict[str, Any] = {"version": VERSION, "gateway_ip": lan_ip()}
+        # build and install: which update package fits this agent, and whether it is out of date
+        payload: dict[str, Any] = {"version": VERSION, "build": BUILD, "install": update_kind(), "gateway_ip": lan_ip()}
         gateway = default_gateway()
         if gateway:
             payload["default_gateway"] = gateway
@@ -233,6 +236,25 @@ class AgentClient:
             self.session.post(f"{self.api_url}/scans/{scan_id}/start", timeout=10).raise_for_status()
         except httpclient.RequestException as exc:
             log.warning("Could not mark scan %s as running: %s", scan_id[:8], exc)
+
+    def download_package(self, kind: str, dest: Path, size: int) -> None:
+        """Download the newest published update package of `kind` to `dest`, through this agent's
+        own authenticated route. At most `size` bytes (the signed size) are written."""
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        written = 0
+        resp = self.session.request("GET", f"{self.api_url}/agents/{self.agent_id}/package",
+                                    timeout=120, params={"kind": kind}, stream=True)
+        try:
+            resp.raise_for_status()
+            with open(tmp, "wb") as fh:
+                for chunk in resp.iter_content(1 << 20):
+                    written += len(chunk)
+                    if written > size:
+                        raise ValueError(f"the download is larger than the signed package ({size} bytes)")
+                    fh.write(chunk)
+        finally:
+            resp.close()
+        tmp.replace(dest)
 
     def mark_scan_failed(self, scan_id: str, reason: str) -> None:
         """Mark a scan failed and keep a concise, user-visible reason."""

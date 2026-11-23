@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ACTION_KEYS, MIGRATION_ACTIONS } from './actions'
+import { ACTIONS_AT_0036, MIGRATION_ACTIONS } from './actions'
 
 const sqlText = readFileSync(join(process.cwd(), 'drizzle/0036_drop_legacy_roles.sql'), 'utf8')
 // Split so legacyRoles.test.ts finds no legacy literal in source either way.
@@ -27,7 +27,7 @@ function at(fragment: string): number {
 test('0036 arrays match the catalog', () => {
   assert.deepEqual(arrayOn(`role='${LEGACY_ADMIN}'`).sort(), [...MIGRATION_ACTIONS.tenant_admin].sort())
   assert.deepEqual(arrayOn(`role='${LEGACY_OWNER}'`).sort(), [...MIGRATION_ACTIONS.business_owner].sort())
-  assert.deepEqual(arrayOn('rn > 1').sort(), [...ACTION_KEYS].sort())
+  assert.deepEqual(arrayOn('rn > 1').sort(), [...ACTIONS_AT_0036].sort())    // the catalog when 0036 ran
 })
 
 test('0036 keeps edited actions (COALESCE)', () => {

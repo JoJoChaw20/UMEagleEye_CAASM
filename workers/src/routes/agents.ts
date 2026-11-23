@@ -29,6 +29,9 @@ import {
   resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
 } from '../lib/endpointInventory'
 import { hardwareUuidForms, machineIdentifiers } from '../lib/machineIdentity'
+import {
+  INSTALL_KINDS, cleanBuildReport, cleanManifest, updateState, type InstallKind, type PackageManifest, type UpdateState,
+} from '../lib/agentUpdate'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -46,8 +49,14 @@ const computeStatus = (lastHeartbeat: Date | null, kind: string | null) => agent
 // asset its endpoint inventory is bound to (agents.host_asset_id).
 type AgentRow = typeof agents.$inferSelect
 type HostRow = { assetId: string; hostname: string | null; ipAddress: string; inventoryCollectedAt: Date | null } | null
-function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy) {
+/** The build and install kind the agent last reported (lib/agentUpdate.ts). */
+function buildOf(a: AgentRow): { build: string | null; install: InstallKind | null } {
+  return cleanBuildReport(reportedOf(a) as { build?: unknown; install?: unknown })
+}
+
+function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy, published?: Published) {
   const applied = reportedOf(a).policy_version ?? null
+  const { build, install } = buildOf(a)
   return {
     agent_id: a.agentId,
     tenant_id: a.tenantId,
@@ -57,8 +66,12 @@ function agentOut(a: AgentRow, host: HostRow, resolved?: ResolvedPolicy) {
     last_heartbeat: a.lastHeartbeat,
     local_ip: a.gatewayIp,          // the column has always held the agent's own LAN IP
     version: a.version,
-    // 1.x = the retired eagleeye_agent.py; it cannot connect any more.
-    legacy: a.version ? a.version.startsWith('1.') : false,
+    // the build stamp (0.1.0+<time>.<commit>, or "dev"), and whether a newer signed package fits it
+    build,
+    update: published ? updateState({ kind: a.kind, build, install }, published) : null,
+    // 1.x without a build stamp = the retired eagleeye_agent.py; it cannot connect any more.
+    // (The current agent reports a build, so a 1.0 release is not taken for it.)
+    legacy: a.version ? a.version.startsWith('1.') && !build : false,
     host: host ? {
       asset_id: host.assetId, hostname: host.hostname, ip_address: host.ipAddress,
       inventory_collected_at: host.inventoryCollectedAt,
@@ -95,9 +108,12 @@ router.get('/', authMiddleware, requireAction('agent.view'), async (c) => {
     .leftJoin(assets, eq(assets.assetId, agents.hostAssetId))
     .where(user.role === 'superadmin' ? undefined : eq(agents.tenantId, user.tenantId!))
 
-  const policies = await tenantPolicies(db, rows.map(r => r.agent.tenantId))
+  const [policies, published] = await Promise.all([
+    tenantPolicies(db, rows.map(r => r.agent.tenantId)),
+    publishedManifests(c.env.REPORTS_BUCKET).then((p) => p.manifests).catch((): Published => ({})),
+  ])
   return c.json({ agents: rows.map(r => agentOut(
-    r.agent, r.host?.assetId ? r.host : null, policyOf(r.agent, policies.get(r.agent.tenantId ?? '') ?? null),
+    r.agent, r.host?.assetId ? r.host : null, policyOf(r.agent, policies.get(r.agent.tenantId ?? '') ?? null), published,
   )) })
 })
 
@@ -176,6 +192,26 @@ async function latestPackages(bucket: R2Bucket): Promise<Record<PackageKind, Pac
 
 const packageOut = (p: Package | null) => p && ({ filename: p.filename, version: p.version, size: p.size, uploaded_at: p.uploaded })
 
+// The signed manifest beside each update package (<package>.manifest.json, agent-gui/packaging/
+// sign_package.py). Only one that matches the newest upload's name and size is used.
+type Published = Partial<Record<InstallKind, PackageManifest | null>>
+const PACKAGE_OF_INSTALL: Record<InstallKind, PackageKind> = { windows: 'windows', source: 'source' }
+
+async function publishedManifests(bucket: R2Bucket): Promise<{ manifests: Published; packages: Record<PackageKind, Package | null> }> {
+  const packages = await latestPackages(bucket)
+  const manifests: Published = {}
+  await Promise.all(INSTALL_KINDS.map(async (kind) => {
+    const pkg = packages[PACKAGE_OF_INSTALL[kind]]
+    const obj = pkg ? await bucket.get(`${pkg.key}.manifest.json`) : null
+    let manifest: PackageManifest | null = null
+    if (pkg && obj) {
+      try { manifest = cleanManifest(JSON.parse(await obj.text()), pkg) } catch { manifest = null }
+    }
+    manifests[kind] = manifest && manifest.kind === kind ? manifest : null
+  }))
+  return { manifests, packages }
+}
+
 router.get('/installer', authMiddleware, requireAction('agent.installer.download'), async (c) => {
   const latest = await latestPackages(c.env.REPORTS_BUCKET)
   if (!latest.windows && !latest.source && !latest.android) return c.json({ detail: 'No agent installer has been uploaded yet' }, 404)
@@ -216,9 +252,82 @@ router.get('/:agentId', authMiddleware, requireAction('agent.view'), async (c) =
     return c.json({ detail: 'Forbidden' }, 403)
   }
 
-  const policies = await tenantPolicies(db, [row.agent.tenantId])
-  return c.json(agentOut(row.agent, row.host?.assetId ? row.host : null,
-    policyOf(row.agent, policies.get(row.agent.tenantId ?? '') ?? null)))
+  const [policies, published] = await Promise.all([
+    tenantPolicies(db, [row.agent.tenantId]),
+    publishedManifests(c.env.REPORTS_BUCKET).then((p) => p.manifests).catch((): Published => ({})),
+  ])
+  const [lastUpdate] = await db.select({ status: scanResults.status, startedAt: scanResults.startedAt, completedAt: scanResults.completedAt,
+      failureReason: scanResults.failureReason, networkInfo: scanResults.networkInfo })
+    .from(scanResults)
+    .where(and(eq(scanResults.agentId, agentId), eq(scanResults.scanType, 'update')))
+    .orderBy(sql`${scanResults.startedAt} DESC`).limit(1)
+  return c.json({
+    ...agentOut(row.agent, row.host?.assetId ? row.host : null,
+      policyOf(row.agent, policies.get(row.agent.tenantId ?? '') ?? null), published),
+    // the last update asked for from the dashboard, and how it went
+    last_update: lastUpdate ? {
+      status: lastUpdate.status, started_at: lastUpdate.startedAt, completed_at: lastUpdate.completedAt,
+      failure_reason: lastUpdate.failureReason,
+      build: ((lastUpdate.networkInfo ?? {}) as { manifest?: { build?: string } }).manifest?.build ?? null,
+    } : null,
+  })
+})
+
+// ── POST /:agentId/update — install the newest signed package on this agent ──
+// Queues an update job (scan_results, scanType 'update') carrying the signed manifest; the agent
+// checks the signature itself, downloads the package (GET /:agentId/package) and installs it. Done
+// when the agent checks in with the new build (heartbeat). Needs "Update agents".
+router.post('/:agentId/update', authMiddleware, requireAction('agent.update'), async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+  const user = c.get('user')
+  const { agentId } = c.req.param()
+  const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+  if (!agent || (user.role !== 'superadmin' && agent.tenantId !== user.tenantId)) return c.json({ detail: 'Agent not found' }, 404)
+  if (agent.retiredAt) return c.json({ detail: 'This agent is retired' }, 409)
+  const { manifests } = await publishedManifests(c.env.REPORTS_BUCKET)
+  const state: UpdateState = updateState({ kind: agent.kind, ...buildOf(agent) }, manifests)
+  if (state.state === 'manual') return c.json({ detail: state.reason }, 409)
+  if (state.state === 'current') return c.json({ detail: 'This agent already runs the newest build' }, 409)
+  const manifest = manifests[buildOf(agent).install!]!
+
+  const [waiting] = await db.select({ scanId: scanResults.scanId }).from(scanResults)
+    .where(and(eq(scanResults.agentId, agentId), eq(scanResults.scanType, 'update'), inArray(scanResults.status, ['pending', 'running'])))
+    .limit(1)
+  if (waiting) return c.json({ scan_id: waiting.scanId, build: manifest.build, already_queued: true })
+
+  const [job] = await db.insert(scanResults).values({
+    agentId, tenantId: agent.tenantId, scanType: 'update', status: 'pending', subnet: null,
+    networkInfo: { trigger: 'dashboard', manifest, from_build: state.build },
+  }).returning({ scanId: scanResults.scanId })
+  await audit(db, c, { userId: user.userId, tenantId: agent.tenantId, actionType: 'agent.update', targetEntity: agentId,
+    previousState: { build: state.build }, newState: { build: manifest.build } })
+  return c.json({ scan_id: job!.scanId, build: manifest.build }, 201)
+})
+
+// ── GET /:agentId/package?kind= — the update package, for the agent itself ──
+// Agent key only, and only while it has an update job: the agent checks the signed manifest it got
+// with the job before installing what it downloads.
+router.get('/:agentId/package', async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+  const { agentId } = c.req.param()
+  const auth = c.req.header('Authorization')
+  if (!auth?.startsWith('Bearer ')) return c.json({ detail: 'Missing Authorization header' }, 401)
+  const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
+  if (!agent || agent.retiredAt || (await hashApiKey(auth.slice(7))) !== agent.apiKeyHash) return c.json({ detail: 'Invalid credentials' }, 401)
+  const kind = c.req.query('kind') as InstallKind
+  if (!INSTALL_KINDS.includes(kind)) return c.json({ detail: 'kind must be windows or source' }, 400)
+  const [job] = await db.select({ scanId: scanResults.scanId }).from(scanResults)
+    .where(and(eq(scanResults.agentId, agentId), eq(scanResults.scanType, 'update'), inArray(scanResults.status, ['pending', 'running'])))
+    .limit(1)
+  if (!job) return c.json({ detail: 'No update is waiting for this agent' }, 409)
+  const pkg = (await latestPackages(c.env.REPORTS_BUCKET))[PACKAGE_OF_INSTALL[kind]]
+  const obj = pkg ? await c.env.REPORTS_BUCKET.get(pkg.key) : null
+  if (!pkg || !obj) return c.json({ detail: 'That package has not been published' }, 404)
+  return c.body(obj.body as unknown as ReadableStream, 200, {
+    'Content-Type': PACKAGES[PACKAGE_OF_INSTALL[kind]].type,
+    'Content-Length': String(obj.size),
+    'Cache-Control': 'no-store',
+  })
 })
 
 // ── GET /:agentId/policy — this agent's settings and where each comes from ──
@@ -407,6 +516,9 @@ router.post(
     networks: z.unknown().optional(),
     // 2.5.0+: send the jobs waiting for it with the answer (instead of GET /scans/pending).
     want_jobs: z.unknown().optional(),
+    // its build stamp and install kind, for updates (lib/agentUpdate.ts); lenient, cleaned below
+    build: z.unknown().optional(),
+    install: z.unknown().optional(),
   })),
   async (c) => {
     const db = getDb(c.env.DATABASE_URL)
@@ -445,11 +557,21 @@ router.post(
     // What a 2.4.0+ agent says about itself: its kind (from its installer), its own
     // settings, what it can do, and the policy version it applied.
     const report = cleanReport(body)
+    const built = cleanBuildReport(body)
     if (body.settings !== undefined || body.policy_version !== undefined) {
       updateData.reported = {
         settings: report.settings, capabilities: report.capabilities, networks: report.networks,
         policy_version: report.policyVersion, reported_at: new Date().toISOString(),
+        build: built.build, install: built.install,
       }
+    }
+    // An update it was asked to install is done once it checks in with that build (looked at only
+    // when the build changes, not on every heartbeat).
+    if (built.build && built.build !== 'dev' && built.build !== buildOf(agent).build) {
+      await db.update(scanResults).set({ status: 'completed', completedAt: new Date(), failureReason: null })
+        .where(and(eq(scanResults.agentId, agentId), eq(scanResults.scanType, 'update'),
+          inArray(scanResults.status, ['pending', 'running']),
+          sql`${scanResults.networkInfo}->'manifest'->>'build' = ${built.build}`))
     }
     if (report.kind && report.kind !== agent.kind) updateData.kind = report.kind
 

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from . import VERSION, deps
+from . import BUILD, VERSION, deps
 from .config import (
     ConfigError, Settings, default_config_path, env_value, load_settings, save_settings, sbom_cache_path,
     sightings_list_path, state_path, with_credentials,
@@ -153,8 +153,24 @@ def build_parser() -> argparse.ArgumentParser:
                      help="enrol: read the code from this file (keeps it out of process lists)")
     svc.add_argument("--kind", choices=("host", "network"), help="enrol: what kind of agent this is (default host)")
 
-    sub.add_parser("version", help="print the version")
+    sub.add_parser("version", help="print the version (and the build stamp of a packaged build)")
+
+    upd = sub.add_parser("update", help="internal: finish an update the dashboard started (Linux)")
+    upd_sub = upd.add_subparsers(dest="update_command", required=True)
+    sw = upd_sub.add_parser("switch", help="point the service at a prepared build; roll back if it does not check in")
+    sw.add_argument("--to", type=Path, required=True, dest="to")
+    sw.add_argument("--from", type=Path, dest="previous")
+    sw.add_argument("--build", required=True)
     return parser
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from .update import install as update_install
+    if args.update_command == "switch":
+        result = update_install.switch(args.to, args.previous, args.build)
+        print(result)
+        return 0 if result == "healthy" else 1
+    return 2
 
 
 def cmd_service(args: argparse.Namespace) -> int:
@@ -560,10 +576,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     commands = {
         "run": cmd_run, "scan": cmd_scan, "listen": cmd_listen,
         "check-deps": cmd_check_deps, "config": cmd_config, "inventory": cmd_inventory, "sbom": cmd_sbom,
-        "service": cmd_service, "netpoll": netpoll.run,
+        "service": cmd_service, "netpoll": netpoll.run, "update": cmd_update,
     }
     if args.command == "version":
         print(VERSION)
+        if BUILD != "dev":
+            print(f"build {BUILD}")
         return 0
     if args.command == "gui":
         try:

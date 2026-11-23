@@ -43,6 +43,7 @@ from . import netinfo, policy
 from .passive import PassiveSuite
 from .sightings import SightingsMonitor
 from .sightings.monitor import make_dns_hub
+from .update import install as update_install
 from .pipeline import EventKind, Pipeline, PipelineContext, PipelineEvent, PipelineResult
 from .schedule import Schedule, ScheduleState
 from .stages.scan_nmap import validate_target
@@ -174,6 +175,9 @@ class AgentService:
         self._passive_future: Optional[Future[Optional[PipelineResult]]] = None
         self._final_flush_started = False
         self._sbom_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sbom")
+        # update jobs (update/install.py): one at a time; the first good heartbeat settles the last one
+        self._update_thread: Optional[threading.Thread] = None
+        self._update_settled = False
         self._sbom_future: Optional[Future[Optional[PipelineResult]]] = None
         self._next_sbom = time.time() + SBOM_FIRST_DELAY     # the daily run (in memory: a restart starts over)
         self.sbom_cache = sbom_tools.FolderCache(sbom_cache_path)   # also holds the weekly run's time
@@ -626,6 +630,21 @@ class AgentService:
             if scan_id:
                 self.client.mark_scan_running(scan_id)
             self._maybe_inventory(force=True, trigger="dashboard", scan_id=scan_id)
+        elif scan_type == "update":
+            if self._update_thread is not None and self._update_thread.is_alive():
+                return                   # one at a time; this one is already being installed
+            if self._busy():             # the installer restarts the agent: let the running job finish
+                log.info("Leaving UPDATE job %s queued while another job runs", (scan_id or "?")[:8])
+                return
+            if not scan_id:
+                return
+            info = scan.get("network_info") or scan.get("networkInfo") or {}
+            log.info("Processing UPDATE job %s", scan_id[:8])
+            self.client.mark_scan_running(scan_id)
+            self._update_thread = threading.Thread(
+                target=update_install.run_update, args=(self.client, scan_id, info.get("manifest")),
+                daemon=True, name="update")
+            self._update_thread.start()
         else:
             self._decline(scan_id, f"Unsupported scan type '{scan_type}'.")
 
@@ -757,6 +776,16 @@ class AgentService:
         self.last_heartbeat_ok = self.client.send_heartbeat(report) if report is not None else self.client.send_heartbeat()
         self.last_heartbeat_at = datetime.now()
         self.rejected = getattr(self.client, "rejected", None)
+        if self.last_heartbeat_ok and not self._update_settled:
+            # The first heartbeat after an update: mark it healthy (stops a Linux rollback), or fail
+            # its job when the install did not work.
+            self._update_settled = True
+            try:
+                outcome = update_install.report_outcome(self.client)
+                if outcome:
+                    log.info("Update outcome: %s", outcome)
+            except Exception as exc:  # noqa: BLE001 - never stops the agent
+                log.warning("Could not settle the last update: %s", exc)
         if getattr(self.client, "jobs_in_heartbeat", False) and self.client.has_jobs():
             self._wake.set()                            # run what it brought now, not at the next poll
 

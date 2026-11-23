@@ -256,6 +256,28 @@ curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sud
 ```
 Grype's vulnerability database needs about 6 GB free on `/` (3.3 GB unpacked, plus room to update it).
 
+## Updates from the dashboard
+Each build carries a stamp, `0.1.0+<UTC time>.<commit>` (`eagleeye version` prints it; a copy run from the source
+tree says `dev`), and each published package has a manifest, `<package>.manifest.json`, signed with the project's
+Ed25519 key. The agent sends its build and install kind with every heartbeat; the Agents page marks agents with
+an older build **Update available**, and **Update agent** sends an `update` job (the `agent.update` action).
+`eagleeye/update/` carries it out:
+
+1. The manifest is checked before anything is downloaded: the signature (the agent's own RFC 8032 verifier and the
+   public keys in `update/keys.py`), the package kind (Windows installer or Linux source package) and a build newer
+   than its own. A refusal fails the job with the reason ("the package signature is not valid") and changes nothing.
+2. The package comes through the agent's own key (`GET /agents/<id>/package`) into the machine folder's `updates/`,
+   and its size and SHA-256 must match the signed ones.
+3. Windows: the installer runs silently, outside the service, which it stops and starts again. Linux (installed in
+   `/opt/eagleeye-agent-*` as the Install tab shows): a new `/opt/eagleeye-agent-<build>` with its own venv from the
+   bundled wheels, then a transient systemd unit (`eagleeye-update-*`) points `eagleeye-agent` at it and restarts
+   it. If the new build has not checked in within 5 minutes, the unit points the service back at the old folder.
+   The previous folder is kept; older ones are removed after a successful update.
+4. The job completes when the agent's heartbeat reports the new build; a rollback or an installer that never
+   brought the new build up fails it (`update-state.json` in the machine folder).
+
+A copy run from source, the network agent's container and macOS are updated by hand (the panel says so).
+
 ## Installing on many computers (Intune, Group Policy, scripts)
 A connection code belongs to one agent: every computer installed with it would be that same agent. For many
 computers, make an **install code** on the dashboard (Agents → Install codes: valid 1–90 days, optionally for at
@@ -377,7 +399,11 @@ Administrator rights (needed for passive listening and the BitLocker/TPM/SMBv1 c
 
 The Linux and network-agent download is the source package: `python packaging/make_source.py` writes
 `dist/eagleeye-agent-<version>.tar.gz` (the package, `pyproject.toml`, this README, the systemd unit and the Docker
-files; no tests). AGENT_SETUP_GUIDE.md, "Publishing a new version", uploads both for the dashboard's Install tab.
+files and `wheels/`, the Linux libraries for Python 3.12–3.14 on x86_64 and aarch64; no tests). Both builds stamp
+`eagleeye/_build.py` (`packaging/buildstamp.py`, removed again after the build) and write the signed
+`<package>.manifest.json` beside the package (`packaging/sign_package.py`, with the private key in
+`%USERPROFILE%\.eagleeye-signing\agent-ed25519.pem` or `EAGLEEYE_SIGNING_KEY`; it never goes into the repository or
+R2). AGENT_SETUP_GUIDE.md, "Publishing a new version", uploads them for the Install tab and for dashboard updates.
 
 ## Layout
 ```

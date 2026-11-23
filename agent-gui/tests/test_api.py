@@ -4,7 +4,7 @@ import json
 
 from eagleeye import httpclient
 
-from eagleeye import VERSION
+from eagleeye import BUILD, VERSION
 from eagleeye.api import AgentClient
 
 AGENT = "11111111-1111-4111-8111-111111111111"
@@ -124,8 +124,12 @@ def test_heartbeat_payload_and_failure(monkeypatch):
     assert c.send_heartbeat()
     method, url, kwargs = session.calls[0]
     assert url.endswith(f"/agents/{AGENT}/heartbeat")
-    assert json.loads(kwargs["data"]) == {"version": VERSION, "gateway_ip": "192.168.1.20", "default_gateway": "192.168.1.1",
-                                          "want_jobs": True}
+    monkeypatch.setattr("eagleeye.api.update_kind", lambda: "windows")
+    assert c.send_heartbeat()
+    method, url, kwargs = session.calls[-1]
+    # build and install: which update package fits this agent (eagleeye/update)
+    assert json.loads(kwargs["data"]) == {"version": VERSION, "build": BUILD, "install": "windows", "gateway_ip": "192.168.1.20",
+                                          "default_gateway": "192.168.1.1", "want_jobs": True}
 
     c2, _, _ = client(httpclient.ConnectionError("x"), httpclient.ConnectionError("x"), httpclient.ConnectionError("x"))
     assert c2.send_heartbeat() is False

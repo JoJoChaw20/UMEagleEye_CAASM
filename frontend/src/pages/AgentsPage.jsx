@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Plus, X, RefreshCw, Radio, AlertCircle, ChevronDown, ChevronRight, Monitor, Download, ArrowLeft,
+  Plus, X, RefreshCw, Radio, AlertCircle, ChevronDown, ChevronRight, Monitor, Download, ArrowLeft, ArrowUpCircle,
 } from 'lucide-react'
 import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -211,8 +211,13 @@ function AgentRow({ a, showTenant, tenantName, onOpen }) {
       <td>{retired ? <span className="text-dark-500">—</span> : <Roles a={a} />}</td>
       <td className="text-sm whitespace-nowrap">
         {a.version
-          ? <span className={a.legacy ? 'text-dark-400' : 'text-dark-200'}>{a.version}{a.legacy && <span className="text-dark-500"> · old</span>}</span>
+          ? <span className={a.legacy ? 'text-dark-400' : 'text-dark-200'} title={a.build ? `Build ${a.build}` : undefined}>{a.version}{a.legacy && <span className="text-dark-500"> · old</span>}</span>
           : <span className="text-dark-500">—</span>}
+        {a.update?.state === 'available' && (
+          <span className="block text-[11px] text-amber-300 inline-flex items-center gap-1" title={`Newer build: ${a.update.latest}`}>
+            <ArrowUpCircle className="w-3 h-3" /> Update available
+          </span>
+        )}
       </td>
       {showTenant && <td className="text-sm text-dark-300">{tenantName ?? <span className="text-dark-500">—</span>}</td>}
       <td className="w-8 text-dark-500"><ChevronRight className="w-4 h-4" /></td>
@@ -346,6 +351,21 @@ export default function AgentsPage({ view = 'agents' }) {
     }
   }
 
+  // Every online agent a newer signed build fits (GET /agents: update.state 'available')
+  const outdated = agents.filter((a) => a.update?.state === 'available' && a.status !== 'retired'
+    && (!tenantFilter || a.tenant_id === tenantFilter))
+  const updateAll = async () => {
+    if (!confirm(`Install the newest build on ${outdated.length} agent(s)?\n\nEach one checks the package signature, installs it and restarts; a Linux agent goes back to its old build if the new one does not check in within 5 minutes.`)) return
+    setBusy('update-all')
+    const failed = []
+    for (const a of outdated) {
+      try { await client.post(`/agents/${a.agent_id}/update`) } catch (err) { failed.push(`${a.name}: ${err?.response?.data?.detail || 'failed'}`) }
+    }
+    setBusy(null)
+    setNotice(failed.length ? `Updates queued, except: ${failed.join('; ')}` : `Updates queued for ${outdated.length} agent(s); each installs at its next heartbeat.`)
+    load()
+  }
+
   const runNow = async (agent) => {
     setBusy(agent.agent_id)
     try {
@@ -424,6 +444,15 @@ export default function AgentsPage({ view = 'agents' }) {
               <span className="px-3 py-1 rounded-full border border-green-500/30 bg-green-500/10 text-green-400">{counts.online} online</span>
               {counts.late > 0 && <span className="px-3 py-1 rounded-full border border-yellow-500/30 bg-yellow-500/10 text-yellow-400">{counts.late} late</span>}
               <span className={`px-3 py-1 rounded-full border ${counts.offline ? 'border-red-500/30 bg-red-500/10 text-red-400' : 'border-dark-600/40 text-dark-400'}`}>{counts.offline} offline</span>
+              {outdated.length > 0 && (
+                can('agent.update')
+                  ? <button type="button" onClick={updateAll} disabled={busy === 'update-all'}
+                      title="Install the newest signed build on every agent that is out of date"
+                      className="px-3 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300 inline-flex items-center gap-1.5 hover:bg-amber-500/20 disabled:opacity-60">
+                      <ArrowUpCircle className="w-3.5 h-3.5" /> Update {outdated.length} agent{outdated.length === 1 ? '' : 's'}
+                    </button>
+                  : <span className="px-3 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300">{outdated.length} out of date</span>
+              )}
               {retired.length > 0 && (
                 <button type="button" onClick={() => setShowRetired((v) => !v)} aria-pressed={showRetired}
                   title="Old 1.x agents that can no longer connect; their Discovery history is kept"

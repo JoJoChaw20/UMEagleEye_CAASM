@@ -13,7 +13,7 @@ export const ACTION_KEYS = [
   'network.view', 'network.map.run', 'topology.edit', 'relationship.view', 'relationship.manage', 'relationship.delete',
   'report.view', 'report.download', 'report.generate', 'report.delete', 'report.snapshot',
   'agent.view', 'agent.installer.download', 'agent.enrol', 'agent.rename', 'agent.configure',
-  'agent.roles.assign', 'agent.sightings.enable', 'agent.key.rotate', 'agent.remove',
+  'agent.roles.assign', 'agent.sightings.enable', 'agent.key.rotate', 'agent.update', 'agent.remove',
   'settings.view', 'settings.scan_policy.edit', 'settings.agent_defaults.edit',
   'chatbot.use',
 ] as const
@@ -113,6 +113,7 @@ const ROWS: Row[] = [
   ['agent.roles.assign', 'agents', 'Assign agent roles', 'Allows the user to switch roles on or off per agent: Scanner (runs scans), Sensor (passive listening), Inventory (reports its own software and SBOM), Collector (reads network devices).', 'medium', ['agent.configure']],
   ['agent.sightings.enable', 'agents', 'Enable threat sightings on agents', "Allows the user to let agents check the computer's DNS lookups and outbound connections against the tenant's threat list. Only matches are sent. The privacy notice covers users of those computers.", 'high', ['agent.configure']],
   ['agent.key.rotate', 'agents', 'Replace agent keys', 'Allows the user to issue a new key to an agent. The old key stops working immediately, and the agent must be updated with the new key.', 'high', ['agent.view']],
+  ['agent.update', 'agents', 'Update agents', 'Allows the user to install the newest published agent build on an agent from the dashboard. The agent checks that the package is signed by the UMEagleEye project before installing it, then restarts.', 'high', ['agent.view']],
   ['agent.remove', 'agents', 'Remove agents', 'Allows the user to remove an agent from the tenant. The computer stops reporting until it is enrolled again.', 'high', ['agent.view']],
 
   ['settings.view', 'settings', 'View tenant settings', "Allows the user to see the tenant's scan policy and default agent settings.", 'low', []],
@@ -199,8 +200,14 @@ const TENANT_ADMIN_NOT_GRANTED: readonly string[] = [
  * states 53 in total and names five ungranted actions; Clear software inventory is the ninth extra,
  * so tenant_admin is the whole catalog minus those five.
  */
+// Actions added to the catalog after migration 0036 ran: what 0036 granted stays as it was (it is
+// applied), so the reference below leaves these out. New actions are granted by a tenant superadmin.
+export const ADDED_AFTER_0036: readonly ActionKey[] = ['agent.update']
+/** The catalog as migration 0036 knew it. */
+export const ACTIONS_AT_0036: readonly ActionKey[] = ACTION_KEYS.filter((k) => !ADDED_AFTER_0036.includes(k))
+
 export const MIGRATION_ACTIONS: { tenant_admin: readonly ActionKey[]; business_owner: readonly ActionKey[] } = {
-  tenant_admin: ACTION_KEYS.filter((k) => !TENANT_ADMIN_NOT_GRANTED.includes(k)),
+  tenant_admin: ACTIONS_AT_0036.filter((k) => !TENANT_ADMIN_NOT_GRANTED.includes(k)),
   business_owner: VIEWER.filter((k) => k !== 'scan.view' && k !== 'relationship.view'),
 }
 

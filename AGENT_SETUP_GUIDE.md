@@ -74,7 +74,19 @@ npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAg
   --file ..\agent-gui\dist\EagleEyeAgent-Setup-0.1.0.exe --content-type application/vnd.microsoft.portable-executable --remote
 npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/eagleeye-agent-0.1.0.tar.gz `
   --file ..\agent-gui\dist\eagleeye-agent-0.1.0.tar.gz --content-type application/gzip --remote
+# the signed manifests, AFTER their packages: dashboard updates offer a package only with its own manifest
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/EagleEyeAgent-Setup-0.1.0.exe.manifest.json `
+  --file ..\agent-gui\dist\EagleEyeAgent-Setup-0.1.0.exe.manifest.json --content-type application/json --remote
+npx wrangler r2 object put umeagleeye-reports-staging/agent-installer/eagleeye-agent-0.1.0.tar.gz.manifest.json `
+  --file ..\agent-gui\dist\eagleeye-agent-0.1.0.tar.gz.manifest.json --content-type application/json --remote
 ```
+
+Both build scripts stamp the build (`0.1.0+<UTC time>.<commit>`) and sign the manifest with the private key in
+`%USERPROFILE%\.eagleeye-signing\agent-ed25519.pem`, which must never be copied into the repository, R2 or the server
+(keep an offline backup: without it, installed agents can only be updated by hand). Once a manifest is uploaded,
+agents on an older build show **Update available** on the Agents page; **Update agent** installs it (agent README,
+"Updates from the dashboard"). A manifest whose size or file name does not match the package beside it is ignored,
+so a package uploaded without its new manifest is offered for download but not as an update.
 
 Uploading the same file name again replaces it (and makes it the newest). To go back to an older build, upload it
 again or delete the newer file (`npx wrangler r2 object delete <bucket>/agent-installer/<file> --remote`).
@@ -88,11 +100,15 @@ systemd needed), then, as root:
 
 ```bash
 sudo tar xzf eagleeye-agent-<version>.tar.gz -C /opt && cd /opt/eagleeye-agent-<version>
-sudo python3 -m venv .venv && sudo .venv/bin/pip install .
+sudo python3 -m venv .venv && sudo .venv/bin/pip install --no-index --find-links wheels .
 sudo .venv/bin/python -m eagleeye service enrol --connection-code 'EE...'   # or --connection-code-file
 sudo .venv/bin/python -m eagleeye service install
 sudo .venv/bin/python -m eagleeye service status
 ```
+
+The package carries its Python libraries (`wheels/`), so no PyPI access is needed. Installed in `/opt` like this,
+the agent can later be updated from the dashboard (**Update agent**), which installs each new build in a folder of
+its own and goes back to the previous one if it does not check in within 5 minutes.
 
 The network agent comes from the same package (its Docker image is built from it): see Agents → Install →
 Network agent, or the agent README, "Network agent".

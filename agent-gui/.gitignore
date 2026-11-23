@@ -4,3 +4,5 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# written by packaging/buildstamp.py for a build, removed after it
+eagleeye/_build.py

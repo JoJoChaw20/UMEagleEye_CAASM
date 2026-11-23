@@ -6,9 +6,9 @@ import {
   type ActionKey,
 } from './actions'
 
-test('58 unique actions, every group used, every requirement exists', () => {
-  assert.equal(ACTIONS.length, 58)
-  assert.equal(new Set(ACTION_KEYS).size, 58)
+test('59 unique actions, every group used, every requirement exists', () => {
+  assert.equal(ACTIONS.length, 59)                     // 58 in the access-control spec + Update agents (23 Nov)
+  assert.equal(new Set(ACTION_KEYS).size, 59)
   for (const a of ACTIONS) for (const r of a.requires) assert.ok(isActionKey(r), `${a.key} -> ${r}`)
   assert.deepEqual(new Set(ACTIONS.map(a => a.group)).size, GROUPS.length)
   assert.ok(!isActionKey('cti.ingest'))

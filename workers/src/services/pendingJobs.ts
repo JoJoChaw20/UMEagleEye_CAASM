@@ -5,6 +5,7 @@
 import { and, eq, sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { scanResults } from '../db/schema'
+import { UPDATE_FINISH_MINUTES, UPDATE_PICKUP_HOURS } from '../lib/agentUpdate'
 import {
   INVESTIGATE_EXPIRE_HOURS, INVESTIGATE_TRIGGER, isInvestigation, recordInvestigationFailure,
 } from './autoInvestigate'
@@ -104,6 +105,23 @@ export async function pendingJobsFor(db: Db, agentId: string, kind?: string | nu
       eq(scanResults.agentId, agentId),
       eq(scanResults.scanType, 'snmp'),
       sql`${scanResults.status} IN ('pending', 'running') AND ${scanResults.startedAt} < now() - interval '30 minutes'`,
+    ))
+
+  // Agent updates (routes/agents.ts POST /:agentId/update): picked up within 2 hours, and the new
+  // build checks in within 45 minutes of starting (the agent itself reports a failed install sooner).
+  await db.update(scanResults)
+    .set({
+      status: 'failed',
+      completedAt: new Date(),
+      failureReason: sql`CASE WHEN ${scanResults.status} = 'pending'
+        THEN ${`The agent did not pick up this update within ${UPDATE_PICKUP_HOURS} hours (it was offline, or too old to update itself: reinstall it once)`}
+        ELSE ${`The new build did not check in within ${UPDATE_FINISH_MINUTES} minutes`} END`,
+    })
+    .where(and(
+      eq(scanResults.agentId, agentId),
+      eq(scanResults.scanType, 'update'),
+      sql`((${scanResults.status} = 'pending' AND ${scanResults.startedAt} < now() - make_interval(hours => ${UPDATE_PICKUP_HOURS}))
+        OR (${scanResults.status} = 'running' AND ${scanResults.startedAt} < now() - make_interval(mins => ${UPDATE_FINISH_MINUTES})))`,
     ))
 
   await expireStaleActiveScans(db, eq(scanResults.agentId, agentId))

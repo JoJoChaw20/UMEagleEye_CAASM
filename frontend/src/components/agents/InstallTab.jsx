@@ -136,7 +136,7 @@ function WindowsGuide({ pkg }) {
           </p>
         </Step>
       </ol>
-      <p className="text-xs text-dark-400">Updating: run the newer installer over the old one; the agent keeps its connection and settings.</p>
+      <p className="text-xs text-dark-400">Updating: <strong>Update agent</strong> on the agent's panel installs the newest signed build silently, or run the newer installer over the old one; the agent keeps its connection and settings.</p>
     </div>
   )
 }
@@ -153,11 +153,12 @@ function LinuxGuide({ pkg }) {
         </Step>
         <Step n={2} title="Install and connect">
           <Commands>{`sudo tar xzf ${pkg?.filename ?? `${dir}.tar.gz`} -C /opt && cd /opt/${dir}
-sudo python3 -m venv .venv && sudo .venv/bin/pip install .
+sudo python3 -m venv .venv && sudo .venv/bin/pip install --no-index --find-links wheels .
 sudo .venv/bin/python -m eagleeye service enrol --connection-code 'EE…'
 sudo .venv/bin/python -m eagleeye service install
 sudo .venv/bin/python -m eagleeye service status`}</Commands>
           <p className="text-xs text-dark-400">
+            The package carries the Python libraries it needs, so the server needs no access to PyPI.
             It runs as the systemd service <code className="font-mono">eagleeye-agent</code>; its settings and logs are in <code className="font-mono">/var/lib/eagleeye</code>
             (log: <code className="font-mono">journalctl -u eagleeye-agent</code>). For many servers, <code className="font-mono">--connection-code-file</code> keeps the code off the command line.
           </p>
@@ -168,7 +169,11 @@ sudo .venv/bin/python -m eagleeye service status`}</Commands>
 curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin`}</Commands>
         </Step>
       </ol>
-      <p className="text-xs text-dark-400">Updating: unpack the new version and run <code className="font-mono">service install</code> from its folder; the connection and settings in /var/lib/eagleeye are kept.</p>
+      <p className="text-xs text-dark-400">
+        Updating: <strong>Update agent</strong> on the agent's panel installs the newest signed build into a new folder under /opt and switches
+        the service to it, going back to the previous folder if the new build does not check in within 5 minutes. Kept in /opt as above, the
+        agent can be updated this way; the connection and settings in /var/lib/eagleeye are kept either way.
+      </p>
     </div>
   )
 }

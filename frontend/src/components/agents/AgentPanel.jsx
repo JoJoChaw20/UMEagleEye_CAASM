@@ -9,6 +9,7 @@ import { GROUPS, PolicyInput, ROLES, SOURCE_LABEL, helpOf, invalid, labelOf, met
 import { useAuth } from '../../context/AuthContext'
 import { requiresTitle } from '../../utils/actions'
 import { CopyButton, NetworkBadge, Seen, StatusBadge } from './parts'
+import AgentUpdate from './AgentUpdate'
 
 export default function AgentPanel({ agent, tenantName, busy, onClose, onSaved, onRename, onRotate, onDelete, onRunNow }) {
   const { can } = useAuth()
@@ -72,6 +73,8 @@ export default function AgentPanel({ agent, tenantName, busy, onClose, onSaved, 
               <CopyButton text={agent.agent_id} label="Copy agent ID" />
             </dd>
           </dl>
+
+          {!retired && <AgentUpdate agent={agent} onUpdated={onSaved} />}
 
           {(can('network.map.run') || can('agent.rename') || can('agent.key.rotate') || can('agent.remove')) && (
             <div className="flex flex-wrap gap-2">
