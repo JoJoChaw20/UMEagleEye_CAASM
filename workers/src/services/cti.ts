@@ -210,30 +210,93 @@ export async function ingestOtx(db: DB, apiKey: string): Promise<number> {
 }
 
 // ── ThreatFox ────────────────────────────────────────────────────────
-export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
+// ThreatFox's "last N days" answer. Since 11 Nov (staging) and 22 Nov (production) every API answer stops after
+// about 64 KB, mid-record, whatever the window (7, 3 or 1 day) and compressed or not: ThreatFox's server ends
+// its streamed (chunked) answer early. So a cut-off, empty or non-JSON answer is asked again for fewer days, and
+// when every try is cut off the recent export file (a static download, the last 48 hours) is used instead; the
+// feed runs nightly, so 48 hours still holds each night's new entries. A refusal (HTTP error, unknown key) is not
+// retried: neither would change it.
+export const THREATFOX_DAYS = [7, 3, 1]
+const THREATFOX_EXPORT = (key: string) => `https://threatfox-api.abuse.ch/v2/files/exports/${encodeURIComponent(key)}/recent.json`
+class ThreatFoxBadAnswer extends Error {}
+type ThreatFoxAnswer = { query_status?: string; data?: ThreatFoxIoc[] }
+
+async function readJson(res: Response, what: string): Promise<unknown> {
+  // Read as text first: an empty or cut-off body otherwise fails as a bare "Unexpected end of JSON input".
+  const text = await res.text().catch((err) => { throw new ThreatFoxBadAnswer(`reading the ${what} failed: ${String(err).slice(0, 120)}`) })
+  const h = (k: string) => res.headers.get(k) ?? '-'
+  const shape = `HTTP ${res.status}, ${h('content-type')}, ${text.length} chars, ${h('transfer-encoding') === 'chunked' ? 'streamed' : `length ${h('content-length')}`}`
+  if (!text.trim()) throw new ThreatFoxBadAnswer(`an empty ${what} (${shape})`)
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new ThreatFoxBadAnswer(`${what} not JSON, probably cut off (${shape}): ...${text.slice(-60).replace(/\s+/g, ' ')}`)
+  }
+}
+
+async function threatFoxIocs(apiKey: string, days: number): Promise<ThreatFoxAnswer> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey) headers['Auth-Key'] = apiKey
-
   const res = await fetch('https://threatfox-api.abuse.ch/api/v1/', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ query: 'get_iocs', days: 7 }),
+    body: JSON.stringify({ query: 'get_iocs', days }),
   })
-
   if (!res.ok) {
     throw new Error(`ThreatFox answered HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
   }
+  return await readJson(res, 'answer') as ThreatFoxAnswer
+}
 
-  // Read as text first: an empty or cut-off body otherwise fails as a bare "Unexpected end of JSON input".
-  const text = await res.text()
-  const shape = `HTTP ${res.status}, ${res.headers.get('content-type') ?? 'no content-type'}, ${text.length} chars`
-  if (!text.trim()) throw new Error(`ThreatFox sent an empty answer (${shape})`)
-  let data: { query_status?: string; data?: ThreatFoxIoc[] }
-  try {
-    data = JSON.parse(text)
-  } catch {
-    throw new Error(`ThreatFox sent something that is not JSON (${shape}): ${text.slice(0, 200)}`)
+/** The export file's records as the API's: the export names the value ioc_value and gives tags as one string,
+ *  and holds either a list or an object of lists keyed by id. */
+export function threatFoxExportIocs(raw: unknown): ThreatFoxIoc[] {
+  const list = Array.isArray(raw) ? raw
+    : raw && typeof raw === 'object' ? Object.values(raw as Record<string, unknown>).flat() : []
+  const out: ThreatFoxIoc[] = []
+  for (const r of list as Array<Record<string, unknown>>) {
+    const ioc = r?.ioc ?? r?.ioc_value
+    if (typeof ioc !== 'string' || typeof r.ioc_type !== 'string') continue
+    const tags = Array.isArray(r.tags) ? r.tags as string[]
+      : typeof r.tags === 'string' && r.tags ? r.tags.split(',').map((t) => t.trim()).filter(Boolean) : null
+    out.push({
+      ioc, ioc_type: r.ioc_type, confidence_level: Number(r.confidence_level ?? 50),
+      malware: r.malware as string | undefined, malware_printable: r.malware_printable as string | undefined,
+      malware_alias: (r.malware_alias as string | null | undefined) ?? null, threat_type: r.threat_type as string | undefined, tags,
+    })
   }
+  return out
+}
+
+async function threatFoxExport(apiKey: string): Promise<ThreatFoxAnswer> {
+  const res = await fetch(THREATFOX_EXPORT(apiKey))
+  if (!res.ok) throw new ThreatFoxBadAnswer(`export HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 120)}`)
+  const data = threatFoxExportIocs(await readJson(res, 'export'))
+  return { query_status: data.length ? 'ok' : 'no_result', data }
+}
+
+export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
+  let data: ThreatFoxAnswer | null = null
+  const problems: string[] = []
+  for (const days of THREATFOX_DAYS) {
+    try {
+      data = await threatFoxIocs(apiKey, days)
+      break
+    } catch (err) {
+      if (!(err instanceof ThreatFoxBadAnswer)) throw err
+      problems.push(`${days} days: ${err.message}`)
+    }
+  }
+  if (!data) {
+    try {
+      data = await threatFoxExport(apiKey)
+    } catch (err) {
+      if (!(err instanceof ThreatFoxBadAnswer)) throw err
+      problems.push(err.message)
+    }
+  }
+  if (!data) throw new Error(`ThreatFox sent no usable answer: ${problems.join('; ')}`)
+  if (problems.length) console.log(`[ThreatFox] used ${problems.length > THREATFOX_DAYS.length - 1 ? 'the recent export' : 'a shorter window'} after: ${problems.join('; ')}`)
   console.log(`[ThreatFox] query_status=${data.query_status} records=${data.data?.length ?? 0}`)
   // 'ok', or 'no_result' for a quiet week; anything else (e.g. 'unknown_auth_key') is a failure
   if (data.query_status && data.query_status !== 'ok' && data.query_status !== 'no_result') {
