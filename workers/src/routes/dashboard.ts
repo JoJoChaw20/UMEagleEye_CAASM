@@ -71,6 +71,9 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
           internetFacingOverride: assets.internetFacingOverride,
           lastScanned: assets.lastScanned, createdAt: assets.createdAt, source: assets.source,
           inventoryAt: assets.inventoryCollectedAt, postureScore: assets.postureScore, postureChecks: assets.postureChecks,
+          baselinePercent: assets.securityBaselinePercent,
+          // the table named: in a one-table select drizzle writes bare "tenant_id", which here would mean t's own
+          baselineTarget: sql<number | null>`(SELECT t.security_baseline_target FROM tenants t WHERE t.tenant_id = "assets"."tenant_id")`,
         })
         .from(assets).where(assetScope),
       db.selectDistinct({ assetId: sboms.assetId })
@@ -372,6 +375,7 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
       coverage: summarizeCoverage(assetRows.map((a): CoverageAsset => ({
         asset_id: a.assetId, hostname: a.hostname, ip: a.ip, device_type: a.deviceType, criticality: a.criticality,
         inventory_at: a.inventoryAt, posture_score: a.postureScore, posture_checks: a.postureChecks,
+        baseline_percent: a.baselinePercent == null ? null : Number(a.baselinePercent), baseline_target: a.baselineTarget,
       }))),
       overview: {
         known_assets: assetRows.length,

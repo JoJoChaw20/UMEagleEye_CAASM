@@ -83,7 +83,7 @@ export function PatchesSection({ inv, checks }) {
   )
 }
 
-// ── Security posture ──
+// ── Phone security checks (computers: the security baseline) ──
 // The checks and the score are computed by the server from the agent's inventory
 // (lib/endpointPosture.ts) and stored on the asset: one definition for this page, the
 // dashboard and reports. Each check: good | bad | warn | unknown | admin.
@@ -95,10 +95,12 @@ const STATE_META = {
   admin:   { icon: HelpCircle,    cls: 'text-dark-400',  text: 'Needs Administrator' },
 }
 
-export function SecuritySection({ inv, checks, score }) {
+// A phone's own checks (screen lock, root, USB debugging, patch age). Computers are judged by the security
+// baseline (BaselineSection); this card shows for one only while its agent is older than the baseline.
+export function SecuritySection({ inv, checks, score, title = 'Phone security checks' }) {
   if (!Array.isArray(checks)) {
     return (
-      <Section icon={ShieldCheck} title="Security posture">
+      <Section icon={ShieldCheck} title={title}>
         <Empty>Not assessed yet. It is computed when the agent next reports.</Empty>
       </Section>
     )
@@ -107,7 +109,7 @@ export function SecuritySection({ inv, checks, score }) {
   const unread = checks.filter((c) => c.state === 'unknown' || c.state === 'admin').length
   const scoreCls = score == null ? 'text-dark-400' : score >= 80 ? 'text-green-400' : score >= 50 ? 'text-amber-400' : 'text-red-400'
   return (
-    <Section icon={ShieldCheck} title="Security posture"
+    <Section icon={ShieldCheck} title={title}
       right={
         <span className="text-xs text-right">
           <span className={`font-semibold ${scoreCls}`}>{score == null ? 'Unassessed' : `${score}/100`}</span>

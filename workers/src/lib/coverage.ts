@@ -19,6 +19,9 @@ export interface CoverageAsset {
   inventory_at: string | Date | null
   posture_score: number | null
   posture_checks: unknown
+  /** The security baseline (lib/baseline.ts): computers are judged by it, not by the posture checks. */
+  baseline_percent?: number | null
+  baseline_target?: number | null
 }
 
 interface Check { id: string; label: string; state: string }
@@ -69,5 +72,14 @@ export function summarizeCoverage(rows: CoverageAsset[]) {
       failing,
       machines_with_failures: rows.filter(a => Array.isArray(a.posture_checks) && (a.posture_checks as Check[]).some(c => c.state === 'bad')).length,
     },
+    // "Security settings below standard" (Dashboard, Inventory ?gap=settings_issues): a computer below its
+    // tenant's security-baseline target, a phone failing one of its own checks, and a computer whose agent is
+    // older than the baseline and fails a posture check.
+    settings_issues: rows.filter(settingsIssue).length,
   }
+}
+
+export function settingsIssue(a: CoverageAsset): boolean {
+  if (a.baseline_percent != null) return a.baseline_percent < (a.baseline_target ?? 95)
+  return Array.isArray(a.posture_checks) && (a.posture_checks as Check[]).some(c => c.state === 'bad')
 }

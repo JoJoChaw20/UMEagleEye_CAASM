@@ -31,7 +31,8 @@ const GAP_LABELS = {
   no_sbom:      'Servers & PCs without an SBOM',
   no_agent:     'Servers & PCs without the EagleEye agent',
   owner:        'Assets without an owner',
-  posture_issues: 'Machines failing an endpoint security check',
+  posture_issues: 'Security settings below standard',
+  settings_issues: 'Security settings below standard (computers below the baseline target, phones failing a check)',
 }
 
 // A search link (the header's "View all") asks for scope=any with q: it searches both

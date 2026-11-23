@@ -521,7 +521,11 @@ export default function AssetDetailPage() {
 
         <NetworkDeviceSection assetId={asset.assetId} device={asset.networkDevice} />
         {inv && <HardwareSection inv={inv} />}
-        {inv && <SecuritySection inv={inv} checks={asset.postureChecks} score={asset.postureScore} />}
+        {/* computers: the security baseline below; this card for phones, and for a computer whose agent is older than the baseline */}
+        {inv && (!BASELINE_PLATFORMS.includes(inv.platform) || !asset.baseline) && (
+          <SecuritySection inv={inv} checks={asset.postureChecks} score={asset.postureScore}
+            title={BASELINE_PLATFORMS.includes(inv.platform) ? 'Security checks (agent older than the baseline)' : 'Phone security checks'} />
+        )}
         {inv && <PatchesSection inv={inv} checks={asset.postureChecks} />}
         {inv && BASELINE_PLATFORMS.includes(inv.platform) && <BaselineSection baseline={asset.baseline} />}
         {inv?.openscap && <OpenScapSection result={inv.openscap} />}

@@ -17,6 +17,7 @@ import { tenants, weeklySnapshots } from '../db/schema'
 import { clockStartExpr, dueAtExpr, tierExpr } from '../lib/priority'
 import { KEV_ALERT } from '../lib/alertSignals'
 import { addWeeks, finishedWeeks, weekBounds, weekStartOf, type WeekMetrics } from '../lib/weekly'
+import { baselineSummary } from './securityBaseline'
 
 type DB = ReturnType<typeof getDb>
 
@@ -105,8 +106,14 @@ export async function recordWeeks(db: DB, now: Date = new Date()): Promise<{ wee
     if (!missing.length) continue
     const prevTotals = new Map(mine.filter((h) => !h.backfilled).map((h) => [h.weekStart, Number((h.metrics as WeekMetrics).assets_total)]))
     const computed = await computeWeeks(db, t.tenantId, missing, prevTotals)
+    let baseline: Awaited<ReturnType<typeof baselineSummary>> | null = null
     for (const [weekStart, metrics] of computed) {
       const live = now.getTime() - weekBounds(weekStart).end.getTime() < 86_400_000
+      if (live) {                                           // settings as they are now: only for the week just ended
+        baseline ??= await baselineSummary(db, t.tenantId)
+        metrics.baseline_pct = baseline.percent
+        metrics.baseline_at_target = baseline.assessed ? baseline.at_target : null
+      }
       inserts.push(db.insert(weeklySnapshots).values({ tenantId: t.tenantId, weekStart, metrics, backfilled: !live })
         .onConflictDoNothing({ target: [weeklySnapshots.tenantId, weeklySnapshots.weekStart] }))
       if (live) out.push({ tenantId: t.tenantId, weekStart })

@@ -35,6 +35,10 @@ export interface MergeAsset {
   postureModel?: number | null
   postureAssessedAt?: string | Date | null
   postureChecks?: unknown
+  /** Security baseline from that inventory (lib/baseline.ts; moves with it too). */
+  securityBaselinePercent?: string | null
+  securityBaseline?: unknown
+  securityBaselineAt?: string | Date | null
   /** Formula that produced criticalityScore. */
   criticalityModel?: number
 }
@@ -208,6 +212,9 @@ export function planMerge(survivor: MergeAsset, losers: MergeAsset[], related: M
     mergedFields.postureModel = newestInventory.postureModel ?? null
     mergedFields.postureAssessedAt = newestInventory.postureAssessedAt ?? null
     mergedFields.postureChecks = newestInventory.postureChecks ?? null
+    mergedFields.securityBaselinePercent = newestInventory.securityBaselinePercent ?? null
+    mergedFields.securityBaseline = newestInventory.securityBaseline ?? null
+    mergedFields.securityBaselineAt = newestInventory.securityBaselineAt ?? null
   }
 
   // ── Addresses: end colliding current scoped loser rows, then move all loser rows ──

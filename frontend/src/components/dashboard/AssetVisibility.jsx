@@ -36,7 +36,7 @@ export default function AssetVisibility({ summary, loading, onInventory, onAgent
     { label: 'Eligible computers without an agent', definition: `${fmt(coverage?.agent_capable)} servers and workstations eligible`, count: coverage?.no_agent?.count, onClick: () => navigate('/inventory?gap=no_agent') },
     { label: 'Stale inventory', definition: `Not scanned in ${hygiene?.stale_after_days ?? 7} days`, count: hygiene?.stale_assets?.count, onClick: () => navigate('/inventory?gap=stale') },
     { label: 'Missing SBOM', definition: 'Servers and workstations without software inventory', count: hygiene?.no_sbom?.count, onClick: () => navigate('/inventory?gap=no_sbom') },
-    { label: 'Endpoint posture issues', definition: 'Managed assets with a failed endpoint security check', count: coverage?.posture?.machines_with_failures, onClick: () => navigate('/inventory?gap=posture_issues') },
+    { label: 'Security settings below standard', definition: 'Computers below the security-baseline target, and phones failing a phone security check', count: coverage?.settings_issues ?? coverage?.posture?.machines_with_failures, onClick: () => navigate('/inventory?gap=settings_issues') },
     { label: 'Offline or degraded agents', definition: 'Agent heartbeats indicate interrupted monitoring', count: (collection?.agents_offline ?? 0) + (collection?.agents_degraded ?? 0), onClick: onAgents },
     { label: 'Network devices without SNMP management', definition: 'Known routers and switches without SNMP system data', count: surface?.network_devices_unmanaged, onClick: () => onInventory({ device_type: 'network' }) },
   ]

@@ -243,9 +243,12 @@ app.get('/', authMiddleware, requireAction('asset.view'), async (c) => {
       conditions.push(sql`${assets.deviceType} IN ('server', 'workstation') AND ${assets.endpointInventory} IS NULL`)
     } else if (gap === 'owner') {
       conditions.push(sql`NULLIF(btrim(${assets.owner}), '') IS NULL`)
-    } else if (gap === 'posture_issues') {
-      // At least one failed endpoint security check.
-      conditions.push(sql`${assets.postureChecks} @> '[{"state":"bad"}]'::jsonb`)
+    } else if (gap === 'posture_issues' || gap === 'settings_issues') {
+      // Security settings below standard (lib/coverage.ts settingsIssue): a computer below its tenant's
+      // security-baseline target; without a baseline (a phone, an older agent), a failed posture check.
+      conditions.push(sql`CASE WHEN ${assets.securityBaselinePercent} IS NOT NULL
+        THEN ${assets.securityBaselinePercent} < (SELECT t.security_baseline_target FROM tenants t WHERE t.tenant_id = "assets"."tenant_id")
+        ELSE ${assets.postureChecks} @> '[{"state":"bad"}]'::jsonb END`)
     }
 
     // My Assets membership filter (new canonical param).

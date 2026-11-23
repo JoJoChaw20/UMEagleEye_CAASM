@@ -8,15 +8,17 @@ import { hoursText } from '../../utils/fixTime'
 const fmt = (v) => (v == null ? '—' : Number(v).toLocaleString())
 const weekDate = (ws) => new Date(`${ws}T00:00:00Z`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })
 // the measures the card compares (keys of lib/weekly.ts COMPARED)
-const SHOWN = ['open_end', 'tier12', 'overdue_end', 'new', 'resolved', 'on_time_pct', 'median_resolve_hours']
-const SHORT = { open_end: 'Open', tier12: 'Compromise or exploited', overdue_end: 'Overdue', new: 'New', resolved: 'Resolved', on_time_pct: 'Fixed on time', median_resolve_hours: 'Median time to fix' }
-const show = (key, v) => (v == null ? '—' : key === 'on_time_pct' ? `${v}%` : key === 'median_resolve_hours' ? hoursText(v) : fmt(v))
+const SHOWN = ['open_end', 'tier12', 'overdue_end', 'new', 'resolved', 'on_time_pct', 'median_resolve_hours', 'baseline_pct', 'baseline_at_target']
+const SHORT = { open_end: 'Open', tier12: 'Compromise or exploited', overdue_end: 'Overdue', new: 'New', resolved: 'Resolved', on_time_pct: 'Fixed on time', median_resolve_hours: 'Median time to fix',
+  baseline_pct: 'Security baseline', baseline_at_target: 'Computers at baseline target' }
+const PCT = new Set(['on_time_pct', 'baseline_pct'])
+const show = (key, v) => (v == null ? '—' : PCT.has(key) ? `${v}%` : key === 'median_resolve_hours' ? hoursText(v) : fmt(v))
 
 function Change({ c }) {
   if (!c || c.delta == null) return <span className="text-dark-500 text-[11px]">no week before</span>
   const cls = c.trend === 'better' ? 'text-emerald-400' : c.trend === 'worse' ? 'text-red-400' : 'text-dark-400'
   const Icon = c.delta > 0 ? ArrowUpRight : c.delta < 0 ? ArrowDownRight : Minus
-  const d = c.key === 'median_resolve_hours' ? hoursText(Math.abs(c.delta)) : c.key === 'on_time_pct' ? `${Math.abs(c.delta)} pts` : fmt(Math.abs(c.delta))
+  const d = c.key === 'median_resolve_hours' ? hoursText(Math.abs(c.delta)) : PCT.has(c.key) ? `${Math.abs(c.delta)} pts` : fmt(Math.abs(c.delta))
   return <span className={`inline-flex items-center gap-0.5 text-[11px] tabular-nums ${cls}`}><Icon className="h-3 w-3" />{c.delta === 0 ? 'same' : d}</span>
 }
 

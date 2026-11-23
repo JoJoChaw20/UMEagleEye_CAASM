@@ -32,7 +32,9 @@ const SOURCES: Record<string, Source> = {
   assets: {
     prefix: 'asset', pk: 'asset_id', extract: extractAsset,
     sql: `SELECT asset_id, tenant_id, hostname, ip_address, mac_address, owner, device_type, hardware_vendor, os_info,
-            endpoint_inventory -> 'os' AS inv_os, criticality_score, posture_score, is_internet_facing, internet_facing_override,
+            endpoint_inventory -> 'os' AS inv_os, criticality_score, posture_score, security_baseline_percent,
+            (SELECT t.security_baseline_target FROM tenants t WHERE t.tenant_id = assets.tenant_id) AS security_baseline_target,
+            is_internet_facing, internet_facing_override,
             source, in_my_assets, last_scanned
           FROM assets WHERE asset_id = ANY($1::uuid[])`,
   },

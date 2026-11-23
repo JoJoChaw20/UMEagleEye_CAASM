@@ -63,6 +63,10 @@ export interface WeekMetrics {
   kev_open_end: number
   sightings_new: number
   posture_score: number | null       // the last daily snapshot of the week
+  // The security baseline (services/securityBaseline.ts baselineSummary) when the week was recorded as it
+  // ended; null for a reconstructed week (settings cannot be read back from alert dates).
+  baseline_pct?: number | null
+  baseline_at_target?: number | null
 }
 
 /** The numbers compared week to week, and which way is better. */
@@ -77,6 +81,8 @@ export const COMPARED: Array<{ key: keyof WeekMetrics | 'tier12'; label: string;
   { key: 'kev_open_end', label: 'Open exploited (KEV)', better: 'down' },
   { key: 'assets_total', label: 'Devices', better: 'up' },
   { key: 'posture_score', label: 'Posture score', better: 'up' },
+  { key: 'baseline_pct', label: 'Security baseline (%)', better: 'up' },
+  { key: 'baseline_at_target', label: 'Computers at baseline target', better: 'up' },
 ]
 
 export function valueOf(m: WeekMetrics, key: (typeof COMPARED)[number]['key']): number | null {

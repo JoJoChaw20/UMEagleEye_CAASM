@@ -88,7 +88,11 @@ export function extractAsset(r: Row): GraphDelta {
     r.mac_address ? `MAC ${r.mac_address}.` : '',
     os ? `Operating system: ${os}.` : 'Operating system unknown.',
     `Criticality ${r.criticality_score} out of 10.`,
-    r.posture_score != null ? `Endpoint posture score ${r.posture_score} out of 100.` : 'Endpoint posture not assessed.',
+    // computers: the security baseline (30 CIS-based checks); phones: their own four checks
+    r.security_baseline_percent != null
+      ? `Security baseline: ${Number(r.security_baseline_percent)}% of checks passed (target ${r.security_baseline_target ?? 95}%).`
+      : r.device_type === 'mobile' && r.posture_score != null ? `Phone security checks score ${r.posture_score} out of 100.`
+        : 'Security settings not assessed.',
     internetFacing ? 'Internet-facing.' : 'Not internet-facing.',
     r.in_my_assets ? 'Tracked in My Assets.' : 'Not in My Assets.',
     r.owner ? `Owner: ${clip(r.owner, 100)}.` : '',
