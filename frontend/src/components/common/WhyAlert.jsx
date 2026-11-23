@@ -87,6 +87,18 @@ function chain(e) {
           rule: 'R7 · A computer contacted a domain or IP in threat intel: treat as a possible compromise',
         }
       }
+      if (d.match_kind === 'public_address') {
+        const listed = (d.listings ?? []).slice(0, 4).map((l) => l.kind === 'range'
+          ? `${l.source} lists the range ${l.value}${l.ref ? ` (${l.ref})` : ''}: networks hijacked or run by criminals`
+          : `${l.source} lists ${l.value}${l.kind === 'c2' ? ' as a command-and-control or malware server' : l.kind === 'malware' ? ' (a malware download on it)' : ''}${l.confidence != null ? ` (${Math.round(l.confidence * 100)}% confidence)` : ''}`)
+        return {
+          evidence: `${d.address_status === 'ours' ? "The organisation's own public address" : 'A public address your agents connect from (not yet confirmed as the organisation\'s)'} ${d.indicator_value}; the alert sits on ${where}, its gateway or the computer that reported it`,
+          knowledge: listed.length ? listed : [`Listed by ${sources}`],
+          rule: d.address_status === 'ours'
+            ? "R11 · The organisation's own public address is on a blocklist: something behind it is probably infected or misused"
+            : 'R11 · A public address agents connect from is on a blocklist: confirm whose it is (a review item until marked ours)',
+        }
+      }
       const what = d.matched_on === 'ip' ? `public IP ${d.observed}` : `hostname ${d.observed}`
       const how = d.indicator_type === 'domain' && d.observed !== d.indicator_value
         ? ` (a subdomain of ${d.indicator_value})`
@@ -110,6 +122,13 @@ function chain(e) {
     }
     case 'exposure': {
       const ev = d.evidence ?? {}
+      if (d.rule === 'internet_view') {
+        return {
+          evidence: `Shodan InternetDB sees port ${d.port} (${ev.service ?? 'a service'}) open on the organisation's public address ${ev.public_ip}${ev.checked_at ? ` (asked ${new Date(ev.checked_at).toLocaleDateString()})` : ''}; the alert sits on ${where}, its gateway or the computer that reported it`,
+          knowledge: [d.fix ?? 'A management or remote-access service open to the internet is a way in'],
+          rule: `Exposure · ${d.title ?? 'Open to the internet'} (closes when Shodan no longer sees it; Shodan rebuilds its data weekly)`,
+        }
+      }
       const seen = [
         ev.product && `${ev.product}${ev.version ? ` ${ev.version}` : ''}`,
         ev.realm && `a login prompt (realm "${ev.realm}")`, ev.title && `a page titled "${ev.title}"`,

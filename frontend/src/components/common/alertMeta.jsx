@@ -89,6 +89,7 @@ export function alertLabel(e) {
   if (e.event_type === 'cti_match' && e.details?.match_kind === 'watchlist') return 'Watched Software Found'
   if (isMaliciousPackage(e)) return e.details?.match_scope === 'name' ? 'Package Named as Malware' : 'Malicious Package'
   if (isSighting(e)) return 'Threat Contacted'
+  if (isPublicAddressListed(e)) return e.details?.address_status === 'ours' ? 'Public Address Listed' : 'Public Address Listed (to confirm)'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
   if (e.event_type === 'os_patch_missing' && e.details?.patch_status === 'unsupported') return 'Windows Out of Support'
   if (e.event_type === 'os_patch_missing') return e.details?.platform === 'linux' ? 'Linux Security Updates Missing' : 'Windows Updates Missing'
@@ -101,6 +102,7 @@ export function renderDetail(e) {
   const d = e.details ?? {}
   if (isPackageAlert(d)) return vulnerablePackageSummary(d)
   if (isSighting(e)) return sightingSummary(d)
+  if (isPublicAddressListed(e)) return `${d.indicator_value} on ${(d.sources ?? []).join(', ') || 'a blocklist'}`
   if (d.cve_id) return d.cve_id
   if (d.indicator_value) return d.indicator_value
   if (e.event_type === 'config_change') {
@@ -139,6 +141,8 @@ export const isPackageAlert = (d) => d?.shape === 'package'
 export const isSighting = (e) => e?.event_type === 'cti_match' && e.details?.match_kind === 'sighting'
 /** A package version published as malware (rule R8, workers/src/lib/maliciousPackages.ts). */
 export const isMaliciousPackage = (e) => e?.event_type === 'cti_match' && e.details?.match_kind === 'malicious_package'
+/** The organisation's public address is on a blocklist (rule R11, workers/src/services/publicAddresses.ts). */
+export const isPublicAddressListed = (e) => e?.event_type === 'cti_match' && e.details?.match_kind === 'public_address'
 
 const shortTime = (iso) => {
   if (!iso) return null
@@ -176,6 +180,7 @@ export function vulnerableServiceSummary(d) {
 // "Port 80 · realm "Router"" / "Port 443 · expired 8 days ago (nas.lab)" (workers/src/lib/exposureRules.ts)
 export function exposureSummary(d) {
   const ev = d.evidence ?? {}
+  if (d.rule === 'internet_view') return `Port ${d.port} ${ev.service ?? ''} on ${ev.public_ip} · seen by Shodan`
   const what = ev.product ? ` ${ev.product}${ev.version ? ` ${ev.version}` : ''}` : RISKY_PORTS[d.port] ? ` ${RISKY_PORTS[d.port]}` : ''
   const extra = ev.realm ? `login realm "${ev.realm}"`
     : ev.title ? `page "${ev.title}"`
@@ -360,6 +365,14 @@ function basePlaybook(e) {
   }
   if (isMaliciousPackage(e)) {
     return { urgency: 'Now', text: `${d.package_name} ${d.package_version} (${d.ecosystem}) is a release published as malware${d.summary ? `: ${d.summary}` : ''}. Its install scripts may already have run on this device. Isolate it, find which project or program pulled the package in, remove it, and rotate any secrets the device holds (tokens, SSH keys, cloud credentials). Escalate to a senior analyst.` }
+  }
+  if (isPublicAddressListed(e)) {
+    const lists = (d.sources ?? []).join(', ') || 'a blocklist'
+    const c2 = (d.listings ?? []).some((l) => l.kind === 'c2')
+    if (d.address_status !== 'ours') {
+      return { urgency: 'Review', text: `Your agents reach the internet from ${d.indicator_value}, and ${lists} lists it. First decide whose address it is (Network → Public addresses): a laptop at home or a shared campus network also reports addresses that are not the organisation's. Mark it ours to make this a firm alert, or not ours to close it.` }
+    }
+    return { urgency: 'Now', text: `The organisation's own address ${d.indicator_value} is listed by ${lists}${c2 ? ' as a command-and-control or malware server' : ''}. Something behind it is probably infected or misused: find which computer or port-forward makes the traffic (the firewall's outbound log for the listed time, the threat sightings of computers behind it), clean it up, then ask the list to remove the address.` }
   }
   if (isSighting(e) && d.matched_on === 'process') {
     return { urgency: 'Now', text: `The program ${d.process ?? '(name unknown)'} running on this computer is a file ${(d.sources ?? []).join(', ') || 'threat intel'} lists as malware (its file hash matches exactly). Isolate the computer from the network and escalate to a senior analyst. Do not delete the file before it is examined: note where it runs from, how it starts (services, scheduled tasks, Run keys) and when it arrived. If the listing is wrong (a legitimate tool listed by mistake), mark the alert a false positive.` }

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
+import { pruneUnusedPublicAddresses } from './publicAddresses'
 
 type DB = ReturnType<typeof getDb>
 
@@ -90,10 +91,11 @@ async function drain(purge: (db: DB) => Promise<number>, db: DB): Promise<number
   return total
 }
 
-export async function purgeOldData(db: DB): Promise<{ cti: number; events: number; scans: number; findings: number }> {
+export async function purgeOldData(db: DB): Promise<{ cti: number; events: number; scans: number; findings: number; publicAddresses: number }> {
   const cti = await drain(purgeStaleCti, db)
   const events = await drain(purgeClosedEvents, db)
   const scans = await drain(purgeOldScans, db)
   const findings = await drain(purgeFixedFindings, db)
-  return { cti, events, scans, findings }
+  const publicAddresses = await pruneUnusedPublicAddresses(db)
+  return { cti, events, scans, findings, publicAddresses }
 }

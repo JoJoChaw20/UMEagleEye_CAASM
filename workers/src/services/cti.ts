@@ -6,6 +6,7 @@ import { KEV_SOURCE, refreshCveIntel } from './threatIntel'
 import { matchIocs } from './iocMatch'
 import { refreshEpss } from './epss'
 import { checkMaliciousPackages } from './maliciousPackages'
+import { DROP_SOURCE, checkPublicAddresses, ingestSpamhausDrop } from './publicAddresses'
 import { CDN_CIDRS, TOP_DOMAINS_LIST, warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds, techniqueName } from '../lib/attack'
 import { inferredTechniques, malwareKind } from '../lib/malwareKind'
@@ -489,10 +490,12 @@ export function describeError(err: unknown): string {
 // (RETIRED_SOURCES) and are deleted by retention.
 // 'malpkg' asks OSV whether any device's package versions were since published as malware
 // (services/maliciousPackages.ts; at most 10,000 a night, carrying on the next night).
-export type CtiStep = 'kev' | 'threatfox' | 'urlhaus' | 'feodo' | 'epss' | 'malpkg' | 'finish'
-export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'urlhaus', 'feodo', 'epss', 'malpkg', 'finish']
+// 'drop' loads Spamhaus DROP for the public-address check (services/publicAddresses.ts; kept in KV, not
+// as indicator rows), and 'finish' then checks every tenant's public addresses against all of them (R11).
+export type CtiStep = 'kev' | 'threatfox' | 'urlhaus' | 'feodo' | 'drop' | 'epss' | 'malpkg' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'urlhaus', 'feodo', 'drop', 'epss', 'malpkg', 'finish']
 /** The feeds the chain loads, as their rows' `source`: the feed-health line shows these only. */
-export const ACTIVE_FEEDS = [KEV_SOURCE, 'ThreatFox', URLHAUS_SOURCE, FEODO_SOURCE]
+export const ACTIVE_FEEDS = [KEV_SOURCE, 'ThreatFox', URLHAUS_SOURCE, FEODO_SOURCE, DROP_SOURCE]
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
 
 /**
@@ -534,7 +537,7 @@ export function nextCtiStep(step: CtiStep): CtiStep | null {
   return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
 }
 
-const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
+const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg' | 'drop'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
   kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
   threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
   // the same abuse.ch Auth-Key as ThreatFox
@@ -572,7 +575,26 @@ export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, ste
     } catch (err) {
       console.error('[CTI] Matching assets failed:', describeError(err))
     }
+    // The organisation's public addresses against the refreshed lists (R11).
+    try {
+      const r = await checkPublicAddresses(db, kv, { all: true })
+      console.log(`[CTI] Public addresses: ${r.addresses} checked, ${r.listed} listed; alerts ${r.created} new, ${r.reopened} reopened, ${r.resolved} resolved`)
+    } catch (err) {
+      console.error('[CTI] Checking public addresses failed:', describeError(err))
+    }
     return null
+  }
+  if (step === 'drop') {
+    let result: { ok: boolean; count: number }
+    try {
+      result = { ok: true, count: await ingestSpamhausDrop(kv) }
+      console.log(`[CTI] ${DROP_SOURCE}: ${result.count} range(s)`)
+    } catch (err) {
+      result = { ok: false, count: 0 }
+      console.error(`[CTI] ${DROP_SOURCE} failed:`, describeError(err))
+    }
+    await recordFeedResult(kv, DROP_SOURCE, result)
+    return nextCtiStep(step)
   }
   if (step === 'epss') {
     try {

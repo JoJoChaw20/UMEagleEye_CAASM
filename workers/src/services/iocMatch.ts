@@ -22,6 +22,7 @@ import { sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { matchableSql, refreshCveIntel, sharedBySql, type IntelScope } from './threatIntel'
 import { CONFIDENCE_LEVEL_SQL } from '../lib/confidence'
+import { checkPublicAddresses } from './publicAddresses'
 
 type DB = ReturnType<typeof getDb>
 
@@ -145,8 +146,9 @@ export async function matchIocs(db: DB, scope: MatchScope): Promise<MatchResult>
       FROM events e JOIN assets a ON a.asset_id = e.asset_id
       WHERE e.event_type = 'cti_match' AND ${inScope}
         -- Sightings (R7, routes/sightings.ts) come from the agent and are closed by people; malicious
-        -- packages (R8) are kept by services/maliciousPackages.ts.
-        AND COALESCE(e.details->>'match_kind', '') NOT IN ('sighting', 'malicious_package')
+        -- packages (R8) are kept by services/maliciousPackages.ts, public addresses (R11) by
+        -- services/publicAddresses.ts.
+        AND COALESCE(e.details->>'match_kind', '') NOT IN ('sighting', 'malicious_package', 'public_address')
     ),
     ins AS (
       INSERT INTO events (asset_id, event_type, severity, details)
@@ -219,6 +221,17 @@ export async function refreshIntelAlerts(db: DB, scope: IntelScope): Promise<Ale
     out.resolved = m.resolved
   } catch (err) {
     console.error('threat intel: matching assets failed:', err)
+  }
+  // An event naming the organisation's own public address (R11); DROP's listings stay as last checked.
+  if (!('assetId' in scope)) {
+    try {
+      const p = await checkPublicAddresses(db, null, scope)
+      out.opened += p.created
+      out.reopened += p.reopened
+      out.resolved += p.resolved
+    } catch (err) {
+      console.error('threat intel: checking public addresses failed:', err)
+    }
   }
   out.total = out.opened + out.reopened + out.resolved + out.marked
   return out

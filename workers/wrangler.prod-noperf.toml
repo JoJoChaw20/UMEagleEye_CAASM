@@ -75,6 +75,16 @@ FRONTEND_URL = "https://umeagleeye.csnet.my"
 [ai]
 binding = "AI"
 
+# Routine agent check-ins answered without the database (src/durable/agentHub.ts). SQLite-backed, so it
+# runs on the free plan; its state is in memory, the storage holds only its alarm.
+[[durable_objects.bindings]]
+name = "AGENT_HUB"
+class_name = "AgentHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentHub"]
+
 [env.staging]
 name = "umeagleeye-api-staging"
 
@@ -124,6 +134,10 @@ max_retries = 2
 
 [env.staging.ai]
 binding = "AI"
+
+[[env.staging.durable_objects.bindings]]
+name = "AGENT_HUB"
+class_name = "AgentHub"
 
 [[env.staging.analytics_engine_datasets]]
 binding = "PERF"

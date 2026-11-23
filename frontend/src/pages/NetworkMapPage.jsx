@@ -4,6 +4,7 @@
 // gateway, the routers and switches a network agent read (cables, switch ports, VLAN groups) and
 // every device on it, with its details beside it. Nothing here is guessed: each line was measured or
 // seen by an agent. ?net=<range> opens a network, so the browser's Back returns to the overview.
+// Under the overview, the organisation's public addresses (components/network/PublicAddresses.jsx).
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, Search, Share2 } from 'lucide-react'
@@ -15,6 +16,7 @@ import {
   COLOUR_MODES, CoverageChips, DevicePanel, NO_ALERTS, NetworkPanel, NetworkTopology, NodePanel, plural, treeIndex,
 } from '../components/network/NetworkBands'
 import { NetworksOverview, OverviewPanel } from '../components/network/NetworkOverview'
+import PublicAddresses from '../components/network/PublicAddresses'
 
 function useMap(tenantId, enabled) {
   const [data, setData] = useState(null)
@@ -176,6 +178,7 @@ export default function NetworkMapPage() {
           </div>
         </>
       )}
+      {data && !net && <PublicAddresses tenantId={tenantId} />}
       {blastOf && <BlastRadiusModal assetId={blastOf} onClose={() => setBlastOf(null)} />}
     </div>
   )

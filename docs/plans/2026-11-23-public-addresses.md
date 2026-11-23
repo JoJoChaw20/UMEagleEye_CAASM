@@ -1,6 +1,10 @@
 # D4: the organisation's public addresses (blocklists + seen from the internet): plan
 
-Status: **proposal, no code yet** (23 Nov 2026). D4 from the threat-intel plan (22 Nov), joined with the
+Status: **steps 1-3 built 23 Nov 2026, not deployed**: Neon's compute allowance ran out the same day, so
+migration 0047 and the staging checks wait for the monthly reset. The SQL was run against an empty copy of
+the schema on a local PostgreSQL 18 (27 checks: recording, listing, sharing, R11 levels and reopening, DROP,
+InternetDB alerts, dashboard counts, retention). Decisions taken as recommended. The rule is **R11** (R9 and
+R10 were taken). Step 4 (evaluation) after the reset. D4 from the threat-intel plan (22 Nov), joined with the
 stakeholders' "internet-facing" ask. The last planned item; integrations, uv Python and remediation are optional.
 
 ## What exists today
@@ -37,7 +41,7 @@ stakeholders' "internet-facing" ask. The last planned item; integrations, uv Pyt
 - IPv6: an agent reaching the server over IPv6 shows its own address (no NAT). These are stored and checked
   against the lists like IPv4. InternetDB is IPv4 only.
 
-### 2. Blocklists (rule R9)
+### 2. Blocklists (rule R11; R9 and R10 are the vulnerable-service and security-baseline rules)
 
 - **Lists:** the address is checked against the IP lists already loaded (ThreatFox, Feodo, URLhaus hosts), plus
   **Spamhaus DROP** (new).
@@ -50,7 +54,7 @@ stakeholders' "internet-facing" ask. The last planned item; integrations, uv Pyt
   - when someone changes an address's status.
 - **What a match means:** the organisation's own address on a C2 or malware list means a computer inside is
   probably infected, or a port-forward is serving something it shouldn't.
-- **The alert** is a threat-intel alert (`cti_match`, `match_kind: 'public_address'`, rule R9). It gets the existing
+- **The alert** is a threat-intel alert (`cti_match`, `match_kind: 'public_address'`, rule R11). It gets the existing
   tiers, ATT&CK mapping, fix-time target and Why panel.
 - **Which asset it sits on:** the network's gateway, when an agent reported it and it is in the inventory.
   Otherwise, the computer of the agent that last reported the address. Alerts need an asset.
@@ -62,7 +66,7 @@ stakeholders' "internet-facing" ask. The last planned item; integrations, uv Pyt
 | not ours | no alert, shown on the list | no alert, shown on the list |
 
 - **Resolving and reopening:** when the address drops off the list, the alert resolves. When it comes back, the
-  alert reopens. This is the same reconciliation as R5. `matchIocs` must leave R9 alerts alone, as it does for
+  alert reopens. This is the same reconciliation as R5. `matchIocs` must leave R11 alerts alone, as it does for
   sightings.
 
 ### 3. Seen from the internet (Shodan InternetDB)
@@ -119,7 +123,7 @@ results.
    - the Network page card with status and Add.
 
    Tests, then staging. **Lab check:** the VMs and your PC appear, and which addresses they show.
-2. **Blocklists:** the Spamhaus DROP feed step (network ranges, matched with `inet <<=`), R9 matching and alerts,
+2. **Blocklists:** the Spamhaus DROP feed step (network ranges kept in KV and matched in code, `lib/ipRanges.ts`), R11 matching and alerts,
    and alert labels. Tests, then staging.
 3. **InternetDB:** the weekly check, exposure alerts on the gateway, the dashboard tile, the report and the
    weekly record. Tests, then staging.

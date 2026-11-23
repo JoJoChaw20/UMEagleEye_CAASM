@@ -36,6 +36,14 @@ export async function expireStaleActiveScans(db: Db, scope: SQL | undefined): Pr
   }
 }
 
+/** Whether any job waits for this agent, also one not due yet (a new-device scan's short wait): the
+ *  AgentHub keeps sending its check-ins to the database until there is none (services/agentHub.ts). */
+export async function hasQueuedJobs(db: Db, agentId: string): Promise<boolean> {
+  const [row] = await db.select({ id: scanResults.scanId }).from(scanResults)
+    .where(and(eq(scanResults.agentId, agentId), eq(scanResults.status, 'pending'))).limit(1)
+  return !!row
+}
+
 /** Up to 5 jobs this agent should run now (rows of scan_results). */
 export async function pendingJobsFor(db: Db, agentId: string, kind?: string | null) {
   // Auto-expire passive scans pending > 10 min

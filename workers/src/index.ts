@@ -31,6 +31,8 @@ import sightingRoutes from './routes/sightings'
 import { handleQueue } from './queues/consumer'
 import { shouldSignalKg, signalKgSyncSafe } from './kg/sync'
 import { handleCron } from './cron/triggers'
+import { syncAgentHub } from './services/agentHub'
+import { isDatabaseUnavailable } from './lib/dbErrors'
 import { perfMiddleware } from './kg/perf'
 
 const app = new Hono<{ Bindings: Env }>()
@@ -102,12 +104,25 @@ app.route('/api/v1', api)
 app.notFound((c) => c.json({ detail: 'Route not found' }, 404))
 app.onError((err, c) => {
   console.error('[error]', err)
+  // Neon refusing (compute suspended, quota used up) or unreachable: say so, so agents' logs and the
+  // dashboard show what is wrong instead of a bare 500.
+  if (isDatabaseUnavailable(err)) return c.json({ detail: 'The database is not available right now. Try again later.' }, 503)
   return c.json({ detail: 'Internal server error' }, 500)
 })
 
 // ── Cloudflare Workers export ─────────────────────────────────────
+export { AgentHub } from './durable/agentHub'
+
+// Scheduled jobs and queue batches read agents' last-seen times (who is online, where to route a scan):
+// the ones the AgentHub kept in memory are written first (services/agentHub.ts).
 export default {
   fetch: app.fetch,
-  queue: handleQueue,
-  scheduled: handleCron,
+  queue: async (batch, env) => {
+    await syncAgentHub(env)
+    return handleQueue(batch, env)
+  },
+  scheduled: async (event, env) => {
+    await syncAgentHub(env, true)
+    return handleCron(event, env)
+  },
 } satisfies ExportedHandler<Env>

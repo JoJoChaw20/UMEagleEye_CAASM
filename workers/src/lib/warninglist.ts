@@ -64,7 +64,7 @@ function inCdnRange(ip: string): boolean {
   return n !== null && CDN_RANGES.some(([lo, hi]) => n >= lo && n <= hi)
 }
 
-function inSpecialRange(ip: string): boolean {
+export function inSpecialRange(ip: string): boolean {
   const n = ipv4ToInt(ip)
   if (n === null) {
     const v = ip.toLowerCase()

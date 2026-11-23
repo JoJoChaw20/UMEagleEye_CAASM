@@ -9,7 +9,7 @@ import { decide, refusalMessage } from '../lib/actions'
 import { policyChangeActions } from '../lib/policyChange'
 import { POLICY_SPECS, ROLE_KEYS, adoptLocal, applyChange, cleanReport, kindKeys, roleChange, tenantDefaultsFor, type ResolvedPolicy, type Role } from '../lib/agentPolicy'
 import { agentPolicy, policyOf, reportedOf, tenantPolicies } from '../services/agentPolicy'
-import { pendingJobsFor } from '../services/pendingJobs'
+import { hasQueuedJobs, pendingJobsFor } from '../services/pendingJobs'
 import { agentLiveness } from '../lib/agentLiveness'
 import { getDb } from '../db/client'
 import { audit } from '../services/audit'
@@ -27,6 +27,10 @@ import { checkWindowsPatch } from '../services/windowsPatch'
 import { syncBaselineAlerts } from '../services/securityBaseline'
 import { checkLinuxUpdates } from '../services/linuxUpdates'
 import { baselineColumns } from '../lib/baseline'
+import { RECORDED_KINDS, publicIpOf, shouldRecordPublicIp } from '../lib/publicAddress'
+import { checkTenantAddresses, recordPublicAddress } from '../services/publicAddresses'
+import { reportKey, type HubCheck } from '../lib/agentHub'
+import { hubOf } from '../services/agentHub'
 import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
   resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
@@ -535,12 +539,30 @@ router.post(
       return c.json({ detail: 'Missing Authorization header' }, 401)
     }
     const providedKey = authHeader.slice(7)
+    const providedHash = await hashApiKey(providedKey)
+
+    // A routine check-in (same key, same report, no jobs waiting) is answered by the AgentHub from
+    // memory, without the database (docs/plans/2026-11-23-quiet-database.md). Anything else, or a hub
+    // that cannot answer, goes on below.
+    const reported = reportKey({
+      version, gateway_ip, default_gateway, kind: body.kind, settings: body.settings, capabilities: body.capabilities,
+      policy_version: body.policy_version, networks: body.networks, build: body.build, install: body.install,
+    })
+    const seenFrom = c.req.header('cf-connecting-ip') ?? null
+    const hub = body.want_jobs === true ? hubOf(c.env) : null
+    if (hub) {
+      try {
+        const cached = await hub.check(agentId, providedHash, reported, seenFrom) as HubCheck
+        if (cached.hit) return c.json({ ...cached.answer, scans: [] })
+      } catch (err) {
+        console.error('heartbeat: agent hub check failed:', err)
+      }
+    }
 
     const [agent] = await db.select().from(agents).where(eq(agents.agentId, agentId)).limit(1)
     if (!agent) return c.json({ detail: 'Agent not found' }, 404)
 
     // Verify API key by SHA-256 hash
-    const providedHash = await hashApiKey(providedKey)
     if (providedHash !== agent.apiKeyHash) {
       return c.json({ detail: 'Invalid API key' }, 401)
     }
@@ -578,6 +600,21 @@ router.post(
     }
     if (report.kind && report.kind !== agent.kind) updateData.kind = report.kind
 
+    // The public address it connects from (lib/publicAddress.ts): stored when it changes or hourly.
+    const publicIp = RECORDED_KINDS.has(report.kind ?? agent.kind) ? publicIpOf(c.req.header('cf-connecting-ip')) : null
+    const heartbeatAt = updateData.lastHeartbeat as Date
+    if (publicIp && agent.tenantId && shouldRecordPublicIp({ ip: agent.publicIp, at: agent.publicIpAt }, publicIp, heartbeatAt)) {
+      updateData.publicIp = publicIp
+      updateData.publicIpAt = heartbeatAt
+      const isNew = await recordPublicAddress(db, agent.tenantId, agentId, publicIp, heartbeatAt)
+        .catch((err) => { console.error('heartbeat: recording the public address failed:', err); return false })
+      // A new address is checked against the blocklists at once (R11), after the answer is sent.
+      if (isNew) {
+        const tenantId = agent.tenantId
+        try { c.executionCtx.waitUntil(checkTenantAddresses(db, c.env.KV_CACHE, tenantId)) } catch { /* no context */ }
+      }
+    }
+
     // Its first report: what it was set up with on its computer becomes its settings on the
     // dashboard (lib/agentPolicy.ts adoptLocal), once; the dashboard decides from then on.
     const policies = await tenantPolicies(db, [agent.tenantId])
@@ -593,12 +630,25 @@ router.post(
 
     // Every setting of this agent (managed), for it to apply between jobs (2.4.0+).
     const resolved = policyOf(current ?? agent, policies.get(agent.tenantId ?? '') ?? null)
-    return c.json({
-      ok: true,
+    const answer = {
+      ok: true as const,
       // local_scans: agents before 2.6 grey out their own "Scan now"; scans start from the dashboard.
       policy: { local_scans: false, managed: resolved.managed, version: resolved.version },
-      ...(body.want_jobs === true ? { scans: await pendingJobsFor(db, agentId, (current ?? agent).kind) } : {}),
-    })
+    }
+    const jobs = body.want_jobs === true ? await pendingJobsFor(db, agentId, (current ?? agent).kind) : undefined
+    // The hub answers its next check-ins while nothing changes; with jobs queued (also ones not due
+    // yet, such as a new-device scan's few minutes' wait) it keeps sending them here.
+    if (hub) {
+      try {
+        const jobsWaiting = (jobs?.length ?? 0) > 0 || await hasQueuedJobs(db, agentId)
+        await hub.remember(agentId, {
+          tenantId: agent.tenantId, keyHash: providedHash, report: reported, publicIp: seenFrom, answer, jobsWaiting,
+        })
+      } catch (err) {
+        console.error('heartbeat: agent hub remember failed:', err)
+      }
+    }
+    return c.json({ ...answer, ...(jobs ? { scans: jobs } : {}) })
   }
 )
 

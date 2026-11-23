@@ -53,8 +53,11 @@ export function exposureAttackOf(eventType: string, d: Record<string, unknown> |
   { techniques: MappedTechnique[]; source: string } | null {
   if (!d) return null
   let uses: Use[] = []
-  if (eventType === 'exposure' && typeof d.rule === 'string' && d.rule in EXPOSURE_TECHNIQUES) {
-    uses = EXPOSURE_TECHNIQUES[d.rule as RuleId]
+  // A port Shodan sees open from the internet (services/internetView.ts) is the same weakness as an admin
+  // port on an internet-facing device found by a scan.
+  const rule = d.rule === 'internet_view' ? 'internet_admin_port' : d.rule
+  if (eventType === 'exposure' && typeof rule === 'string' && rule in EXPOSURE_TECHNIQUES) {
+    uses = EXPOSURE_TECHNIQUES[rule as RuleId]
   } else if (eventType === 'vulnerable_service' && !d.kev && Number(d.cve_count ?? 0) > 0) {
     uses = [internetFacing
       ? { id: 'T1190', why: 'its known flaws can be exploited from the internet' }

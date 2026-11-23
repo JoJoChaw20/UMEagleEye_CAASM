@@ -251,7 +251,8 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       // The feeds the nightly chain loads, in its order (a retired feed's rows are counted above, not here)
       feeds: ACTIVE_FEEDS.map((source) => ({
         source,
-        count:      bySource.find((r) => r.source === source)?.count ?? 0,
+        // Spamhaus DROP is kept in KV, not as indicator rows: its count is the last run's
+        count:      bySource.find((r) => r.source === source)?.count ?? lastIngest?.feeds?.[source]?.count ?? 0,
         ok:         lastIngest?.feeds?.[source]?.ok ?? null,
         last_ok_at: lastIngest?.feeds?.[source]?.last_ok_at ?? null,
       })),

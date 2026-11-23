@@ -10,7 +10,8 @@ export const ACTION_KEYS = [
   'alert.view', 'alert.manage', 'alert.bulk_update',
   'advisory.view', 'advisory.generate', 'advisory.update', 'advisory.close_via_chat',
   'cti.view', 'ti_event.view', 'ti_event.create', 'ti_event.edit', 'ti_event.publish', 'ti_event.delete',
-  'network.view', 'network.map.run', 'topology.edit', 'relationship.view', 'relationship.manage', 'relationship.delete',
+  'network.view', 'network.map.run', 'topology.edit', 'network.public_address.edit',
+  'relationship.view', 'relationship.manage', 'relationship.delete',
   'report.view', 'report.download', 'report.generate', 'report.delete', 'report.snapshot',
   'agent.view', 'agent.installer.download', 'agent.enrol', 'agent.rename', 'agent.configure',
   'agent.roles.assign', 'agent.sightings.enable', 'agent.key.rotate', 'agent.update', 'agent.remove',
@@ -95,6 +96,7 @@ const ROWS: Row[] = [
   ['network.view', 'network', 'View network map', 'Allows the user to see the network map, device links, and topology tree.', 'low', []],
   ['network.map.run', 'network', 'Map network devices', 'Allows the user to ask a network agent to read routers and switches (SNMP) and update the map.', 'medium', ['network.view']],
   ['topology.edit', 'network', 'Edit topology', 'Allows the user to add or remove topology nodes by hand, and to rebuild the topology from current assets.', 'medium', ['network.view']],
+  ['network.public_address.edit', 'network', 'Manage public addresses', "Allows the user to mark which of the public addresses agents connect from are the organisation's own, and to add or remove addresses by hand. Only the organisation's own addresses raise firm alerts.", 'medium', ['network.view']],
   ['relationship.view', 'network', 'View relationships', 'Allows the user to see how assets depend on each other, and the blast radius of an asset.', 'low', ['asset.view']],
   ['relationship.manage', 'network', 'Manage relationships', 'Allows the user to add relationships by hand and to detect them from current data.', 'medium', ['relationship.view']],
   ['relationship.delete', 'network', 'Delete relationships', 'Allows the user to remove a relationship between assets.', 'medium', ['relationship.view']],
@@ -202,7 +204,7 @@ const TENANT_ADMIN_NOT_GRANTED: readonly string[] = [
  */
 // Actions added to the catalog after migration 0036 ran: what 0036 granted stays as it was (it is
 // applied), so the reference below leaves these out. New actions are granted by a tenant superadmin.
-export const ADDED_AFTER_0036: readonly ActionKey[] = ['agent.update']
+export const ADDED_AFTER_0036: readonly ActionKey[] = ['agent.update', 'network.public_address.edit']
 /** The catalog as migration 0036 knew it. */
 export const ACTIONS_AT_0036: readonly ActionKey[] = ACTION_KEYS.filter((k) => !ADDED_AFTER_0036.includes(k))
 

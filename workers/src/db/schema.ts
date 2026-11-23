@@ -93,6 +93,9 @@ export const tenants = pgTable('tenants', {
   sharedEventAlerts: boolean('shared_event_alerts').notNull().default(false),
   // Security-baseline target, % of checks passed (lib/baseline.ts); a computer below it gets an alert.
   securityBaselineTarget: smallint('security_baseline_target').notNull().default(95),
+  // Ask Shodan InternetDB what the internet sees on this tenant's public addresses (publicAddresses).
+  // The only place the address is sent; off stops the check and clears what was stored.
+  publicAddressLookup: boolean('public_address_lookup').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -574,8 +577,38 @@ export const agents = pgTable('agents', {
   // What the agent reports about itself in its heartbeat (2.4.0+): {settings, capabilities,
   // policy_version, reported_at}. Its own settings show where the admin set nothing.
   reported: jsonb('reported').notNull().default({}),
+  // The public address its heartbeats come from (CF-Connecting-IP), when public; refreshed when it
+  // changes or hourly (lib/publicAddress.ts), with a row in publicAddresses.
+  publicIp: varchar('public_ip', { length: 45 }),
+  publicIpAt: timestamp('public_ip_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [index('idx_agents_tenant').on(t.tenantId)])
+
+// ─── Public addresses (D4) ──────────────────────────────────────
+// The tenant's addresses on the internet: those its agents connect from, and ones added by hand
+// (a server's or the office's static IP). Status: 'unconfirmed' (seen by agents: a laptop at home or
+// a shared campus NAT also shows up), 'ours', 'not_ours'. Blocklist results (rule R9) and
+// Shodan InternetDB's view are kept on the row.
+export const publicAddresses = pgTable('public_addresses', {
+  publicAddressId: uuid('public_address_id').primaryKey().default(newUuid()),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.tenantId, { onDelete: 'cascade' }),
+  ip: varchar('ip', { length: 45 }).notNull(),
+  source: varchar('source', { length: 16 }).notNull().default('agent'),        // agent | manual
+  status: varchar('status', { length: 16 }).notNull().default('unconfirmed'),  // unconfirmed | ours | not_ours
+  note: varchar('note', { length: 200 }),
+  firstSeen: timestamp('first_seen', { withTimezone: true }),                  // by an agent; NULL = never
+  lastSeen: timestamp('last_seen', { withTimezone: true }),
+  lastAgentId: uuid('last_agent_id').references(() => agents.agentId, { onDelete: 'set null' }),
+  blocklists: jsonb('blocklists'),
+  checkedAt: timestamp('checked_at', { withTimezone: true }),
+  internetdb: jsonb('internetdb'),
+  internetdbAt: timestamp('internetdb_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
+}, (t) => [
+  uniqueIndex('idx_public_addr_tenant_ip').on(t.tenantId, t.ip),
+  index('idx_public_addr_ip').on(t.ip),
+])
 
 // ─── Installed software (endpoint inventory) ────────────────────
 // One row per installed application on an asset, as reported by the agent on that

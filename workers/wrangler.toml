@@ -75,6 +75,16 @@ binding = "AI"
 binding = "PERF"
 dataset = "umeagleeye_perf"
 
+# Routine agent check-ins answered without the database (src/durable/agentHub.ts). SQLite-backed, so it
+# runs on the free plan; its state is in memory, the storage holds only its alarm.
+[[durable_objects.bindings]]
+name = "AGENT_HUB"
+class_name = "AgentHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentHub"]
+
 
 # ══════════════════════════════════════════════════════════════════
 # Staging environment  —  deploy with: npm run deploy:staging
@@ -135,3 +145,7 @@ binding = "AI"
 [[env.staging.analytics_engine_datasets]]
 binding = "PERF"
 dataset = "umeagleeye_perf_staging"
+
+[[env.staging.durable_objects.bindings]]
+name = "AGENT_HUB"
+class_name = "AgentHub"

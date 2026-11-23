@@ -73,6 +73,15 @@ export default function ExposureAndChanges({ overview, surface, recentChanges, c
               </Link>)}</div>
               <p className="mt-2 text-[11px] text-dark-500">Port observations describe current scan data; they are distinct from high-risk alert counts.</p>
             </div>}
+            {surface?.public_addresses?.total > 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-dark-700/60 pt-4 text-xs">
+              <p className="text-dark-400">
+                Public addresses: <span className="font-semibold text-dark-100">{fmt(surface.public_addresses.total)}</span>
+                {' · '}<span className={surface.public_addresses.listed > 0 ? 'font-semibold text-red-400' : ''}>{fmt(surface.public_addresses.listed)} on a blocklist</span>
+                {' · '}<span className={surface.public_addresses.open_ports > 0 ? 'font-semibold text-amber-400' : ''}>{fmt(surface.public_addresses.open_ports)} with risky ports open to the internet</span>
+                {surface.public_addresses.unconfirmed > 0 && <span> · {fmt(surface.public_addresses.unconfirmed)} to confirm</span>}
+              </p>
+              <Link to={dashboardHref('/network-map', {}, tenantId)} className="inline-flex items-center gap-1 font-medium text-eagle-400 hover:text-eagle-300">Review public addresses <ArrowRight className="h-3.5 w-3.5" /></Link>
+            </div>}
             <p className="mt-4 text-xs text-dark-500">Threat-intel matches are possible compromise indicators and are not confirmation of compromise.</p>
           </div>
         </div>

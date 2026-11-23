@@ -9,6 +9,8 @@ import { CTI_INGEST_LOCK, runIngestStep, type CtiStep } from '../services/cti'
 import { runDriftAudit } from '../services/drift'
 import { runServiceCves, type ServiceCveJob } from '../services/serviceCves'
 import { checkMaliciousPackages } from '../services/maliciousPackages'
+import { refreshInternetViews } from '../services/internetView'
+import { PER_RUN } from '../lib/internetView'
 import { postureMetrics, assets, events, advisories } from '../db/schema'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { handleKgSyncMessages, signalKgSyncSafe } from '../kg/sync'
@@ -59,7 +61,14 @@ interface MaliciousPackagesJob {
   osv?: boolean
 }
 
-type Job = AdvisoryJob | ReportJob | CtiIngestJob | ServiceCveJob | KgSyncJob | MaliciousPackagesJob
+// What the internet sees on the organisation's public addresses (services/internetView.ts): the
+// addresses due (weekly), after the nightly feeds; again while more are due, at most 5 runs in a row.
+interface InternetViewJob {
+  type: 'internet_view'
+  round?: number
+}
+
+type Job = AdvisoryJob | ReportJob | CtiIngestJob | ServiceCveJob | KgSyncJob | MaliciousPackagesJob | InternetViewJob
 
 // The same report as the dashboard's download: same data (services/reportData.ts), same
 // layout (frontend/src/utils/reportPdf.js). A queued report is always a tenant's (only tenant
@@ -174,8 +183,17 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
           console.log(`[cti_ingest] Feeds ingested (triggered by: ${job.triggeredBy ?? 'system'})`)
           // Release the lock so re-ingestion can be triggered again
           await env.KV_CACHE.delete(CTI_INGEST_LOCK)
+          await env.ADVISORY_QUEUE.send({ type: 'internet_view' })
         }
         wrote = true
+        message.ack()
+      } else if (job.type === 'internet_view') {
+        const r = await refreshInternetViews(db)
+        console.log(`[internet_view] ${r.asked} address(es) asked${r.failed ? `, ${r.failed} failed` : ''}: ${r.created} new, ${r.refreshed} still open, ${r.resolved} closed`)
+        if (r.asked === PER_RUN && (job.round ?? 0) < 4) {
+          await env.ADVISORY_QUEUE.send({ type: 'internet_view', round: (job.round ?? 0) + 1 }, { delaySeconds: 60 })
+        }
+        if (r.created || r.resolved) wrote = true
         message.ack()
       } else {
         message.ack()

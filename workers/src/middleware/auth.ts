@@ -5,6 +5,7 @@ import { toAuthUser } from '../lib/accountRows'
 import { isMfaExempt } from '../lib/mfaFlow'
 import { isDeactivated, sessionGate } from '../lib/sessionGate'
 import { flipIfDue } from '../services/deactivation'
+import { invalidateAgentHub, syncAgentHub } from '../services/agentHub'
 import { getDb } from '../db/client'
 import { users } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -59,7 +60,15 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
     return c.json({ detail: 'Your account is not part of an organisation yet. Ask your administrator to add you.' }, 403)
   }
 
+  // Agents' last-seen times the AgentHub kept in memory reach the database before this request reads
+  // them (services/agentHub.ts; at most once a minute per Worker instance).
+  await syncAgentHub(c.env)
   await next()
+  // A change (settings, scans, inventory or SBOM requests, updates, keys, deletions) may alter what the
+  // tenant's agents should be told: their next check-in reads the database again.
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.res.status < 400) {
+    await invalidateAgentHub(c.env, user.tenantId ? { tenantId: user.tenantId } : { all: true })
+  }
 })
 
 // Permission guards live in guards.ts (no database or crypto imports, so they can be unit tested).

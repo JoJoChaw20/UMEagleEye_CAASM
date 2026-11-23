@@ -33,6 +33,7 @@ import { routeAgents, unmanagedHostIps } from '../services/agentRouting'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
 import { refreshRelationshipsLater } from '../services/relationshipRefresh'
+import { invalidateAgentHub } from '../services/agentHub'
 import {
   INVESTIGATE_EXPIRE_HOURS, INVESTIGATE_TRIGGER, isInvestigation, queueInvestigations, recordInvestigationFailure,
   recordInvestigationResult, type InvestigationInfo,
@@ -1490,7 +1491,9 @@ Example:
         await recordInvestigationResult(db, investigation, effectiveScanId, investigatedIp, hosts as Record<string, unknown>[])
       } else if (scan_type === 'passive' && upsertedAssetIds.length) {
         // (a network agent's new devices are not queued: it cannot scan them itself)
-        await queueInvestigations(db, { tenantId: tenantId ?? null, agentId: agent_id, assetIds: upsertedAssetIds })
+        const queued = await queueInvestigations(db, { tenantId: tenantId ?? null, agentId: agent_id, assetIds: upsertedAssetIds })
+        // the agent's cached check-in answer has no jobs: its next check-in reads them (services/agentHub.ts)
+        if (queued > 0) await invalidateAgentHub(c.env, { agentIds: [agent_id] })
       }
     } catch (err) {
       console.error('scan ingest: new-device investigation failed:', err)

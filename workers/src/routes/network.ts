@@ -7,15 +7,24 @@
 //   GET  /network/links         the tenant's cables, for the topology view
 //   POST /network/run/:agentId  "Run now": a crawl job for a network agent
 //   GET  /network/map           the measured network as one graph (lib/networkMap.ts)
+//   GET  /network/public-addresses           the organisation's public addresses (D4)
+//   POST /network/public-addresses           add one by hand (the organisation's own)
+//   PATCH/DELETE /network/public-addresses/:id   mark ours / not ours / unconfirmed, note; remove
+//   PUT  /network/public-addresses/lookup    the tenant's Shodan InternetDB switch (Tenant Superadmin)
 
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
-import { authMiddleware, requireAction } from '../middleware/auth'
+import { authMiddleware, hasAction, requireAction, requireTenantSuperadmin } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { agents, assetAddresses, assetIdentifiers, assets, auditLogs, networkLinks, scanResults } from '../db/schema'
+import { agents, assetAddresses, assetIdentifiers, assets, auditLogs, networkLinks, publicAddresses, scanResults, tenants } from '../db/schema'
+import { audit } from '../services/audit'
+import { PUBLIC_ADDRESS_STATUSES, publicIpOf } from '../lib/publicAddress'
+import { checkTenantAddresses, listPublicAddresses } from '../services/publicAddresses'
+import { refreshInternetViews, syncInternetAlerts } from '../services/internetView'
+import { ALERT_PORTS } from '../lib/internetView'
 import { jobRefusal } from '../lib/agentPolicy'
 import { agentPolicy } from '../services/agentPolicy'
 import { cleanSelf, pickHostAsset } from '../lib/networkAgentHost'
@@ -292,5 +301,143 @@ app.get('/map', authMiddleware, requireAction('network.view'), async (c) => {
     return c.json({ detail: 'Failed to build the network map' }, 500)
   }
 })
+
+// ── Public addresses (lib/publicAddress.ts, services/publicAddresses.ts) ──────────────
+const NOT_PUBLIC = 'Enter a public IPv4 or IPv6 address. Private and reserved ranges are not reachable from the internet.'
+const noteSchema = z.string().trim().max(200).nullable().optional()
+
+app.get('/public-addresses', authMiddleware, requireAction('network.view'), async (c) => {
+  const user = c.get('user')
+  const tenantId = user.role === 'superadmin' ? c.req.query('tenant_id') : user.tenantId
+  if (!tenantId || !z.string().uuid().safeParse(tenantId).success) {
+    return c.json({ items: [], lookup: false, can_edit: false, can_switch: false })
+  }
+  const db = getDb(c.env.DATABASE_URL)
+  const [items, [tenant]] = await Promise.all([
+    listPublicAddresses(db, tenantId),
+    db.select({ lookup: tenants.publicAddressLookup }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1),
+  ])
+  return c.json({
+    items, lookup: tenant?.lookup ?? false, alert_ports: ALERT_PORTS,
+    can_edit: hasAction(user, 'network.public_address.edit'),
+    can_switch: user.role === 'tenant_superadmin',
+  })
+})
+
+// {ip, note?}: the organisation's own address (a server's, the office's static IP). An address agents
+// already reported becomes "ours".
+app.post('/public-addresses', authMiddleware, requireAction('network.public_address.edit'),
+  zValidator('json', z.object({ ip: z.string().max(64), note: noteSchema })),
+  async (c) => {
+    const user = c.get('user')
+    const body = c.req.valid('json')
+    const ip = publicIpOf(body.ip)
+    if (!ip) return c.json({ detail: NOT_PUBLIC }, 400)
+    const db = getDb(c.env.DATABASE_URL)
+    const now = new Date()
+    const note = body.note || null
+    const [row] = await db.insert(publicAddresses)
+      .values({ tenantId: user.tenantId!, ip, source: 'manual', status: 'ours', note })
+      .onConflictDoUpdate({
+        target: [publicAddresses.tenantId, publicAddresses.ip],
+        set: { status: 'ours', updatedAt: now, ...(note ? { note } : {}) },
+      })
+      .returning({ id: publicAddresses.publicAddressId, source: publicAddresses.source })
+    await audit(db, c, {
+      userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'public_address.add', targetEntity: row?.id ?? null,
+      previousState: null, newState: { ip, status: 'ours', note },
+    })
+    const check = await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!)
+    const view = row?.id ? await internetViewNow(db, user.tenantId!, row.id, 'ours') : null
+    return c.json({ public_address_id: row?.id, ip, status: 'ours', check, internet_view: view }, 201)
+  })
+
+// {status?, note?}
+app.patch('/public-addresses/:id', authMiddleware, requireAction('network.public_address.edit'),
+  zValidator('json', z.object({ status: z.enum(PUBLIC_ADDRESS_STATUSES).optional(), note: noteSchema })),
+  async (c) => {
+    const user = c.get('user')
+    const id = c.req.param('id')
+    if (!z.string().uuid().safeParse(id).success) return c.json({ detail: 'Invalid address id' }, 400)
+    const body = c.req.valid('json')
+    if (body.status === undefined && body.note === undefined) return c.json({ detail: 'Nothing to change' }, 400)
+    const db = getDb(c.env.DATABASE_URL)
+    const [current] = await db.select().from(publicAddresses)
+      .where(and(eq(publicAddresses.publicAddressId, id), eq(publicAddresses.tenantId, user.tenantId!))).limit(1)
+    if (!current) return c.json({ detail: 'Address not found' }, 404)
+    const next = {
+      ...(body.status !== undefined ? { status: body.status } : {}),
+      ...(body.note !== undefined ? { note: body.note || null } : {}),
+    }
+    await db.update(publicAddresses).set({ ...next, updatedAt: new Date() }).where(eq(publicAddresses.publicAddressId, id))
+    await audit(db, c, {
+      userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'public_address.update', targetEntity: id,
+      previousState: { ip: current.ip, status: current.status, note: current.note }, newState: { ip: current.ip, ...next },
+    })
+    // A status change changes its alert: firm, a review item, or none (R11)
+    const changed = next.status !== undefined && next.status !== current.status
+    const check = changed ? await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!) : null
+    // marked ours: what the internet sees on it now, with its alerts; otherwise those alerts close
+    const view = changed ? await internetViewNow(db, user.tenantId!, id, next.status!) : null
+    return c.json({ public_address_id: id, ip: current.ip, status: next.status ?? current.status, note: 'note' in next ? next.note : current.note, check, internet_view: view })
+  })
+
+// An address agents still connect from comes back as unconfirmed at their next hourly refresh.
+app.delete('/public-addresses/:id', authMiddleware, requireAction('network.public_address.edit'), async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  if (!z.string().uuid().safeParse(id).success) return c.json({ detail: 'Invalid address id' }, 400)
+  const db = getDb(c.env.DATABASE_URL)
+  const [gone] = await db.delete(publicAddresses)
+    .where(and(eq(publicAddresses.publicAddressId, id), eq(publicAddresses.tenantId, user.tenantId!)))
+    .returning({ ip: publicAddresses.ip, status: publicAddresses.status, source: publicAddresses.source })
+  if (!gone) return c.json({ detail: 'Address not found' }, 404)
+  await audit(db, c, {
+    userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'public_address.delete', targetEntity: id,
+    previousState: gone, newState: null,
+  })
+  // its alerts close (R11, and the internet view's)
+  const check = await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!)
+  await syncInternetAlerts(db, user.tenantId!).catch((err) => console.error('public addresses: internet alerts failed:', err))
+  return c.json({ ok: true, check })
+})
+
+// {enabled}: off stops asking Shodan InternetDB and clears what it said.
+app.put('/public-addresses/lookup', authMiddleware, requireTenantSuperadmin,
+  zValidator('json', z.object({ enabled: z.boolean() })),
+  async (c) => {
+    const user = c.get('user')
+    const { enabled } = c.req.valid('json')
+    const db = getDb(c.env.DATABASE_URL)
+    const [tenant] = await db.select({ lookup: tenants.publicAddressLookup }).from(tenants)
+      .where(eq(tenants.tenantId, user.tenantId!)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+    await db.update(tenants).set({ publicAddressLookup: enabled }).where(eq(tenants.tenantId, user.tenantId!))
+    if (!enabled) {
+      await db.update(publicAddresses).set({ internetdb: null, internetdbAt: null })
+        .where(eq(publicAddresses.tenantId, user.tenantId!))
+    }
+    // on: ask about the addresses now; off: their alerts close
+    const view = enabled
+      ? await refreshInternetViews(db, { tenantId: user.tenantId! }).catch((err) => { console.error('internet view failed:', err); return null })
+      : await syncInternetAlerts(db, user.tenantId!).catch((err) => { console.error('internet alerts failed:', err); return null })
+    await audit(db, c, {
+      userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'tenant.public_address_lookup', targetEntity: user.tenantId ?? null,
+      previousState: { enabled: tenant.lookup }, newState: { enabled },
+    })
+    return c.json({ lookup: enabled, internet_view: view })
+  })
+
+/** After an address was added or its status changed: ask InternetDB about it when it is now the
+ *  organisation's (or still unconfirmed and never asked), else bring the alerts in line. Logged, never thrown. */
+async function internetViewNow(db: Db, tenantId: string, id: string, status: string) {
+  try {
+    if (status === 'ours') return await refreshInternetViews(db, { tenantId, ids: [id] })
+    return await syncInternetAlerts(db, tenantId)
+  } catch (err) {
+    console.error('public addresses: internet view failed:', err)
+    return null
+  }
+}
 
 export default app

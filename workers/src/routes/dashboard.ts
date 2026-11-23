@@ -22,6 +22,8 @@ import { summarizeCoverage, type CoverageAsset } from '../lib/coverage'
 import { agentLiveness } from '../lib/agentLiveness'
 import { fixTimeSummary } from '../services/fixTime'
 import { baselineSummary } from '../services/securityBaseline'
+import { ALERT_PORTS } from '../lib/internetView'
+import { LIST_DAYS } from '../services/publicAddresses'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -54,7 +56,8 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
       WHEN jsonb_typeof(${events.details}->'epss_score') = 'number' THEN (${events.details}->>'epss_score')::float ELSE 0 END`
 
     const [agentRows, scanRows, assetRows, sbomRows, openBySevAsset, topRows, identityRows,
-           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows, priorityMetrics, advisoryMetrics, kevRows] = await Promise.all([
+           concernCounts, concernTops, cveTotals, pkgRows, riskyAssetRows, priorityMetrics, advisoryMetrics, kevRows,
+           publicRows] = await Promise.all([
       db.select({ agentId: agents.agentId, name: agents.name, kind: agents.kind, status: agents.status, lastHeartbeat: agents.lastHeartbeat, version: agents.version })
         .from(agents).where(tenantId ? and(eq(agents.tenantId, tenantId), isNull(agents.retiredAt)) : isNull(agents.retiredAt)),
       db.select({
@@ -185,6 +188,18 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
         .from(cveFindings).innerJoin(events, eq(cveFindings.eventId, events.eventId))
         .innerJoin(assets, eq(events.assetId, assets.assetId))
         .where(and(openScope, eq(cveFindings.kev, true), isNull(cveFindings.fixedAt), eq(cveFindings.dismissed, false))),
+      // The organisation's public addresses (D4): how many, on a blocklist, with a port open that alerts
+      db.execute(sql`
+        SELECT count(*)::int AS total,
+               count(*) FILTER (WHERE status = 'ours')::int AS ours,
+               count(*) FILTER (WHERE status = 'unconfirmed')::int AS unconfirmed,
+               count(*) FILTER (WHERE status <> 'not_ours' AND jsonb_array_length(COALESCE(blocklists->'listings', '[]'::jsonb)) > 0)::int AS listed,
+               count(*) FILTER (WHERE status = 'ours' AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements_text(COALESCE(internetdb->'ports', '[]'::jsonb)) pt
+                 WHERE pt::int = ANY(${sql.raw(`ARRAY[${ALERT_PORTS.join(',')}]::int[]`)})))::int AS open_ports
+        FROM public_addresses
+        WHERE ${tenantId ? sql`tenant_id = ${tenantId}::uuid` : sql`true`}
+          AND (status = 'ours' OR source = 'manual' OR last_seen > now() - make_interval(days => ${LIST_DAYS}))`),
     ])
 
     // ── Collection health ──────────────────────────────────────────
@@ -362,6 +377,8 @@ app.get('/summary', authMiddleware, requireAction('dashboard.view'), async (c) =
         network_devices: networkDevices.slice(0, 12),
         network_devices_total: networkDevices.length,
         network_devices_unmanaged: networkDevices.filter(n => !n.snmp_managed).length,
+        public_addresses: (publicRows.rows[0] ?? { total: 0, ours: 0, unconfirmed: 0, listed: 0, open_ports: 0 }) as
+          { total: number; ours: number; unconfirmed: number; listed: number; open_ports: number },
       },
       hygiene: {
         new_devices_7d: listOf(newDevices, a => ({ ...brief(a), vendor: a.vendor, mac: a.mac, first_seen: a.createdAt })),

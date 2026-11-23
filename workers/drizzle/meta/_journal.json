@@ -330,6 +330,13 @@
       "when": 1795422548329,
       "tag": "0046_security_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1795437950325,
+      "tag": "0047_public_addresses",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import type { Ai, AnalyticsEngineDataset, Queue, R2Bucket, KVNamespace } from '@cloudflare/workers-types'
+import type { Ai, AnalyticsEngineDataset, DurableObjectNamespace, Queue, R2Bucket, KVNamespace } from '@cloudflare/workers-types'
 
 export interface Env {
   // ── Secrets ──
@@ -31,6 +31,8 @@ export interface Env {
   AI?: Ai                  // embeddings for the knowledge graph
   EMAIL?: { send(msg: unknown): Promise<unknown> }  // Cloudflare Email binding; absent = email off
   PERF?: AnalyticsEngineDataset  // request and job timings
+  // Routine agent check-ins answered without the database (durable/agentHub.ts); absent = always the database
+  AGENT_HUB?: DurableObjectNamespace<import('./durable/agentHub').AgentHub>
 }
 
 export interface JWTPayload {
