@@ -21,7 +21,7 @@ import { formatSeen } from '../utils/time'
 import { isLocallyAdministeredMac } from '../utils/mac'
 import DeviceTypePicker from '../components/assets/DeviceTypePicker'
 import { NetworkDeviceSection, NetworkLocationField } from '../components/assets/NetworkSections'
-import BaselineSection from '../components/assets/BaselineSection'
+import BaselineSection, { OpenScapSection } from '../components/assets/BaselineSection'
 
 // How long a device has been up: "18 min", "5 h", "12 days".
 function uptimeText(seconds) {
@@ -523,6 +523,7 @@ export default function AssetDetailPage() {
         {inv && <SecuritySection inv={inv} checks={asset.postureChecks} score={asset.postureScore} />}
         {inv && <PatchesSection inv={inv} checks={asset.postureChecks} />}
         {inv && ['windows', 'linux'].includes(inv.platform) && <BaselineSection baseline={asset.baseline} />}
+        {inv?.openscap && <OpenScapSection result={inv.openscap} />}
 
         {/* Services */}
         <Section icon={Network} title="Open ports & services" className="xl:col-span-2"

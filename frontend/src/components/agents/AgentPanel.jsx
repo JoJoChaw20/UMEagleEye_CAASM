@@ -212,6 +212,15 @@ function AgentSettings({ agent, onSaved }) {
           <span>The agent does not run as Administrator/root, so it cannot read DNS answers; it still checks the computer's connections.</span>
         </div>
       )}
+      {/* OpenSCAP runs on Linux only; an agent older than the setting does not report `openscap` */}
+      {byKey.openscap?.value === true && policy.capabilities && policy.capabilities.openscap !== true && (
+        <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>{policy.capabilities.openscap === false
+            ? 'OpenSCAP is on, but it runs on Linux only: this agent ignores it. Its security baseline covers the same ground.'
+            : 'OpenSCAP is on, but this agent is older than the setting. Update it from the Agents page.'}</span>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {roles.map((r) => {

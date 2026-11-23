@@ -37,6 +37,10 @@ export const POLICY_SPECS = {
   // and outbound connections against the tenant's bad domains and IPs on the computer and reports
   // only matches. Off unless set (it reads this computer's traffic; privacy notice v7).
   sightings: { type: 'bool' },
+  // OpenSCAP (agent-gui/eagleeye/openscap.py, Linux): the SCAP Security Guide's CIS Level 1 profile,
+  // at most weekly, its results sent with the inventory and shown beside the security baseline.
+  // Off unless set (it takes minutes, and needs content for the exact OS version).
+  openscap: { type: 'bool' },
   // The network agent (agent-gui/eagleeye/netagent): it reads the seed routers and switches,
   // then their CDP/LLDP neighbours inside the allowed ranges, up to network_depth hops away,
   // every network_interval seconds. Its SNMP credentials stay on the agent.
@@ -85,7 +89,7 @@ export type Role = keyof typeof ROLE_KEYS
 export const DEFAULTS: Record<PolicyKey, PolicyValue> = {
   scanner: true, scan_ports: 'base', passive: false, passive_interval: 300,
   inventory: true, inventory_interval: 21600, inventory_user_software: false,
-  sbom: true, sbom_interval: 86400, sightings: false,
+  sbom: true, sbom_interval: 86400, sightings: false, openscap: false,
   network_poll: true, network_seeds: [], network_ranges: [], network_depth: 3, network_interval: 900,
 }
 

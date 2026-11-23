@@ -34,6 +34,35 @@ class LocalInventoryStage(Stage):
             ctx.progress("Run as Administrator to also read: " + ", ".join(inventory["unavailable"]))
 
 
+class OpenScapStage(Stage):
+    """Linux, when the dashboard's OpenSCAP setting is on: the last CIS Level 1 result goes with the
+    inventory, after running OpenSCAP again when a week has passed (openscap.py)."""
+    name = "openscap"
+    label = "OpenSCAP CIS Level 1"
+
+    def __init__(self, scanner: Any = None) -> None:
+        self.scanner = scanner
+
+    def run(self, ctx: PipelineContext) -> None:
+        inventory = ctx.summary.get("inventory") or {}
+        if inventory.get("platform") != "linux":
+            return
+        from ..collectors.linux import parse_os_release
+        from ..openscap import OpenScap
+        try:
+            with open("/etc/os-release", encoding="utf-8") as fh:
+                os_release = parse_os_release(fh.read())
+        except OSError:
+            os_release = {}
+        result = (self.scanner or OpenScap()).result(os_release, (inventory.get("os") or {}).get("role"))
+        inventory["openscap"] = {k: v for k, v in result.items() if k not in ("content_path", "content_mtime")}
+        if result.get("status") == "ok":
+            c = result["counts"]
+            ctx.progress(f"OpenSCAP: {c['pass']} pass, {c['fail']} fail, {c['notapplicable']} not applicable")
+        else:
+            ctx.progress(f"OpenSCAP: {result.get('reason')}")
+
+
 class InventoryUploadStage(Stage):
     name = "upload"
     label = "Upload inventory"

@@ -47,6 +47,58 @@ function Check({ c }) {
   )
 }
 
+const SEV_CLS = { high: 'text-red-400', medium: 'text-amber-400', low: 'text-dark-300', unknown: 'text-dark-400' }
+
+// OpenSCAP's CIS Level 1 result (agent-gui/eagleeye/openscap.py, inventory.openscap): its own rules and
+// counts, beside the baseline and not part of it (Windows has no OpenSCAP; the baseline judges both alike).
+export function OpenScapSection({ result: r }) {
+  const [all, setAll] = useState(false)
+  if (!r) return null
+  if (r.status !== 'ok') {
+    return (
+      <Section icon={ShieldCheck} title="OpenSCAP (CIS Level 1)" className="xl:col-span-2">
+        <p className="text-sm text-dark-300">{r.status === 'error' ? 'The last run failed: ' : 'Not run: '}{r.reason}</p>
+      </Section>
+    )
+  }
+  const c = r.counts ?? {}
+  const judged = (c.pass ?? 0) + (c.fail ?? 0) + (c.error ?? 0)
+  const pct = judged ? Math.floor((1000 * (c.pass ?? 0)) / judged) / 10 : null
+  const failed = r.failed ?? []
+  const shown = all ? failed : failed.slice(0, 15)
+  return (
+    <Section icon={ShieldCheck} title="OpenSCAP (CIS Level 1)" className="xl:col-span-2"
+      right={<span className="text-xs text-dark-300">{pct == null ? '' : `${pct}% of ${judged} judged rules pass`}</span>}>
+      <p className="text-[11px] text-dark-400 mb-3">
+        {r.profile_title ?? r.profile_id} · SCAP Security Guide {r.content_version} ({r.content}) · run {new Date(r.ran_at * 1000).toLocaleString()} in {Math.round(r.duration_s ?? 0)} s.
+        {' '}Its own rules and count, shown beside the security baseline; they do not change it.
+      </p>
+      <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs mb-3">
+        <span className="text-green-400">{c.pass ?? 0} pass</span>
+        <span className="text-red-400">{c.fail ?? 0} fail</span>
+        {c.error > 0 && <span className="text-amber-400">{c.error} error</span>}
+        <span className="text-dark-400">{c.notapplicable ?? 0} not applicable</span>
+        {c.notchecked > 0 && <span className="text-dark-400">{c.notchecked} not checked</span>}
+      </div>
+      {failed.length > 0 && (
+        <ul className="divide-y divide-dark-700/40">
+          {shown.map((f) => (
+            <li key={f.id} className="py-1.5 flex items-start justify-between gap-3 text-sm">
+              <span className="text-dark-100">{f.title}{f.result === 'error' && <span className="text-amber-400 text-[11px]"> (could not be checked)</span>}</span>
+              <span className={`text-[11px] whitespace-nowrap ${SEV_CLS[f.severity] ?? SEV_CLS.unknown}`}>{f.severity}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {failed.length > 15 && (
+        <button type="button" onClick={() => setAll((a) => !a)} className="mt-2 text-xs text-eagle-400 hover:underline">
+          {all ? 'Show fewer' : `Show all ${r.failed_total ?? failed.length} failed rules`}
+        </button>
+      )}
+    </Section>
+  )
+}
+
 export default function BaselineSection({ baseline }) {
   const [showPassed, setShowPassed] = useState(false)
   // Linked from a Below Security Baseline alert (#security-baseline): the router does not scroll to it

@@ -49,7 +49,7 @@ from .schedule import Schedule, ScheduleState
 from .stages.scan_nmap import validate_target
 from .stages.scan_own import active_scan_stage
 from .stages import (
-    CveCheckStage, InventoryUploadStage, LocalInventoryStage, PassiveCollectStage,
+    CveCheckStage, InventoryUploadStage, LocalInventoryStage, OpenScapStage, PassiveCollectStage,
     PassiveEnrichStage, SbomBuildStage, SbomUploadStage, UploadStage,
 )
 
@@ -289,7 +289,9 @@ class AgentService:
         "Collect inventory" job; the server completes it when the inventory arrives."""
         ctx = PipelineContext("inventory", scan_id=scan_id, scan_type="inventory")
         result = Pipeline("inventory", [
-            LocalInventoryStage(options=self.settings.inventory_options), InventoryUploadStage(self.client),
+            LocalInventoryStage(options=self.settings.inventory_options),
+            *([OpenScapStage()] if self.settings.openscap else []),
+            InventoryUploadStage(self.client),
         ], self.on_event).run(ctx)
         if result.status == "failed" and "not available on" in (result.error or ""):
             # Linux/macOS until their collectors exist: report it once, then stop trying.

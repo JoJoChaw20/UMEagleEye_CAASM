@@ -69,6 +69,9 @@ class Settings:
     # Threat sightings (sightings/): this computer's DNS answers and outbound connections are
     # checked here against the organisation's bad domains and IPs; only matches are sent.
     sightings: bool = False
+    # OpenSCAP (openscap.py, Linux): the SCAP Security Guide's CIS Level 1 profile, at most weekly,
+    # its results sent with the inventory. Off unless set on the dashboard.
+    openscap: bool = False
     # Active scan engine (stages/scan_own.py): auto = the agent's own engine; nmap (the Nmap
     # stage) and compare (both, with a local report) are evaluation tools for the command line.
     # Port tier ("Scan depth" on the dashboard): base | consumer | wide (engine/ports.py).
@@ -149,6 +152,7 @@ _ENV_VARS = {
     "sbom_extra_paths": "EAGLEEYE_SBOM_EXTRA_PATHS",
     "sbom_include_binaries": "EAGLEEYE_SBOM_INCLUDE_BINARIES",
     "sightings": "EAGLEEYE_SIGHTINGS",
+    "openscap": "EAGLEEYE_OPENSCAP",
     "scan_engine": "EAGLEEYE_SCAN_ENGINE",
     "scan_ports": "EAGLEEYE_SCAN_PORTS",
     "kind": "EAGLEEYE_KIND",
