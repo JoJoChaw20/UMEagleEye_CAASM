@@ -199,6 +199,12 @@ or messages, location, and the contents of network traffic. For ports that only 
 (`127.0.0.1` / `::1`), which program owns them is not sent. Passive mode reads only broadcast discovery packets
 (ARP, mDNS, NetBIOS, DHCP, SSDP/UPnP) to learn device names and addresses, and ignores the computer's own packets.
 
+**When passive results go up:** every passive interval (5 minutes by default) the agent uploads only if something is
+new: a host it has not sent, a host whose MAC changed, or a host last sent 30 minutes ago or more
+(`ArpSniffer.has_news`, `UPLOAD_REFRESH`). A busy network is heard all the time, and every upload wakes the server's
+database (Neon sleeps only after 5 idle minutes): a new device still reaches the dashboard at the next round, and a
+quiet network goes up about every 30 minutes. A failed upload keeps its hosts for the next round.
+
 **Which network passive mode listens on:** with the interface left empty ("automatic"), the adapter the operating
 system uses to reach the internet, re-checked every 30 seconds (so it follows Wi-Fi connecting after sign-in, a
 switch to a cable, or a VPN, and never sits on a virtual adapter such as a GNS3/VMware loopback). The Status page
