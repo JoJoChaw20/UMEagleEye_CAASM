@@ -67,8 +67,8 @@ export const GROUPS = [
     title: 'OpenSCAP (Linux)',
     settings: [
       {
-        key: 'openscap', label: 'Run the CIS Level 1 profile of the SCAP Security Guide weekly',
-        help: "Linux only. Needs OpenSCAP and SCAP Security Guide content for the computer's exact OS version (the distribution's ssg / scap-security-guide package, or a ComplianceAsCode release in the agent's scap-content folder). Takes minutes; the results are shown on the asset page beside the security baseline, which they do not change.",
+        key: 'openscap', os: 'linux', label: 'Run the CIS Level 1 profile of the SCAP Security Guide weekly',
+        help: "Linux computers only (other agents do not show it). Needs OpenSCAP and SCAP Security Guide content for the computer's exact OS version (the distribution's ssg / scap-security-guide package, or a ComplianceAsCode release in the agent's scap-content folder). Takes minutes; the results are shown on the asset page beside the security baseline, which they do not change.",
       },
     ],
   },

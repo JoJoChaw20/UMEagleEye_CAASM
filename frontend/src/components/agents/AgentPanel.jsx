@@ -169,6 +169,10 @@ function AgentSettings({ agent, onSaved }) {
   const fallback = (s) => `${s.tenant_default !== null ? 'Tenant default' : 'Default'}: ${show(metaOf(s.key), s.spec, s.inherited)}`
   const inSync = policy && policy.applied_version !== null ? policy.applied_version === policy.version : null
   const hasAdvanced = GROUPS.some((g) => g.settings.some((m) => m.advanced && byKey[m.key]))
+  // A setting for one OS only (policy.jsx `os`) is left out for an agent that reports another
+  // (capabilities.os is Python's sys.platform: win32, linux, darwin); shown when the OS is not known.
+  const agentOs = policy?.capabilities?.os
+  const forThisOs = (m) => !m.os || !agentOs || agentOs.startsWith(m.os)
 
   if (error && !policy) return <ErrorBox text={error} />
   if (!policy) return <div className="flex justify-center py-10"><RefreshCw className="w-6 h-6 animate-spin text-dark-400" /></div>
@@ -212,13 +216,11 @@ function AgentSettings({ agent, onSaved }) {
           <span>The agent does not run as Administrator/root, so it cannot read DNS answers; it still checks the computer's connections.</span>
         </div>
       )}
-      {/* OpenSCAP runs on Linux only; an agent older than the setting does not report `openscap` */}
-      {byKey.openscap?.value === true && policy.capabilities && policy.capabilities.openscap !== true && (
+      {/* A Linux agent older than the OpenSCAP setting does not report `openscap` (other systems do not show it) */}
+      {byKey.openscap?.value === true && agentOs?.startsWith('linux') && policy.capabilities.openscap !== true && (
         <div className="flex items-start gap-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
           <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-          <span>{policy.capabilities.openscap === false
-            ? 'OpenSCAP is on, but it runs on Linux only: this agent ignores it. Its security baseline covers the same ground.'
-            : 'OpenSCAP is on, but this agent is older than the setting. Update it from the Agents page.'}</span>
+          <span>OpenSCAP is on, but this agent is older than the setting. Update it from the Agents page.</span>
         </div>
       )}
 
@@ -239,7 +241,7 @@ function AgentSettings({ agent, onSaved }) {
       </div>
 
       {GROUPS.map((g) => {
-        const items = g.settings.filter((m) => byKey[m.key] && (advanced || !m.advanced))
+        const items = g.settings.filter((m) => byKey[m.key] && forThisOs(m) && (advanced || !m.advanced))
         if (!items.length) return null
         return (
           <div key={g.title} className="space-y-3">
