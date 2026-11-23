@@ -50,6 +50,8 @@ _NETWORK_RECHECK_SECONDS = 600  # how often the subnet/gateway is re-read on an 
 _IP_TTL_SECONDS = 4 * 3600
 _MAC_TTL_SECONDS = 24 * 3600
 _PRUNE_EVERY_SECONDS = 600
+# A host already uploaded with the same MAC goes up again at most this often (ArpSniffer.has_news)
+UPLOAD_REFRESH = 30 * 60
 _LINK_LOCAL = ipaddress.ip_network("169.254.0.0/16")
 
 
@@ -411,6 +413,9 @@ class ArpSniffer(_Sniffer):
     def __init__(self, interface: Optional[str] = None, chooser: Optional[InterfaceChooser] = None) -> None:
         super().__init__(interface, chooser)
         self._seen: dict[str, dict[str, Any]] = {}
+        # ip -> (mac, when it last reached the server): a busy network is heard all the time, so the
+        # upload goes only when something is new (has_news), and each host is refreshed every UPLOAD_REFRESH.
+        self._uploaded: dict[str, tuple[Optional[str], float]] = {}
 
     def _make_handler(self) -> Any:
         from scapy.all import ARP, IP, Ether  # type: ignore
@@ -456,6 +461,29 @@ class ArpSniffer(_Sniffer):
         """Hosts heard since the last drain."""
         with self._lock:
             return len(self._seen)
+
+    def has_news(self, now: Optional[float] = None, refresh: float = UPLOAD_REFRESH) -> bool:
+        """Whether an upload is worth sending: a host the server has not had from this agent, one
+        whose MAC changed, or one last sent `refresh` seconds ago or more (so the server's "last
+        seen" stays current). Otherwise the round is skipped and what was heard waits; every
+        upload wakes the server's database (docs/plans/2026-11-23-quiet-database.md)."""
+        now = time.time() if now is None else now
+        with self._lock:
+            for ip, info in self._seen.items():
+                sent = self._uploaded.get(ip)
+                if sent is None or sent[0] != info.get("mac") or now - sent[1] >= refresh:
+                    return True
+        return False
+
+    def mark_uploaded(self, hosts: list[HostRecord], now: Optional[float] = None) -> None:
+        """These hosts reached the server."""
+        now = time.time() if now is None else now
+        with self._lock:
+            for host in hosts:
+                self._uploaded[host.ip] = (host.mac, now)
+            if len(self._uploaded) > 4096:              # a long-lived laptop on many networks
+                for ip, _ in sorted(self._uploaded.items(), key=lambda kv: kv[1][1])[:1024]:
+                    del self._uploaded[ip]
 
     def drain_batches(self) -> list[tuple[Optional[dict[str, Optional[str]]], list[HostRecord]]]:
         """What was heard since the last drain, one batch per network it was heard on

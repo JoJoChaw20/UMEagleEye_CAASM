@@ -14,6 +14,7 @@ export interface HubAnswer { ok: true; policy: unknown }
 
 export interface HubRemember {
   tenantId: string | null
+  kind: string                // host, network, mobile: only a computer's own agent gets the sightings list
   keyHash: string
   report: string             // reportKey() of the check-in
   publicIp: string | null
@@ -49,6 +50,21 @@ export function spreadOf(agentId: string): number {
 
 export class HubState {
   private entries = new Map<string, Entry>()
+  // The threat-sightings event list per tenant (routes/sightings.ts part=events): each computer asks
+  // every 30 minutes; it changes only when someone edits threat events (invalidate drops it).
+  private eventLists = new Map<string, { body: unknown; at: number }>()
+
+  /** The tenant's cached event list for a known computer agent with this key; null: ask the database. */
+  eventsFor(agentId: string, keyHash: string, now: number): unknown {
+    const e = this.entries.get(agentId)
+    if (!e || !e.keyHash || e.keyHash !== keyHash || e.kind !== 'host' || !e.tenantId) return null
+    const list = this.eventLists.get(e.tenantId)
+    return list && now - list.at < REVALIDATE_MS ? list.body : null
+  }
+
+  rememberEvents(tenantId: string, body: unknown, now: number): void {
+    this.eventLists.set(tenantId, { body, at: now })
+  }
 
   /** The cached answer when nothing needs the database; records the check-in either way it hits. */
   check(agentId: string, keyHash: string, report: string, publicIp: string | null, now: number): HubCheck {
@@ -67,6 +83,8 @@ export class HubState {
 
   /** Drop cached answers (the next check-in takes the slow path); unsaved last-seen times are kept. */
   invalidate(sel: HubSelector): number {
+    if ('all' in sel) this.eventLists.clear()
+    else if ('tenantId' in sel) this.eventLists.delete(sel.tenantId)
     let n = 0
     for (const [id, e] of this.entries) {
       const hit = 'all' in sel || ('tenantId' in sel ? e.tenantId === sel.tenantId : sel.agentIds.includes(id))

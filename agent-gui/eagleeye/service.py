@@ -241,6 +241,8 @@ class AgentService:
             if result.status == "failed" and batch[1]:
                 arp.restore(batch[0], batch[1])
                 log.info("Passive upload failed; %d host(s) kept for the next flush", len(batch[1]))
+            elif result.ok and hasattr(arp, "mark_uploaded"):
+                arp.mark_uploaded(batch[1])
             self._finish(batch_scan_id, result)
             self._record("passive", "dashboard" if batch_scan_id else "auto", "local network", result)
         return result
@@ -279,7 +281,10 @@ class AgentService:
             log.debug("Passive flush skipped: the previous one is still uploading")
             return
         self._last_flush = time.time()
-        if self.suite.arp.pending():
+        # Only when something is new (a host, a changed MAC) or a host is due a refresh: on a busy
+        # network something is always heard, and each upload wakes the server's database.
+        news = getattr(self.suite.arp, "has_news", None)
+        if news() if news is not None else self.suite.arp.pending():
             self._submit_passive(None)
         else:
             log.debug("Passive flush: nothing new heard")

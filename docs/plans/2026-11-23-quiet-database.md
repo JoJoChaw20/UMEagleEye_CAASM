@@ -47,8 +47,18 @@ continuously: roughly 10-20% of the hours, ~20-40 CU-hours a month per branch, i
 production and staging together. Measured after the reset on staging (Neon's usage page, a day with the lab
 agents running and nobody signed in).
 
-Still waking it, unchanged for now: passive-listening uploads (every 5 minutes when on), threat-sightings
-event lists (every 30 minutes per agent with sightings on), and inventory and SBOM uploads.
+Also quieted (built 23 Nov, later the same night):
+
+- **Threat-sightings event list** (every 30 minutes per computer with sightings on): the hub keeps each
+  tenant's list for up to 6 hours and answers known computer agents from it. Any threat-intel change
+  (`/api/v1/cti...`, events and their sharing) drops every tenant's list; other changes drop that tenant's.
+- **Passive-listening uploads** (agent): a round uploads only when a host is new, its MAC changed, or it was
+  last sent 30 minutes ago or more (`ArpSniffer.has_news`, `UPLOAD_REFRESH`). A new device still reaches the
+  dashboard at the next round (5 minutes); a quiet network uploads about every 30 minutes instead of every 5.
+  Reaches the agents with the next build, through the dashboard's update.
+
+Still waking it, by design: inventory and SBOM uploads (hours apart), the sightings feed list (every
+6 hours per agent), and anyone using the dashboard.
 
 ## Limits of the free plan
 

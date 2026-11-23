@@ -642,7 +642,7 @@ router.post(
       try {
         const jobsWaiting = (jobs?.length ?? 0) > 0 || await hasQueuedJobs(db, agentId)
         await hub.remember(agentId, {
-          tenantId: agent.tenantId, keyHash: providedHash, report: reported, publicIp: seenFrom, answer, jobsWaiting,
+          tenantId: agent.tenantId, kind: (current ?? agent).kind, keyHash: providedHash, report: reported, publicIp: seenFrom, answer, jobsWaiting,
         })
       } catch (err) {
         console.error('heartbeat: agent hub remember failed:', err)

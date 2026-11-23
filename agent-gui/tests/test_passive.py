@@ -23,7 +23,7 @@ from scapy.layers.netbios import (  # noqa: E402
 )
 
 from eagleeye.passive.sniffers import (  # noqa: E402
-    ArpSniffer, DhcpSniffer, InterfaceChooser, MdnsNetbiosSniffer, SsdpSniffer, parse_ssdp,
+    UPLOAD_REFRESH, ArpSniffer, DhcpSniffer, InterfaceChooser, MdnsNetbiosSniffer, SsdpSniffer, parse_ssdp,
 )
 from eagleeye.pipeline.record import HostRecord  # noqa: E402
 from eagleeye.stages import enrich_passive_hosts  # noqa: E402
@@ -601,6 +601,29 @@ def test_hosts_are_kept_per_network_and_a_failed_batch_goes_back(path):
     again = hosts.drain_batches()
     assert [(n["gateway_ip"], [h.ip for h in hs]) for n, hs in again] == [
         ("10.179.63.254", ["10.179.63.254"]), ("192.168.100.1", ["192.168.100.187"])]
+
+
+def test_an_upload_goes_only_with_news_or_when_a_host_is_due_a_refresh(path):
+    """A busy network is heard all the time: the agent uploads a new host or a changed MAC at the next
+    round, and otherwise each host every UPLOAD_REFRESH, so the server's database can sleep."""
+    probe, clock = FakeProbe("192.168.100.71", ADAPTERS), Clock()
+    chooser = InterfaceChooser(probe=probe, clock=clock)
+    chooser.refresh()
+    hosts = ArpSniffer(chooser=chooser)
+    feed = feeder(hosts, path)
+    feed(arp("192.168.100.186", IPAD_MAC))
+    assert hosts.has_news(now=1000)                            # never uploaded
+    batch = hosts.drain_batches()[0][1]
+    hosts.mark_uploaded(batch, now=1000)
+    feed(arp("192.168.100.186", IPAD_MAC))                     # heard again, nothing new
+    assert not hosts.has_news(now=1300)
+    assert hosts.pending() == 1                                # it waits in the buffer
+    assert hosts.has_news(now=1000 + UPLOAD_REFRESH)           # due a refresh
+    feed(arp("192.168.100.187", PHONE_MAC))                    # a new host
+    assert hosts.has_news(now=1300)
+    hosts.mark_uploaded([h for _, hs in hosts.drain_batches() for h in hs], now=1300)
+    feed(arp("192.168.100.187", "aa:bb:cc:dd:ee:01"))          # the address moved to another device
+    assert hosts.has_news(now=1400)
 
 
 def test_an_address_name_expires_but_the_devices_own_name_wins(mdns):

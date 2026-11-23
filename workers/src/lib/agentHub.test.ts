@@ -6,7 +6,7 @@ const A = '11111111-1111-1111-1111-111111111111'
 const B = '22222222-2222-2222-2222-222222222222'
 const answer = { ok: true as const, policy: { local_scans: false, managed: { sbom: true }, version: 'v1' } }
 const base = (over: Partial<HubRemember> = {}): HubRemember => ({
-  tenantId: 't1', keyHash: 'k', report: reportKey({ version: '0.1.0', build: 'b1' }), publicIp: '203.106.93.7',
+  tenantId: 't1', kind: 'host', keyHash: 'k', report: reportKey({ version: '0.1.0', build: 'b1' }), publicIp: '203.106.93.7',
   answer, jobsWaiting: false, ...over,
 })
 
@@ -66,6 +66,29 @@ test('a failed flush puts the times back, unless a newer check-in came', () => {
   h.restore(taken)
   assert.deepEqual(h.takeDirty().sort((x, y) => x.agentId.localeCompare(y.agentId)),
     [{ agentId: A, lastSeen: 10 }, { agentId: B, lastSeen: 20 }])
+})
+
+test('the sightings event list: per tenant, for a known computer agent, dropped on a change', () => {
+  const h = new HubState()
+  const list = { items: [['domain', 'evil.example']], truncated: false }
+  h.remember(A, base(), 0)
+  h.remember(B, base({ kind: 'network' }), 0)
+  assert.equal(h.eventsFor(A, 'k', 1), null)                    // nothing cached yet
+  h.rememberEvents('t1', list, 1)
+  assert.deepEqual(h.eventsFor(A, 'k', 2), list)
+  assert.equal(h.eventsFor(A, 'wrong key', 2), null)
+  assert.equal(h.eventsFor(B, 'k', 2), null)                    // not a computer's own agent
+  assert.equal(h.eventsFor('unknown', 'k', 2), null)
+  assert.equal(h.eventsFor(A, 'k', 1 + REVALIDATE_MS), null)    // too old
+  h.invalidate({ agentIds: [B] })
+  assert.deepEqual(h.eventsFor(A, 'k', 3), list)                // another agent's change keeps it
+  h.invalidate({ tenantId: 't1' })
+  assert.equal(h.eventsFor(A, 'k', 3), null)
+  h.remember(A, base(), 4)
+  h.rememberEvents('t1', list, 4)
+  h.invalidate({ all: true })
+  h.remember(A, base(), 5)
+  assert.equal(h.eventsFor(A, 'k', 5), null)
 })
 
 test('reportKey ignores key order and undefined fields', () => {

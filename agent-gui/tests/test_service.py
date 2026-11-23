@@ -389,6 +389,41 @@ def test_a_slow_upload_never_holds_up_polling_and_is_never_doubled():
     assert [h["ip"] for h in client.ingested[1]["hosts"]] == ["192.168.1.42"]
 
 
+class NewsArp(FakeArp):
+    """The real buffer's rule: an upload only with news (eagleeye.passive.sniffers ArpSniffer.has_news)."""
+
+    def __init__(self, seen, network=None):
+        super().__init__(seen, network)
+        self.uploaded = set()
+
+    def has_news(self):
+        return any(ip not in self.uploaded for ip in self.seen)
+
+    def mark_uploaded(self, hosts):
+        self.uploaded.update(h.ip for h in hosts)
+
+
+def test_a_round_with_nothing_new_is_skipped_and_the_hosts_wait():
+    client = FakeClient()
+    svc = service(client, passive=True)
+    svc.suite = FakeSuite([])
+    svc.suite.arp = NewsArp(["192.168.1.40"])
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    assert len(client.ingested) == 1 and svc.suite.arp.uploaded == {"192.168.1.40"}
+    svc.suite.arp.hear("192.168.1.40")                # heard again: nothing new
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    assert len(client.ingested) == 1 and svc.suite.arp.pending() == 1
+    svc.suite.arp.hear("192.168.1.41")                # a new device goes up at the next round
+    svc._last_flush = 0
+    svc.poll_once()
+    wait_passive(svc)
+    assert [h["ip"] for h in client.ingested[1]["hosts"]] == ["192.168.1.40", "192.168.1.41"]
+
+
 def test_rounds_start_on_time_however_long_the_upload_took(monkeypatch):
     client = FakeClient()
     svc = service(client, passive=True, passive_interval=300)

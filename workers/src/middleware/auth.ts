@@ -66,8 +66,11 @@ export const authMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   await next()
   // A change (settings, scans, inventory or SBOM requests, updates, keys, deletions) may alter what the
   // tenant's agents should be told: their next check-in reads the database again.
+  // Threat-intel changes (events, sharing) reach every tenant that may see them, so they drop all
+  // cached answers and sightings lists.
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.res.status < 400) {
-    await invalidateAgentHub(c.env, user.tenantId ? { tenantId: user.tenantId } : { all: true })
+    const everyone = !user.tenantId || c.req.path.startsWith('/api/v1/cti')
+    await invalidateAgentHub(c.env, everyone ? { all: true } : { tenantId: user.tenantId! })
   }
 })
 

@@ -28,6 +28,15 @@ export class AgentHub extends DurableObject<Env> {
     return this.hub.invalidate(sel)
   }
 
+  /** The tenant's threat-sightings event list for this agent, or null (routes/sightings.ts). */
+  async eventsFor(agentId: string, keyHash: string): Promise<unknown> {
+    return this.hub.eventsFor(agentId, keyHash, Date.now())
+  }
+
+  async rememberEvents(tenantId: string, body: unknown): Promise<void> {
+    this.hub.rememberEvents(tenantId, body, Date.now())
+  }
+
   /** Writes the unsaved last-seen times to the database; returns how many. On failure they stay unsaved. */
   async flush(): Promise<number> {
     const rows = this.hub.takeDirty()

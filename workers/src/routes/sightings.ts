@@ -22,6 +22,7 @@ import type { Env } from '../types'
 import { getDb } from '../db/client'
 import { agents, auditLogs, eventCtiIndicators, events } from '../db/schema'
 import { FEED_FRESH, matchableSql, sharedBySql } from '../services/threatIntel'
+import { hubOf } from '../services/agentHub'
 import {
   LIST_PAGE, LIST_RULES, cleanHits, decodeCursor, encodeCursor, listItems, lookupValues, matchHits, planSightings,
   type ExistingSighting, type IndicatorRow,
@@ -60,13 +61,28 @@ const inList = (column: SQL, values: string[]): SQL =>
 const URL_HOST = sql.raw(`lower(substring(c.value from '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?([^]/?#:[]+)'))`)
 
 app.get('/indicators', async (c) => {
+  const events = c.req.query('part') === 'events'
+  // The event list, asked every 30 minutes by each computer, comes from the AgentHub while no one has
+  // edited threat events (docs/plans/2026-11-23-quiet-database.md); the database is asked otherwise.
+  const hub = events ? hubOf(c.env) : null
+  const auth = c.req.header('Authorization')
+  const agentId = c.req.header('X-Agent-ID')
+  if (hub && auth?.startsWith('Bearer ') && agentId && z.string().uuid().safeParse(agentId).success) {
+    try {
+      const cached = await hub.eventsFor(agentId, await sha256Hex(auth.slice(7)))
+      if (cached) return c.json(cached as Record<string, unknown>)
+    } catch (err) {
+      console.error('sightings: agent hub failed:', err)
+    }
+  }
+
   const db = getDb(c.env.DATABASE_URL)
   const agent = await authenticateAgent(c, db)
   if (!agent) return c.json({ detail: 'Invalid credentials' }, 401)
   if (agent.kind !== 'host' || !agent.tenantId) return c.json({ detail: 'Sightings are for a computer\'s own agent' }, 403)
   const tenant = sql`${agent.tenantId}::uuid`
 
-  if (c.req.query('part') === 'events') {
+  if (events) {
     const res = await db.execute(sql`
       SELECT c.indicator_type::text AS type, c.value
       FROM cti_indicators c JOIN ti_events te ON te.ti_event_id = c.ti_event_id
@@ -75,7 +91,9 @@ app.get('/indicators', async (c) => {
       LIMIT ${MAX_EVENT_VALUES + 1}
     `)
     const rows = res.rows as { type: string; value: string }[]
-    return c.json({ items: listItems(rows.slice(0, MAX_EVENT_VALUES)), truncated: rows.length > MAX_EVENT_VALUES, rules: LIST_RULES })
+    const body = { items: listItems(rows.slice(0, MAX_EVENT_VALUES)), truncated: rows.length > MAX_EVENT_VALUES, rules: LIST_RULES }
+    if (hub) await hub.rememberEvents(agent.tenantId, body).catch((err: unknown) => console.error('sightings: agent hub failed:', err))
+    return c.json(body)
   }
 
   const rawAfter = c.req.query('after')
