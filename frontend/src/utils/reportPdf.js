@@ -28,6 +28,7 @@ const LEVEL = {
   stable: { label: 'STABLE', fg: C.green, bg: C.greenBg },
 }
 const SEV = { critical: C.red, high: [200, 90, 10], medium: C.amber, low: C.muted }
+const OS_NAME = { windows: 'Windows', linux: 'Linux', macos: 'macOS' }
 // Alert types in the fix-time table (the Worker builds this PDF too, so not alertMeta.jsx's labels)
 const ALERT_TYPE = {
   cve_detected: 'Vulnerable package', vulnerable_service: 'Vulnerable service', os_patch_missing: 'Missing OS updates',
@@ -314,17 +315,17 @@ export function buildPdf(data, reportType) {
     tiles([
       { value: sb.percent == null ? '-' : `${sb.percent}%`, label: `Checks passed across scored computers${sb.target != null ? ` (target ${sb.target}%)` : ''}`, color: tone(sb.percent, sb.target) },
       { value: `${sb.at_target} of ${sb.assessed}`, label: 'Computers at the target', color: sb.at_target < sb.assessed ? C.amber : C.green },
-      ...Object.entries(sb.by_os ?? {}).map(([os, v]) => ({ value: v.percent == null ? '-' : `${v.percent}%`, label: `${os === 'linux' ? 'Linux' : 'Windows'}: ${v.at_target} of ${v.assessed} at target`, color: tone(v.percent, sb.target) })),
+      ...Object.entries(sb.by_os ?? {}).map(([os, v]) => ({ value: v.percent == null ? '-' : `${v.percent}%`, label: `${OS_NAME[os] ?? os}: ${v.at_target} of ${v.assessed} at target`, color: tone(v.percent, sb.target) })),
     ], 15)
     if ((sb.lowest ?? []).length) {
       table([
         { label: 'Computer', w: 90, get: r => r.hostname ?? r.asset_id.slice(0, 8), bold: true, color: () => C.ink },
-        { label: 'System', w: 30, get: r => (r.os === 'linux' ? 'Linux' : 'Windows') },
+        { label: 'System', w: 30, get: r => OS_NAME[r.os] ?? r.os },
         { label: 'Checks passed', w: 30, align: 'right', get: r => `${r.percent}%`, color: r => tone(r.percent, r.target), bold: true },
         { label: 'Target', w: 30, align: 'right', get: r => `${r.target}%` },
       ], sb.lowest)
     }
-    paragraph('The same number of checks for Windows and Linux. Checks an agent could not read are left out, never counted as passed; a computer with too few readable checks is not scored. Each computer\'s failed checks and how to fix them are on its asset page.', 7.5, C.muted)
+    paragraph('The same number of checks for Windows, Linux and macOS, in the same eight areas. Checks an agent could not read are left out, never counted as passed; a computer with too few readable checks is not scored. Each computer\'s failed checks and how to fix them are on its asset page.', 7.5, C.muted)
     y += 2
   }
 

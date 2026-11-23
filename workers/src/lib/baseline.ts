@@ -27,7 +27,7 @@ export const AREAS: Record<BaselineArea, string> = {
   remote: 'Remote access and network', hardening: 'System hardening', integrity: 'Malware and integrity',
   logging: 'Logging and time',
 }
-export type BaselineOs = 'windows' | 'linux'
+export type BaselineOs = 'windows' | 'linux' | 'macos'
 
 export interface BaselineCheck {
   id: string
@@ -110,6 +110,22 @@ export function windowsSupport(os: Rec): Support | null {
   return { name: row[0], until: enterprise ? row[2] : row[1] }
 }
 
+/** macOS by major version. Apple publishes no end dates; in practice it fixes the current macOS and
+ *  the two before it, so a major is dropped when the third one after it ships (these dates). */
+const MACOS_ENDED: Record<number, [string, string]> = {
+  11: ['macOS Big Sur', '2023-09-26'], 12: ['macOS Monterey', '2024-09-16'], 13: ['macOS Ventura', '2025-09-15'],
+}
+const MACOS_CURRENT: Record<number, string> = { 14: 'macOS Sonoma', 15: 'macOS Sequoia', 26: 'macOS Tahoe' }
+
+export function macosSupport(os: Rec): Support | null {
+  const major = Number(String(os['version'] ?? '').split('.')[0])
+  if (!Number.isFinite(major) || major <= 0) return null
+  if (MACOS_ENDED[major]) return { name: MACOS_ENDED[major][0], until: MACOS_ENDED[major][1] }
+  if (MACOS_CURRENT[major]) return { name: MACOS_CURRENT[major], until: '' }
+  if (major > 26) return { name: `macOS ${major}`, until: '' }
+  return { name: `macOS ${os['version']}`, until: '2023-09-26' }    // older than Big Sur
+}
+
 export function linuxSupport(os: Rec): Support | null {
   const name = String(os['name'] ?? '').toLowerCase()
   const id = Object.keys(LINUX).find(k => name.includes(k === 'rhel' ? 'red hat' : k)) ?? null
@@ -136,7 +152,7 @@ const passIf = (ok: boolean, found: string | null): Verdict => [ok ? 'pass' : 'f
 
 function supportVerdict(s: Support | null, now: Date): Verdict {
   if (!s) return ['unknown', null]
-  if (!s.until) return yes(`${s.name}: newer than every release in the lifecycle table`)
+  if (!s.until) return yes(s.name.startsWith('macOS') ? `${s.name}: still getting security updates` : `${s.name}: newer than every release in the lifecycle table`)
   const ends = new Date(`${s.until}T23:59:59Z`)
   return passIf(ends >= now, `${s.name}: security updates ${ends >= now ? 'until' : 'ended'} ${s.until}`)
 }
@@ -483,11 +499,157 @@ function sshRules(): Rule[] {
   ]
 }
 
-export const RULES: Record<BaselineOs, Rule[]> = { windows: WINDOWS, linux: LINUX_RULES }
+// macOS: after the CIS Apple macOS Benchmark (Level 1). Built from Apple's documented settings and tools;
+// not yet run on a real Mac (agent-gui/TESTING-MACOS.md lists what a tester confirms).
+const off = (v: unknown) => v === false || v === 0
+const MAC_RULES: Rule[] = [
+  { id: 'mac.updates_recent', area: 'updates', label: 'Updates installed recently', expected: 'a macOS update installed in the last 30 days',
+    cis: 'Ensure All Apple-provided Software Is Current', fix: 'Install the waiting updates in System Settings > General > Software Update.', judge: updatesRecent },
+  { id: 'mac.auto_updates', area: 'updates', label: 'Automatic updates on', expected: 'checking, downloading and security responses automatic',
+    cis: 'Ensure Auto Update / Download New Updates When Available / Install Security Responses Is Enabled',
+    fix: 'System Settings > General > Software Update > Automatic updates: turn on every option (or set com.apple.SoftwareUpdate by profile).',
+    judge: c => {
+      if (!hasFacts(c)) return unread(c, false)
+      const su = rec(c.facts['software_update'])
+      const turnedOff = [['AutomaticCheckEnabled', 'check'], ['AutomaticDownload', 'download'], ['CriticalUpdateInstall', 'security responses']]
+        .filter(([k]) => off(su[k!])).map(([, l]) => l)
+      return passIf(!turnedOff.length, turnedOff.length ? `off: ${turnedOff.join(', ')}` : 'on')
+    } },
+  { id: 'mac.os_supported', area: 'updates', label: 'macOS version still supported', expected: 'a macOS version Apple still sends security updates for',
+    cis: 'Use a supported operating system version', fix: 'Upgrade to a current macOS (System Settings > General > Software Update).',
+    judge: c => supportVerdict(macosSupport(c.os), c.now) },
+
+  ...macPasswordRules(),
+  { id: 'mac.guest', area: 'accounts', label: 'Guest account disabled', expected: 'the Guest user off', cis: 'Ensure Guest Account Is Disabled',
+    fix: 'System Settings > Users & Groups > Guest User: off.',
+    judge: c => (!hasFacts(c) ? unread(c, false) : passIf(c.facts['guest_enabled'] !== true, c.facts['guest_enabled'] === true ? 'on' : 'off')) },
+  { id: 'mac.auto_login', area: 'accounts', label: 'Automatic login off', expected: 'nobody signed in automatically at start-up', cis: 'Ensure Automatic Login Is Disabled',
+    fix: 'System Settings > Users & Groups > Automatically log in as: Off.',
+    judge: c => (!hasFacts(c) ? unread(c, false) : passIf(!c.facts['auto_login_user'], c.facts['auto_login_user'] ? `on${typeof c.facts['auto_login_user'] === 'string' ? ` (${c.facts['auto_login_user']})` : ''}` : 'off')) },
+  { id: 'mac.root_disabled', area: 'accounts', label: 'Root account disabled', expected: 'the root user cannot sign in', cis: 'Ensure the "root" Account Is Disabled',
+    fix: 'Directory Utility > Edit > Disable Root User (or: sudo dsenableroot -d).',
+    judge: c => { const v = bool(c.facts['root_enabled']); return v == null ? unread(c) : passIf(!v, v ? 'enabled' : 'disabled') } },
+  { id: 'mac.local_admins', area: 'accounts', label: 'Few administrators', expected: '3 or fewer administrator accounts',
+    cis: 'Limit membership of the admin group', fix: 'Make everyday accounts Standard in System Settings > Users & Groups.',
+    judge: c => { const n = num(c.sec['local_admin_count']); return n == null ? unread(c, false) : passIf(n <= 3, plural(n, 'administrator')) } },
+
+  { id: 'mac.firewall_on', area: 'firewall', label: 'Firewall on', expected: 'the Application Firewall on', cis: 'Ensure Firewall Is Enabled',
+    fix: 'System Settings > Network > Firewall: on.',
+    judge: c => { const v = bool(c.sec['firewall_all_enabled']); return v == null ? unread(c, false) : passIf(v, v ? 'on' : 'off') } },
+  { id: 'mac.stealth', area: 'firewall', label: 'Stealth mode on', expected: 'no answer to probes from the network', cis: 'Ensure Firewall Stealth Mode Is Enabled',
+    fix: 'System Settings > Network > Firewall > Options: Enable stealth mode.',
+    judge: c => { const v = bool(c.facts['stealth']); return v == null ? unread(c, false) : passIf(v, v ? 'on' : 'off') } },
+
+  { id: 'mac.filevault', area: 'disk', label: 'FileVault on', expected: 'the startup disk encrypted with FileVault', cis: 'Ensure FileVault Is Enabled',
+    fix: 'System Settings > Privacy & Security > FileVault: Turn On.',
+    judge: c => {
+      if (!Array.isArray(c.sec['disk_encryption'])) return unread(c, false)
+      const v = list(c.sec['disk_encryption'])[0]
+      return v ? passIf(String(v['protection']).toLowerCase() === 'on', String(v['protection']).toLowerCase()) : unread(c, false)
+    } },
+  { id: 'mac.sip', area: 'disk', label: 'System Integrity Protection on', expected: 'SIP enabled', cis: 'Ensure System Integrity Protection Status (SIP) Is Enabled',
+    fix: 'Start in Recovery and run: csrutil enable',
+    judge: c => { const v = bool(c.facts['sip']); return v == null ? unread(c, false) : passIf(v, v ? 'enabled' : 'disabled') } },
+  { id: 'mac.ssv', area: 'disk', label: 'Sealed system volume', expected: 'the signed, sealed system volume in use', cis: 'Ensure Sealed System Volume (SSV) Is Enabled',
+    fix: 'Start in Recovery and run: csrutil authenticated-root enable',
+    judge: c => { const v = bool(c.facts['ssv']); return v == null ? unread(c, false) : passIf(v, v ? 'enabled' : 'disabled') } },
+
+  ...macServiceRules(),
+  { id: 'mac.screen_sharing', area: 'remote', label: 'Screen Sharing off', expected: 'no Screen Sharing or Remote Management answering',
+    cis: 'Ensure Screen Sharing Is Disabled / Remote Management Is Disabled', fix: 'System Settings > General > Sharing: Screen Sharing and Remote Management off.',
+    judge: c => { const v = bool(c.sec['rdp_enabled']); return v == null ? unread(c) : passIf(!v, v ? 'answering' : 'off') } },
+  { id: 'mac.internet_sharing', area: 'remote', label: 'Internet Sharing off', expected: 'this Mac not sharing its connection', cis: 'Ensure Internet Sharing Is Disabled',
+    fix: 'System Settings > General > Sharing: Internet Sharing off.',
+    judge: c => (!hasFacts(c) ? unread(c, false) : passIf(c.facts['internet_sharing'] !== true, c.facts['internet_sharing'] === true ? 'on' : 'off')) },
+  { id: 'mac.smb_guest', area: 'remote', label: 'No guest access to shared folders', expected: 'shared folders closed to guests',
+    cis: 'Ensure Guest Access to Shared Folders Is Disabled', fix: 'System Settings > General > Sharing > File Sharing (i): guest access off.',
+    judge: c => (!hasFacts(c) ? unread(c, false) : passIf(c.facts['smb_guest'] !== true, c.facts['smb_guest'] === true ? 'allowed' : 'not allowed')) },
+
+  { id: 'mac.system_prefs_admin', area: 'hardening', label: 'Admin password for system settings', expected: 'system-wide settings ask for an administrator',
+    cis: 'Ensure an Administrator Password Is Required to Access System-Wide Preferences',
+    fix: 'Run: security authorizationdb read system.preferences > /tmp/sp.plist; set shared to false; security authorizationdb write system.preferences < /tmp/sp.plist',
+    judge: c => { const v = bool(c.facts['system_prefs_admin']); return v == null ? unread(c) : passIf(v, v ? 'required' : 'not required') } },
+  { id: 'mac.sudo_timeout', area: 'hardening', label: 'sudo asks every time', expected: 'Defaults timestamp_timeout=0', cis: 'Ensure the Sudo Timeout Period Is Set to Zero',
+    fix: 'Add "Defaults timestamp_timeout=0" to /etc/sudoers.d/10_cissudoconfiguration (visudo -f).',
+    judge: c => {
+      const v = num(c.facts['sudo_timeout'])
+      if (v == null) return c.facts['sudoers_read'] === true ? no('not set (macOS default: 5 minutes)') : unread(c)
+      return passIf(v === 0, `${plural(v, 'minute')}`)
+    } },
+  { id: 'mac.wake_for_network', area: 'hardening', label: 'Wake for network access off', expected: 'the Mac does not wake for network requests',
+    cis: 'Ensure Wake for Network Access Is Disabled', fix: 'Run: sudo pmset -a womp 0',
+    judge: c => { const v = num(c.facts['wake_on_lan']); return v == null ? unread(c, false) : passIf(v === 0, v === 0 ? 'off' : 'on') } },
+  { id: 'mac.login_window', area: 'hardening', label: 'Login window asks for name and password', expected: 'no list of user names at the login window',
+    cis: 'Ensure Login Window Displays as Name and Password Is Enabled', fix: 'System Settings > Lock Screen > Login window shows: Name and password.',
+    judge: c => (!hasFacts(c) ? unread(c, false) : passIf(c.facts['show_full_name'] === true, c.facts['show_full_name'] === true ? 'name and password' : 'list of users')) },
+
+  { id: 'mac.xprotect', area: 'integrity', label: 'XProtect up to date', expected: 'Apple\'s malware definitions updated in the last 45 days',
+    cis: 'Ensure XProtect Is Running and Updated', fix: 'Turn on "Install Security Responses and system files" in Software Update.',
+    judge: c => {
+      const x = list(c.sec['antivirus']).find(a => String(a['name']).startsWith('XProtect'))
+      if (!x) return unread(c, false)
+      return x['up_to_date'] == null ? ['unknown', String(x['name'])] : passIf(x['up_to_date'] === true, x['up_to_date'] ? 'up to date' : 'out of date')
+    } },
+  { id: 'mac.gatekeeper', area: 'integrity', label: 'Gatekeeper on', expected: 'only signed, checked apps run', cis: 'Ensure Gatekeeper Is Enabled',
+    fix: 'Run: sudo spctl --master-enable',
+    judge: c => { const v = bool(c.facts['gatekeeper']); return v == null ? unread(c, false) : passIf(v, v ? 'on' : 'off') } },
+
+  { id: 'mac.auditd', area: 'logging', label: 'Security auditing on', expected: 'the audit daemon running', cis: 'Ensure Security Auditing Is Enabled',
+    fix: 'Run: sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.auditd.plist',
+    judge: c => {
+      const v = str(c.facts['auditd'])
+      if (v == null) return unread(c, false)
+      return v === 'absent' ? ['na', 'not part of this macOS'] : passIf(v === 'enabled', v === 'enabled' ? 'running' : 'off')
+    } },
+  { id: 'mac.install_log', area: 'logging', label: 'Install log kept a year', expected: 'install.log kept 365 days or more', cis: 'Ensure install.log Is Retained for 365 or More Days',
+    fix: 'In /etc/asl/com.apple.install set ttl=365 and remove all_max=.',
+    judge: c => { const v = num(c.facts['install_log_ttl_days']); return v == null ? (hasFacts(c) ? no('not set') : unread(c, false)) : passIf(v >= 365, plural(v, 'day')) } },
+  { id: 'mac.network_time', area: 'logging', label: 'Clock synchronised', expected: 'Set time and date automatically on', cis: 'Ensure Set Time and Date Automatically Is Enabled',
+    fix: 'System Settings > General > Date & Time: Set time and date automatically.',
+    judge: c => { const v = bool(c.facts['network_time']); return v == null ? unread(c) : passIf(v, v ? 'on' : 'off') } },
+]
+
+function macPasswordRules(): Rule[] {
+  const rule = (id: string, label: string, expected: string, cis: string, fix: string, judge: (p: Rec) => Verdict): Rule => ({
+    id, area: 'accounts', label, expected, cis, fix,
+    judge: c => { const p = c.facts['password_policy']; return p && typeof p === 'object' ? judge(rec(p)) : unread(c) },
+  })
+  return [
+    rule('mac.pw_length', 'Passwords at least 14 characters', 'a minimum length of 14 or more', 'Ensure Password Minimum Length Is Configured',
+      'Set a passcode policy by configuration profile (minLength), or: pwpolicy -setglobalpolicy',
+      p => { const v = num(p['min_length']); return v == null ? no('no minimum set') : passIf(v >= 14, plural(v, 'character')) }),
+    rule('mac.lockout', 'Account lockout after 5 tries', 'locked after 5 or fewer bad passwords', 'Ensure Password Account Lockout Threshold Is Configured',
+      'Set maxFailedAttempts 5 by configuration profile, or a pwpolicy lockout policy.',
+      p => { const v = num(p['max_failed']); return v == null ? no('never locks') : passIf(v >= 1 && v <= 5, plural(v, 'try')) }),
+    rule('mac.pw_max_age', 'Passwords expire within a year', 'a maximum age of 365 days or fewer', 'Ensure Password Age Is Configured',
+      'Set maxPINAgeInDays 365 by configuration profile, or a pwpolicy expiry policy.',
+      p => { const v = num(p['max_age_days']); return v == null ? no('never expire') : passIf(v >= 1 && v <= 365, plural(v, 'day')) }),
+  ]
+}
+
+function macServiceRules(): Rule[] {
+  const svc = (id: string, label: string, key: string, cis: string, fix: string): Rule => ({
+    id, area: 'remote', label, expected: `${label.replace(/ off$/, '')} not answering from the network`, cis, fix,
+    judge: c => {
+      const l = c.facts['listening']
+      if (!l || typeof l !== 'object') return unread(c)
+      const on = rec(l)[key] === true
+      return passIf(!on, on ? 'answering' : 'off')
+    },
+  })
+  return [
+    svc('mac.remote_login', 'Remote Login off', 'ssh', 'Ensure Remote Login Is Disabled', 'System Settings > General > Sharing: Remote Login off.'),
+    svc('mac.file_sharing', 'File Sharing off', 'smb', 'Ensure File Sharing Is Disabled', 'System Settings > General > Sharing: File Sharing off.'),
+    svc('mac.remote_apple_events', 'Remote Apple Events off', 'remote_apple_events', 'Ensure Remote Apple Events Is Disabled',
+      'System Settings > General > Sharing: Remote Application Scripting off.'),
+  ]
+}
+
+export const RULES: Record<BaselineOs, Rule[]> = { windows: WINDOWS, linux: LINUX_RULES, macos: MAC_RULES }
 
 export function baselineOs(inventory: unknown): BaselineOs | null {
   const p = String(rec(inventory)['platform'] ?? '').toLowerCase()
-  return p === 'windows' || p === 'linux' ? p : null
+  return p === 'windows' || p === 'linux' ? p : p === 'darwin' ? 'macos' : null
 }
 
 // ── stored per asset, and the Below baseline alert (services/securityBaseline.ts) ──

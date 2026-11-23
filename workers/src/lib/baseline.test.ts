@@ -60,14 +60,50 @@ const VM = {
 }
 
 test('the same number of checks for each OS, in the same areas', () => {
-  for (const os of ['windows', 'linux'] as const) {
-    assert.equal(RULES[os].length, CHECKS_PER_OS)
+  for (const os of ['windows', 'linux', 'macos'] as const) {
+    assert.equal(RULES[os].length, CHECKS_PER_OS, os)
     assert.equal(new Set(RULES[os].map(r => r.id)).size, CHECKS_PER_OS)
     for (const r of RULES[os]) assert.ok(r.area in AREAS && r.cis && r.fix && r.expected, r.id)
   }
-  const areas = (os: 'windows' | 'linux') => new Set(RULES[os].map(r => r.area))
-  assert.deepEqual([...areas('windows')].sort(), [...areas('linux')].sort())
-  assert.equal(areas('windows').size, Object.keys(AREAS).length)
+  const areas = (os: 'windows' | 'linux' | 'macos') => [...new Set(RULES[os].map(r => r.area))].sort()
+  assert.deepEqual(areas('windows'), areas('linux'))
+  assert.deepEqual(areas('macos'), areas('linux'))
+  assert.equal(areas('windows').length, Object.keys(AREAS).length)
+})
+
+// What agent-gui/tests/test_macos_inventory.py's hardened Mac reports (macOS Sonoma 14.5, a MacBook
+// answering on 22 and 5900): formats from Apple's tools, not yet from a real Mac.
+const MAC = {
+  platform: 'darwin', is_admin: true,
+  os: { name: 'macOS Sonoma 14.5', version: '14.5', role: 'workstation' },
+  patches: { days_since_last_patch: 187 },
+  security: {
+    firewall: [{ profile: 'Application Firewall', enabled: false }], firewall_all_enabled: false,
+    antivirus: [{ name: 'XProtect 5277', enabled: true, up_to_date: true }], disk_encryption: [{ volume: '/', protection: 'on' }],
+    rdp_enabled: true, local_admin_count: 2,
+  },
+  baseline: {
+    software_update: { AutomaticCheckEnabled: true, AutomaticDownload: true, CriticalUpdateInstall: true, ConfigDataInstall: null },
+    password_policy: { min_length: 15, max_failed: 5, max_age_days: 365 }, guest_enabled: false, auto_login_user: null, show_full_name: true,
+    root_enabled: false, stealth: true, sip: true, ssv: true, listening: { ssh: true, smb: false, remote_apple_events: false },
+    internet_sharing: false, smb_guest: null, gatekeeper: true, system_prefs_admin: true, sudo_timeout: 0, sudoers_read: true,
+    wake_on_lan: 0, network_time: true, auditd: 'enabled', install_log_ttl_days: 365,
+  },
+}
+
+test('macOS: the same 30 areas of checks, judged from the agent\'s facts', () => {
+  const r = evaluateBaseline(MAC, NOW)!
+  assert.equal(r.os, 'macos')
+  assert.equal(r.readable, 30)
+  assert.deepEqual(r.checks.filter(c => c.state === 'fail').map(c => c.id).sort(),
+    ['mac.firewall_on', 'mac.remote_login', 'mac.screen_sharing', 'mac.updates_recent'])
+  assert.equal(r.percent, Math.floor((1000 * 26) / 30) / 10)
+  assert.equal(found(r, 'mac.os_supported'), 'macOS Sonoma: still getting security updates')
+  const old = evaluateBaseline({ ...MAC, os: { version: '13.6' }, baseline: { ...MAC.baseline, password_policy: { min_length: null, max_failed: null, max_age_days: null }, sudo_timeout: null, auditd: 'absent' } }, NOW)!
+  assert.deepEqual([state(old, 'mac.os_supported'), found(old, 'mac.os_supported')], ['fail', 'macOS Ventura: security updates ended 2025-09-15'])
+  assert.deepEqual([state(old, 'mac.pw_length'), found(old, 'mac.pw_length')], ['fail', 'no minimum set'])
+  assert.deepEqual([state(old, 'mac.sudo_timeout'), found(old, 'mac.sudo_timeout')], ['fail', 'not set (macOS default: 5 minutes)'])
+  assert.equal(state(old, 'mac.auditd'), 'na')
 })
 
 test('run without Administrator, the PC is not assessed: unreadable is never a pass', () => {
@@ -129,7 +165,7 @@ test('older agents and other platforms have no baseline', () => {
   const { baseline: _b, ...old } = VM
   assert.equal(evaluateBaseline(old, NOW), null)
   assert.equal(evaluateBaseline({ platform: 'android', baseline: {} }, NOW), null)
-  assert.equal(evaluateBaseline({ platform: 'darwin', baseline: {} }, NOW), null)
+  assert.equal(evaluateBaseline({ platform: 'darwin' }, NOW), null)                    // a Mac agent older than the baseline
   assert.equal(evaluateBaseline(null, NOW), null)
 })
 

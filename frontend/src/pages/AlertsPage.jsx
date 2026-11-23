@@ -21,6 +21,7 @@ import {
 import AdvisoryBody from '../components/common/AdvisoryBody'
 import { historyActor } from '../utils/users'
 import { hoursText, workText } from '../utils/fixTime'
+import { osLabel } from '../utils/osLabel'
 import WeeklyCard from '../components/alerts/WeeklyCard'
 
 const PAGE_SIZE = 20
@@ -906,7 +907,7 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 e.event_type === 'os_patch_missing' && d.cves > 0 && ['Missing fixes', `${Number(d.cves).toLocaleString()} CVEs · ${d.critical ?? 0} critical · ${d.exploited ?? 0} exploited in the wild`],
                 e.event_type === 'os_patch_missing' && d.behind_since && ['Behind since', `${new Date(d.behind_since).toLocaleDateString()} (fixes released then)`],
                 e.event_type === 'os_patch_missing' && d.patch_status === 'unsupported' && ['Support', <span className="text-red-300">{d.reason ?? 'No longer receives security updates'}</span>],
-                e.event_type === 'security_baseline' && ['Baseline', `${d.percent}% of checks passed (${d.passed} of ${d.judged}) · target ${d.target}% · ${d.os === 'linux' ? 'Linux' : 'Windows'}`],
+                e.event_type === 'security_baseline' && ['Baseline', `${d.percent}% of checks passed (${d.passed} of ${d.judged}) · target ${d.target}% · ${osLabel(d.os)}`],
                 e.event_type === 'security_baseline' && Array.isArray(d.failed_checks) && d.failed_checks.length > 0 && [`Failed (${d.failed_checks.length})`, <span className="block space-y-0.5">
                   {d.failed_checks.map(c => (
                     <span key={c.id} className="block">{c.label}{c.found && <span className="text-dark-400"> · found: {c.found}</span>}</span>

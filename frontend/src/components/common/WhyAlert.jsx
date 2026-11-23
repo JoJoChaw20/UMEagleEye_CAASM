@@ -43,7 +43,7 @@ function chain(e) {
           `The organisation's target is ${d.target}% (Alert rules page)`,
           ...(failed.length ? [`Failed: ${failed.slice(0, 6).map(c => c.label).join('; ')}${failed.length > 6 ? ` and ${failed.length - 6} more` : ''}`] : []),
         ],
-        rule: 'R10 · A computer below its organisation\'s security-baseline target (30 checks after the CIS Benchmarks, the same number for Windows and Linux)',
+        rule: 'R10 · A computer below its organisation\'s security-baseline target (30 checks after the CIS Benchmarks, as many for Windows, Linux and macOS)',
       }
     }
     case 'os_patch_missing': {

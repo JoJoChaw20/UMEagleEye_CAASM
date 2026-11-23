@@ -406,6 +406,95 @@ def _software(sys_: System, user_software: bool) -> list[dict[str, Any]]:
 
 
 # ── document ─────────────────────────────────────────────────────────────────
+# ── security baseline facts (judged by the server, workers/src/lib/baseline.ts) ──
+# Settings after the CIS Apple macOS Benchmark (Level 1), read as root (the launchd daemon).
+# A configuration profile (MDM) wins over the local preference, as macOS applies it.
+def _pref(sys_: System, domain: str, managed_only: bool = False) -> dict[str, Any]:
+    local = {} if managed_only else plist(sys_.read_bytes(f"/Library/Preferences/{domain}.plist"))
+    managed = plist(sys_.read_bytes(f"/Library/Managed Preferences/{domain}.plist"))
+    return {**(local if isinstance(local, dict) else {}), **(managed if isinstance(managed, dict) else {})}
+
+
+def parse_pwpolicy(text: Optional[str]) -> Optional[dict[str, Optional[int]]]:
+    """Minimum length, failed tries before lockout and maximum age (days) from
+    `pwpolicy -getaccountpolicies` (a line of text, then a plist)."""
+    if not text or "<?xml" not in text:
+        return None
+    data = plist(text[text.index("<?xml"):].encode())
+    if not isinstance(data, dict):
+        return None
+    out: dict[str, Optional[int]] = {"min_length": None, "max_failed": None, "max_age_days": None}
+    for policies in data.values():
+        for p in policies if isinstance(policies, list) else []:
+            params = p.get("policyParameters") or {} if isinstance(p, dict) else {}
+            content = str(p.get("policyContent") or "") if isinstance(p, dict) else ""
+            m = re.search(r"matches '\.\{(\d+),", content)
+            if m or "minimumLength" in params:
+                out["min_length"] = max(out["min_length"] or 0, int(params.get("minimumLength") or (m.group(1) if m else 0)))
+            if "policyAttributeMaximumFailedAuthentications" in params:
+                out["max_failed"] = int(params["policyAttributeMaximumFailedAuthentications"])
+            if "policyAttributeExpiresEveryNDays" in params:
+                out["max_age_days"] = int(params["policyAttributeExpiresEveryNDays"])
+    return out
+
+
+def _password_policy(sys_: System) -> Optional[dict[str, Optional[int]]]:
+    pol = parse_pwpolicy(sys_.run(["pwpolicy", "-getaccountpolicies"]))
+    # a passcode configuration profile (MDM) sets the same three
+    prof = _pref(sys_, "com.apple.mobiledevice.passwordpolicy", managed_only=True)
+    if not pol and not prof:
+        return None
+    pol = pol or {"min_length": None, "max_failed": None, "max_age_days": None}
+    for key, name in (("min_length", "minLength"), ("max_failed", "maxFailedAttempts"), ("max_age_days", "maxPINAgeInDays")):
+        if pol[key] is None and isinstance(prof.get(name), int):
+            pol[key] = prof[name]
+    return pol
+
+
+def _contains(text: Optional[str], word: str) -> Optional[bool]:
+    return None if text is None else word in text.lower()
+
+
+def _baseline(sys_: System, listening: list[dict[str, Any]]) -> dict[str, Any]:
+    su = _pref(sys_, "com.apple.SoftwareUpdate")
+    login = _pref(sys_, "com.apple.loginwindow")
+    root = sys_.run(["dscl", ".", "-read", "/Users/root"])
+    open_ports = {e["port"] for e in listening if not e.get("local_only")}
+    nat = _pref(sys_, "SystemConfiguration/com.apple.nat").get("NAT")
+    smb = _pref(sys_, "SystemConfiguration/com.apple.smb.server")
+    authdb = plist((sys_.run(["security", "authorizationdb", "read", "system.preferences"]) or "").encode() or None)
+    sudoers = [sys_.read_bytes("/etc/sudoers")] + [sys_.read_bytes(f"/etc/sudoers.d/{n}") for n in sys_.listdir("/etc/sudoers.d")]
+    timeouts = [int(m) for b in sudoers if b for m in re.findall(rb"^\s*Defaults\b[^\n]*\btimestamp_timeout\s*=\s*(-?\d+)", b, re.M)]
+    womp = re.search(r"^\s*womp\s+(\d)", sys_.run(["pmset", "-g"]) or "", re.M)
+    ntp = sys_.run(["systemsetup", "-getusingnetworktime"])
+    asl = sys_.read_bytes("/etc/asl/com.apple.install")
+    ttl = re.search(rb"\bttl=(\d+)", asl or b"")
+    return {
+        "software_update": {k: su.get(k) for k in ("AutomaticCheckEnabled", "AutomaticDownload", "CriticalUpdateInstall", "ConfigDataInstall")},
+        "password_policy": _password_policy(sys_),
+        "guest_enabled": login.get("GuestEnabled"),
+        "auto_login_user": login.get("autoLoginUser") or (True if sys_.exists("/etc/kcpassword") else None),
+        "show_full_name": login.get("SHOWFULLNAME"),
+        "root_enabled": None if root is None else ("AuthenticationAuthority:" in root and "ShadowHash" in root),
+        "stealth": _contains(sys_.run([_SOCKETFILTERFW, "--getstealthmode"]), "enabled"),
+        "sip": _contains(sys_.run(["csrutil", "status"]), "status: enabled"),
+        "ssv": _contains(sys_.run(["csrutil", "authenticated-root", "status"]), "status: enabled"),
+        # services answering beyond this Mac (lsof as root sees every socket)
+        "listening": {"ssh": 22 in open_ports, "smb": 445 in open_ports, "remote_apple_events": 3031 in open_ports} if listening else None,
+        "internet_sharing": bool(nat.get("Enabled")) if isinstance(nat, dict) else False,
+        "smb_guest": smb.get("AllowGuestAccess"),
+        "gatekeeper": _contains(sys_.run(["spctl", "--status"]), "assessments enabled"),
+        "system_prefs_admin": None if not isinstance(authdb, dict) else authdb.get("shared") is False,
+        "sudo_timeout": timeouts[-1] if timeouts else None,
+        "sudoers_read": sudoers[0] is not None,
+        "wake_on_lan": int(womp.group(1)) if womp else None,
+        "network_time": _contains(ntp, ": on"),
+        "auditd": "absent" if not sys_.exists("/usr/sbin/auditd") else
+                  "enabled" if sys_.run(["launchctl", "print", "system/com.apple.auditd"]) is not None else "disabled",
+        "install_log_ttl_days": int(ttl.group(1)) if ttl else None,
+    }
+
+
 def build_inventory(sys_: System, user_software: bool = False, admin_names: bool = False) -> dict[str, Any]:
     now = sys_.now()
     unavailable: list[str] = []
@@ -470,6 +559,7 @@ def build_inventory(sys_: System, user_software: bool = False, admin_names: bool
             "local_admins": [{"name": n} for n in admins] if admin_names else [],
             "local_admin_count": len(admins),
         },
+        "baseline": section("baseline", lambda: _baseline(sys_, listening), None),
         "network": {
             "primary_ip": primary_ip(sys_.primary_ip(), interfaces),
             "interfaces": interfaces,

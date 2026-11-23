@@ -62,9 +62,22 @@ Tell the person who sent you this guide that steps 1 to 3 are done. They check o
 - the Mac shows up as an online agent,
 - its inventory arrived (hardware, macOS version, apps),
 - the devices it heard appear,
-- an active scan of your network, started from the dashboard, finishes.
+- an active scan of your network, started from the dashboard, finishes,
+- the asset page's **Security baseline** card shows 30 macOS checks, nearly all readable.
 
 Keep the Mac awake and on the same network for about 10 minutes for this.
+
+The security baseline reads about 25 macOS settings (password policy, firewall stealth mode, SIP,
+sharing services, Gatekeeper, sudo timeout and so on). Its readers were written from Apple's
+documentation, so this is their first real run. Save what it read, without sending anything:
+
+```sh
+sudo eagleeye inventory --json ~/Desktop/eagleeye-inventory.json
+```
+
+and also send `eagleeye-inventory.json` (step 5). It holds this Mac's settings and installed apps, no
+files or passwords. For each check the person who sent you this guide compares the agent's reading
+with System Settings.
 
 ## 5. Send back
 
@@ -75,6 +88,7 @@ Keep the Mac awake and on the same network for about 10 minutes for this.
    ```
    then send `eagleeye-agent.log` from your Desktop.
 3. Your macOS version (Apple menu → About This Mac) and whether the Mac is Apple silicon or Intel.
+4. `eagleeye-inventory.json` from your Desktop (step 4).
 
 ## 6. Remove the agent
 

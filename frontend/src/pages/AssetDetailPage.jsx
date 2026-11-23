@@ -22,6 +22,7 @@ import { isLocallyAdministeredMac } from '../utils/mac'
 import DeviceTypePicker from '../components/assets/DeviceTypePicker'
 import { NetworkDeviceSection, NetworkLocationField } from '../components/assets/NetworkSections'
 import BaselineSection, { OpenScapSection } from '../components/assets/BaselineSection'
+import { BASELINE_PLATFORMS } from '../utils/osLabel'
 
 // How long a device has been up: "18 min", "5 h", "12 days".
 function uptimeText(seconds) {
@@ -522,7 +523,7 @@ export default function AssetDetailPage() {
         {inv && <HardwareSection inv={inv} />}
         {inv && <SecuritySection inv={inv} checks={asset.postureChecks} score={asset.postureScore} />}
         {inv && <PatchesSection inv={inv} checks={asset.postureChecks} />}
-        {inv && ['windows', 'linux'].includes(inv.platform) && <BaselineSection baseline={asset.baseline} />}
+        {inv && BASELINE_PLATFORMS.includes(inv.platform) && <BaselineSection baseline={asset.baseline} />}
         {inv?.openscap && <OpenScapSection result={inv.openscap} />}
 
         {/* Services */}

@@ -76,6 +76,30 @@ OpenSCAP and the comparison must stay fair.
 5. **Evaluation**: run CIS-CAT Lite (CIS's free assessor) on the Windows VM and the Ubuntu VM and measure how
    often our verdict agrees with it, check by check; record it with the AP2 evaluation files.
 
+## Status and follow-ups (23 Nov)
+
+Steps 1-4 built and verified on staging (lab: Ubuntu VM 58.6%, LAB-WIN11 66.6%, developer PC 70%).
+Decisions taken: the baseline sits beside the device score, one alert per computer, one profile per OS,
+OpenSCAP opt-in (Linux agents only show it).
+
+Follow-ups, in this order:
+1. **Step 5, the evaluation** against CIS-CAT Lite on LAB-WIN11 and the Ubuntu VM.
+2. **macOS baseline**: 30 checks in the same eight areas, so a Mac is judged as hard as Windows and Linux.
+   Built from Apple's documented settings; verified on a real Mac when a tester has one (TESTING-MACOS.md).
+3. **Optional Windows cross-check** like OpenSCAP: HardeningKitty (CIS and Microsoft baseline lists) behind
+   an opt-in setting, results beside the baseline, if its licence allows running it from the agent.
+4. **Optional macOS cross-check**: read the macOS Security Compliance Project's audit plist when an
+   organisation already runs it.
+
+Items 3 and 4 are parked (optional). Licences checked 23 Nov: HardeningKitty is MIT ("Copyright (c) 2020
+scip ag"; keep the notice if shipped; audit mode writes CSV, CIS Windows 11 lists up to 24H2 4.0.0);
+mSCP is CC BY 4.0 (attribution when redistributed, no implied NIST endorsement, Apple-authored
+"Vendor Description" text excluded). Reading results an organisation already produces needs no
+redistribution at all.
+
+Item 2 built 23 Nov: macOS collector facts (collectors/macos.py `_baseline`) and 30 `mac.*` rules; not yet
+run on a real Mac (TESTING-MACOS.md step 4 asks the tester for the inventory JSON).
+
 ## Decisions needed
 
 1. **Beside or instead of the 10-check device score?** Recommended: beside for now (the posture history stays

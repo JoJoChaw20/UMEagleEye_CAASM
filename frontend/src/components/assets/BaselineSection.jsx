@@ -1,9 +1,10 @@
 // The computer's security baseline (GET /assets/:id baseline, workers/src/lib/baseline.ts): 30 checks
-// after the CIS Benchmarks, the same number for Windows and Linux, against the tenant's target.
+// after the CIS Benchmarks, as many for Windows, Linux and macOS, against the tenant's target.
 // Failed checks first, each with what passes, what the agent found, how to fix it and the CIS reference.
 import { useEffect, useState } from 'react'
 import { CheckCircle2, ChevronRight, HelpCircle, Lock, MinusCircle, ShieldCheck, XCircle } from 'lucide-react'
 import { Section, Empty } from './DetailParts'
+import { osLabel } from '../../utils/osLabel'
 
 const AREAS = {
   updates: 'Updates', accounts: 'Accounts and passwords', firewall: 'Firewall', disk: 'Disk and boot',
@@ -137,8 +138,8 @@ export default function BaselineSection({ baseline }) {
           </div>
         )}
         <p className="text-[11px] text-dark-400 mb-2">
-          {os === 'linux' ? 'Linux' : 'Windows'}: {passed} of {judged} judged checks passed; {readable} of {total} could be read.
-          {' '}Checks after the CIS Benchmarks (Level 1): 30 for Windows and 30 for Linux, in the same eight areas. Unreadable checks are left out, never counted as passed.
+          {osLabel(os)}: {passed} of {judged} judged checks passed; {readable} of {total} could be read.
+          {' '}Checks after the CIS Benchmarks (Level 1): 30 each for Windows, Linux and macOS, in the same eight areas. Unreadable checks are left out, never counted as passed.
           {!assessed && ' Too few checks could be read for a score: run the agent as Administrator / root (its service does).'}
         </p>
         <div className="space-y-3">

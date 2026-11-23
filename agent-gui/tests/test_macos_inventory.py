@@ -261,3 +261,69 @@ def test_launchd_daemon():
     assert job["EnvironmentVariables"] == {"PYTHONPATH": "/opt/eagleeye"}
     assert plistlib.loads(plistlib.dumps(job))["ProgramArguments"][-1] == "run"
     assert launchd_label("lab") == "com.umeagleeye.agent-lab"
+
+
+# ── security baseline facts (CIS Apple macOS Level 1; judged by workers/src/lib/baseline.ts) ──
+# Formats from Apple's tools as documented; not yet replayed from a real Mac (TESTING-MACOS.md).
+PWPOLICY = "Getting global account policies\n" + plistlib.dumps({
+    "policyCategoryAuthentication": [{"policyIdentifier": "Authentication Lockout",
+        "policyContent": "(policyAttributeFailedAuthentications < policyAttributeMaximumFailedAuthentications)",
+        "policyParameters": {"autoEnableInSeconds": 900, "policyAttributeMaximumFailedAuthentications": 5}}],
+    "policyCategoryPasswordContent": [{"policyIdentifier": "Minimum length",
+        "policyContent": "policyAttributePassword matches '.{15,}'", "policyParameters": {"minimumLength": 15}}],
+    "policyCategoryPasswordChange": [{"policyIdentifier": "Change every 365 days",
+        "policyContent": "policyAttributeCurrentTime > policyAttributeLastPasswordChangeTime + (policyAttributeExpiresEveryNDays * 24 * 60 * 60)",
+        "policyParameters": {"policyAttributeExpiresEveryNDays": 365}}],
+}).decode()
+HARDENED_MAC = {
+    "pwpolicy -getaccountpolicies": PWPOLICY,
+    "dscl . -read /Users/root": "RecordName: root\nUniqueID: 0\nPassword: *\n",
+    "/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode": "Firewall stealth mode is on (enabled)\n",
+    "csrutil status": "System Integrity Protection status: enabled.\n",
+    "csrutil authenticated-root status": "Authenticated Root status: enabled\n",
+    "spctl --status": "assessments enabled\n",
+    "security authorizationdb read system.preferences": plistlib.dumps({"class": "user", "shared": False, "group": "admin"}).decode(),
+    "pmset -g": "System-wide power settings:\nCurrently in use:\n standby              1\n womp                 0\n",
+    "systemsetup -getusingnetworktime": "Network Time: On\n",
+    "launchctl print system/com.apple.auditd": "system/com.apple.auditd = {\n state = not running\n}\n",
+}
+HARDENED_FILES = {
+    "/Library/Preferences/com.apple.SoftwareUpdate.plist": plistlib.dumps({"AutomaticCheckEnabled": True, "AutomaticDownload": True, "CriticalUpdateInstall": True}),
+    "/Library/Preferences/com.apple.loginwindow.plist": plistlib.dumps({"GuestEnabled": False, "SHOWFULLNAME": True}),
+    "/etc/sudoers": b"root ALL = (ALL) ALL\nDefaults timestamp_timeout=0\n",
+    "/etc/asl/com.apple.install": b"? [= Facility com.apple.install] file /var/log/install.log mode=0640 format=bsd rotate=utc compress file_max=50M ttl=365\n",
+    "/usr/sbin/auditd": b"",
+}
+
+
+def mac_with(commands: dict[str, str], files: dict[str, bytes], root: bool = True) -> FakeMac:
+    mac = FakeMac(root=root, files=files)
+    mac.commands.update(commands)
+    return mac
+
+
+def test_baseline_facts_of_a_hardened_mac():
+    b = build_inventory(mac_with(HARDENED_MAC, HARDENED_FILES))["baseline"]
+    assert b["password_policy"] == {"min_length": 15, "max_failed": 5, "max_age_days": 365}
+    assert b["software_update"] == {"AutomaticCheckEnabled": True, "AutomaticDownload": True, "CriticalUpdateInstall": True, "ConfigDataInstall": None}
+    assert (b["guest_enabled"], b["auto_login_user"], b["show_full_name"], b["root_enabled"]) == (False, None, True, False)
+    assert (b["stealth"], b["sip"], b["ssv"], b["gatekeeper"], b["system_prefs_admin"]) == (True, True, True, True, True)
+    assert (b["sudo_timeout"], b["wake_on_lan"], b["network_time"], b["install_log_ttl_days"], b["auditd"]) == (0, 0, True, 365, "enabled")
+    # the recorded MacBook answers on 5900 (Screen Sharing) and 22 (Remote Login) beyond itself
+    assert b["listening"] == {"ssh": True, "smb": False, "remote_apple_events": False}
+    assert b["internet_sharing"] is False
+
+
+def test_baseline_facts_of_a_default_mac():
+    b = build_inventory(FakeMac())["baseline"]
+    assert b["password_policy"] is None and b["root_enabled"] is None and b["sip"] is None
+    assert b["software_update"] == dict.fromkeys(("AutomaticCheckEnabled", "AutomaticDownload", "CriticalUpdateInstall", "ConfigDataInstall"))
+    assert b["auditd"] == "absent" and b["sudo_timeout"] is None and b["sudoers_read"] is False
+
+
+def test_a_configuration_profile_wins_and_fills_the_password_policy():
+    files = {**HARDENED_FILES, "/Library/Managed Preferences/com.apple.loginwindow.plist": plistlib.dumps({"GuestEnabled": True}),
+             "/Library/Managed Preferences/com.apple.mobiledevice.passwordpolicy.plist": plistlib.dumps({"minLength": 14, "maxFailedAttempts": 10})}
+    b = build_inventory(mac_with({k: v for k, v in HARDENED_MAC.items() if k != "pwpolicy -getaccountpolicies"}, files))["baseline"]
+    assert b["guest_enabled"] is True
+    assert b["password_policy"] == {"min_length": 14, "max_failed": 10, "max_age_days": None}
