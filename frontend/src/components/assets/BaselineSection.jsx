@@ -57,7 +57,7 @@ export function OpenScapSection({ result: r }) {
   if (!r) return null
   if (r.status !== 'ok') {
     return (
-      <Section icon={ShieldCheck} title="OpenSCAP (CIS Level 1)" className="xl:col-span-2">
+      <Section icon={ShieldCheck} title="OpenSCAP (CIS Level 1)" className="xl:col-span-3">
         <p className="text-sm text-dark-300">{r.status === 'error' ? 'The last run failed: ' : 'Not run: '}{r.reason}</p>
       </Section>
     )
@@ -68,7 +68,7 @@ export function OpenScapSection({ result: r }) {
   const failed = r.failed ?? []
   const shown = all ? failed : failed.slice(0, 15)
   return (
-    <Section icon={ShieldCheck} title="OpenSCAP (CIS Level 1)" className="xl:col-span-2"
+    <Section icon={ShieldCheck} title="OpenSCAP (CIS Level 1)" className="xl:col-span-3"
       right={<span className="text-xs text-dark-300">{pct == null ? '' : `${pct}% of ${judged} judged rules pass`}</span>}>
       <p className="text-[11px] text-dark-400 mb-3">
         {r.profile_title ?? r.profile_id} · SCAP Security Guide {r.content_version} ({r.content}) · run {new Date(r.ran_at * 1000).toLocaleString()} in {Math.round(r.duration_s ?? 0)} s.
@@ -82,7 +82,7 @@ export function OpenScapSection({ result: r }) {
         {c.notchecked > 0 && <span className="text-dark-400">{c.notchecked} not checked</span>}
       </div>
       {failed.length > 0 && (
-        <ul className="divide-y divide-dark-700/40">
+        <ul className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 divide-y divide-dark-700/40 lg:divide-y-0">
           {shown.map((f) => (
             <li key={f.id} className="py-1.5 flex items-start justify-between gap-3 text-sm">
               <span className="text-dark-100">{f.title}{f.result === 'error' && <span className="text-amber-400 text-[11px]"> (could not be checked)</span>}</span>
@@ -108,7 +108,7 @@ export default function BaselineSection({ baseline }) {
   }, [])
   if (!baseline) {
     return (
-      <Section icon={ShieldCheck} title="Security baseline" className="xl:col-span-2">
+      <Section icon={ShieldCheck} title="Security baseline" className="xl:col-span-3">
         <Empty>Not reported. The agent sends these checks from the build of 23 November 2026: update it from the Agents page.</Empty>
       </Section>
     )
@@ -121,7 +121,7 @@ export default function BaselineSection({ baseline }) {
   const passedCount = checks.filter((c) => c.state === 'pass').length
 
   return (
-    <section id="security-baseline" className="xl:col-span-2 scroll-mt-4">
+    <section id="security-baseline" className="xl:col-span-3 scroll-mt-4">
       <Section icon={ShieldCheck} title="Security baseline"
         right={
           <span className="text-xs text-right">
@@ -142,7 +142,8 @@ export default function BaselineSection({ baseline }) {
           {' '}Checks after the CIS Benchmarks (Level 1): 30 each for Windows, Linux and macOS, in the same eight areas. Unreadable checks are left out, never counted as passed.
           {!assessed && ' Too few checks could be read for a score: run the agent as Administrator / root (its service does).'}
         </p>
-        <div className="space-y-3">
+        {/* full width: the areas in two columns */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-3 items-start">
           {byArea.map(([area, list]) => (
             <div key={area}>
               <p className="text-[11px] uppercase tracking-wide text-dark-500 mb-0.5">{AREAS[area]}</p>

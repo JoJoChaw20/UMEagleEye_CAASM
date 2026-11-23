@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowRight, ArrowUpRight, CircleCheck } from 'lucide-react'
 import SectionHeader from '../ui/SectionHeader'
 import PanelHeading from '../ui/PanelHeading'
+import BaselineCard from './BaselineCard'
 
 const TYPE_META = {
   workstation: { label: 'Workstations', color: 'bg-series-1' },
@@ -21,7 +22,7 @@ function GapRow({ label, definition, count, onClick, warning = false }) {
   </button>
 }
 
-export default function AssetVisibility({ summary, loading, onInventory, onAgents }) {
+export default function AssetVisibility({ summary, loading, onInventory, onAgents, tenantId }) {
   const navigate = useNavigate()
   const surface = summary?.attack_surface
   const mix = surface?.device_mix
@@ -44,8 +45,8 @@ export default function AssetVisibility({ summary, loading, onInventory, onAgent
   return (
     <section aria-labelledby="asset-visibility-title">
       <SectionHeader id="asset-visibility-title" title="Asset visibility & coverage" className="mb-4"
-        description="What is in the environment, and where monitoring or ownership is incomplete." />
-      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
+        description="What is in the environment, how well its computers are configured, and where monitoring or ownership is incomplete." />
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
         <div className="glass-card p-5 lg:p-6">
           <PanelHeading title="Asset landscape" detail={total == null ? 'Known asset records' : `${fmt(total)} unique asset records · ${fmt(summary?.overview?.new_assets_7d)} newly discovered in 7 days`} />
           {loading ? <div className="space-y-4 animate-pulse">{[0,1,2,3].map(n => <div key={n} className="h-7 rounded bg-dark-700/50" />)}</div>
@@ -67,6 +68,8 @@ export default function AssetVisibility({ summary, loading, onInventory, onAgent
                 <p className="pt-1 text-xs text-dark-500">Each bar is a device-type count. Asset totals use unique inventory records.</p>
               </div>}
         </div>
+
+        <BaselineCard baseline={summary?.security_baseline} loading={loading} tenantId={tenantId} />
 
         <div className="glass-card p-5 lg:p-6">
           <PanelHeading title="Visibility & coverage gaps" detail="Each count has a defined asset scope; no coverage percentages are inferred." />

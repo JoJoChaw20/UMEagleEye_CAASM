@@ -467,7 +467,8 @@ export default function AssetDetailPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      {/* dense: a one-column card fills a gap left beside a wider one (no phone-style card next to Patches on a computer) */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 xl:grid-flow-row-dense gap-6">
         {/* Identity */}
         <Section icon={Server} title="Identity" className="xl:col-span-1">
           <dl>
