@@ -24,6 +24,8 @@ import { postureColumns } from '../lib/endpointPosture'
 import { resolveNetworkScope } from '../lib/networkScope'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { checkWindowsPatch } from '../services/windowsPatch'
+import { syncBaselineAlerts } from '../services/securityBaseline'
+import { baselineColumns } from '../lib/baseline'
 import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
   resolveAgentDeviceType, storedInventory, type BindingCandidate, type InventoryPayload,
@@ -834,6 +836,7 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
         endpointInventory: stored,
         inventoryCollectedAt: collectedAt,
         ...postureColumns(stored, collectedAt),
+        ...baselineColumns(stored, collectedAt, now),
         lastScanned: now,
         updatedAt: now,
         hostname: sql`COALESCE(NULLIF(${assets.hostname}, ''), ${hostname})`,
@@ -883,6 +886,12 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       await checkWindowsPatch(db, c.env.REPORTS_BUCKET, assetId, inv)
     } catch (err) {
       console.error('inventory: Windows patch check failed:', err)
+    }
+    // Security baseline below the tenant's target: one alert while it is.
+    try {
+      await syncBaselineAlerts(db, tenantId, [assetId], now)
+    } catch (err) {
+      console.error('inventory: security baseline alert failed:', err)
     }
     if (created) refreshRelationshipsLater(c, tenantId)   // a new device: the relationships, in the background
 

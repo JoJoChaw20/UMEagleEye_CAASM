@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { AREAS, CHECKS_PER_OS, RULES, evaluateBaseline, linuxSupport, windowsSupport, type BaselineResult } from './baseline'
+import {
+  AREAS, CHECKS_PER_OS, RULES, baselineColumns, compactBaseline, evaluateBaseline, linuxSupport, planBaselineAlert, windowsSupport,
+  type BaselineResult,
+} from './baseline'
 
 const NOW = new Date('2026-11-23T00:00:00Z')
 const state = (r: BaselineResult | null, id: string) => r?.checks.find(c => c.id === id)?.state
@@ -157,4 +160,36 @@ test('secedit values: password never expires and lockout off are failures with p
   assert.equal(found(r, 'win.lockout_threshold'), 'never locks')
   assert.deepEqual([state(r, 'win.lockout_duration'), found(r, 'win.lockout_duration')], ['fail', 'lockout off'])
   assert.deepEqual([state(r, 'win.admin_account'), found(r, 'win.admin_account')], ['pass', 'enabled as "it-admin"'])
+})
+
+test('stored per asset: compact, and cleared with the inventory', () => {
+  const cols = baselineColumns(VM, new Date('2026-11-23T07:59:35Z'), NOW)
+  const r = evaluateBaseline(VM, NOW)!
+  assert.equal(cols.securityBaselinePercent, r.percent!.toFixed(1))
+  assert.deepEqual(cols.securityBaseline!.checks[0], { id: r.checks[0]!.id, state: r.checks[0]!.state, found: r.checks[0]!.found })
+  assert.equal('cis' in cols.securityBaseline!.checks[0]!, false)
+  assert.deepEqual(baselineColumns(null, null), { securityBaselinePercent: null, securityBaseline: null, securityBaselineAt: null })
+  assert.equal(baselineColumns(PC, new Date(), NOW).securityBaselinePercent, null)          // not assessed: no number
+})
+
+test('the Below baseline alert: opened under target, updated, resolved at target, quiet after a false positive', () => {
+  const vm = compactBaseline(evaluateBaseline(VM, NOW)!)                                     // 57.6% (15 of 26, without root)
+  const open = planBaselineAlert(vm, 95, null, null)
+  assert.equal(open.kind, 'open')
+  if (open.kind !== 'open') return
+  assert.equal(open.severity, 'high')                                                        // under 80%
+  assert.equal(open.details.failed_checks.length, vm.failed)
+  assert.deepEqual(open.details.failed_checks[0], { id: 'linux.pw_length', label: 'Passwords at least 14 characters', area: 'accounts', found: 'no password quality module' })
+  assert.equal(planBaselineAlert(vm, 95, { eventId: 'e1' }, null).kind, 'update')
+  assert.equal(planBaselineAlert({ ...vm, percent: 85 }, 95, null, null).kind === 'open' && (planBaselineAlert({ ...vm, percent: 85 }, 95, null, null) as { severity: string }).severity, 'medium')
+  assert.equal(vm.percent, 57.6)
+  assert.deepEqual(planBaselineAlert(vm, 50, { eventId: 'e1' }, null), { kind: 'resolve', eventId: 'e1', note: 'Auto-resolved: security baseline 57.6% meets the 50% target' })
+  assert.equal(planBaselineAlert(vm, 50, null, null).kind, 'none')
+  assert.equal(planBaselineAlert({ ...vm, assessed: false, percent: null }, 95, { eventId: 'e1' }, null).kind, 'none')
+  // closed as a false positive: quiet while the same checks fail, back when another one fails
+  const closed = { status: 'false_positive', details: open.details }
+  assert.equal(planBaselineAlert(vm, 95, null, closed).kind, 'suppressed')
+  const worse = { ...vm, checks: vm.checks.map(c => (c.id === 'linux.time_sync' ? { ...c, state: 'fail' as const } : c)) }
+  assert.equal(planBaselineAlert(worse, 95, null, closed).kind, 'open')
+  assert.equal(planBaselineAlert(vm, 95, null, { status: 'resolved', details: open.details }).kind, 'open')
 })

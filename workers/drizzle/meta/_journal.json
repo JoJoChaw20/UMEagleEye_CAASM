@@ -323,6 +323,13 @@
       "when": 1795357071164,
       "tag": "0045_weekly_history",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1795422548329,
+      "tag": "0046_security_baseline",
+      "breakpoints": true
     }
   ]
 }

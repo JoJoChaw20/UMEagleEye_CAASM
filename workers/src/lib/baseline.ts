@@ -486,6 +486,75 @@ export function baselineOs(inventory: unknown): BaselineOs | null {
   return p === 'windows' || p === 'linux' ? p : null
 }
 
+// ── stored per asset, and the Below baseline alert (services/securityBaseline.ts) ──
+/** What the asset row keeps (assets.security_baseline): the result without the fixed texts. */
+export interface StoredBaseline extends Omit<BaselineResult, 'checks'> {
+  checks: { id: string; state: BaselineState; found: string | null }[]
+}
+
+export function compactBaseline(r: BaselineResult): StoredBaseline {
+  const { checks, ...summary } = r
+  return { ...summary, checks: checks.map(c => ({ id: c.id, state: c.state, found: c.found })) }
+}
+
+/** Asset columns for an inventory (null clears them). numeric comes back from Postgres as a string. */
+export function baselineColumns(inventory: unknown | null, collectedAt: Date | null, now: Date = new Date()) {
+  const r = inventory == null ? null : evaluateBaseline(inventory, now)
+  return {
+    securityBaselinePercent: r?.percent != null ? r.percent.toFixed(1) : null,
+    securityBaseline: r ? compactBaseline(r) : null,
+    securityBaselineAt: r ? collectedAt : null,
+  }
+}
+
+const LABEL = new Map(Object.values(RULES).flat().map(r => [r.id, { label: r.label, area: r.area }]))
+export const HIGH_BELOW = 80
+
+export interface BaselineAlertDetails {
+  model: number
+  os: BaselineOs
+  percent: number
+  target: number
+  passed: number
+  failed: number
+  judged: number
+  failed_checks: { id: string; label: string; area: BaselineArea; found: string | null }[]
+}
+export type BaselineAlertPlan =
+  | { kind: 'none' }
+  | { kind: 'suppressed' }
+  | { kind: 'open'; severity: 'high' | 'medium'; details: BaselineAlertDetails }
+  | { kind: 'update'; eventId: string; severity: 'high' | 'medium'; details: BaselineAlertDetails }
+  | { kind: 'resolve'; eventId: string; note: string }
+
+/**
+ * One alert per computer under its tenant's target: high under HIGH_BELOW %, else medium. Resolved
+ * when the computer reaches the target. Not assessed (too little readable) leaves things as they are.
+ * Closed as false positive or accepted risk: quiet until a check fails that was not failing then.
+ */
+export function planBaselineAlert(
+  stored: StoredBaseline | null, target: number,
+  open: { eventId: string } | null,
+  lastClosed: { status: string; details: unknown } | null,
+): BaselineAlertPlan {
+  if (!stored || !stored.assessed || stored.percent == null) return { kind: 'none' }
+  if (stored.percent >= target) {
+    return open ? { kind: 'resolve', eventId: open.eventId, note: `Auto-resolved: security baseline ${stored.percent}% meets the ${target}% target` } : { kind: 'none' }
+  }
+  const failing = stored.checks.filter(c => c.state === 'fail')
+  const details: BaselineAlertDetails = {
+    model: stored.model, os: stored.os, percent: stored.percent, target, passed: stored.passed, failed: stored.failed, judged: stored.judged,
+    failed_checks: failing.map(c => ({ id: c.id, label: LABEL.get(c.id)?.label ?? c.id, area: LABEL.get(c.id)?.area ?? 'hardening', found: c.found })),
+  }
+  const severity = stored.percent < HIGH_BELOW ? 'high' : 'medium'
+  if (open) return { kind: 'update', eventId: open.eventId, severity, details }
+  if (lastClosed && (lastClosed.status === 'false_positive' || lastClosed.status === 'accepted_risk')) {
+    const before = new Set(list(rec(lastClosed.details)['failed_checks']).map(c => String(c['id'])))
+    if (failing.every(c => before.has(c.id))) return { kind: 'suppressed' }
+  }
+  return { kind: 'open', severity, details }
+}
+
 /** The baseline for one machine's stored inventory, or null when its platform has none (phones,
  *  macOS for now) or its agent is older than the baseline (no `baseline` section). */
 export function evaluateBaseline(inventory: unknown, now: Date = new Date()): BaselineResult | null {

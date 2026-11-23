@@ -8,11 +8,12 @@ import client from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import TenantSelector from '../components/common/TenantSelector'
 import FixTargetsCard from '../components/common/FixTargetsCard'
+import BaselineTargetCard from '../components/common/BaselineTargetCard'
 import { EVENT_TYPE_LABELS, TYPE_GROUPS } from '../components/common/alertMeta'
 import { hoursText } from '../utils/fixTime'
 
 // Where each kind of alert comes from, and the estimated work to close one (workers/src/lib/alertRank.ts
-// EFFORT_HOURS: compromise 4 h, service or Windows update 1 h, package or exposure 30 min, review 15 min).
+// EFFORT_HOURS: compromise 4 h, hardening 2 h, service or Windows update 1 h, package or exposure 30 min, review 15 min).
 const SOURCE = {
   cve_detected: { from: 'The computer\'s agent: its software list (SBOM) checked for known CVEs', work: 'Update the package: 30 min' },
   vulnerable_service: { from: 'Active scans: a service\'s version from its banner, checked against NVD', work: 'Upgrade the service: 1 h' },
@@ -21,6 +22,7 @@ const SOURCE = {
   cti_sighting: { from: 'The computer\'s agent: its DNS look-ups, connections and running programs against the threat list, on the computer', work: 'Investigate: 4 h' },
   exposure: { from: 'Active scans: what a port answers (Telnet, a database without a password, RDP, TLS…)', work: 'Fix the setting or close the port: 30 min' },
   port_opened: { from: 'Scans and the drift audit: a port not in the device\'s baseline', work: 'Risky port 30 min; other ports reviewed: 15 min' },
+  security_baseline: { from: 'The computer\'s agent: its security settings, judged against the target set below', work: 'Harden the computer\'s settings: 2 h' },
   config_change: { from: 'The drift audit (every 6 hours and after scans): against the device\'s baseline', work: 'Review: 15 min' },
   version_downgrade: { from: 'The drift audit', work: 'Review: 15 min' },
   new_device: { from: 'Scans and passive listening: a device seen for the first time', work: 'Review: 15 min' },
@@ -43,7 +45,7 @@ export default function AlertRulesPage() {
   const TIERS = [
     { n: 1, name: 'Possible compromise', cls: 'text-red-400', what: 'Threat intelligence seen on a device and rated high or critical: a computer looked up or connected to a listed domain or IP, runs a program whose file is listed malware, has a listed address or name, or has a release published as malware installed.', target: `Investigate within ${day(p.compromise)}` },
     { n: 2, name: 'Exploited', cls: 'text-orange-400', what: 'A vulnerability attackers are known to exploit (on CISA\'s KEV list), in a package or a service, or a missing Windows update that fixes one.', target: `Fix within ${day(p.kev_exposed)} if internet-facing, ${day(p.kev)} otherwise` },
-    { n: 3, name: 'Fix', cls: 'text-amber-400', what: 'Other vulnerable packages, services and Windows updates, risky set-ups (exposures) and a risky port that opened. Ranked within the tier by risk: CVSS, exploit chance (EPSS), the device\'s criticality, internet-facing.', target: `By severity: critical ${day(p.critical)}, high ${day(p.high)}, medium ${day(p.medium)}, low ${day(p.low)}` },
+    { n: 3, name: 'Fix', cls: 'text-amber-400', what: 'Other vulnerable packages, services and Windows updates, risky set-ups (exposures), a risky port that opened, and computers below the security baseline. Ranked within the tier by risk: CVSS, exploit chance (EPSS), the device\'s criticality, internet-facing.', target: `By severity: critical ${day(p.critical)}, high ${day(p.high)}, medium ${day(p.medium)}, low ${day(p.low)}` },
     { n: 4, name: 'Review', cls: 'text-dark-300', what: 'New devices, configuration and version changes, other new ports, watched software, and weaker threat-intel matches (a low-confidence listing, a package matched by name only).', target: `Review within ${day(p.review)}` },
   ]
 
@@ -102,6 +104,7 @@ export default function AlertRulesPage() {
       </div>
 
       {tenantId ? <FixTargetsCard tenantId={tenantId} /> : <div className="glass-card p-6 text-sm text-dark-400">Choose a tenant above to see its fix-time targets.</div>}
+      {tenantId && <BaselineTargetCard tenantId={tenantId} />}
     </div>
   )
 }

@@ -27,7 +27,9 @@ export const eventTypeEnum = pgEnum('event_type', [
   'exposure',
   // A product version with known CVEs, identified from its banner on a device without an SBOM:
   // one per device and product (lib/serviceIdentity.ts, services/serviceCves.ts)
-  'vulnerable_service'
+  'vulnerable_service',
+  // A computer below its tenant's security-baseline target: one per device (services/securityBaseline.ts)
+  'security_baseline'
 ])
 // Alert triage lifecycle. open/in_progress count as "open" everywhere
 // (see lib/eventStatus.ts); the other three close the alert.
@@ -89,6 +91,8 @@ export const tenants = pgTable('tenants', {
   // a shared event is read-only context until this tenant opts in (here, or per event:
   // tiEventAlertChoices). services/threatIntel.ts matchableSql.
   sharedEventAlerts: boolean('shared_event_alerts').notNull().default(false),
+  // Security-baseline target, % of checks passed (lib/baseline.ts); a computer below it gets an alert.
+  securityBaselineTarget: smallint('security_baseline_target').notNull().default(95),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
 }, (t) => [uniqueIndex('idx_tenants_slug').on(t.slug)])
 
@@ -243,6 +247,11 @@ export const assets = pgTable('assets', {
   postureModel: smallint('posture_model'),
   postureAssessedAt: timestamp('posture_assessed_at', { withTimezone: true }),
   postureChecks: jsonb('posture_checks'),
+  // Security baseline (CIS-based checks, lib/baseline.ts; not the drift baseline below): % of judged
+  // checks passed (NULL = not assessed), the compact result, and when the agent read the facts.
+  securityBaselinePercent: numeric('security_baseline_percent', { precision: 4, scale: 1 }),
+  securityBaseline: jsonb('security_baseline'),
+  securityBaselineAt: timestamp('security_baseline_at', { withTimezone: true }),
   baselineState: jsonb('baseline_state'),
   isInternetFacing: boolean('is_internet_facing').notNull().default(false),
   // Analyst-confirmed exposure. NULL = not confirmed, so scans keep inferring it.

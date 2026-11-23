@@ -73,7 +73,7 @@ const SEVERE = new Set(['critical', 'high'])
 // add a level), so the ranking does not add internet-facing a second time.
 const SEVERITY_HAS_EXPOSURE = new Set(['exposure', 'vulnerable_service', 'port_opened', 'new_device', 'config_change'])
 const BASE: Record<Severity, number> = { critical: 85, high: 70, medium: 50, low: 30 }
-const FIX_TYPES = new Set(['cve_detected', 'vulnerable_service', 'os_patch_missing', 'exposure'])
+const FIX_TYPES = new Set(['cve_detected', 'vulnerable_service', 'os_patch_missing', 'exposure', 'security_baseline'])
 
 const isKev = (d: Record<string, unknown>) => d.kev === true || Number(d.kev_count ?? 0) > 0
 
@@ -140,20 +140,21 @@ export function slaKeyOf(tier: Tier, severity: Severity, internetFacing: boolean
  * measured time to resolve (median per alert type, services/fixTime.ts) shows how long alerts
  * actually stay open.
  */
-export type EffortKey = 'investigate' | 'package' | 'service' | 'windows_update' | 'exposure' | 'software' | 'review'
+export type EffortKey = 'investigate' | 'package' | 'service' | 'windows_update' | 'exposure' | 'hardening' | 'software' | 'review'
 export const EFFORT_HOURS: Record<EffortKey, number> = {
   investigate: 4,          // a possible compromise: isolate, examine, clean up
   package: 0.5,            // update one package on one device
   service: 1,              // upgrade a network service (and check it still works)
   windows_update: 1,       // install the update, with a restart
   exposure: 0.5,           // change a setting or close a port
+  hardening: 2,            // bring one computer's settings up to the baseline (several checks, a policy or script)
   software: 0.5,           // update or remove watched software
   review: 0.25,            // look at a change and accept it or open a fix
 }
 export const EFFORT_LABEL: Record<EffortKey, string> = {
   investigate: 'Investigate a possible compromise', package: 'Update a package', service: 'Upgrade a service',
-  windows_update: 'Install a Windows update (restart)', exposure: 'Fix an exposure', software: 'Update or remove watched software',
-  review: 'Review a change',
+  windows_update: 'Install a Windows update (restart)', exposure: 'Fix an exposure', hardening: 'Harden a computer\'s settings',
+  software: 'Update or remove watched software', review: 'Review a change',
 }
 
 export function effortKeyOf(a: Pick<RankInput, 'type' | 'severity' | 'details'>): EffortKey {
@@ -165,6 +166,7 @@ export function effortKeyOf(a: Pick<RankInput, 'type' | 'severity' | 'details'>)
   if (a.type === 'vulnerable_service') return 'service'
   if (a.type === 'os_patch_missing') return 'windows_update'
   if (a.type === 'exposure') return 'exposure'
+  if (a.type === 'security_baseline') return 'hardening'
   if (a.type === 'port_opened' && Number(a.details.port) in RISKY_PORTS) return 'exposure'
   return 'review'
 }

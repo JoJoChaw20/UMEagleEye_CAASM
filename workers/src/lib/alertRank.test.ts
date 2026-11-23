@@ -76,6 +76,8 @@ test('estimated work per alert: the planning figures, by what fixing it takes', 
   assert.equal(k('vulnerable_service', 'high'), 'service')
   assert.equal(k('os_patch_missing', 'high'), 'windows_update')
   assert.equal(k('exposure', 'medium'), 'exposure')
+  assert.equal(k('security_baseline', 'high'), 'hardening')
+  assert.equal(tierOf({ type: 'security_baseline', severity: 'medium', details: {} }), 3)
   assert.equal(k('port_opened', 'high', { port: 3389 }), 'exposure')
   assert.equal(k('port_opened', 'low', { port: 8080 }), 'review')
   assert.equal(k('new_device', 'medium'), 'review')

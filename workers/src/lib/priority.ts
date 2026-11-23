@@ -21,7 +21,7 @@ export const tierExpr = sql<number>`(CASE
   WHEN ${events.eventType} = 'cti_match' THEN
     CASE WHEN ${d('match_kind')} = 'watchlist' THEN 4 WHEN ${events.severity} IN ('critical', 'high') THEN 1 ELSE 4 END
   WHEN ${KEV} OR (${events.eventType} = 'os_patch_missing' AND ${num('exploited')} > 0) THEN 2
-  WHEN ${events.eventType} IN ('cve_detected', 'vulnerable_service', 'os_patch_missing', 'exposure') THEN 3
+  WHEN ${events.eventType} IN ('cve_detected', 'vulnerable_service', 'os_patch_missing', 'exposure', 'security_baseline') THEN 3
   WHEN ${events.eventType} = 'port_opened' AND (${d('port')}) ~ '^[0-9]+$' AND (${d('port')})::int = ANY(${RISKY}) THEN 3
   ELSE 4 END)`
 
@@ -67,6 +67,7 @@ export const effortKeyExpr = sql<string>`(CASE
   WHEN ${events.eventType} = 'vulnerable_service' THEN 'service'
   WHEN ${events.eventType} = 'os_patch_missing' THEN 'windows_update'
   WHEN ${events.eventType} = 'exposure' THEN 'exposure'
+  WHEN ${events.eventType} = 'security_baseline' THEN 'hardening'
   WHEN ${events.eventType} = 'port_opened' AND (${d('port')}) ~ '^[0-9]+$' AND (${d('port')})::int = ANY(${RISKY}) THEN 'exposure'
   ELSE 'review' END)`
 const EFFORT_WHENS = sql.raw(Object.entries(EFFORT_HOURS).map(([k, h]) => `WHEN '${k}' THEN ${Number(h)}`).join(' '))

@@ -35,6 +35,7 @@ export const EVENT_TYPE_LABELS = {
   os_patch_missing:  'Windows Updates Missing',
   exposure:          'Exposure',
   vulnerable_service: 'Vulnerable Service',
+  security_baseline: 'Below Security Baseline',
 }
 
 // The Alerts page's type filter: the types the server raises today, by what they are about.
@@ -52,6 +53,7 @@ export const TYPE_GROUPS = [
   { label: 'Exposure', types: {
     exposure:           'A risky setup a scan saw now: Telnet, a database without a password, RDP from the internet…',
     port_opened:        'A port open that was not in the device\'s baseline',
+    security_baseline:  'A computer passing fewer of the 30 CIS-based security checks than the organisation\'s target',
   } },
   { label: 'Changes', types: {
     config_change:      'Hostname, MAC, device type, internet exposure or firmware changed',
@@ -120,7 +122,12 @@ export function renderDetail(e) {
   if (e.event_type === 'os_patch_missing') return windowsPatchSummary(d)
   if (e.event_type === 'exposure') return exposureSummary(d)
   if (e.event_type === 'vulnerable_service') return vulnerableServiceSummary(d)
+  if (e.event_type === 'security_baseline') return baselineSummary(d)
   return d.changed_attribute ?? '—'
+}
+
+export function baselineSummary(d) {
+  return `${d.percent ?? '?'}% of checks passed (target ${d.target ?? '?'}%) · ${d.failed ?? '?'} failed`
 }
 
 /** An SBOM alert for one vulnerable package with its CVEs inside (details.shape 'package'). */
@@ -268,6 +275,11 @@ export function riskReasons(e) {
     if (d.critical) out.push({ label: `${d.critical} critical`, tone: 'serious' })
     if (d.kb) out.push({ label: `Fix: KB${d.kb}`, tone: 'good' })
   }
+  if (e.event_type === 'security_baseline') {
+    out.push({ label: `${d.percent}% of ${d.target}% target`, tone: d.percent < 80 ? 'critical' : 'serious' })
+    const supported = (d.failed_checks ?? []).find(c => c.id?.endsWith('.os_supported'))
+    if (supported) out.push({ label: 'OS out of support', tone: 'critical' })
+  }
   if (exposed) out.push({ label: 'Internet-facing', tone: 'critical' })
   if (d.port != null && RISKY_PORTS[d.port]) out.push({ label: `${RISKY_PORTS[d.port]} is a common attack target`, tone: 'serious' })
   // a package alert keeps its worst CVE's values as max_epss / max_cvss
@@ -375,6 +387,10 @@ function basePlaybook(e) {
       return d.exploited || exposed
         ? { urgency: '≤72h', text: `Install ${kb} through Windows Update and restart. It fixes ${d.exploited ? 'a CVE attackers are already using' : 'CVEs on an internet-facing machine'}, so do not wait for the patch cycle.` }
         : { urgency: 'Patch cycle', text: `Install ${kb} through Windows Update and restart in the next patch window. One cumulative update fixes every CVE listed; the alert closes itself at the next inventory.` }
+    }
+    case 'security_baseline': {
+      const first = (d.failed_checks ?? []).slice(0, 3).map(c => c.label).join('; ')
+      return { urgency: 'Patch cycle', text: `This computer passes ${d.percent}% of the security-baseline checks; the organisation's target is ${d.target}%. Fix the failed checks listed below (each has its own instructions on the asset page)${first ? `, starting with: ${first}` : ''}. For many computers, apply the settings once through Group Policy, Intune or a configuration script. The alert closes itself at the next inventory that reaches the target.` }
     }
     case 'vulnerable_service': {
       const distro = d.outside_sbom ? ' It is not in the device\'s SBOM: look for a container (docker ps) or a hand-installed copy serving this port, and update its image or binary.'

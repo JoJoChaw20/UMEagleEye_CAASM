@@ -32,7 +32,7 @@ const SEV = { critical: C.red, high: [200, 90, 10], medium: C.amber, low: C.mute
 const ALERT_TYPE = {
   cve_detected: 'Vulnerable package', vulnerable_service: 'Vulnerable service', os_patch_missing: 'Missing Windows update',
   exposure: 'Exposure', cti_match: 'Threat-intel match', port_opened: 'New open port', new_device: 'New device',
-  config_change: 'Configuration change', software_change: 'Software change',
+  config_change: 'Configuration change', software_change: 'Software change', security_baseline: 'Below security baseline',
 }
 
 const safe = (s) => String(s ?? '')
@@ -283,7 +283,7 @@ export function buildPdf(data, reportType) {
           color: r => (r.reliable ? C.body : C.muted) },
       ], ttr)
     }
-    paragraph(`Estimated work per alert: investigate a possible compromise 4 h, update a package 30 min, upgrade a service 1 h, install a Windows update 1 h (with a restart), fix an exposure 30 min, review a change 15 min. Typical time is the median from first seen (or reopened) to resolved; it is a guide once ${ft.min_resolved ?? 10} of a type are resolved.`, 7.5, C.muted)
+    paragraph(`Estimated work per alert: investigate a possible compromise 4 h, update a package 30 min, upgrade a service 1 h, install a Windows update 1 h (with a restart), harden a computer below the security baseline 2 h, fix an exposure 30 min, review a change 15 min. Typical time is the median from first seen (or reopened) to resolved; it is a guide once ${ft.min_resolved ?? 10} of a type are resolved.`, 7.5, C.muted)
     y += 2
   }
   if ((pr.sla_breaches ?? []).length) {
@@ -306,6 +306,27 @@ export function buildPdf(data, reportType) {
   ], 15)
   paragraph('Printers, routers, IoT and phones are discovered and watched for changes but cannot be CVE-checked; only computers running the agent are.', 8, C.muted)
   y += 2
+  // Security baseline (workers/src/services/securityBaseline.ts): 30 CIS-based checks per computer
+  const sb = data.security_baseline
+  if (sb && sb.computers > 0) {
+    font(8.5, 'bold', C.ink); ensure(24); doc.text('Security baseline: computers\' settings against 30 CIS-based checks', M, y); y += 4
+    const tone = (p, t) => (p == null || t == null ? C.ink : p >= t ? C.green : p >= 80 ? C.amber : C.red)
+    tiles([
+      { value: sb.percent == null ? '-' : `${sb.percent}%`, label: `Checks passed across scored computers${sb.target != null ? ` (target ${sb.target}%)` : ''}`, color: tone(sb.percent, sb.target) },
+      { value: `${sb.at_target} of ${sb.assessed}`, label: 'Computers at the target', color: sb.at_target < sb.assessed ? C.amber : C.green },
+      ...Object.entries(sb.by_os ?? {}).map(([os, v]) => ({ value: v.percent == null ? '-' : `${v.percent}%`, label: `${os === 'linux' ? 'Linux' : 'Windows'}: ${v.at_target} of ${v.assessed} at target`, color: tone(v.percent, sb.target) })),
+    ], 15)
+    if ((sb.lowest ?? []).length) {
+      table([
+        { label: 'Computer', w: 90, get: r => r.hostname ?? r.asset_id.slice(0, 8), bold: true, color: () => C.ink },
+        { label: 'System', w: 30, get: r => (r.os === 'linux' ? 'Linux' : 'Windows') },
+        { label: 'Checks passed', w: 30, align: 'right', get: r => `${r.percent}%`, color: r => tone(r.percent, r.target), bold: true },
+        { label: 'Target', w: 30, align: 'right', get: r => `${r.target}%` },
+      ], sb.lowest)
+    }
+    paragraph('The same number of checks for Windows and Linux. Checks an agent could not read are left out, never counted as passed; a computer with too few readable checks is not scored. Each computer\'s failed checks and how to fix them are on its asset page.', 7.5, C.muted)
+    y += 2
+  }
 
   // ════ Appendix (weekly / monthly) ════
   if (reportType !== 'executive') {

@@ -92,7 +92,7 @@ export default function AlertsPage() {
   const [assetFilter,  setAssetFilter]  = useState(() => searchParams.get('asset_id')
     ? { id: searchParams.get('asset_id'), label: searchParams.get('label') } : null)
   const [pkgFilter,    setPkgFilter]    = useState(() => searchParams.get('package') ?? '')
-  const [typeFilter,   setTypeFilter]   = useState('')
+  const [typeFilter,   setTypeFilter]   = useState(() => searchParams.get('type') ?? '')
   const [deviceType,   setDeviceType]   = useState('')
   const [onlyExposed,  setOnlyExposed]  = useState(false)
   const [onlyNew,      setOnlyNew]      = useState(false)
@@ -898,6 +898,13 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 e.event_type === 'os_patch_missing' && d.cves > 0 && ['Missing fixes', `${Number(d.cves).toLocaleString()} CVEs · ${d.critical ?? 0} critical · ${d.exploited ?? 0} exploited in the wild`],
                 e.event_type === 'os_patch_missing' && d.behind_since && ['Behind since', `${new Date(d.behind_since).toLocaleDateString()} (fixes released then)`],
                 e.event_type === 'os_patch_missing' && d.patch_status === 'unsupported' && ['Support', <span className="text-red-300">{d.reason ?? 'No longer receives security updates'}</span>],
+                e.event_type === 'security_baseline' && ['Baseline', `${d.percent}% of checks passed (${d.passed} of ${d.judged}) · target ${d.target}% · ${d.os === 'linux' ? 'Linux' : 'Windows'}`],
+                e.event_type === 'security_baseline' && Array.isArray(d.failed_checks) && d.failed_checks.length > 0 && [`Failed (${d.failed_checks.length})`, <span className="block space-y-0.5">
+                  {d.failed_checks.map(c => (
+                    <span key={c.id} className="block">{c.label}{c.found && <span className="text-dark-400"> · found: {c.found}</span>}</span>
+                  ))}
+                </span>],
+                e.event_type === 'security_baseline' && (e.asset_id ?? e.asset?.asset_id) && ['How to fix', <Link to={`/inventory/${e.asset_id ?? e.asset?.asset_id}#security-baseline`} className="text-accent-cyan hover:underline">Each check's fix and CIS reference on the asset page</Link>],
                 e.event_type === 'vulnerable_service' && ['Service', `${d.vendor ? `${d.vendor} ` : ''}${d.product ?? '—'}${d.version ? ` ${d.version}` : ''} on port ${d.port}`],
                 e.event_type === 'vulnerable_service' && d.seen && ['Banner', d.seen],
                 e.event_type === 'vulnerable_service' && ['Confidence', d.distro ? `Version from the network banner; ${d.distro} may have backported the fixes` : 'Version from the network banner'],

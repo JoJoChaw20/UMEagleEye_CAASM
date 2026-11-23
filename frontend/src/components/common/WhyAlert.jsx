@@ -35,6 +35,17 @@ function chain(e) {
         rule: 'R1 · A package with a known vulnerability (Grype matched it against its vulnerability database)',
       }
     }
+    case 'security_baseline': {
+      const failed = d.failed_checks ?? []
+      return {
+        evidence: `${where} passes ${d.passed} of ${d.judged} security-baseline checks (${d.percent}%), from the settings its EagleEye agent read`,
+        knowledge: [
+          `The organisation's target is ${d.target}% (Alert rules page)`,
+          ...(failed.length ? [`Failed: ${failed.slice(0, 6).map(c => c.label).join('; ')}${failed.length > 6 ? ` and ${failed.length - 6} more` : ''}`] : []),
+        ],
+        rule: 'R10 · A computer below its organisation\'s security-baseline target (30 checks after the CIS Benchmarks, the same number for Windows and Linux)',
+      }
+    }
     case 'os_patch_missing': {
       const known = d.patch_status === 'unsupported'
         ? ['Microsoft has stopped releasing security updates for this Windows version']

@@ -7,6 +7,7 @@ import { purgeOldData } from '../services/retention'
 import { CTI_INGEST_LOCK } from '../services/cti'
 import { runAlertHygiene } from '../services/alertHygiene'
 import { rescoreAssets } from '../lib/rescore'
+import { refreshTenantBaselines } from '../services/securityBaseline'
 import { refreshCveAlertScores } from '../services/alertScores'
 import { runKgSyncJob, signalKgSyncSafe } from '../kg/sync'
 import { kgQuery } from '../kg/store'
@@ -108,6 +109,16 @@ export async function handleCron(controller: ScheduledController, env: Env): Pro
             alerts += await refreshCveAlertScores(db, { tenantId: id })
           }
           return `${changed} criticality score(s) changed, ${alerts} CVE alert risk score(s) updated`
+        })
+        // Security baseline (services/securityBaseline.ts): re-judged from each computer's stored
+        // inventory ("OS still supported" depends on today's date), then the Below baseline alerts.
+        await step(env, 'security-baseline', async () => {
+          let changed = 0, opened = 0, resolved = 0
+          for (const id of tenantIds) {
+            const r = await refreshTenantBaselines(db, id)
+            changed += r.changed; opened += r.opened; resolved += r.resolved
+          }
+          return `${changed} baseline(s) changed, ${opened} alert(s) opened, ${resolved} resolved`
         })
         // Weekly history (services/weekly.ts): the week that just ended (Monday), and any missing before
         // it; each tenant's Weekly Summary report for a week just ended is queued (the report queue).

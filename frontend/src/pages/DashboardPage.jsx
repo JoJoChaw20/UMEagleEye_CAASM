@@ -110,7 +110,7 @@ export default function DashboardPage() {
       <PriorityActionCentre actions={priorityActions} loading={loading} available={!errors.summary} tenantId={tenantFilter} />
       <ExposureAndChanges overview={summary?.overview} surface={summary?.attack_surface} recentChanges={recentChanges} changesLoading={loading} changesError={errors.changes} showChanges={canAlerts} tenantId={tenantFilter} />
       <AssetVisibility summary={summary} loading={loading} onInventory={openInventory} onAgents={openAgents} />
-      <RemediationAndTrend remediation={summary?.remediation} fixTime={summary?.fix_time} posture={posture} history={history} loading={loading} onManage={openAdvisories} tenantId={tenantFilter} />
+      <RemediationAndTrend remediation={summary?.remediation} fixTime={summary?.fix_time} baseline={summary?.security_baseline} posture={posture} history={history} loading={loading} onManage={openAdvisories} tenantId={tenantFilter} />
       <p className="text-right text-[11px] text-dark-500">Windows: new assets 7 days · security changes 24 hours · posture trend 30 days</p>
     </div>
   )

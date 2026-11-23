@@ -6,6 +6,7 @@ import { dashboardHref, historicalScoreChange } from './dashboardUtils'
 import SectionHeader from '../ui/SectionHeader'
 import PanelHeading from '../ui/PanelHeading'
 import FixTimeCard from './FixTimeCard'
+import BaselineCard from './BaselineCard'
 
 const fmt = value => Number(value ?? 0).toLocaleString()
 const STATUSES = [
@@ -68,12 +69,13 @@ function SecurityPostureTrend({ posture, history, loading }) {
   </div>
 }
 
-export default function RemediationAndTrend({ remediation, fixTime, posture, history, loading, onManage, tenantId }) {
+export default function RemediationAndTrend({ remediation, fixTime, baseline, posture, history, loading, onManage, tenantId }) {
   return <section aria-labelledby="remediation-trend-title">
     <SectionHeader id="remediation-trend-title" title="Remediation & security trends" className="mb-4"
       description="Follow-through on known risks, and how the scored posture is changing." />
     <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
       <FixTimeCard fixTime={fixTime} loading={loading} tenantId={tenantId} />
+      <BaselineCard baseline={baseline} loading={loading} tenantId={tenantId} />
       <RemediationProgress remediation={remediation} loading={loading} onManage={onManage} tenantId={tenantId} /><SecurityPostureTrend posture={posture} history={history} loading={loading} />
     </div>
   </section>

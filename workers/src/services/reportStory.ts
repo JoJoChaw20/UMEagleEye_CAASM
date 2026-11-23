@@ -71,6 +71,7 @@ function actionText(type: string, d: Record<string, unknown>, group?: { pkg: str
     case 'vulnerable_service': return `Update ${String(d.product ?? 'the service')}${d.version ? ` ${String(d.version)}` : ''} on port ${d.port ?? '?'} (${d.cve_count ?? '?'} known CVEs${d.kev_count ? `, ${d.kev_count} exploited` : ''})`
     case 'exposure': return `${String(d.title ?? 'Fix the exposure')} on port ${d.port ?? '?'}: ${String(d.fix ?? '').slice(0, 160)}`
     case 'os_patch_missing': return `Install the missing Windows updates${kbLabel(d.kb) ? ` (latest ${kbLabel(d.kb)!.slice(0, 40)})` : ''}`
+    case 'security_baseline': return `Fix the ${d.failed ?? '?'} failed security-baseline checks (${d.percent ?? '?'}% against a ${d.target ?? '?'}% target)`
     case 'version_downgrade': return `Check the downgrade of ${d.changed_attribute ?? 'a component'}${d.from ? ` from ${d.from} to ${d.to}` : ''}`
     case 'config_change': return `Review the configuration change${d.changed_attribute ? ` (${d.changed_attribute})` : ''}`
     default: return `Review the ${type.replace(/_/g, ' ')} alert`

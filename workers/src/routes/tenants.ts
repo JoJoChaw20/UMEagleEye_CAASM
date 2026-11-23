@@ -26,6 +26,8 @@ import { NO_PASSWORD_HASH, hashPassword } from '../lib/auth'
 import { inviteCredentials } from '../lib/passwordRules'
 import { SLA_DEFAULTS, SLA_KEYS, SLA_MAX_HOURS, SLA_MIN_HOURS, cleanSlaPolicy, slaPolicy, type SlaKey } from '../lib/alertRank'
 import { refreshIntelAlerts } from '../services/iocMatch'
+import { DEFAULT_TARGET } from '../lib/baseline'
+import { syncBaselineAlerts } from '../services/securityBaseline'
 
 const USERNAME_TAKEN = { detail: 'That username is already taken. Choose another one.' }
 import { networkTargetErrors } from '../services/scanTargets'
@@ -327,6 +329,42 @@ router.put(
       previousState: { sla_policy: cleanSlaPolicy(tenant.slaPolicy) }, newState: { sla_policy: next },
     })
     return c.json(slaPolicyOut(next, true))
+  }
+)
+
+// ── Security-baseline target (lib/baseline.ts): the % of checks a computer must pass ──
+const baselineTargetOut = (target: number, canEdit: boolean) =>
+  ({ target, default: DEFAULT_TARGET, min: BASELINE_TARGET_MIN, max: 100, can_edit: canEdit })
+const BASELINE_TARGET_MIN = 50
+
+router.get('/:tenantId/security-baseline', authMiddleware, requireAction('alert.view', 'settings.view'), requireOwnTenant, async (c) => {
+  const db = getDb(c.env.DATABASE_URL)
+  const [tenant] = await db.select({ target: tenants.securityBaselineTarget }).from(tenants).where(eq(tenants.tenantId, c.req.param('tenantId'))).limit(1)
+  if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+  return c.json(baselineTargetOut(tenant.target, c.get('user').role === 'tenant_superadmin'))
+})
+
+// {target: % | null}: null goes back to the default. Every computer's alert follows the new target at once.
+router.put(
+  '/:tenantId/security-baseline',
+  authMiddleware,
+  requireTenantSuperadmin,
+  requireOwnTenant,
+  zValidator('json', z.object({ target: z.number().int().min(BASELINE_TARGET_MIN).max(100).nullable() })),
+  async (c) => {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const { tenantId } = c.req.param()
+    const [tenant] = await db.select({ target: tenants.securityBaselineTarget }).from(tenants).where(eq(tenants.tenantId, tenantId)).limit(1)
+    if (!tenant) return c.json({ detail: 'Tenant not found' }, 404)
+    const target = c.req.valid('json').target ?? DEFAULT_TARGET
+    await db.update(tenants).set({ securityBaselineTarget: target }).where(eq(tenants.tenantId, tenantId))
+    await audit(db, c, {
+      userId: user.userId, tenantId, actionType: 'tenant.security_baseline_target', targetEntity: tenantId,
+      previousState: { target: tenant.target }, newState: { target },
+    })
+    const alerts = await syncBaselineAlerts(db, tenantId)
+    return c.json({ ...baselineTargetOut(target, true), alerts_change: alerts })
   }
 )
 

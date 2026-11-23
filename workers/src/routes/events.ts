@@ -60,7 +60,7 @@ const SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 const EVENT_TYPE_VALUES = [
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'cve_detected', 'new_device', 'config_change', 'new_package',
-  'removed_package', 'cti_match', 'os_patch_missing', 'exposure', 'vulnerable_service',
+  'removed_package', 'cti_match', 'os_patch_missing', 'exposure', 'vulnerable_service', 'security_baseline',
 ] as const
 // Filter-only types: a kind of alert inside an event type. cti_sighting = the cti_match alerts an
 // agent saw its own computer make (rule R7, routes/sightings.ts).

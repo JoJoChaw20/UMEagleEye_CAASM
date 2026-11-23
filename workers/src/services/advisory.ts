@@ -241,6 +241,13 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
     const title = d.kb_title ?? d.kbTitle
     if (title != null) other.kbTitle = sanitizeText(title, 160)
   }
+  // Below the security baseline: the score and the checks that failed, with what was found
+  if (event.eventType === 'security_baseline') {
+    other.baseline = sanitizeText(`${d.percent ?? '?'}% of checks passed, target ${d.target ?? '?'}% (${d.os ?? ''})`, 80)
+    const failed = (Array.isArray(d.failed_checks) ? d.failed_checks as Array<Record<string, unknown>> : [])
+      .map(f => `${f.label}${f.found ? ` (found: ${f.found})` : ''}`)
+    if (failed.length) other.failed_checks = sanitizeText(failed.slice(0, 12).join('; '), 900)
+  }
   // A new port: what the last active scan saw listening on it (Nmap service, product, version)
   if (event.eventType === 'port_opened' && d.port != null) {
     const svc = (Array.isArray(osInfo.services) ? osInfo.services as Array<Record<string, unknown>> : [])

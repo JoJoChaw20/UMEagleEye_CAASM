@@ -13,7 +13,8 @@ import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { refreshCveAlertScores } from '../services/alertScores'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
-import { evaluateBaseline } from '../lib/baseline'
+import { baselineColumns, evaluateBaseline } from '../lib/baseline'
+import { tenantTarget } from '../services/securityBaseline'
 import { automaticDeviceType } from '../lib/deviceClassify'
 import { planScanLogPurge } from '../lib/scanLog'
 import type { DeviceTypeHint } from '../lib/deviceHints'
@@ -623,7 +624,9 @@ app.get('/:assetId', authMiddleware, requireAction('asset.view'), async (c) => {
     // how its machine shows it).
     const agentsHere = await db.select({ agent_id: agents.agentId, name: agents.name, kind: agents.kind })
       .from(agents).where(and(eq(agents.hostAssetId, assetId), isNull(agents.retiredAt)))
-    return c.json({ ...asset, agents_here: agentsHere, baseline: evaluateBaseline(asset.endpointInventory) })
+    const baseline = evaluateBaseline(asset.endpointInventory)
+    const baselineTarget = baseline && asset.tenantId ? await tenantTarget(db, asset.tenantId) : null
+    return c.json({ ...asset, agents_here: agentsHere, baseline: baseline && { ...baseline, target: baselineTarget } })
   } catch (err) {
     console.error('assets GET /:assetId error:', err)
     return c.json({ detail: 'Failed to fetch asset' }, 500)
@@ -680,7 +683,7 @@ app.delete('/:assetId/inventory', authMiddleware, requireAction('asset.inventory
     await db.batch([
       db.delete(assetSoftware).where(eq(assetSoftware.assetId, assetId)),
       db.delete(assetIdentifiers).where(eq(assetIdentifiers.assetId, assetId)),
-      db.update(assets).set({ endpointInventory: null, inventoryCollectedAt: null, ...postureColumns(null, null), updatedAt: new Date() }).where(eq(assets.assetId, assetId)),
+      db.update(assets).set({ endpointInventory: null, inventoryCollectedAt: null, ...postureColumns(null, null), ...baselineColumns(null, null), updatedAt: new Date() }).where(eq(assets.assetId, assetId)),
       db.insert(auditLogs).values({
         userId: user.userId, tenantId: asset.tenantId, actionType: 'asset.inventory_clear', targetEntity: assetId,
         previousState: { inventory_collected_at: asset.inventoryCollectedAt, software_count: softwareRemoved },

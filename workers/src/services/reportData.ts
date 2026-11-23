@@ -12,6 +12,7 @@ import { assets, events, postureMetrics, advisories, ctiIndicators, scanResults,
 import { buildReportStory } from './reportStory'
 import { computePosture } from './posture'
 import { fixTimeSummary } from './fixTime'
+import { baselineSummary } from './securityBaseline'
 import { weeklyView } from './weekly'
 import { compareWeeks, isoWeek } from '../lib/weekly'
 
@@ -103,10 +104,11 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
 
   // The report's storyline (verdict, first actions, hotspots, changes, progress, coverage), and the
   // fix-time figures for management (services/fixTime.ts, the same as the Dashboard)
-  const [story, fixTime, weekly] = await Promise.all([
+  const [story, fixTime, weekly, securityBaseline] = await Promise.all([
     buildReportStory(db, tenantId, reportType), fixTimeSummary(db, tenantId),
     // a tenant's weekly report: last finished week against the week before (services/weekly.ts)
     reportType === 'weekly' && tenantId ? weeklyView(db, tenantId, 2) : Promise.resolve(null),
+    baselineSummary(db, tenantId),     // the security baseline (services/securityBaseline.ts, as on the Dashboard)
   ])
   const lastWeek = weekly?.weeks[0] ?? null
   const weekOverWeek = weekly && lastWeek ? {
@@ -145,6 +147,7 @@ export async function buildReportData(db: DB, tenantId: string | undefined, repo
     last_scan:         lastScanRows[0] ?? null,
     story,
     fix_time:          fixTime,
+    security_baseline: securityBaseline,
     week_over_week:    weekOverWeek,
   }
 }

@@ -48,6 +48,7 @@ export function alertWhat(alertType: string, d: Record<string, unknown>): string
   if (d.port) return short(`port ${d.port}/${d.protocol ?? 'tcp'}${d.service ? ` (${d.service})` : ''} open`)
   if (d.indicator_value) return short(`threat-intel match: ${d.indicator_value}${d.matched_on ? ` (${d.matched_on})` : ''}`)
   if (alertType === 'os_patch_missing') return short(`missing Windows update${kbLabel(d.kb) ? ` ${kbLabel(d.kb)}` : 's'}`)
+  if (alertType === 'security_baseline') return short(`security baseline ${d.percent ?? '?'}% (target ${d.target ?? '?'}%), ${d.failed ?? '?'} checks failed`)
   return short(alertType.replace(/_/g, ' '))
 }
 
