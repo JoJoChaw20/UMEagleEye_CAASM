@@ -58,7 +58,7 @@ export default function FixTimeCard({ fixTime, loading, tenantId }) {
           </ul>}
         </div>
       </div>
-      <p className="mt-3 text-[11px] text-dark-500">Work is estimated per alert (investigate a compromise 4 h, upgrade a service or install a Windows update 1 h, update a package or fix an exposure 30 min, review a change 15 min). Due dates follow your fix-time targets (Alerts › Alert rules).</p>
+      <p className="mt-3 text-[11px] text-dark-500">Work is estimated per alert (investigate a compromise 4 h, harden a computer below the security baseline 2 h, upgrade a service or install OS updates 1 h, update a package or fix an exposure 30 min, review a change 15 min). Due dates follow your fix-time targets (Alerts › Alert rules).</p>
     </>}
   </div>
 }

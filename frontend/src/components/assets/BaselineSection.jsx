@@ -86,7 +86,7 @@ export default function BaselineSection({ baseline }) {
         )}
         <p className="text-[11px] text-dark-400 mb-2">
           {os === 'linux' ? 'Linux' : 'Windows'}: {passed} of {judged} judged checks passed; {readable} of {total} could be read.
-          {' '}Checks after the CIS Benchmarks (Level 1), the same 30 areas for Windows and Linux. Unreadable checks are left out, never counted as passed.
+          {' '}Checks after the CIS Benchmarks (Level 1): 30 for Windows and 30 for Linux, in the same eight areas. Unreadable checks are left out, never counted as passed.
           {!assessed && ' Too few checks could be read for a score: run the agent as Administrator / root (its service does).'}
         </p>
         <div className="space-y-3">

@@ -32,7 +32,7 @@ export const EVENT_TYPE_LABELS = {
   new_package:       'New Package',
   removed_package:   'Removed Package',
   new_device:        'New Device',
-  os_patch_missing:  'Windows Updates Missing',
+  os_patch_missing:  'OS Updates Missing',
   exposure:          'Exposure',
   vulnerable_service: 'Vulnerable Service',
   security_baseline: 'Below Security Baseline',
@@ -44,7 +44,7 @@ export const TYPE_GROUPS = [
   { label: 'Vulnerabilities', types: {
     cve_detected:       'A package from the device\'s SBOM with known CVEs (one alert per package, its CVEs inside)',
     vulnerable_service: 'A service version with known CVEs, from its network banner (devices without an SBOM)',
-    os_patch_missing:   'A Windows machine behind on the fixes Microsoft released',
+    os_patch_missing:   'A computer behind on its operating system\'s security updates: Windows against the fixes Microsoft released, Linux against its distribution\'s security channel',
   } },
   { label: 'Threats', types: {
     cti_match:          'Every threat-intel match: the device\'s address or name is listed, it contacted a listed domain or IP, or watched software is installed',
@@ -91,6 +91,7 @@ export function alertLabel(e) {
   if (isSighting(e)) return 'Threat Contacted'
   if (e.event_type === 'config_change') return CONFIG_CHANGE_LABELS[e.details?.changed_attribute] ?? 'Config Change'
   if (e.event_type === 'os_patch_missing' && e.details?.patch_status === 'unsupported') return 'Windows Out of Support'
+  if (e.event_type === 'os_patch_missing') return e.details?.platform === 'linux' ? 'Linux Security Updates Missing' : 'Windows Updates Missing'
   if (e.event_type === 'exposure') return e.details?.title ?? 'Exposure'
   return EVENT_TYPE_LABELS[e.event_type] || e.event_type
 }
@@ -184,8 +185,12 @@ export function exposureSummary(d) {
   return [`Port ${d.port}${what}`, extra].filter(Boolean).join(' · ')
 }
 
-// "1,009 missing fixes (25 critical, 1 exploited) · install KB5127648"
+// "1,009 missing fixes (25 critical, 1 exploited) · install KB5127648"; Linux: "3 security updates waiting: openssl, ..."
 export function windowsPatchSummary(d) {
+  if (d.platform === 'linux') {
+    const names = (d.packages ?? []).slice(0, 3).map(p => p.name).join(', ')
+    return `${d.updates} security update${d.updates === 1 ? '' : 's'} waiting${names ? `: ${names}${d.updates > 3 ? '…' : ''}` : ''}`
+  }
   const extra = [d.critical ? `${d.critical} critical` : null, d.exploited ? `${d.exploited} exploited` : null].filter(Boolean)
   const fixes = d.cves ? `${Number(d.cves).toLocaleString()} missing fix${d.cves === 1 ? '' : 'es'}${extra.length ? ` (${extra.join(', ')})` : ''}` : null
   if (d.patch_status === 'unsupported') return ['No longer receives updates', fixes].filter(Boolean).join(' · ')
@@ -268,6 +273,10 @@ export function riskReasons(e) {
     if (d.kev) out.push({ label: d.kev_count > 1 ? `${d.kev_count} actively exploited (CISA KEV)` : 'Actively exploited (CISA KEV)', tone: 'critical' })
     if (titles.length) out.push({ label: `In threat intel: ${titles[0]}${titles.length > 1 ? ` +${titles.length - 1}` : ''}`, tone: 'critical' })
     if (!d.kev && !titles.length) out.push({ label: 'Named in threat intel', tone: 'critical' })
+  }
+  if (e.event_type === 'os_patch_missing' && d.platform === 'linux') {
+    out.push({ label: `${d.updates} security update${d.updates === 1 ? '' : 's'} waiting`, tone: 'serious' })
+    if (d.restart_pending) out.push({ label: 'Restart pending', tone: 'serious' })
   }
   if (e.event_type === 'os_patch_missing') {
     if (d.exploited) out.push({ label: `${d.exploited} exploited in the wild (Microsoft)`, tone: 'critical' })
@@ -380,6 +389,9 @@ function basePlaybook(e) {
       return { urgency: 'Patch cycle', text: `Schedule upgrade of ${d.package_name ?? 'the package'}${fix} in the next patch window.` }
     }
     case 'os_patch_missing': {
+      if (d.platform === 'linux') {
+        return { urgency: 'Patch cycle', text: `Install the ${d.updates} waiting security update${d.updates === 1 ? '' : 's'} from the distribution: sudo apt update && sudo apt upgrade (Red Hat family: sudo dnf upgrade --security), then restart if the kernel or core libraries changed. Turning on unattended-upgrades (dnf-automatic) keeps it current. The alert closes itself at the next inventory, and the SBOM's package alerts for the same packages close with it.` }
+      }
       if (d.patch_status === 'unsupported') {
         return { urgency: '≤3d', text: `This Windows version no longer receives security updates. Plan an upgrade to a supported version (Windows 10 22H2 needs Extended Security Updates). Until then, limit what the machine can reach.` }
       }

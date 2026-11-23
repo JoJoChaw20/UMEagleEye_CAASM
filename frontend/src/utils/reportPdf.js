@@ -30,7 +30,7 @@ const LEVEL = {
 const SEV = { critical: C.red, high: [200, 90, 10], medium: C.amber, low: C.muted }
 // Alert types in the fix-time table (the Worker builds this PDF too, so not alertMeta.jsx's labels)
 const ALERT_TYPE = {
-  cve_detected: 'Vulnerable package', vulnerable_service: 'Vulnerable service', os_patch_missing: 'Missing Windows update',
+  cve_detected: 'Vulnerable package', vulnerable_service: 'Vulnerable service', os_patch_missing: 'Missing OS updates',
   exposure: 'Exposure', cti_match: 'Threat-intel match', port_opened: 'New open port', new_device: 'New device',
   config_change: 'Configuration change', software_change: 'Software change', security_baseline: 'Below security baseline',
 }
@@ -283,7 +283,7 @@ export function buildPdf(data, reportType) {
           color: r => (r.reliable ? C.body : C.muted) },
       ], ttr)
     }
-    paragraph(`Estimated work per alert: investigate a possible compromise 4 h, update a package 30 min, upgrade a service 1 h, install a Windows update 1 h (with a restart), harden a computer below the security baseline 2 h, fix an exposure 30 min, review a change 15 min. Typical time is the median from first seen (or reopened) to resolved; it is a guide once ${ft.min_resolved ?? 10} of a type are resolved.`, 7.5, C.muted)
+    paragraph(`Estimated work per alert: investigate a possible compromise 4 h, update a package 30 min, upgrade a service 1 h, install OS updates 1 h (with a restart), harden a computer below the security baseline 2 h, fix an exposure 30 min, review a change 15 min. Typical time is the median from first seen (or reopened) to resolved; it is a guide once ${ft.min_resolved ?? 10} of a type are resolved.`, 7.5, C.muted)
     y += 2
   }
   if ((pr.sla_breaches ?? []).length) {

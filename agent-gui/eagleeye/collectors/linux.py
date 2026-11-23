@@ -507,14 +507,111 @@ def _sshd(sys_: System) -> Optional[dict[str, Any]]:
             "permitemptypasswords": cfg.get("permitemptypasswords", "no"), "maxauthtries": _int(cfg.get("maxauthtries", "6"))}
 
 
-def _security_updates(sys_: System) -> Optional[int]:
+_APT_INST = re.compile(r"^Inst (\S+) (?:\[(\S+)\] )?\((\S+) ([^)]*)\)")
+_MAX_UPDATE_PACKAGES = 100
+
+
+def parse_security_updates(apt_out: Optional[str] = None, dnf_out: Optional[str] = None) -> Optional[list[dict[str, Any]]]:
+    """The packages the distribution's security channel has newer versions of: apt-get -s output
+    (`Inst pkg [installed] (candidate archives...)`) or dnf updateinfo (`RHSA-... Important/Sec. nevra`)."""
+    if apt_out is not None:
+        found = []
+        for ln in apt_out.splitlines():
+            m = _APT_INST.match(ln)
+            if m and "-security" in m.group(4):
+                found.append({"name": m.group(1), "installed": m.group(2), "available": m.group(3)})
+        return found
+    if dnf_out is not None:
+        found = []
+        for ln in dnf_out.splitlines():
+            parts = ln.split()
+            if len(parts) >= 3 and "/Sec." in parts[1]:
+                found.append({"name": parts[2], "installed": None, "available": None, "advisory": parts[0], "severity": parts[1].split("/")[0]})
+        return found
+    return None
+
+
+def _deb_order(c: str) -> int:
+    """dpkg's character order inside a version part: ~ first, then the end, letters, then the rest."""
+    return -1 if c == "~" else 0 if c.isdigit() else ord(c) if c.isalpha() else ord(c) + 256
+
+
+def _deb_cmp_part(a: str, b: str) -> int:
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while (i < len(a) and not a[i].isdigit()) or (j < len(b) and not b[j].isdigit()):
+            ac = _deb_order(a[i]) if i < len(a) else 0
+            bc = _deb_order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return ac - bc
+            i, j = i + 1, j + 1
+        while i < len(a) and a[i] == "0":
+            i += 1
+        while j < len(b) and b[j] == "0":
+            j += 1
+        first = 0
+        while i < len(a) and a[i].isdigit() and j < len(b) and b[j].isdigit():
+            first = first or ord(a[i]) - ord(b[j])
+            i, j = i + 1, j + 1
+        if i < len(a) and a[i].isdigit():
+            return 1
+        if j < len(b) and b[j].isdigit():
+            return -1
+        if first:
+            return first
+    return 0
+
+
+def deb_version_cmp(a: str, b: str) -> int:
+    """Debian version comparison (dpkg --compare-versions): <0, 0 or >0."""
+    def split(v: str) -> tuple[int, str, str]:
+        epoch, _, rest = v.partition(":") if ":" in v else ("0", "", v)
+        upstream, _, revision = rest.rpartition("-") if "-" in rest else (rest, "", "")
+        return int(epoch or 0) if epoch.isdigit() else 0, upstream, revision
+    ea, ua, ra = split(a)
+    eb, ub, rb = split(b)
+    return (ea - eb) or _deb_cmp_part(ua, ub) or _deb_cmp_part(ra, rb)
+
+
+def parse_madison_security(text: Optional[str]) -> dict[str, str]:
+    """The newest version each package has in a -security pocket, from `apt-cache madison`."""
+    best: dict[str, str] = {}
+    for ln in (text or "").splitlines():
+        parts = [p.strip() for p in ln.split("|")]
+        if len(parts) == 3 and "-security" in parts[2]:
+            name, version = parts[0], parts[1]
+            if name not in best or deb_version_cmp(version, best[name]) > 0:
+                best[name] = version
+    return best
+
+
+def _apt_security_updates(sys_: System) -> Optional[list[dict[str, Any]]]:
+    """apt: what dist-upgrade would bring from -security, plus packages whose candidate is a newer
+    -updates version while -security also holds a version newer than the installed one (apt-get then
+    names only -updates, and the security fix would be missed)."""
+    out = sys_.run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"], timeout=180)
+    found = parse_security_updates(apt_out=out)
+    if found is None:
+        return None
+    others = []
+    for ln in (out or "").splitlines():
+        m = _APT_INST.match(ln)
+        if m and m.group(2) and "-security" not in m.group(4):
+            others.append((m.group(1), m.group(2)))
+    if others:
+        security = parse_madison_security(sys_.run(["apt-cache", "madison", *[n for n, _ in others]], timeout=120))
+        for name, installed in others:
+            if name in security and deb_version_cmp(security[name], installed) > 0:
+                found.append({"name": name, "installed": installed, "available": security[name]})
+    return found
+
+
+def _security_updates(sys_: System) -> Optional[list[dict[str, Any]]]:
     """Updates from the distribution's security channel that are waiting to be installed."""
     if sys_.which("apt-get"):
-        out = sys_.run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"], timeout=180)
-        return None if out is None else sum(1 for ln in out.splitlines() if ln.startswith("Inst ") and "-security" in ln)
+        return _apt_security_updates(sys_)
     if sys_.which("dnf"):
-        out = sys_.run(["dnf", "-C", "-q", "updateinfo", "list", "--security"], timeout=180)
-        return None if out is None else sum(1 for ln in out.splitlines() if "/Sec." in ln)
+        return parse_security_updates(dnf_out=sys_.run(["dnf", "-C", "-q", "updateinfo", "list", "--security"], timeout=180))
     return None
 
 
@@ -586,8 +683,11 @@ def _baseline(sys_: System, software: list[dict[str, Any]], firewall: list[dict[
     selinux = (sys_.read("/sys/fs/selinux/enforce") or "").strip()
     journald = _conf_value(sys_.read("/etc/systemd/journald.conf"), "Storage")
     ntp = (sys_.run(["timedatectl", "show", "-p", "NTP", "--value"]) or "").strip()
+    updates = _security_updates(sys_)
     return {
-        "security_updates": _security_updates(sys_),
+        "security_updates": None if updates is None else len(updates),
+        "security_update_packages": None if updates is None else updates[:_MAX_UPDATE_PACKAGES],
+        "uefi": sys_.exists("/sys/firmware/efi"),               # legacy BIOS boot: Secure Boot is not possible
         "auto_updates": _auto_updates(sys_),
         "password_quality": None if pwq is None else {"min_length": minlen},
         "lockout": None if lock is None else {"deny": deny},

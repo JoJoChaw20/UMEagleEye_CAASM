@@ -25,6 +25,7 @@ import { resolveNetworkScope } from '../lib/networkScope'
 import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { checkWindowsPatch } from '../services/windowsPatch'
 import { syncBaselineAlerts } from '../services/securityBaseline'
+import { checkLinuxUpdates } from '../services/linuxUpdates'
 import { baselineColumns } from '../lib/baseline'
 import {
   bindMachine, deviceTypeFor, diffSoftware, identityMacs, inventoryHostKey, inventoryIps, planAgentAddress, primaryMac,
@@ -886,6 +887,12 @@ router.post('/:agentId/inventory', zValidator('json', inventorySchema), async (c
       await checkWindowsPatch(db, c.env.REPORTS_BUCKET, assetId, inv)
     } catch (err) {
       console.error('inventory: Windows patch check failed:', err)
+    }
+    // Linux: security updates waiting in the distribution's channel, one alert while any are.
+    try {
+      await checkLinuxUpdates(db, assetId, inv, now)
+    } catch (err) {
+      console.error('inventory: Linux updates check failed:', err)
     }
     // Security baseline below the tenant's target: one alert while it is.
     try {

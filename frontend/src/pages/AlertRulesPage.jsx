@@ -17,7 +17,7 @@ import { hoursText } from '../utils/fixTime'
 const SOURCE = {
   cve_detected: { from: 'The computer\'s agent: its software list (SBOM) checked for known CVEs', work: 'Update the package: 30 min' },
   vulnerable_service: { from: 'Active scans: a service\'s version from its banner, checked against NVD', work: 'Upgrade the service: 1 h' },
-  os_patch_missing: { from: 'The computer\'s agent: its Windows build against Microsoft\'s monthly fixes', work: 'Install the update, with a restart: 1 h' },
+  os_patch_missing: { from: 'The computer\'s agent: its Windows build against Microsoft\'s monthly fixes; on Linux, the updates its distribution\'s security channel has waiting', work: 'Install the updates, with a restart: 1 h' },
   cti_match: { from: 'Threat intelligence (feeds and your events) against device addresses and names, installed software and packages', work: 'Investigate: 4 h; a weak match is reviewed: 15 min' },
   cti_sighting: { from: 'The computer\'s agent: its DNS look-ups, connections and running programs against the threat list, on the computer', work: 'Investigate: 4 h' },
   exposure: { from: 'Active scans: what a port answers (Telnet, a database without a password, RDP, TLS…)', work: 'Fix the setting or close the port: 30 min' },

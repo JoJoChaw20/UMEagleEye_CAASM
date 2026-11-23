@@ -890,8 +890,16 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                 e.event_type === 'cti_match' && d.match_kind !== 'malicious_package' && d.indicator_value && ['Indicator', `${d.indicator_type}: ${d.indicator_value}`],
                 e.event_type === 'cti_match' && Array.isArray(d.sources) && d.sources.length > 0 && ['Listed by', d.sources.join(', ')],
                 e.event_type === 'cti_match' && Array.isArray(d.shared_by) && d.shared_by.length > 0 && ['Shared by', `${d.shared_by.join(', ')} (an event they share with all tenants)`],
-                e.event_type === 'os_patch_missing' && ['Windows', `${d.product ?? '—'}`],
-                e.event_type === 'os_patch_missing' && ['Installed build', d.build],
+                e.event_type === 'os_patch_missing' && d.platform === 'linux' && ['Distribution', d.product ?? '—'],
+                e.event_type === 'os_patch_missing' && d.platform === 'linux' && [`Waiting (${d.updates})`, <span className="block space-y-0.5">
+                  {(d.packages ?? []).map(p => (
+                    <span key={p.name} className="block font-mono text-xs">{p.name}{p.installed ? <span className="text-dark-400"> {p.installed} → </span> : ' '}{p.available ?? ''}{p.advisory && <span className="text-dark-400"> · {p.advisory}{p.severity ? ` (${p.severity})` : ''}</span>}</span>
+                  ))}
+                  {d.updates > (d.packages ?? []).length && <span className="block text-dark-400 text-xs">and {d.updates - (d.packages ?? []).length} more</span>}
+                </span>],
+                e.event_type === 'os_patch_missing' && d.platform === 'linux' && d.restart_pending && ['Restart', 'A restart is pending: updates already installed are not active yet'],
+                e.event_type === 'os_patch_missing' && d.platform !== 'linux' && ['Windows', `${d.product ?? '—'}`],
+                e.event_type === 'os_patch_missing' && d.platform !== 'linux' && ['Installed build', d.build],
                 e.event_type === 'os_patch_missing' && d.latest_build && ['Latest build', d.kb
                   ? <span>{d.latest_build} · <a href={`https://support.microsoft.com/help/${d.kb}`} target="_blank" rel="noreferrer" className="text-accent-cyan hover:underline">KB{d.kb}</a></span>
                   : d.latest_build],

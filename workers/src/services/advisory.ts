@@ -236,6 +236,11 @@ async function gatherFacts(db: DB, event: typeof events.$inferSelect, asset: typ
     other.techniques = sanitizeText(exposure.techniques.slice(0, 4).map((t) => `${t.id} ${t.name}`).join('; '), 240)
   }
   // A missing Windows patch: the KB id and title
+  if (event.eventType === 'os_patch_missing' && d.platform === 'linux') {
+    const pkgs = (Array.isArray(d.packages) ? d.packages as Array<Record<string, unknown>> : [])
+      .map(p => `${p.name}${p.available ? ` -> ${p.available}` : ''}`)
+    other.linux_security_updates = sanitizeText(`${d.updates ?? pkgs.length} waiting: ${pkgs.slice(0, 15).join('; ')}`, 900)
+  }
   if (event.eventType === 'os_patch_missing') {
     if (kbLabel(d.kb)) other.kb = sanitizeText(kbLabel(d.kb), 40)
     const title = d.kb_title ?? d.kbTitle

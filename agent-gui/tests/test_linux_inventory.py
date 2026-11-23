@@ -316,7 +316,10 @@ def test_baseline_facts_of_a_hardened_server():
             commands={("apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"): APT_SIM, ("sshd", "-T"): SSHD_T,
                       ("timedatectl", "show", "-p", "NTP", "--value"): "yes\n"},
             tools=["apt-get", "sshd", "timedatectl"])["baseline"]
-    assert b["security_updates"] == 2 and b["auto_updates"] is True
+    assert b["security_updates"] == 2 and b["auto_updates"] is True and b["uefi"] is False
+    assert b["security_update_packages"] == [
+        {"name": "libssl3t64", "installed": "3.5.0-1ubuntu1", "available": "3.5.0-1ubuntu1.1"},
+        {"name": "openssl", "installed": "3.5.0-1ubuntu1", "available": "3.5.0-1ubuntu1.1"}]       # tzdata: -updates only
     assert b["password_quality"] == {"min_length": 14} and b["lockout"] == {"deny": 5} and b["pass_max_days"] == 365
     assert b["shadow"] == {"empty_passwords": 0, "root_locked": True} and b["uid0"] == ["root"]
     assert b["default_incoming"] == "deny"
@@ -336,6 +339,45 @@ def test_baseline_facts_of_a_default_install_without_root():
     assert b["shadow"] is None                                     # needs root: the server says so
     assert b["sshd"] == {"source": "config files", "permitrootlogin": "prohibit-password", "permitemptypasswords": "no", "maxauthtries": 3}
     assert b["default_incoming"] is None and b["security_updates"] is None
+
+
+def test_debian_version_order_matches_dpkg():
+    cmp = linux.deb_version_cmp
+    assert cmp("1.25.0-2ubuntu4", "1.25.0-2ubuntu4.4") < 0                 # the wget test on the lab VM
+    assert cmp("2:9.1.2141-1ubuntu4.10", "2:9.1.2141-1ubuntu4.9") > 0      # 10 > 9 as numbers, not text
+    assert cmp("1.0~rc1", "1.0") < 0 and cmp("1.0", "1.0~rc1") > 0         # ~ sorts before the end
+    assert cmp("1:1.0", "2.0") > 0                                          # the epoch wins
+    assert cmp("1.0a", "1.0") > 0 and cmp("1.0+b1", "1.0") > 0 and cmp("1.0-1", "1.0-1") == 0
+    assert cmp("3.4.1+ds1-7ubuntu0.3", "3.4.1+ds1-7") > 0
+
+
+def test_a_security_fix_hidden_behind_a_newer_updates_version_is_found():
+    # vim-tiny: installed 4.8; -security has 4.9, -updates 4.10, so apt-get names only -updates
+    apt = ("Inst vim-tiny [2:9.1.2141-1ubuntu4.8] (2:9.1.2141-1ubuntu4.10 Ubuntu:26.04/resolute-updates [amd64]) []\n"
+           "Inst tzdata [2026a-1] (2026b-0ubuntu0.26.04 Ubuntu:26.04/resolute-updates [all])\n")
+    madison = (" vim-tiny | 2:9.1.2141-1ubuntu4.10 | http://archive.ubuntu.com/ubuntu resolute-updates/main amd64 Packages\n"
+               " vim-tiny | 2:9.1.2141-1ubuntu4.9 | http://security.ubuntu.com/ubuntu resolute-security/main amd64 Packages\n"
+               " vim-tiny | 2:9.1.2141-1ubuntu4 | http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages\n"
+               "   tzdata | 2026b-0ubuntu0.26.04 | http://archive.ubuntu.com/ubuntu resolute-updates/main all Packages\n")
+    b = inv(commands={("apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"): apt,
+                      ("apt-cache", "madison", "vim-tiny", "tzdata"): madison}, tools=["apt-get", "apt-cache"])["baseline"]
+    assert b["security_updates"] == 1
+    assert b["security_update_packages"] == [{"name": "vim-tiny", "installed": "2:9.1.2141-1ubuntu4.8", "available": "2:9.1.2141-1ubuntu4.9"}]
+    # installed already at the security version (the lab VM today): nothing waiting
+    apt_now = apt.replace("ubuntu4.8]", "ubuntu4.9]")
+    b = inv(commands={("apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"): apt_now,
+                      ("apt-cache", "madison", "vim-tiny", "tzdata"): madison}, tools=["apt-get", "apt-cache"])["baseline"]
+    assert b["security_updates"] == 0
+
+
+def test_security_updates_on_rpm_systems():
+    dnf = ("RHSA-2026:1234 Important/Sec.  openssl-libs-1:3.2.2-6.el9_5.1.x86_64\n"
+           "RHBA-2026:2000 bugfix         tzdata-2026b-1.el9.noarch\n"
+           "RHSA-2026:1300 Moderate/Sec.  curl-7.76.1-31.el9_6.x86_64\n")
+    pk = linux.parse_security_updates(dnf_out=dnf)
+    assert [p["name"] for p in pk] == ["openssl-libs-1:3.2.2-6.el9_5.1.x86_64", "curl-7.76.1-31.el9_6.x86_64"]
+    assert pk[0]["advisory"] == "RHSA-2026:1234" and pk[0]["severity"] == "Important"
+    assert linux.parse_security_updates() is None                  # could not ask: not "none waiting"
 
 
 def test_insecure_servers_come_from_the_package_list():

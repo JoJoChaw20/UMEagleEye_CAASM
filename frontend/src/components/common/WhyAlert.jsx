@@ -47,6 +47,14 @@ function chain(e) {
       }
     }
     case 'os_patch_missing': {
+      if (d.platform === 'linux') {
+        const names = (d.packages ?? []).slice(0, 5).map(p => p.name).join(', ')
+        return {
+          evidence: `${where} runs ${d.product ?? 'Linux'}; its package manager lists ${d.updates} update${d.updates === 1 ? '' : 's'} from the security channel not yet installed (EagleEye agent inventory)`,
+          knowledge: [`The distribution published these as security fixes${names ? `: ${names}${d.updates > 5 ? ', …' : ''}` : ''}`],
+          rule: 'R8 · Security updates the distribution has released but the computer has not installed (apt / dnf security channel)',
+        }
+      }
       const known = d.patch_status === 'unsupported'
         ? ['Microsoft has stopped releasing security updates for this Windows version']
         : [`Microsoft has released build ${d.latest_build ?? 'newer'}${d.kb ? ` (KB${d.kb})` : ''}, which fixes ${Number(d.cves ?? 0).toLocaleString()} CVEs this build is missing`]

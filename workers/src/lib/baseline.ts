@@ -379,8 +379,12 @@ const LINUX_RULES: Rule[] = [
       return vols.length ? passIf(vols.every(v => String(v['protection']).toLowerCase() === 'on'), vols.map(v => `${v['volume'] ?? v['drive']} ${String(v['protection']).toLowerCase()}`).join(', ')) : unread(c, false)
     } },
   { id: 'linux.secure_boot', area: 'disk', label: 'Secure Boot on', expected: 'UEFI Secure Boot enabled', cis: 'Enable Secure Boot',
-    fix: 'Turn on Secure Boot in the UEFI settings (signed kernels are the default on Ubuntu and RHEL).',
-    judge: c => { const v = bool(c.sec['secure_boot']); return v == null ? unread(c, false) : passIf(v, v ? 'on' : 'off') } },
+    fix: 'Turn on Secure Boot in the UEFI settings (signed kernels are the default on Ubuntu and RHEL). A machine booting in legacy BIOS mode must be switched to UEFI first.',
+    judge: c => {
+      const v = bool(c.sec['secure_boot'])
+      if (v == null) return unread(c, false)
+      return passIf(v, v ? 'on' : c.facts['uefi'] === false ? 'off: legacy BIOS boot (Secure Boot needs UEFI)' : 'off')
+    } },
   { id: 'linux.bootloader', area: 'disk', label: 'Boot loader config protected', expected: 'grub.cfg owned by root, no access for group or others',
     cis: 'Ensure access to bootloader config is configured', fix: 'Run: sudo chown root:root /boot/grub/grub.cfg && sudo chmod 0600 /boot/grub/grub.cfg',
     judge: c => {

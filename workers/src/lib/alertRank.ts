@@ -153,7 +153,7 @@ export const EFFORT_HOURS: Record<EffortKey, number> = {
 }
 export const EFFORT_LABEL: Record<EffortKey, string> = {
   investigate: 'Investigate a possible compromise', package: 'Update a package', service: 'Upgrade a service',
-  windows_update: 'Install a Windows update (restart)', exposure: 'Fix an exposure', hardening: 'Harden a computer\'s settings',
+  windows_update: 'Install OS updates (restart)', exposure: 'Fix an exposure', hardening: 'Harden a computer\'s settings',
   software: 'Update or remove watched software', review: 'Review a change',
 }
 
