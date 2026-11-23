@@ -184,6 +184,19 @@ def test_payload_is_json_serialisable(inv):
     json.dumps(inv)
 
 
+def test_baseline_facts_pass_through_trimmed():
+    raw = json.loads(json.dumps(RAW))
+    # As recorded on the developer PC (25H2 Home, run as a normal user), plus oversized values.
+    raw["baseline"] = {"no_auto_update": None, "update_service_disabled": False, "secpol": None, "rdp_nla": 1,
+                       "firewall_inbound": [{"profile": "Public", "action": "Block"}], "autorun_drive_types": 221,
+                       "audit_logon": "x" * 400, "deep": {"a": {"b": {"c": {"d": 1}}}}, "obj": object()}
+    b = windows.normalize(raw, collected_at=NOW)["baseline"]
+    assert b["rdp_nla"] == 1 and b["autorun_drive_types"] == 221 and b["secpol"] is None
+    assert b["firewall_inbound"] == [{"profile": "Public", "action": "Block"}]
+    assert len(b["audit_logon"]) == 255 and b["deep"] == {"a": {"b": None}} and b["obj"] is None
+    assert windows.normalize(json.loads(json.dumps(RAW)), collected_at=NOW)["baseline"] is None    # an older script
+
+
 # ── stages ──
 class FakeClient:
     def __init__(self, ok=True):

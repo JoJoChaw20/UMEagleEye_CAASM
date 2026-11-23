@@ -161,6 +161,61 @@ $secureBoot = RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State'
 $enableLua  = RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
 $denyRdp    = RegValue 'HKLM:\System\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections'
 
+# Security baseline facts: raw values only, judged by the server (workers/src/lib/baseline.ts,
+# CIS Level 1). Unreadable stays null. Local security policy, SMB signing, the audit policy and
+# the Security log need Administrator (the service runs as SYSTEM).
+$secpol = $null; $smbSigning = $null; $auditLogon = $null; $securityLogKb = $null
+if ($isAdmin) {
+    $secpol = Section 'baseline_secpol' {
+        $cfg = Join-Path $env:TEMP "eagleeye-secpol-$PID.inf"
+        try {
+            $null = & secedit.exe /export /cfg $cfg /areas SECURITYPOLICY /quiet
+            $kv = @{}
+            foreach ($line in Get-Content -LiteralPath $cfg -Encoding Unicode) {
+                if ($line -match '^\s*(\w+)\s*=\s*(.*?)\s*$') { $kv[$Matches[1]] = $Matches[2].Trim('"') }
+            }
+            function IntOf($key) { if ($kv.ContainsKey($key) -and $kv[$key] -match '^-?\d+$') { [int]$kv[$key] } else { $null } }
+            [ordered]@{
+                min_password_length = (IntOf 'MinimumPasswordLength'); password_complexity = (IntOf 'PasswordComplexity')
+                max_password_age = (IntOf 'MaximumPasswordAge'); lockout_threshold = (IntOf 'LockoutBadCount')
+                lockout_duration = (IntOf 'LockoutDuration'); guest_enabled = (IntOf 'EnableGuestAccount')
+                admin_enabled = (IntOf 'EnableAdminAccount'); admin_name = $kv['NewAdministratorName']
+            }
+        } finally { Remove-Item -LiteralPath $cfg -ErrorAction SilentlyContinue }
+    }
+    $smbSigning = Section 'baseline_smb_signing' { [bool](Get-SmbServerConfiguration).RequireSecuritySignature }
+    # Logon subcategory by GUID (the name is translated); the setting text may be translated too.
+    $auditLogon = Section 'baseline_audit' {
+        $csv = & auditpol.exe /get '/subcategory:{0CCE9215-69AE-11D9-BED3-505054503030}' /r | Where-Object { $_ } | ConvertFrom-Csv
+        [string]@($csv)[0].'Inclusion Setting'
+    }
+    $securityLogKb = Section 'baseline_security_log' { [int64]((Get-WinEvent -ListLog Security).MaximumSizeInBytes / 1KB) }
+}
+$baseline = Section 'baseline' {
+    $wu = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
+    [ordered]@{
+        no_auto_update        = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoUpdate')
+        update_service_disabled = $(if ($wu) { [string]$wu.StartType -eq 'Disabled' } else { $null })
+        secpol                = $secpol
+        firewall_inbound      = (Section 'baseline_firewall' { ,@(Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object {
+                                    [ordered]@{ profile = [string]$_.Name; action = [string]$_.DefaultInboundAction } }) })
+        rdp_nla               = $(
+                                    $p = RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication'
+                                    if ($null -ne $p) { $p } else { RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'UserAuthentication' })
+        smb_signing_required  = $smbSigning
+        llmnr_policy          = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast')
+        winrm_basic_policy    = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' 'AllowBasic')
+        winrm_basic_local     = (RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Service' 'auth_basic')
+        uac_secure_desktop    = (RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'PromptOnSecureDesktop')
+        autorun_drive_types   = (RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoDriveTypeAutoRun')
+        ps_scriptblock_logging = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' 'EnableScriptBlockLogging')
+        smartscreen_policy    = (RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableSmartScreen')
+        smartscreen_local     = (RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'SmartScreenEnabled')
+        audit_logon           = $auditLogon
+        security_log_kb       = $securityLogKb
+    }
+}
+
 $result = [ordered]@{
     schema   = 1
     is_admin = $isAdmin
@@ -212,6 +267,7 @@ $result = [ordered]@{
         local_admins       = $localAdmins
         local_admin_count  = $localAdminCount
     }
+    baseline = $baseline
     network  = [ordered]@{ interfaces = $interfaces; listening = $listening }
     software = $software
     errors   = @($errors)

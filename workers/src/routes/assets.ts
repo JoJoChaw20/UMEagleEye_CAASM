@@ -13,6 +13,7 @@ import { closeReviewedNewDevices } from '../services/alertHygiene'
 import { refreshCveAlertScores } from '../services/alertScores'
 import { ACTIVE_MODEL, agentRoleOf, rescoreAssets, scoreAsset, scoreDetail, scoreInputOf } from '../lib/rescore'
 import { postureColumns } from '../lib/endpointPosture'
+import { evaluateBaseline } from '../lib/baseline'
 import { automaticDeviceType } from '../lib/deviceClassify'
 import { planScanLogPurge } from '../lib/scanLog'
 import type { DeviceTypeHint } from '../lib/deviceHints'
@@ -622,7 +623,7 @@ app.get('/:assetId', authMiddleware, requireAction('asset.view'), async (c) => {
     // how its machine shows it).
     const agentsHere = await db.select({ agent_id: agents.agentId, name: agents.name, kind: agents.kind })
       .from(agents).where(and(eq(agents.hostAssetId, assetId), isNull(agents.retiredAt)))
-    return c.json({ ...asset, agents_here: agentsHere })
+    return c.json({ ...asset, agents_here: agentsHere, baseline: evaluateBaseline(asset.endpointInventory) })
   } catch (err) {
     console.error('assets GET /:assetId error:', err)
     return c.json({ detail: 'Failed to fetch asset' }, 500)

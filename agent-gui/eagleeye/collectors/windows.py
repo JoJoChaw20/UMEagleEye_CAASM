@@ -126,6 +126,22 @@ def antivirus_state(product_state: Any) -> dict[str, Optional[bool]]:
     return {"enabled": hexstate[2:4] in ("10", "11"), "up_to_date": hexstate[4:6] == "00"}
 
 
+def baseline_facts(value: Any, depth: int = 0) -> Any:
+    """The security-baseline facts as sent: plain values, short strings, small lists and maps
+    (the server judges them, workers/src/lib/baseline.ts)."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:255]
+    if depth >= 3:
+        return None
+    if isinstance(value, dict):
+        return {str(k)[:64]: baseline_facts(v, depth + 1) for k, v in list(value.items())[:64]}
+    if isinstance(value, list):
+        return [baseline_facts(v, depth + 1) for v in value[:64]]
+    return None
+
+
 def normalize(raw: dict[str, Any], collected_at: Optional[datetime] = None) -> dict[str, Any]:
     now = collected_at or datetime.now(timezone.utc)
     ident = raw.get("identity") or {}
@@ -274,6 +290,7 @@ def normalize(raw: dict[str, Any], collected_at: Optional[datetime] = None) -> d
             "local_admins": [a for a in _list(sec.get("local_admins")) if isinstance(a, dict)],
             "local_admin_count": sec.get("local_admin_count"),
         },
+        "baseline": baseline_facts(raw.get("baseline")),
         "network": {
             "primary_ip": primary_ip(lan_ip(), interfaces),
             "interfaces": interfaces,

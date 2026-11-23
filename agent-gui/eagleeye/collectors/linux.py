@@ -89,6 +89,14 @@ class System:
         except OSError:
             return None
 
+    def stat_mode(self, path: str) -> Optional[tuple[int, int, int]]:
+        """(permission bits, owner uid, group gid), or None when missing."""
+        try:
+            st = os.stat(path)
+            return st.st_mode & 0o7777, st.st_uid, st.st_gid
+        except OSError:
+            return None
+
     def hostname(self) -> str:
         return socket.gethostname()
 
@@ -435,6 +443,179 @@ def _software(sys_: System) -> list[dict[str, Any]]:
 
 
 # ── document ─────────────────────────────────────────────────────────────────
+# ── security baseline facts (judged by the server, workers/src/lib/baseline.ts) ──
+_INSECURE_SERVERS = frozenset({
+    "telnetd", "inetutils-telnetd", "telnetd-ssl", "telnet-server", "rsh-server", "rsh-redone-server",
+    "tftpd", "tftpd-hpa", "atftpd", "tftp-server", "nis", "ypserv", "talkd", "inetutils-talkd", "talk-server",
+})
+_PAM_PASSWORD = ("/etc/pam.d/common-password", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth")
+_PAM_AUTH = ("/etc/pam.d/common-auth", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth")
+
+
+def _pam_module(sys_: System, files: tuple[str, ...], module: str) -> Optional[dict[str, str]]:
+    """The arguments of `module` where the PAM stack uses it, or None when it is not used."""
+    for path in files:
+        for line in (sys_.read(path) or "").splitlines():
+            line = line.split("#", 1)[0]
+            if module in line:
+                args = line.split(module, 1)[1].split()
+                return dict(a.split("=", 1) if "=" in a else (a, "") for a in args)
+    return None
+
+
+def _conf_value(text: Optional[str], key: str) -> Optional[str]:
+    """The last `key = value` (or `key value`) in a config file."""
+    found = None
+    for line in (text or "").splitlines():
+        m = re.match(rf"^\s*{re.escape(key)}\s*(?:=\s*|\s+)(\S+)", line, re.I)
+        if m:
+            found = m.group(1).strip('"')
+    return found
+
+
+def _int(value: Optional[str]) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def parse_sshd(text: str) -> dict[str, str]:
+    """`sshd -T` output, or config files read in order (sshd keeps the FIRST value of a key)."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.split("#", 1)[0].split(None, 1)
+        if len(parts) == 2 and parts[0].lower() not in out and parts[0].lower() != "match":
+            out[parts[0].lower()] = parts[1].strip().lower()
+    return out
+
+
+def _sshd(sys_: System) -> Optional[dict[str, Any]]:
+    if not (sys_.exists("/usr/sbin/sshd") or sys_.which("sshd")):
+        return None                                   # no SSH server: the SSH checks do not apply
+    effective = sys_.run(["sshd", "-T"]) if sys_.is_root else None
+    if effective:
+        cfg, source = parse_sshd(effective), "sshd -T"
+    else:
+        # Ubuntu includes sshd_config.d/*.conf at the top, so the drop-ins come first.
+        texts = [sys_.read(f"/etc/ssh/sshd_config.d/{n}") or "" for n in sys_.listdir("/etc/ssh/sshd_config.d") if n.endswith(".conf")]
+        main = sys_.read("/etc/ssh/sshd_config")
+        if main is None and not texts:
+            return {"source": None}
+        cfg, source = parse_sshd("\n".join(texts + [main or ""])), "config files"
+    return {"source": source, "permitrootlogin": cfg.get("permitrootlogin", "prohibit-password"),
+            "permitemptypasswords": cfg.get("permitemptypasswords", "no"), "maxauthtries": _int(cfg.get("maxauthtries", "6"))}
+
+
+def _security_updates(sys_: System) -> Optional[int]:
+    """Updates from the distribution's security channel that are waiting to be installed."""
+    if sys_.which("apt-get"):
+        out = sys_.run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"], timeout=180)
+        return None if out is None else sum(1 for ln in out.splitlines() if ln.startswith("Inst ") and "-security" in ln)
+    if sys_.which("dnf"):
+        out = sys_.run(["dnf", "-C", "-q", "updateinfo", "list", "--security"], timeout=180)
+        return None if out is None else sum(1 for ln in out.splitlines() if "/Sec." in ln)
+    return None
+
+
+def _auto_updates(sys_: System) -> Optional[bool]:
+    if sys_.which("apt-get"):
+        conf = "\n".join(sys_.read(f"/etc/apt/apt.conf.d/{n}") or "" for n in sys_.listdir("/etc/apt/apt.conf.d"))
+        on = re.search(r'APT::Periodic::Unattended-Upgrade\s+"?1"?', conf) is not None
+        return on and (sys_.exists("/usr/bin/unattended-upgrade") or sys_.which("unattended-upgrade"))
+    if sys_.which("dnf"):
+        return any((sys_.run(["systemctl", "is-enabled", t]) or "").strip() == "enabled"
+                   for t in ("dnf-automatic.timer", "dnf-automatic-install.timer", "dnf5-automatic.timer"))
+    return None
+
+
+def _default_incoming(sys_: System, firewall: list[dict[str, Any]]) -> Optional[str]:
+    """'deny' or 'allow' for traffic no rule mentions; None when it cannot be told."""
+    on = {f["profile"] for f in firewall if f.get("enabled")}
+    if "ufw" in on:
+        policy = (_conf_value(sys_.read("/etc/default/ufw"), "DEFAULT_INPUT_POLICY") or "").upper()
+        return "deny" if policy in ("DROP", "REJECT") else "allow" if policy == "ACCEPT" else None
+    if "firewalld" in on:
+        return "deny"                                 # zones reject what they do not allow
+    rules = sys_.run(["nft", "list", "ruleset"]) if sys_.is_root else None
+    if rules is None:
+        return None
+    return "deny" if re.search(r"hook input[^;]*;[^;]*policy (drop|reject)", rules) else "allow"
+
+
+def _shadow(sys_: System) -> Optional[dict[str, Any]]:
+    text = sys_.read("/etc/shadow") if sys_.is_root else None
+    if text is None:
+        return None
+    empty, root_locked = 0, None
+    for line in text.splitlines():
+        parts = line.split(":")
+        if len(parts) < 2:
+            continue
+        if parts[1] == "":
+            empty += 1
+        if parts[0] == "root":
+            root_locked = parts[1].startswith(("!", "*"))
+    return {"empty_passwords": empty, "root_locked": root_locked}
+
+
+def _mode(sys_: System, *paths: str) -> Optional[dict[str, int]]:
+    for p in paths:
+        st = sys_.stat_mode(p)
+        if st:
+            return {"mode": st[0], "uid": st[1], "gid": st[2]}
+    return None
+
+
+def _baseline(sys_: System, software: list[dict[str, Any]], firewall: list[dict[str, Any]],
+              interfaces: list[dict[str, Any]]) -> dict[str, Any]:
+    pwq = _pam_module(sys_, _PAM_PASSWORD, "pam_pwquality.so")
+    minlen = None
+    if pwq is not None:
+        conf = "\n".join([sys_.read("/etc/security/pwquality.conf") or ""] + [
+            sys_.read(f"/etc/security/pwquality.conf.d/{n}") or "" for n in sys_.listdir("/etc/security/pwquality.conf.d")])
+        minlen = _int(pwq.get("minlen")) or _int(_conf_value(conf, "minlen")) or 8      # pwquality's own default
+    lock = _pam_module(sys_, _PAM_AUTH, "pam_faillock.so")
+    deny = None
+    if lock is not None:
+        deny = _int(lock.get("deny")) or _int(_conf_value(sys_.read("/etc/security/faillock.conf"), "deny")) or 3
+    names = {a["name"].lower() for a in software}
+    sysctl = lambda key: _int((sys_.read(f"/proc/sys/{key}") or "").strip() or None)  # noqa: E731
+    apparmor = (sys_.read("/sys/module/apparmor/parameters/enabled") or "").strip()
+    profiles = sys_.read("/sys/kernel/security/apparmor/profiles") if sys_.is_root else None
+    selinux = (sys_.read("/sys/fs/selinux/enforce") or "").strip()
+    journald = _conf_value(sys_.read("/etc/systemd/journald.conf"), "Storage")
+    ntp = (sys_.run(["timedatectl", "show", "-p", "NTP", "--value"]) or "").strip()
+    return {
+        "security_updates": _security_updates(sys_),
+        "auto_updates": _auto_updates(sys_),
+        "password_quality": None if pwq is None else {"min_length": minlen},
+        "lockout": None if lock is None else {"deny": deny},
+        "pass_max_days": _int(_conf_value(sys_.read("/etc/login.defs"), "PASS_MAX_DAYS")),
+        "shadow": _shadow(sys_),
+        "uid0": [ln.split(":")[0] for ln in (sys_.read("/etc/passwd") or "").splitlines()
+                 if len(ln.split(":")) > 3 and ln.split(":")[2] == "0"],
+        "default_incoming": _default_incoming(sys_, firewall),
+        "bootloader_config": _mode(sys_, "/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"),
+        "sshd": _sshd(sys_),
+        "insecure_servers": sorted(names & _INSECURE_SERVERS),
+        "aslr": sysctl("kernel/randomize_va_space"),
+        "ip_forward": sysctl("net/ipv4/ip_forward"),
+        "accept_redirects": [sysctl("net/ipv4/conf/all/accept_redirects"), sysctl("net/ipv4/conf/default/accept_redirects")],
+        "container_host": sys_.exists("/var/run/docker.sock") or sys_.exists("/run/containerd/containerd.sock")
+                          or any(re.match(r"^(docker\d*|cni|podman|br-)", i.get("name") or "") for i in interfaces),
+        "mac": {"apparmor": apparmor == "Y" if apparmor else None,
+                "apparmor_enforcing": None if profiles is None else profiles.count("(enforce)"),
+                "selinux": {"1": "enforcing", "0": "permissive"}.get(selinux)},
+        "aide": sys_.which("aide") or sys_.exists("/usr/bin/aide") or sys_.exists("/usr/sbin/aide"),
+        "shadow_file": _mode(sys_, "/etc/shadow"),
+        "auditd": _service_active(sys_, "auditd"),
+        "persistent_logs": (journald or "").lower() == "persistent" or sys_.exists("/var/log/journal")
+                           or _service_active(sys_, "rsyslog", "syslog-ng"),
+        "time_sync": ntp == "yes" if ntp else _service_active(sys_, "systemd-timesyncd", "chronyd", "chrony", "ntpsec", "ntp"),
+    }
+
+
 def build_inventory(sys_: System, user_software: bool = False, admin_names: bool = False) -> dict[str, Any]:
     now = sys_.now()
     unavailable: list[str] = []
@@ -493,6 +674,7 @@ def build_inventory(sys_: System, user_software: bool = False, admin_names: bool
             "local_admins": [{"name": n} for n in admins] if admin_names else [],
             "local_admin_count": len(admins),
         },
+        "baseline": section("baseline", lambda: _baseline(sys_, unique, firewall, interfaces), None),
         "network": {
             # Not an address on a virtual interface (docker0, virbr0, a tap): same rule as Windows.
             "primary_ip": primary_ip(sys_.primary_ip(), interfaces),

@@ -118,6 +118,9 @@ class FakeSystem(linux.System):
     def stat_mtime(self, path):
         return datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp() if path == "/var/log/installer" else None
 
+    def stat_mode(self, path):
+        return {"/etc/shadow": (0o640, 0, 42), "/boot/grub/grub.cfg": (0o600, 0, 0)}.get(path)
+
     def hostname(self):
         return "umeagleeye"
 
@@ -280,3 +283,62 @@ def test_primary_ip_is_never_a_virtual_interface(monkeypatch):
     assert inv()["network"]["primary_ip"] == "192.168.150.128"
     monkeypatch.setattr(FakeSystem, "primary_ip", lambda self: "172.17.0.1")
     assert inv()["network"]["primary_ip"] == "192.168.150.128"      # the first physical NIC instead
+
+
+# ── security baseline facts (judged by the server, workers/src/lib/baseline.ts) ──
+APT_SIM = """NOTE: This is only a simulation!
+Inst libssl3t64 [3.5.0-1ubuntu1] (3.5.0-1ubuntu1.1 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])
+Inst openssl [3.5.0-1ubuntu1] (3.5.0-1ubuntu1.1 Ubuntu:26.04/resolute-security [amd64])
+Inst tzdata [2026a-1] (2026b-0ubuntu0.26.04 Ubuntu:26.04/resolute-updates [all])
+Conf openssl (3.5.0-1ubuntu1.1 Ubuntu:26.04/resolute-security [amd64])
+"""
+HARDENED = {
+    "/etc/pam.d/common-password": "password requisite pam_pwquality.so retry=3\npassword [success=1 default=ignore] pam_unix.so obscure yescrypt\n",
+    "/etc/security/pwquality.conf": "# minlen = 8\nminlen = 14\n",
+    "/etc/pam.d/common-auth": "auth required pam_faillock.so preauth\nauth [success=1 default=ignore] pam_unix.so\n",
+    "/etc/security/faillock.conf": "deny = 5\nunlock_time = 900\n",
+    "/etc/login.defs": "PASS_MAX_DAYS\t365\nPASS_MIN_DAYS\t1\n",
+    "/etc/shadow": "root:!:20000:0:99999:7:::\nuser:$y$j9T$abc:20000:0:99999:7:::\n",
+    "/etc/passwd": "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000::/home/user:/bin/bash\n",
+    "/etc/apt/apt.conf.d/20auto-upgrades": 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n',
+    "/etc/default/ufw": 'DEFAULT_INPUT_POLICY="DROP"\n', "/etc/ufw/ufw.conf": "ENABLED=yes\n",
+    "/proc/sys/kernel/randomize_va_space": "2\n", "/proc/sys/net/ipv4/ip_forward": "0\n",
+    "/proc/sys/net/ipv4/conf/all/accept_redirects": "0\n", "/proc/sys/net/ipv4/conf/default/accept_redirects": "0\n",
+    "/sys/module/apparmor/parameters/enabled": "Y\n",
+    "/sys/kernel/security/apparmor/profiles": "/usr/sbin/cupsd (enforce)\nsnap.lxd (complain)\n/usr/bin/man (enforce)\n",
+}
+SSHD_T = "port 22\npermitrootlogin no\npermitemptypasswords no\nmaxauthtries 4\n"
+
+
+def test_baseline_facts_of_a_hardened_server():
+    b = inv(files=HARDENED, exists=["/usr/sbin/sshd", "/usr/bin/unattended-upgrade"],
+            dirs={"/etc/apt/apt.conf.d": ["20auto-upgrades"]},
+            commands={("apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"): APT_SIM, ("sshd", "-T"): SSHD_T,
+                      ("timedatectl", "show", "-p", "NTP", "--value"): "yes\n"},
+            tools=["apt-get", "sshd", "timedatectl"])["baseline"]
+    assert b["security_updates"] == 2 and b["auto_updates"] is True
+    assert b["password_quality"] == {"min_length": 14} and b["lockout"] == {"deny": 5} and b["pass_max_days"] == 365
+    assert b["shadow"] == {"empty_passwords": 0, "root_locked": True} and b["uid0"] == ["root"]
+    assert b["default_incoming"] == "deny"
+    assert b["sshd"] == {"source": "sshd -T", "permitrootlogin": "no", "permitemptypasswords": "no", "maxauthtries": 4}
+    assert (b["aslr"], b["ip_forward"], b["accept_redirects"]) == (2, 0, [0, 0])
+    assert b["mac"] == {"apparmor": True, "apparmor_enforcing": 2, "selinux": None}
+    assert b["bootloader_config"] == {"mode": 0o600, "uid": 0, "gid": 0} and b["shadow_file"] == {"mode": 0o640, "uid": 0, "gid": 42}
+    assert b["time_sync"] is True and b["insecure_servers"] == [] and b["container_host"] is True   # docker0 in the recorded VM
+
+
+def test_baseline_facts_of_a_default_install_without_root():
+    b = inv(root=False, files={"/etc/login.defs": "PASS_MAX_DAYS\t99999\n",
+                               "/etc/ssh/sshd_config": "Include /etc/ssh/sshd_config.d/*.conf\n#PermitRootLogin prohibit-password\n",
+                               "/etc/ssh/sshd_config.d/50-cloud-init.conf": "PasswordAuthentication yes\nMaxAuthTries 3\n"},
+            dirs={"/etc/ssh/sshd_config.d": ["50-cloud-init.conf"]}, exists=["/usr/sbin/sshd"])["baseline"]
+    assert b["password_quality"] is None and b["lockout"] is None and b["pass_max_days"] == 99999
+    assert b["shadow"] is None                                     # needs root: the server says so
+    assert b["sshd"] == {"source": "config files", "permitrootlogin": "prohibit-password", "permitemptypasswords": "no", "maxauthtries": 3}
+    assert b["default_incoming"] is None and b["security_updates"] is None
+
+
+def test_insecure_servers_come_from_the_package_list():
+    dpkg = DPKG + "telnetd\t0.17-44\tUbuntu Developers <x@y>\tamd64\tinstalled\n"
+    cmd = ("dpkg-query", "-W", "-f", "${Package}\t${Version}\t${Maintainer}\t${Architecture}\t${db:Status-Status}\n")
+    assert inv(commands={cmd: dpkg})["baseline"]["insecure_servers"] == ["telnetd"]
