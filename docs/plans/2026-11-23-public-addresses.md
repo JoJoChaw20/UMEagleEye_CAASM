@@ -1,7 +1,7 @@
 # D4: the organisation's public addresses (blocklists): plan
 
-Status: **built 23-24 Nov 2026, not deployed**: Neon's compute allowance ran out on 23 Nov, so migration 0047
-and the staging checks wait for the monthly reset. The SQL was run against an empty copy of the schema on a
+Status: **built 23-24 Nov 2026, on staging since 26 Nov** (migration 0047, Worker `afcd5b7f`; not in production). Neon's
+compute allowance ran out on 23 Nov and the staging checks waited for it. The SQL was run against an empty copy of the schema on a
 local PostgreSQL 18 (recording, listing, sharing, R11 levels and reopening, DROP, dashboard counts, retention).
 The rule is **R11** (R9 and R10 were taken). D4 from the threat-intel plan (22 Nov), joined with the
 stakeholders' "internet-facing" ask.
@@ -112,7 +112,7 @@ track. What it would have added, and what to use instead, is under "Not built". 
 2. **Blocklists:** the Spamhaus DROP feed step (network ranges kept in KV and matched in code,
    `lib/ipRanges.ts`), R11 matching and alerts, and alert labels. Tests, then staging.
 3. ~~InternetDB~~ removed (above).
-4. **Evaluation**, on staging: a published test event that lists the lab's own public address. Check the alert
+4. **Evaluation**, on staging (done 26 Nov, `C:\FYP\AP2\eval\public-addresses\RESULTS.md` part 2: low when unconfirmed, high when ours, resolve and reopen all worked; the critical level and DROP not yet exercised): a published test event that lists the lab's own public address. Check the alert
    level for each status (ours, unconfirmed, not ours), that it resolves when the event is withdrawn, and that
    it reopens when the event comes back. Results go into this plan and `C:\FYP\AP2\eval\public-addresses\`.
 
