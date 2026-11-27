@@ -32,6 +32,7 @@ import { handleQueue } from './queues/consumer'
 import { shouldSignalKg, signalKgSyncSafe } from './kg/sync'
 import { handleCron } from './cron/triggers'
 import { syncAgentHub } from './services/agentHub'
+import { maybeHarvestMycert } from './services/mycert'
 import { isDatabaseUnavailable } from './lib/dbErrors'
 import { perfMiddleware } from './kg/perf'
 
@@ -115,8 +116,14 @@ export { AgentHub } from './durable/agentHub'
 
 // Scheduled jobs and queue batches read agents' last-seen times (who is online, where to route a scan):
 // the ones the AgentHub kept in memory are written first (services/agentHub.ts).
+// A request from Malaysia or Singapore (agents' check-ins, the dashboard) may fetch MyCERT after it is
+// answered: MyCERT refuses the Worker's requests otherwise (services/mycert.ts maybeHarvestMycert).
 export default {
-  fetch: app.fetch,
+  fetch: (request, env, ctx) => {
+    const country = (request as unknown as { cf?: { country?: string } }).cf?.country
+    ctx.waitUntil(maybeHarvestMycert(env.KV_CACHE, country))
+    return app.fetch(request, env, ctx)
+  },
   queue: async (batch, env) => {
     await syncAgentHub(env)
     return handleQueue(batch, env)

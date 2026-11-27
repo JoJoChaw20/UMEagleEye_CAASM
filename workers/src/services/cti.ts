@@ -9,7 +9,9 @@ import { checkMaliciousPackages } from './maliciousPackages'
 import { DROP_SOURCE, checkPublicAddresses, ingestSpamhausDrop } from './publicAddresses'
 import { CDN_CIDRS, TOP_DOMAINS_LIST, warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds, techniqueName } from '../lib/attack'
-import { inferredTechniques, malwareKind } from '../lib/malwareKind'
+import { inferredTechniques } from '../lib/malwareKind'
+import { MYCERT_SOURCE } from '../lib/mycert'
+import { ingestMycert, rememberKnownMycert } from './mycert'
 import { kevTechniques } from '../lib/kevAttack'
 
 // Rows per INSERT statement. Every statement is one HTTP request to Neon, and a Worker
@@ -338,91 +340,9 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
   return rows.length
 }
 
-// ── abuse.ch URLhaus and Feodo Tracker (replace AlienVault OTX, 22 Nov 2026) ──
-// URLhaus: URLs that deliver malware, recent days, with their status and tags; the API needs the
-// abuse.ch Auth-Key ThreatFox uses (the free bulk download was withdrawn). A URL on an IP address
-// lets the agents match the connection (lib/sightings.ts listItem); its tags name the malware.
-// Feodo Tracker: botnet command-and-control servers (Emotet, QakBot, Pikabot...): few entries since
-// the 2024 takedowns, but each is precise. Confidence follows whether the entry is still online.
-const URLHAUS_URL = 'https://urlhaus-api.abuse.ch/v1/urls/recent/limit/1000/'
-const FEODO_URL = 'https://feodotracker.abuse.ch/downloads/ipblocklist.json'
-export const URLHAUS_SOURCE = 'URLhaus'
-export const FEODO_SOURCE = 'Feodo Tracker'
-
-interface UrlhausUrl { url?: string; url_status?: string; host?: string; threat?: string; tags?: string[] | null }
-// URLhaus tags that describe where or what, not which malware
-const URLHAUS_TOPIC_TAGS = new Set(['github', 'gitlab', 'bitbucket', 'discord', 'dropbox', 'googledrive', 'onedrive', 'crypto',
-  'opendir', 'encrypted', 'ascii', 'base64', 'powershell', 'payload', 'dropped', 'malware', 'botnet', 'phishing', 'stealer',
-  'rat', 'loader', 'trojan', 'malicious', 'exploit', 'cve', 'mirror', 'cdn', 'telegram', 'bitbucket'])
-interface FeodoEntry { ip_address?: string; status?: string; malware?: string }
-
-/** How sure an abuse.ch entry is, from whether it was still online when last checked. */
-export function statusConfidence(status: string | undefined, online: number, offline: number): string {
-  return (status === 'online' ? online : status === 'offline' ? offline : (online + offline) / 2).toFixed(2)
-}
-
-/** A URLhaus entry as an indicator row (null when it is not a usable URL). PURE. */
-export function urlhausRow(u: UrlhausUrl, now: Date): CtiRow | null {
-  const value = u.url?.trim()
-  if (!value || !/^https?:\/\//i.test(value)) return null
-  const tags = (u.tags ?? []).filter((t) => typeof t === 'string' && !/^(elf|exe|dll|zip|rar|js|apk|doc|xls|ps1|sh|arm|mips|x86|32-bit|64-bit|mozi\.m)$/i.test(t))
-  const software = resolveSoftware(tags)
-  // Tags also name hosts, platforms and topics ("github", "crypto", "206-189-84-190"): the family is a
-  // tag ATT&CK or the kind rules know, else the first that looks like a name.
-  const family = familyName(tags.find((t) => resolveSoftware([t]) || malwareKind([t]))
-    ?? tags.find((t) => /^[A-Za-z][A-Za-z0-9_.-]{3,}$/.test(t) && !/^\d/.test(t) && !URLHAUS_TOPIC_TAGS.has(t.toLowerCase())))
-  const techniques = inferredTechniques({ names: tags, inAttack: !!software, role: u.threat ?? 'malware_download' })
-    .filter((t) => techniqueName(t) !== null)
-  return {
-    source: URLHAUS_SOURCE, indicatorType: 'url', value, warning: warninglistOf('url', value),
-    confidenceScore: statusConfidence(u.url_status, 0.9, 0.5), malwareFamily: family, attackSoftware: software,
-    attackTechniques: techniques.length ? techniques : null, lastSeen: now,
-  }
-}
-
-/** A Feodo Tracker entry as an indicator row. PURE. */
-export function feodoRow(f: FeodoEntry, now: Date): CtiRow | null {
-  const ip = f.ip_address?.trim()
-  if (!ip || !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return null
-  const software = resolveSoftware([f.malware])
-  const techniques = inferredTechniques({ names: [f.malware], inAttack: !!software, role: 'botnet_cc' })
-    .filter((t) => techniqueName(t) !== null)
-  return {
-    source: FEODO_SOURCE, indicatorType: 'ip', value: ip, warning: warninglistOf('ip', ip),
-    confidenceScore: statusConfidence(f.status, 0.95, 0.6), malwareFamily: familyName(f.malware), attackSoftware: software,
-    attackTechniques: techniques.length ? techniques : null, lastSeen: now,
-  }
-}
-
-export async function ingestUrlhaus(db: DB, apiKey: string): Promise<number> {
-  if (!apiKey) throw new Error('URLhaus needs the abuse.ch Auth-Key (THREATFOX_API_KEY)')
-  // this endpoint answers GET only ("http_get_expected" to a POST)
-  const res = await fetch(URLHAUS_URL, { headers: { 'Auth-Key': apiKey } })
-  if (!res.ok) throw new Error(`URLhaus answered HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
-  const text = await res.text()
-  let data: { query_status?: string; urls?: UrlhausUrl[] }
-  try { data = JSON.parse(text) } catch { throw new Error(`URLhaus sent something that is not JSON (${text.length} chars): ${text.slice(0, 200)}`) }
-  if (data.query_status && data.query_status !== 'ok' && data.query_status !== 'no_results') {
-    throw new Error(`URLhaus refused the query: ${data.query_status}`)
-  }
-  const now = new Date()
-  const seen = new Set<string>()
-  const rows = (data.urls ?? []).map((u) => urlhausRow(u, now)).filter((r): r is CtiRow => !!r && !seen.has(r.value) && !!seen.add(r.value))
-  console.log(`[URLhaus] ${rows.length} URL(s)`)
-  await batchUpsert(db, rows)
-  return rows.length
-}
-
-export async function ingestFeodo(db: DB): Promise<number> {
-  const res = await fetch(FEODO_URL)
-  if (!res.ok) throw new Error(`Feodo Tracker answered HTTP ${res.status}`)
-  const list = await res.json() as FeodoEntry[]
-  const now = new Date()
-  const rows = (Array.isArray(list) ? list : []).map((f) => feodoRow(f, now)).filter((r): r is CtiRow => !!r)
-  console.log(`[Feodo] ${rows.length} C2 address(es)`)
-  await batchUpsert(db, rows)
-  return rows.length
-}
+// URLhaus and Feodo Tracker (abuse.ch) were loaded here from 22 to 27 Nov 2026 and dropped when MyCERT
+// became the main source: Feodo listed about 5 addresses, most URLhaus URLs were on the warninglist.
+// Their stored rows stop matching at once (threatIntel.ts RETIRED_SOURCES) and retention deletes them.
 
 // ── CISA Known Exploited Vulnerabilities ─────────────────────────────
 // CVEs with confirmed exploitation in the wild (free JSON, no key, about 1.7k
@@ -485,17 +405,19 @@ export function describeError(err: unknown): string {
 // 17k rows were saved. So each feed is its own queue job, which queues the next one;
 // 'epss' fills in and refreshes EPSS on the devices' CVEs (services/epss.ts); 'finish'
 // refreshes the CVE alerts and the asset matches against the new data.
-// AlienVault OTX was dropped on 22 Nov 2026 (only its 50 newest pulses, user-written, almost no ATT&CK,
-// a flat 70% confidence); URLhaus and Feodo Tracker replace it. Its stored rows stop matching at once
-// (RETIRED_SOURCES) and are deleted by retention.
+// 'mycert' comes first: MyCERT's advisories are the main source (services/mycert.ts; platform events,
+// not feed rows). CISA KEV and EPSS give every CVE its exploited and likelihood data, ThreatFox the bulk
+// indicators the agents' sightings check, Spamhaus DROP the public-address check.
+// AlienVault OTX was dropped on 22 Nov 2026, URLhaus and Feodo Tracker on 27 Nov 2026: their stored rows
+// stop matching at once (RETIRED_SOURCES) and are deleted by retention.
 // 'malpkg' asks OSV whether any device's package versions were since published as malware
 // (services/maliciousPackages.ts; at most 10,000 a night, carrying on the next night).
 // 'drop' loads Spamhaus DROP for the public-address check (services/publicAddresses.ts; kept in KV, not
 // as indicator rows), and 'finish' then checks every tenant's public addresses against all of them (R11).
-export type CtiStep = 'kev' | 'threatfox' | 'urlhaus' | 'feodo' | 'drop' | 'epss' | 'malpkg' | 'finish'
-export const CTI_STEPS: CtiStep[] = ['kev', 'threatfox', 'urlhaus', 'feodo', 'drop', 'epss', 'malpkg', 'finish']
-/** The feeds the chain loads, as their rows' `source`: the feed-health line shows these only. */
-export const ACTIVE_FEEDS = [KEV_SOURCE, 'ThreatFox', URLHAUS_SOURCE, FEODO_SOURCE, DROP_SOURCE]
+export type CtiStep = 'mycert' | 'kev' | 'threatfox' | 'drop' | 'epss' | 'malpkg' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['mycert', 'kev', 'threatfox', 'drop', 'epss', 'malpkg', 'finish']
+/** The feeds the chain loads, in its order, as their `source`: the feed-health line shows these only. */
+export const ACTIVE_FEEDS = [MYCERT_SOURCE, KEV_SOURCE, 'ThreatFox', DROP_SOURCE]
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
 
 /**
@@ -510,23 +432,28 @@ export function feedRefresh(appEnv: string | undefined): { scheduled: boolean; m
 
 /**
  * Mark stored indicators (feeds and events alike) that are on a warninglist added after they were
- * saved: IPs and URL hosts in the shared CDN ranges, domains that are exactly a top-1,000 site
- * (lib/warninglist.ts). Only rows without a warning yet; returns how many were marked.
+ * saved: IPs and URL hosts in the shared CDN ranges, domains that are exactly a top-1,000 site, and
+ * domains and email addresses under gov.my, edu.my or mil.my (lib/warninglist.ts). Only rows without a
+ * warning yet; returns how many were marked.
  */
 export async function reflagWarninglists(db: DB): Promise<number> {
   const cidrs = JSON.stringify(CDN_CIDRS)
   const domains = JSON.stringify(TOP_DOMAINS_LIST)
   const ipHost = `substring(c.value from '^[A-Za-z][A-Za-z0-9+.-]*://((?:[0-9]{1,3}\\.){3}[0-9]{1,3})(?:[:/?#]|$)')`
+  // the same rule as MY_OFFICIAL_DOMAIN, on a domain or an email's host
+  const myOfficial = `(c.indicator_type IN ('domain', 'email') AND lower(trim(trailing '.' from c.value)) ~ '(^|[.@])(gov|edu|mil)\\.my$')`
   const res = await db.execute(sql`
     WITH cdn AS (SELECT array_agg(x::inet) AS r FROM jsonb_array_elements_text(${cidrs}::jsonb) x),
          top AS (SELECT array_agg(x) AS d FROM jsonb_array_elements_text(${domains}::jsonb) x)
-    UPDATE cti_indicators c SET warning = CASE WHEN c.indicator_type = 'domain' THEN 'top-domain' ELSE 'cdn' END
+    UPDATE cti_indicators c SET warning = CASE WHEN ${sql.raw(myOfficial)} THEN 'my-official-domain'
+                                              WHEN c.indicator_type = 'domain' THEN 'top-domain' ELSE 'cdn' END
     FROM cdn, top
     WHERE c.warning IS NULL AND (
       (c.indicator_type = 'ip' AND c.value ~ '^([0-9]{1,3}\\.){3}[0-9]{1,3}$' AND c.value::inet <<= ANY(cdn.r))
       OR (c.indicator_type = 'url' AND ${sql.raw(ipHost)} IS NOT NULL AND ${sql.raw(ipHost)}::inet <<= ANY(cdn.r))
       OR (c.indicator_type = 'domain'
           AND regexp_replace(lower(trim(trailing '.' from c.value)), '^www\\.', '') = ANY(top.d))
+      OR ${sql.raw(myOfficial)}
     )
     RETURNING c.indicator_id`)
   return res.rows.length
@@ -537,21 +464,41 @@ export function nextCtiStep(step: CtiStep): CtiStep | null {
   return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
 }
 
-const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg' | 'drop'>,{ source: string; run: (db: DB, keys: FeedKeys) => Promise<number> }> = {
+const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg' | 'drop' | 'mycert'>,{ source: string; run: (db: DB, ctx: IngestContext) => Promise<number> }> = {
   kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
   threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
-  // the same abuse.ch Auth-Key as ThreatFox
-  urlhaus:   { source: URLHAUS_SOURCE,   run: (db, k) => ingestUrlhaus(db, k.threatFox) },
-  feodo:     { source: FEODO_SOURCE,     run: (db) => ingestFeodo(db) },
 }
 
-export interface FeedKeys { threatFox: string }
+export interface IngestContext {
+  threatFox: string
+  /** Called when threat events changed (new MyCERT advisories): the agents' cached event lists are dropped. */
+  eventsChanged?: () => Promise<void>
+  /** How MyCERT's pages are read (services/mycert.ts mycertSourceOf: harvested during a request from
+   *  Malaysia, kept in KV); default directly. */
+  fetchMycert?: (url: string) => Promise<string>
+}
 
 /**
  * Run one step and record it for the feed-health line. A feed that fails is recorded as
  * failed and the chain goes on. Returns the next step, or null when the run is done.
  */
-export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, step: CtiStep): Promise<CtiStep | null> {
+export async function runIngestStep(db: DB, kv: KVNamespace, ctx: IngestContext, step: CtiStep): Promise<CtiStep | null> {
+  if (step === 'mycert') {
+    // Feed health counts the advisories stored, not indicators.
+    let result: { ok: boolean; count: number }
+    try {
+      const r = await ingestMycert(db, { fetchText: ctx.fetchMycert })
+      await rememberKnownMycert(kv, r.knownIds)
+      result = { ok: true, count: r.stored }
+      console.log(`[CTI] ${MYCERT_SOURCE}: ${r.listed} in the feed, ${r.added} new, ${r.failed} failed, ${r.stored} stored`)
+      if (r.added) await ctx.eventsChanged?.()
+    } catch (err) {
+      result = { ok: false, count: 0 }
+      console.error(`[CTI] ${MYCERT_SOURCE} failed:`, describeError(err))
+    }
+    await recordFeedResult(kv, MYCERT_SOURCE, result)
+    return nextCtiStep(step)
+  }
   if (step === 'finish') {
     // Stored indicators get the warninglists added since they were saved (CDN ranges, top sites):
     // a value a feed no longer lists would otherwise keep its old (empty) warning.
@@ -614,15 +561,15 @@ export async function runIngestStep(db: DB, kv: KVNamespace, keys: FeedKeys, ste
     }
     return nextCtiStep(step)
   }
-  // A queued job from before a step was dropped (the old 'otx' step): carry on with EPSS and finish.
+  // A queued job from before a step was dropped ('otx', 'urlhaus', 'feodo'): carry on with DROP and the rest.
   if (!(step in FEED_OF)) {
     console.log(`[CTI] Step '${step}' is no longer run; going on`)
-    return 'epss'
+    return 'drop'
   }
-  const feed = FEED_OF[step]
+  const feed = FEED_OF[step as keyof typeof FEED_OF]
   let result: { ok: boolean; count: number }
   try {
-    result = { ok: true, count: await feed.run(db, keys) }
+    result = { ok: true, count: await feed.run(db, ctx) }
     console.log(`[CTI] ${feed.source}: ${result.count} indicator(s)`)
   } catch (err) {
     result = { ok: false, count: 0 }

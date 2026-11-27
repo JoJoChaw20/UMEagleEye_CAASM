@@ -90,6 +90,12 @@ function eventOut(ev: EventRow, user: User, extra: Record<string, unknown> = {})
     created_at: ev.createdAt,
     updated_at: ev.updatedAt,
     published_at: ev.publishedAt,
+    // loaded from an outside publisher (MyCERT, services/mycert.ts): its id there, the CVEs it says are
+    // exploited, and its link, rating, kind and affected products
+    origin: ev.origin,
+    external_id: ev.externalId,
+    exploited_cves: ev.exploitedCves ?? [],
+    source_meta: ev.sourceMeta,
     can_edit: canEdit(user, ev),
     ...extra,
   }

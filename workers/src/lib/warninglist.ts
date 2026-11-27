@@ -37,6 +37,12 @@ const WELL_KNOWN_DOMAINS = [
   'localhost', 'example.com', 'example.net', 'example.org',
 ]
 
+// Malaysia's official second-level domains: only government bodies, education institutions and the
+// armed forces can register under them (MYNIC), so a phishing site cannot be one. Advisories name the
+// genuine site the scam imitates ("STR is paid only through bantuantunai.hasil.gov.my"); an alert when
+// someone visits the real portal would be wrong. A URL keeps its path (a page on a hacked site can be bad).
+export const MY_OFFICIAL_DOMAIN = /(^|\.)(gov|edu|mil)\.my$/i
+
 function ipv4ToInt(ip: string): number | null {
   const parts = ip.split('.')
   if (parts.length !== 4) return null
@@ -78,7 +84,7 @@ export function inSpecialRange(ip: string): boolean {
 }
 
 /** The warninglist a value is on ('public-dns', 'special-ip', 'cdn', 'well-known-domain',
- *  'top-domain'), or null. */
+ *  'my-official-domain', 'top-domain'), or null. */
 export function warninglistOf(type: IocType, value: string): string | null {
   if (type === 'ip') {
     if (PUBLIC_DNS.has(value.toLowerCase())) return 'public-dns'
@@ -92,6 +98,7 @@ export function warninglistOf(type: IocType, value: string): string | null {
     if (/^[\d.]+$/.test(host) && inSpecialRange(host)) return 'special-ip'
     if (/^[\d.]+$/.test(host) && inCdnRange(host)) return 'cdn'
     if (WELL_KNOWN_DOMAINS.some(d => host === d || host.endsWith(`.${d}`))) return 'well-known-domain'
+    if (type !== 'url' && MY_OFFICIAL_DOMAIN.test(host)) return 'my-official-domain'
     // a domain indicator that is exactly a top-1,000 site; a URL keeps its path (a page can be bad)
     if (type === 'domain' && (TOP_DOMAINS.has(host) || TOP_DOMAINS.has(host.replace(/^www\./, '')))) return 'top-domain'
   }
@@ -107,5 +114,6 @@ export const WARNINGLIST_LABELS: Record<string, string> = {
   'special-ip': 'Private or special-use address',
   'cdn': 'Shared CDN address (Cloudflare, Fastly, CloudFront)',
   'well-known-domain': 'Well-known platform domain',
+  'my-official-domain': 'Malaysian government, education or armed forces domain (gov.my, edu.my, mil.my)',
   'top-domain': 'One of the 1,000 most visited sites',
 }

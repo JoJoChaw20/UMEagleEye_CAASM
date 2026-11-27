@@ -9,6 +9,7 @@ import type { Env } from '../types'
 import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
 import { ACTIVE_FEEDS, CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
+import { maybeHarvestMycert } from '../services/mycert'
 import { indicatorUseSql } from '../services/threatIntel'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
@@ -251,7 +252,8 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       // The feeds the nightly chain loads, in its order (a retired feed's rows are counted above, not here)
       feeds: ACTIVE_FEEDS.map((source) => ({
         source,
-        // Spamhaus DROP is kept in KV, not as indicator rows: its count is the last run's
+        // Spamhaus DROP is kept in KV, MyCERT's advisories as events, not as feed rows: their count is the
+        // last run's (DROP's ranges, MyCERT's advisories stored)
         count:      bySource.find((r) => r.source === source)?.count ?? lastIngest?.feeds?.[source]?.count ?? 0,
         ok:         lastIngest?.feeds?.[source]?.ok ?? null,
         last_ok_at: lastIngest?.feeds?.[source]?.last_ok_at ?? null,
@@ -572,6 +574,9 @@ app.post('/ingest', authMiddleware, requirePlatformSuperadmin, async (c) => {
     if (await c.env.KV_CACHE.get(CTI_INGEST_LOCK)) {
       return c.json({ message: 'A feed update is already running or ran in the last hour', queued: false })
     }
+    // This request comes from the superadmin: from Malaysia, it can fetch MyCERT now (services/mycert.ts).
+    const country = (c.req.raw as unknown as { cf?: { country?: string } }).cf?.country
+    await maybeHarvestMycert(c.env.KV_CACHE, country, { force: true })
     // The same lock and queue job as the nightly cron (cron/triggers.ts); the consumer clears the lock.
     await c.env.KV_CACHE.put(CTI_INGEST_LOCK, '1', { expirationTtl: 3600 })
     await c.env.ADVISORY_QUEUE.send({ type: 'cti_ingest', triggeredBy: c.get('user').userId })

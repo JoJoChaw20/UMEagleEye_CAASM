@@ -5,7 +5,9 @@ import { getDb } from '../db/client'
 import { isOpenEvent } from '../lib/eventStatus'
 import { generateAdvisory } from '../services/advisory'
 import { savePostureSnapshot } from '../services/posture'
-import { CTI_INGEST_LOCK, runIngestStep, type CtiStep } from '../services/cti'
+import { CTI_INGEST_LOCK, CTI_STEPS, runIngestStep, type CtiStep } from '../services/cti'
+import { invalidateAgentHub } from '../services/agentHub'
+import { mycertSourceOf } from '../services/mycert'
 import { runDriftAudit } from '../services/drift'
 import { runServiceCves, type ServiceCveJob } from '../services/serviceCves'
 import { checkMaliciousPackages } from '../services/maliciousPackages'
@@ -167,7 +169,13 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
         if (r.created || r.reopened || r.resolved) wrote = true
         message.ack()
       } else if (job.type === 'cti_ingest') {
-        const next = await runIngestStep(db, env.KV_CACHE, { threatFox: env.THREATFOX_API_KEY }, job.step ?? 'kev')
+        const next = await runIngestStep(db, env.KV_CACHE, {
+          threatFox: env.THREATFOX_API_KEY,
+          // new MyCERT events change every tenant's sightings list, which the AgentHub caches
+          eventsChanged: () => invalidateAgentHub(env, { all: true }),
+          // MyCERT refuses the queue job (no request from Malaysia): its pages come from the harvest in KV
+          fetchMycert: mycertSourceOf(env.KV_CACHE),
+        }, job.step ?? CTI_STEPS[0]!)
         if (next) {
           await env.ADVISORY_QUEUE.send({ type: 'cti_ingest', step: next, triggeredBy: job.triggeredBy })
         } else {

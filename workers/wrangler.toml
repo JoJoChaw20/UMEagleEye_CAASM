@@ -85,6 +85,16 @@ class_name = "AgentHub"
 tag = "v1"
 new_sqlite_classes = ["AgentHub"]
 
+# v2/v3 (27 Nov 2026): a MycertFetcher object placed in Asia-Pacific, tried for MyCERT and removed
+# (MyCERT judges the visitor's country, not where the Worker runs: services/mycert.ts).
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MycertFetcher"]
+
+[[migrations]]
+tag = "v3"
+deleted_classes = ["MycertFetcher"]
+
 
 # ══════════════════════════════════════════════════════════════════
 # Staging environment  —  deploy with: npm run deploy:staging

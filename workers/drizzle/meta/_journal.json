@@ -337,6 +337,13 @@
       "when": 1795449531904,
       "tag": "0047_public_addresses",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1795774052804,
+      "tag": "0048_mycert_advisories",
+      "breakpoints": true
     }
   ]
 }

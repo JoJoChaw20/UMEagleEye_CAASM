@@ -12,7 +12,7 @@ import { REASON_LABEL, USE_META } from '../components/threatintel/indicatorUse'
 import { Tabs, StatTile, Toast, useToast, Spinner, Pager, ago } from '../components/common/PageParts'
 
 // Threat Intelligence: does any of it touch our assets? The overview (matches, events and indicator
-// tiles, feed health) with the global feeds (ThreatFox, URLhaus, Feodo Tracker, CISA KEV), the ATT&CK
+// tiles, feed health) with MyCERT's advisories (platform events) and the global feeds (CISA KEV, ThreatFox), the ATT&CK
 // view and Coverage: what the indicators are used for (checked by agents, against assets, or
 // reference only), how the alerts ended, and the limits. Matches and Events are sub-pages.
 

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { feedRefresh, feodoRow, otxPulseAttack, threatFoxAttack, urlhausRow } from './cti'
+import { ACTIVE_FEEDS, CTI_STEPS, feedRefresh, nextCtiStep, otxPulseAttack, threatFoxAttack } from './cti'
+import { RETIRED_SOURCES } from './threatIntel'
 import { kevTechniques } from '../lib/kevAttack'
 
 test('feeds: on schedule in production, by hand only on staging (no crons there)', () => {
@@ -53,32 +54,13 @@ test('a family ATT&CK does not describe gets the techniques of its kind and role
   assert.equal(threatFoxAttack({ malware: 'win.cobalt_strike', malware_printable: 'Cobalt Strike', threat_type: 'botnet_cc' }).attackTechniques?.join(), 'T1071')
 })
 
-test('URLhaus: a malware-download URL, confidence from its status, family and techniques from its tags', () => {
-  const now = new Date('2026-11-22T00:00:00Z')
-  const r = urlhausRow({ url: 'http://182.117.29.181:43715/i', url_status: 'online', threat: 'malware_download', tags: ['32-bit', 'elf', 'mips', 'Mozi'] }, now)!
-  assert.equal(r.source, 'URLhaus')
-  assert.equal(r.indicatorType, 'url')
-  assert.equal(r.confidenceScore, '0.90')
-  assert.equal(r.malwareFamily, 'Mozi')
-  assert.deepEqual(r.attackTechniques, ['T1110', 'T1498', 'T1071', 'T1105'])   // an IoT botnet, delivered by this URL
-  assert.equal(urlhausRow({ url: 'http://x.example/a', url_status: 'offline' }, now)!.confidenceScore, '0.50')
-  // topic and host tags are not families; a known family wins wherever it sits
-  assert.equal(urlhausRow({ url: 'http://x.example/a', tags: ['github', 'crypto', 'AsyncRAT'] }, now)!.malwareFamily, 'AsyncRAT')
-  assert.equal(urlhausRow({ url: 'http://x.example/a', tags: ['206-189-84-190', 'github'] }, now)!.malwareFamily, null)
-  assert.equal(urlhausRow({ url: 'http://x.example/a', tags: ['DEVPOPPER'] }, now)!.malwareFamily, 'DEVPOPPER')
-  assert.equal(urlhausRow({ url: 'ftp://x.example/a' }, now), null)
-  assert.equal(urlhausRow({}, now), null)
-})
-
-test('Feodo Tracker: a botnet C2 address, sure while online', () => {
-  const now = new Date('2026-11-22T00:00:00Z')
-  const r = feodoRow({ ip_address: '162.243.103.246', status: 'online', malware: 'Emotet' }, now)!
-  assert.equal(r.indicatorType, 'ip')
-  assert.equal(r.confidenceScore, '0.95')
-  assert.equal(r.attackSoftware, 'S0367')                                   // Emotet is ATT&CK software
-  assert.deepEqual(r.attackTechniques, ['T1071'])                           // nothing inferred from the kind
-  assert.equal(feodoRow({ ip_address: '162.243.103.246', status: 'offline' }, now)!.confidenceScore, '0.60')
-  assert.equal(feodoRow({ ip_address: 'not-an-ip' }, now), null)
+test('the nightly chain: MyCERT first, then CVE data, bulk indicators and the rest; URLhaus and Feodo retired', () => {
+  assert.deepEqual(CTI_STEPS, ['mycert', 'kev', 'threatfox', 'drop', 'epss', 'malpkg', 'finish'])
+  assert.deepEqual(ACTIVE_FEEDS, ['MyCERT', 'CISA KEV', 'ThreatFox', 'Spamhaus DROP'])
+  assert.equal(nextCtiStep('mycert'), 'kev')
+  assert.equal(nextCtiStep('finish'), null)
+  for (const s of ['AlienVault OTX', 'URLhaus', 'Feodo Tracker']) assert.ok(RETIRED_SOURCES.includes(s))
+  assert.ok(!RETIRED_SOURCES.includes('MyCERT'))
 })
 
 test('KEV CVEs carry MITRE CTID\'s techniques: how exploited, what it leads to', () => {

@@ -463,7 +463,21 @@ export const tiEvents = pgTable('ti_events', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now()),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().default(now()),
   publishedAt: timestamp('published_at', { withTimezone: true }),
-}, (t) => [index('idx_ti_events_tenant').on(t.tenantId, t.status)])
+  // An event loaded from an outside publisher (services/mycert.ts): who ('mycert') and its own id there
+  // (the advisory number, MA-1506.112026). NULL for events people write here. Such events are
+  // platform events nobody here edits; the nightly load updates them.
+  origin: varchar('origin', { length: 20 }),
+  externalId: varchar('external_id', { length: 40 }),
+  // CVEs the publisher says are exploited in the wild: their findings rank like CISA KEV ones
+  // (services/threatIntel.ts). Only loaded events set it.
+  exploitedCves: text('exploited_cves').array(),
+  // What the publisher says that has no column: its link, its own rating, the kind (advisory or alert),
+  // the affected products. Shown, never matched.
+  sourceMeta: jsonb('source_meta'),
+}, (t) => [
+  index('idx_ti_events_tenant').on(t.tenantId, t.status),
+  uniqueIndex('idx_ti_events_origin').on(t.origin, t.externalId).where(sql`${t.origin} IS NOT NULL`),
+])
 
 // A receiving tenant's choice for one event another tenant shared with all tenants: raise alerts
 // from it (true) or not (false), whatever tenants.shared_event_alerts says. No row = that setting.

@@ -7,10 +7,10 @@
 // devices still waiting go into a follow-up job.
 import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
-import { assets, ctiIndicators, dependencies, events, sboms } from '../db/schema'
+import { assets, dependencies, events, sboms } from '../db/schema'
 import { identifyServices, inSbom, isBuildStamp, planServices, productKey, sbomNames, serviceFinding, type CveRef, type OpenServiceAlert,
   type SbomPackage, type ServiceFinding } from '../lib/serviceIdentity'
-import { KEV_SOURCE } from './threatIntel'
+import { cveExploitedSql } from './threatIntel'
 
 const NVD_PER_JOB = 10
 const CACHE_SECONDS = 86_400
@@ -112,11 +112,13 @@ export async function runServiceCves(db: DB, kv: KVNamespace, nvdKey: string | u
   }
   result.nvdCalls = budget.calls
   result.failed = budget.failed
+  // exploited in the wild: on CISA KEV, or named exploited by a published MyCERT advisory
   const kev = new Set<string>()
   if (kevNeeded.size) {
-    const rows = await db.select({ value: ctiIndicators.value }).from(ctiIndicators)
-      .where(and(eq(ctiIndicators.indicatorType, 'cve'), eq(ctiIndicators.source, KEV_SOURCE), inArray(ctiIndicators.value, [...kevNeeded])))
-    for (const r of rows) kev.add(r.value)
+    const res = await db.execute(sql`
+      SELECT v.id FROM jsonb_array_elements_text(${JSON.stringify([...kevNeeded])}::jsonb) AS v(id)
+      WHERE ${cveExploitedSql(sql`v.id`)}`)
+    for (const r of res.rows as { id: string }[]) kev.add(r.id)
   }
 
   // 2) the alerts

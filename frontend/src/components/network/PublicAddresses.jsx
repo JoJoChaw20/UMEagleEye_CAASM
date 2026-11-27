@@ -107,7 +107,7 @@ export default function PublicAddresses({ tenantId }) {
           <p className="text-xs text-dark-400 mt-1">
             The addresses your agents reach the internet from, and any you add, such as a server's or the office's fixed address.
             Mark the ones that belong to the organisation: laptops at home and shared networks (a campus) also report addresses that are not yours.
-            Each is checked against ThreatFox, Feodo Tracker, URLhaus, your threat events and Spamhaus DROP after every feed update:
+            Each is checked against ThreatFox, MyCERT's advisories, your threat events and Spamhaus DROP after every feed update:
             one of yours on a list raises an alert, an unconfirmed one a review item.
           </p>
         </div>

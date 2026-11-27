@@ -3,24 +3,43 @@
  * with it.
  *
  * An indicator is MATCHABLE for an asset of tenant T when it is a global feed entry
- * (ThreatFox, URLhaus, Feodo Tracker, CISA KEV), or an attribute of a PUBLISHED event that
- * is T's own, a platform event, or shared with all tenants by another tenant and opted into
- * by T (eventAlertsSql); and it is marked to_ids and not on a warninglist. Drafts and other
- * tenants' private events never touch T's alerts.
+ * (ThreatFox, CISA KEV), or an attribute of a PUBLISHED event that is T's own, a platform
+ * event (the MyCERT advisories, services/mycert.ts), or shared with all tenants by another
+ * tenant and opted into by T (eventAlertsSql); and it is marked to_ids and not on a
+ * warninglist. Drafts and other tenants' private events never touch T's alerts.
  *
  * CVE findings (cve_findings) carry the result: has_cti_match (any matchable 'cve'
- * indicator), kev (one of them is CISA KEV) and ti_event_titles (the events naming it); the
- * package alert sums them up (kev_count, has_cti_match...). refreshCveIntel() recomputes
- * those after anything changes (nightly feeds, an event published, unpublished, edited or
- * deleted), both ways: a flag can also be cleared.
+ * indicator), kev (exploited in the wild: on CISA KEV, or named exploited by a published
+ * platform event, i.e. a MyCERT advisory: EXPLOITED_SQL) and ti_event_titles (the events
+ * naming it); the package alert sums them up (kev_count, has_cti_match...), and an exploited
+ * CVE ranks in the Exploited tier (lib/alertRank.ts) whichever said so. refreshCveIntel()
+ * recomputes those after anything changes (nightly feeds, an event published, unpublished,
+ * edited or deleted), both ways: a flag can also be cleared.
  */
 import { sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { recomputePackageAlerts } from './packageAlerts'
+import { MYCERT_SOURCE } from '../lib/mycert'
 
 type DB = ReturnType<typeof getDb>
 
 export const KEV_SOURCE = 'CISA KEV'
+
+/**
+ * SQL: CVE indicator `c` (its event `te`, LEFT JOIN) says the CVE is exploited in the wild: a CISA KEV
+ * entry, or an attribute of a published platform event that lists it in exploited_cves (only MyCERT
+ * advisories set it). Use it on rows already known matchable.
+ */
+export const EXPLOITED_SQL = sql`((c.ti_event_id IS NULL AND c.source = ${KEV_SOURCE})
+  OR COALESCE(te.status = 'published' AND te.distribution = 'platform' AND c.value = ANY(te.exploited_cves), false))`
+
+/** SQL: CVE `cveId` (an SQL text value) is exploited in the wild per CISA KEV or a published MyCERT advisory. */
+export function cveExploitedSql(cveId: SQL): SQL {
+  return sql`(EXISTS (SELECT 1 FROM cti_indicators c WHERE c.indicator_type = 'cve' AND c.value = ${cveId}
+                        AND c.ti_event_id IS NULL AND c.source = ${KEV_SOURCE})
+    OR EXISTS (SELECT 1 FROM ti_events te WHERE te.status = 'published' AND te.distribution = 'platform'
+                 AND ${cveId} = ANY(te.exploited_cves)))`
+}
 
 /**
  * How long a feed's IP, domain or URL keeps raising alerts after the feed last listed it. Feeds
@@ -28,18 +47,24 @@ export const KEV_SOURCE = 'CISA KEV'
  * listed for this long is most likely cleaned up or reassigned: an IP is often handed to someone
  * else within weeks, a domain lasts longer. Kept in the table (and on old alerts) until retention
  * deletes it (services/retention.ts, 90 days); it just stops matching. KEV CVEs and a tenant's own
- * event attributes do not expire.
+ * event attributes do not expire. A MyCERT advisory's IPs, domains and URLs follow the same windows,
+ * counted from the advisory's date (their last_seen): the advisory stays, its old addresses stop
+ * matching. Its CVEs and hashes do not expire.
  */
 export const FEED_FRESH_DAYS = { ip: 30, domain: 90, url: 90 } as const
 // The day counts as SQL literals (constants above): bound as parameters they arrive as text,
 // and "text * interval" fails (it broke the agents' list download on 22 Nov until fixed).
-// A retired feed's rows (AlienVault OTX, dropped 22 Nov 2026) stop matching at once; retention deletes them.
-export const RETIRED_SOURCES = ['AlienVault OTX']
+// A retired feed's rows stop matching at once; retention deletes them. AlienVault OTX was dropped on
+// 22 Nov 2026; URLhaus and Feodo Tracker on 27 Nov 2026, when MyCERT became the main source.
+export const RETIRED_SOURCES = ['AlienVault OTX', 'URLhaus', 'Feodo Tracker']
 const RETIRED_LIST = sql.raw(RETIRED_SOURCES.map((s) => `'${s.replace(/'/g, "''")}'`).join(', '))
-/** A feed value still listed recently enough to match (an event's attributes always are), for table alias `a`. */
+// Event attributes loaded from MyCERT (services/mycert.ts) age like feed entries.
+const AGEING_EVENT_SOURCE = sql.raw(`'${MYCERT_SOURCE}'`)
+/** A value still recent enough to match, for table alias `a`: a feed value listed lately, a MyCERT
+ *  advisory's value within the same window of its date; an analyst's event attributes always are. */
 export function freshSql(a: string): SQL {
   const t = sql.raw(a)
-  return sql`(${t}.ti_event_id IS NOT NULL OR (${t}.source NOT IN (${RETIRED_LIST})
+  return sql`((${t}.ti_event_id IS NOT NULL AND ${t}.source <> ${AGEING_EVENT_SOURCE}) OR (${t}.source NOT IN (${RETIRED_LIST})
   AND (${t}.indicator_type NOT IN ('ip', 'domain', 'url')
   OR ${t}.last_seen > now() - (CASE WHEN ${t}.indicator_type = 'ip' THEN ${sql.raw(String(Number(FEED_FRESH_DAYS.ip)))}
                                  ELSE ${sql.raw(String(Number(FEED_FRESH_DAYS.domain)))} END) * interval '1 day')))`
@@ -108,16 +133,16 @@ export async function cveIntelFor(db: DB, tenantId: string | null, cveIds: strin
   if (cveIds.length === 0) return out
   // Aliased c / te so the shared rule (eventAlertsSql) applies as everywhere else.
   const res = await db.execute(sql`
-    SELECT c.value, c.source, c.ti_event_id AS "eventId", te.title
+    SELECT c.value, c.ti_event_id AS "eventId", te.title, ${EXPLOITED_SQL} AS exploited
     FROM cti_indicators c LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
     WHERE c.indicator_type = 'cve' AND c.value IN (${sql.join(cveIds.map((v) => sql`${v}`), sql`, `)})
       AND c.to_ids AND c.warning IS NULL
       AND (c.ti_event_id IS NULL OR (te.status = 'published' AND ${eventAlertsSql(sql`${tenantId}::uuid`)}))
   `)
-  const rows = res.rows as Array<{ value: string; source: string; eventId: string | null; title: string | null }>
+  const rows = res.rows as Array<{ value: string; eventId: string | null; title: string | null; exploited: boolean }>
   for (const r of rows) {
     const cur = out.get(r.value) ?? { kev: false, titles: [] }
-    if (!r.eventId && r.source === KEV_SOURCE) cur.kev = true
+    if (r.exploited) cur.kev = true
     if (r.title && !cur.titles.includes(r.title) && cur.titles.length < 3) cur.titles.push(r.title)
     out.set(r.value, cur)
   }
@@ -149,7 +174,7 @@ export async function refreshCveIntel(db: DB, scope: IntelScope): Promise<number
       JOIN assets a ON a.asset_id = e.asset_id
       CROSS JOIN LATERAL (
         SELECT count(c.indicator_id) > 0 AS hit,
-               COALESCE(bool_or(c.ti_event_id IS NULL AND c.source = ${KEV_SOURCE}), false) AS kev,
+               COALESCE(bool_or(${EXPLOITED_SQL}), false) AS kev,
                COALESCE(to_jsonb((array_agg(DISTINCT te.title) FILTER (WHERE te.title IS NOT NULL))[1:3]), '[]'::jsonb) AS titles
         FROM cti_indicators c
         LEFT JOIN ti_events te ON te.ti_event_id = c.ti_event_id
@@ -172,18 +197,17 @@ export async function refreshCveIntel(db: DB, scope: IntelScope): Promise<number
 
 /**
  * The same for vulnerable services (scan banners, services/serviceCves.ts): mark each listed CVE
- * that is on CISA KEV now, and update kev_count / kev / has_cti_match. A service that gains a KEV
- * CVE goes up to at least high, as serviceFinding() rates a new one. Without this, a CVE added to
- * KEV after the scan stayed unflagged until the next active scan. Returns how many alerts changed.
+ * that is exploited now (CISA KEV or a MyCERT advisory: cveExploitedSql), and update kev_count / kev /
+ * has_cti_match. A service that gains an exploited CVE goes up to at least high, as serviceFinding()
+ * rates a new one. Without this, a CVE added to KEV after the scan stayed unflagged until the next
+ * active scan. Returns how many alerts changed.
  */
 export async function refreshServiceKev(db: DB, scope: IntelScope): Promise<number> {
   const where = scopeSql(scope)
   const res = await db.execute(sql`
     WITH s AS (
       SELECT e.event_id,
-        (SELECT jsonb_agg(CASE WHEN EXISTS (
-                  SELECT 1 FROM cti_indicators c
-                  WHERE c.indicator_type = 'cve' AND c.value = x->>'id' AND c.ti_event_id IS NULL AND c.source = ${KEV_SOURCE})
+        (SELECT jsonb_agg(CASE WHEN ${cveExploitedSql(sql`x->>'id'`)}
                 THEN x || '{"kev": true}'::jsonb ELSE x - 'kev' END ORDER BY t.ord)
          FROM jsonb_array_elements(e.details->'cves') WITH ORDINALITY AS t(x, ord)) AS cves
       FROM events e
