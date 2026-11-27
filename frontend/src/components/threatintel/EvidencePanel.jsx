@@ -4,6 +4,7 @@
 // C:\FYP\AP2\eval, not on this page: they describe the test machines, not the viewer's network.)
 import { ShieldCheck, Database, AlertTriangle } from 'lucide-react'
 import { REASON_LABEL, USE_META } from './indicatorUse'
+import { Spinner } from '../common/PageParts'
 
 const fmt = (n) => Number(n ?? 0).toLocaleString()
 
@@ -24,8 +25,9 @@ export default function EvidencePanel({ stats }) {
   return (
     <div className="space-y-4">
       <div className="glass-card p-5 space-y-3">
-        <h3 className="text-sm font-semibold text-dark-100 flex items-center gap-2"><Database className="w-4 h-4 text-eagle-400" /> What the feed indicators are used for</h3>
-        {!u ? <p className="text-xs text-dark-400">Loading…</p> : <>
+        <h3 className="text-sm font-semibold text-dark-100 flex items-center gap-2"><Database className="w-4 h-4 text-eagle-400" /> What the indicators are used for</h3>
+        <p className="text-xs text-dark-400">MyCERT's advisories and the sources' indicators. A source's value that can no longer raise an alert is deleted; reference-only values are kept inside MyCERT's advisories.</p>
+        {!u ? <Spinner className="py-8" /> : <>
           <div className="flex h-2.5 gap-px overflow-hidden rounded-full bg-dark-700/50" role="img"
             aria-label={`${fmt(u.agents)} checked by agents, ${fmt(u.assets)} checked against assets, ${fmt(u.reference)} reference only`}>
             <span className="bg-eagle-500" style={{ width: `${pct(u.agents)}%` }} />

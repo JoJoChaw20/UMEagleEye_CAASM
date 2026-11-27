@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Download, ExternalLink, Info, RefreshCw, X } from 'lucide-react'
+import { Download, Info } from 'lucide-react'
 import client from '../../api/client'
+import { Spinner } from '../common/PageParts'
+import { useTiPanel } from './tiPanelContext'
 
 // MITRE ATT&CK view of the feeds (GET /cti/matrix). Techniques come from MITRE's own
-// data for each indicator's malware family; nothing is inferred from type or tags.
+// data for each indicator's malware family; nothing is inferred from type or tags. A technique opens in
+// the Threat Intelligence panel (TechniqueView.jsx), with its indicators listed there.
 
 const SHADE = '#3393ff'
 const COLUMN_ROWS = 14
@@ -19,8 +22,6 @@ const rgba = (hex, a) => {
 }
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0)
 const fmtDate = (d) => (d ? new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '')
-const techUrl = (id) => `https://attack.mitre.org/techniques/${id.replace('.', '/')}/`
-const softUrl = (id) => `https://attack.mitre.org/software/${id}/`
 
 // ATT&CK Navigator layer (format 4.5): open at https://mitre-attack.github.io/attack-navigator/
 function navigatorLayer(data) {
@@ -60,18 +61,17 @@ function downloadLayer(data) {
 
 // fixedScope: one view, no switcher. The pages show each where it belongs: the feeds on Threat Intelligence,
 // 'matched' on Matches (what the threats on your assets do), 'events' on Events.
-export default function AttackMatrixPanel({ onShowIndicators, fixedScope }) {
+export default function AttackMatrixPanel({ fixedScope }) {
+  const panel = useTiPanel()
   const [scope, setScope] = useState(fixedScope ?? 'feeds')       // feeds | matched | events
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [shadeBy, setShadeBy] = useState(fixedScope === 'events' ? 'families' : 'iocs')    // iocs | families
-  const [selected, setSelected] = useState(null)    // technique id
   const [expanded, setExpanded] = useState({})      // tactic short -> true
 
   const load = async (sc = scope) => {
     setError('')
     setData(null)
-    setSelected(null)
     try {
       const res = await client.get('/cti/matrix', { params: { scope: sc } })
       setData(res.data)
@@ -118,19 +118,16 @@ export default function AttackMatrixPanel({ onShowIndicators, fixedScope }) {
     return (
       <div className="space-y-4">
         {scopeBar}
-        <div className="flex justify-center py-20">
-          <RefreshCw className="w-6 h-6 animate-spin text-dark-400" />
-        </div>
+        <Spinner className="py-20" />
       </div>
     )
   }
 
   const { coverage: cov, attack } = data
   const max = Math.max(1, ...data.techniques.map((t) => (shadeBy === 'iocs' ? t.iocs : t.family_count)))
-  const sel = selected && data.techniques.find((t) => t.id === selected)
   const isEvents = data.scope === 'events'
   const famWord = isEvents ? 'events' : 'families'
-  const canList = data.scope === 'feeds' && onShowIndicators    // the IoC Feed lists feed rows only
+  const openTechnique = (t) => panel.open({ kind: 'technique', tech: t, scope: data.scope, tactics: data.tactics, label: `${t.id} ${t.name}` })
 
   return (
     <div className="space-y-4">
@@ -232,11 +229,10 @@ export default function AttackMatrixPanel({ onShowIndicators, fixedScope }) {
                     {rows.map((t) => {
                       const v = shadeBy === 'iocs' ? t.iocs : t.family_count
                       const a = 0.12 + (v / max) * 0.78
-                      const isSel = t.id === selected
                       return (
-                        <button key={t.id} onClick={() => setSelected(isSel ? null : t.id)}
+                        <button key={t.id} onClick={() => openTechnique(t)}
                           title={`${t.id} ${t.name}: ${t.iocs.toLocaleString()} indicators, ${t.family_count} ${famWord}`}
-                          className={`text-left px-1.5 py-1 rounded text-[11px] leading-tight transition-transform hover:scale-[1.03] ${isSel ? 'ring-2 ring-accent-orange' : ''}`}
+                          className="text-left px-1.5 py-1 rounded text-[11px] leading-tight transition-transform hover:scale-[1.03]"
                           style={{ background: `rgb(var(--eagle-500) / ${a.toFixed(2)})`, color: a > 0.55 ? '#fff' : undefined, border: '1px solid rgb(var(--eagle-500) / 0.35)' }}>
                           <span className="block truncate font-medium">{t.name}</span>
                           <span className="flex justify-between font-mono text-[11px] opacity-80">
@@ -261,78 +257,6 @@ export default function AttackMatrixPanel({ onShowIndicators, fixedScope }) {
           </div>
         )}
       </div>
-
-      {/* Technique detail */}
-      {sel && (
-        <div className="glass-card p-5 space-y-4">
-          <div className="flex items-start gap-3">
-            <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-semibold text-dark-100">
-                {sel.name} <span className="font-mono text-dark-400">{sel.id}</span>
-              </h3>
-              <p className="text-xs text-dark-400 mt-0.5">
-                {sel.tactics.map((s) => data.tactics.find((t) => t.short === s)?.name ?? s).join(', ')}
-                {' · '}{sel.iocs.toLocaleString()} indicators · {sel.family_count} {famWord}
-              </p>
-            </div>
-            <a href={techUrl(sel.id)} target="_blank" rel="noreferrer"
-              className="text-xs text-eagle-400 hover:underline flex items-center gap-1">
-              On attack.mitre.org <ExternalLink className="w-3 h-3" />
-            </a>
-            <button onClick={() => setSelected(null)} className="p-1 text-dark-400 hover:text-dark-100" title="Close">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs font-medium text-dark-300 mb-2">{isEvents ? 'Events with it' : 'Families that use it'}</p>
-              <div className="space-y-1">
-                {sel.families.map((f) => (
-                  <div key={f.software ?? f.name} className="flex items-center gap-2 text-xs bg-dark-800/60 rounded px-2 py-1.5">
-                    <span className="flex-1 min-w-0 truncate text-dark-100">
-                      {f.name}
-                      {f.software && (
-                        <a href={softUrl(f.software)} target="_blank" rel="noreferrer" className="ml-1.5 font-mono text-dark-500 hover:text-eagle-400">{f.software}</a>
-                      )}
-                    </span>
-                    <span className="text-dark-400">{f.iocs.toLocaleString()}</span>
-                    {f.software && canList && (
-                      <button onClick={() => onShowIndicators({ family: f.software, label: f.name })}
-                        className="text-eagle-400 hover:underline">Indicators</button>
-                    )}
-                  </div>
-                ))}
-                {sel.family_count > sel.families.length && (
-                  <p className="text-[11px] text-dark-500">and {sel.family_count - sel.families.length} more</p>
-                )}
-              </div>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-dark-300 mb-2">Sub-techniques</p>
-              {sel.subs.length ? (
-                <div className="space-y-1">
-                  {sel.subs.map((s) => (
-                    <a key={s.id} href={techUrl(s.id)} target="_blank" rel="noreferrer"
-                      className="flex items-center gap-2 text-xs bg-dark-800/60 rounded px-2 py-1.5 hover:bg-dark-700/60">
-                      <span className="font-mono text-dark-400 w-16">{s.id}</span>
-                      <span className="flex-1 truncate text-dark-100">{s.name}</span>
-                      <span className="text-dark-400">{s.iocs.toLocaleString()}</span>
-                    </a>
-                  ))}
-                </div>
-              ) : <p className="text-xs text-dark-500">MITRE lists the technique itself, not a sub-technique.</p>}
-            </div>
-          </div>
-
-          {canList && (
-            <button onClick={() => onShowIndicators({ technique: sel.id, label: `${sel.id} ${sel.name}` })}
-              className="btn-secondary text-xs py-1.5 px-3">
-              View the {sel.iocs.toLocaleString()} indicators
-            </button>
-          )}
-        </div>
-      )}
     </div>
   )
 }

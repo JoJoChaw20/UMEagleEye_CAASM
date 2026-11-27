@@ -654,6 +654,7 @@ app.get('/mycert', authMiddleware, requireAction('cti.view'), async (c) => {
       total: all.length,
       last_30d: all.filter((a) => a.published_at && new Date(a.published_at).getTime() >= monthAgo).length,
       affecting: all.filter((a) => a.devices > 0).length,
+      exploited: all.filter((a) => a.exploited_cves.length > 0).length,
       exploited_affecting: all.filter((a) => a.devices > 0 && a.exploited_cves.length > 0).length,
       newest_at: all[0]?.published_at ?? null,
     }

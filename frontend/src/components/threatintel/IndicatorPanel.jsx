@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, ExternalLink, Globe, Link2, Hash, Mail, Bug, Package, FileText } from 'lucide-react'
 import client from '../../api/client'
 import { SevBadge } from '../common/alertMeta'
-import { SidePanel, Spinner } from '../common/PageParts'
+import { Spinner } from '../common/PageParts'
 import { REASON_LABEL, USE_META } from './indicatorUse'
 
 export const TYPE_META = {
@@ -24,8 +24,17 @@ export function TypeLabel({ type }) {
 
 const MATCH_KIND = { ioc: 'Listed IOC', watchlist: 'Watched software', sighting: 'Seen in traffic', address: 'Uses this IP (no alert)' }
 
+// An indicator's view in the Threat Intelligence panel (TiPanel.jsx): a row of the Indicators tab, a value
+// looked up, or one listed inside an advisory, event or technique (then "←" leads back there).
+export function IndicatorView({ view, setHead }) {
+  useEffect(() => {
+    setHead({ title: <span className="break-all font-mono">{view.value}</span>, subtitle: 'Indicator' })
+  }, [view.value, setHead])
+  return <IndicatorBody value={view.value} />
+}
+
 // What threat intel knows about one value, and which of our assets it touches.
-export default function IndicatorPanel({ value, onClose }) {
+export function IndicatorBody({ value }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
 
@@ -42,7 +51,7 @@ export default function IndicatorPanel({ value, onClose }) {
   const assets = result?.matched_assets ?? []
 
   return (
-    <SidePanel title={<span className="font-mono break-all">{value}</span>} subtitle="Threat-intel lookup" onClose={onClose}>
+    <div className="space-y-4">
       {error && (
         <div className="flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/40 rounded-lg p-3">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" /> {error}
@@ -148,6 +157,6 @@ export default function IndicatorPanel({ value, onClose }) {
           </div>
         </>
       )}
-    </SidePanel>
+    </div>
   )
 }

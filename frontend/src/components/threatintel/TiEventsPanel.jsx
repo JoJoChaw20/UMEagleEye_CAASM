@@ -1,27 +1,30 @@
-// Threat-intel events (MISP-style): a tenant's own IOC collections, plus the ones other
-// tenants shared and the platform's. API: /cti/events (workers/src/routes/tiEvents.ts).
-import { useState, useEffect, useCallback } from 'react'
+// Threat-intel events (MISP-style): a tenant's own IOC collections and the ones other tenants share with it.
+// API: /cti/events (workers/src/routes/tiEvents.ts). MyCERT's advisories are platform events too, listed on
+// their own tab (MycertPanel.jsx), but they open here: EventView shows any event, with MyCERT's facts.
+// Every detail opens in the Threat Intelligence panel (TiPanel.jsx): an event (EventView), and the form to
+// create or edit one (EventForm); the list below has one filter bar and pages of 20.
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import {
-  Plus, ArrowLeft, Pencil, Trash2, Send, Undo2, Shield, AlertTriangle, X, Tag, Crosshair, Bug, ExternalLink,
-} from 'lucide-react'
+import { Plus, Pencil, Trash2, Send, Undo2, Shield, AlertTriangle, X, Bug, ExternalLink, BookOpen } from 'lucide-react'
 import client from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
 import { softwareFor, softwareUrl, techniqueUrl, useAttackCatalog } from './attackCatalog'
 import { alertLabel, SevBadge } from '../common/alertMeta'
 import { alertChangeText } from '../../utils/alertChange'
+import { ConfirmDialog, Spinner } from '../common/PageParts'
+import { ClearFilters, EmptyState, FilterBar, FilterChip, ListPager, ListTotal, PanelList, pageWithin } from '../common/ListParts'
+import { Badge, LevelBadge, SearchBox, day } from './tiParts'
+import { useTiPanel } from './tiPanelContext'
+import { TypeLabel } from './IndicatorPanel'
 
-const LEVELS = {
-  high:   { label: 'High',   cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
-  medium: { label: 'Medium', cls: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
-  low:    { label: 'Low',    cls: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30' },
-}
+const PAGE = 20
 const SHARING = {
-  organisation: { label: 'Only our organisation', short: 'Private' },
-  all_tenants:  { label: 'All tenants',            short: 'Shared' },
-  platform:     { label: 'Platform (every tenant)', short: 'Platform' },
+  organisation: { label: 'Only our organisation', short: 'Our organisation' },
+  all_tenants:  { label: 'All tenants',            short: 'All tenants' },
+  platform:     { label: 'Platform (every tenant)', short: 'Every organisation' },
 }
 const TYPE_LABELS = { ip: 'IP', domain: 'Domain', url: 'URL', hash: 'Hash', email: 'Email', cve: 'CVE', software: 'Software' }
+const KIND_LABEL = { advisory: 'Advisory', alert: 'Alert', report: 'Report' }
 
 // Does a tag look like an indicator? (Tags are labels; they never match anything.)
 // A rough mirror of workers/src/lib/iocParse.ts detectType, defanged values included.
@@ -36,13 +39,9 @@ const IOC_LIKE = [
 ]
 const looksLikeIoc = (tag) => IOC_LIKE.some(re => re.test(tag.trim()))
 
-const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : '—')
-const Badge = ({ cls, children, title }) => (
-  <span title={title} className={`text-xs px-2 py-0.5 rounded-md border font-medium whitespace-nowrap ${cls}`}>{children}</span>
-)
 const StatusBadge = ({ status }) => status === 'published'
-  ? <Badge cls="bg-green-500/15 text-green-300 border-green-500/40">Published</Badge>
-  : <Badge cls="bg-dark-700 text-dark-300 border-dark-600">Draft</Badge>
+  ? <Badge cls="border-green-500/40 bg-green-500/15 text-green-300">Published</Badge>
+  : <Badge>Draft</Badge>
 
 function errorText(err, fallback) {
   return err?.response?.data?.detail || fallback
@@ -68,7 +67,7 @@ function TechniquePicker({ cat, value, onChange }) {
           {value.map(id => (
             <span key={id} className="text-xs px-1.5 py-0.5 rounded bg-dark-700/70 text-dark-200 flex items-center gap-1">
               <span className="font-mono">{id}</span> {nameOf(id)}
-              <button type="button" onClick={() => onChange(value.filter(v => v !== id))} className="text-dark-400 hover:text-red-400"><X className="w-3 h-3" /></button>
+              <button type="button" onClick={() => onChange(value.filter(v => v !== id))} className="text-dark-400 hover:text-red-400" aria-label={`Remove ${id}`}><X className="w-3 h-3" /></button>
             </span>
           ))}
         </div>
@@ -94,19 +93,24 @@ function TechniquePicker({ cat, value, onChange }) {
   )
 }
 
-// ── Create / edit dialog ──────────────────────────────────────
-function EventDialog({ initial, onClose, onSaved }) {
+// ── Create / edit form (a view in the panel) ──────────────────
+// view.initial: the event being edited (opened from its own view, so Cancel goes back to it); none: a new
+// draft, which becomes its own view once saved.
+export function EventForm({ view, setHead, panel, showToast }) {
+  const initial = view.initial ?? null
   const { can } = useAuth()
   const canIndicators = can('ti_event.edit')   // indicators are added through the attributes endpoint
-  const [form, setForm] = useState({
+  const startForm = useMemo(() => ({
     title: initial?.title ?? '',
     description: initial?.description ?? '',
     threat_level: initial?.threat_level ?? 'medium',
     distribution: initial?.distribution ?? 'organisation',
     tags: (initial?.tags ?? []).join(', '),
     malware_family: initial?.malware_family ?? '',
-  })
-  const [techniques, setTechniques] = useState((initial?.attack_techniques ?? []).map(t => t.id))
+  }), [initial])
+  const startTechniques = useMemo(() => (initial?.attack_techniques ?? []).map(t => t.id), [initial])
+  const [form, setForm] = useState(startForm)
+  const [techniques, setTechniques] = useState(startTechniques)
   const cat = useAttackCatalog()
   const famSoftware = form.malware_family.trim() ? softwareFor(cat, form.malware_family) : null
   const [indicators, setIndicators] = useState('')
@@ -119,8 +123,9 @@ function EventDialog({ initial, onClose, onSaved }) {
     setIndicators(v => [v.trim(), ...iocTags].filter(Boolean).join('\n'))
     setForm(f => ({ ...f, tags: tagList.filter(t => !looksLikeIoc(t)).join(', ') }))
   }
+  const dirty = JSON.stringify(form) !== JSON.stringify(startForm) || techniques.join() !== startTechniques.join() || !!indicators.trim()
 
-  const save = async () => {
+  const save = useCallback(async () => {
     setSaving(true)
     setError('')
     const body = {
@@ -128,7 +133,7 @@ function EventDialog({ initial, onClose, onSaved }) {
       description: form.description.trim() || null,
       threat_level: form.threat_level,
       distribution: form.distribution,
-      tags: tagList,
+      tags: form.tags.split(',').map(t => t.trim()).filter(Boolean),
       malware_family: form.malware_family.trim() || null,
       attack_techniques: techniques,
     }
@@ -153,83 +158,91 @@ function EventDialog({ initial, onClose, onSaved }) {
       }
     }
     setSaving(false)
-    onSaved(saved, added)
-  }
+    if (initial) showToast(added?.error ? `Saved, but ${added.error}.` : added ? `Saved. ${added.added} indicator(s) added.` : `Saved. ${alertChangeText(saved)}`.trim(), added?.error ? 'error' : 'success')
+    else showToast(added?.error ? `Draft created, but ${added.error}.` : added ? `Draft created with ${added.added} indicator(s). Publish it to use them.` : 'Draft created. Add indicators, then publish.', added?.error ? 'error' : 'success')
+    panel.changed()
+    if (initial) panel.back()
+    else panel.replace({ kind: 'event', id: saved.event_id, label: saved.title })
+  }, [form, techniques, indicators, initial, canIndicators, panel, showToast])
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-950/70 p-4" onClick={onClose}>
-      <div className="glass-card w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-dark-50">{initial ? 'Edit event' : 'New threat-intel event'}</h2>
-          <button onClick={onClose} className="text-dark-400 hover:text-dark-100"><X className="w-5 h-5" /></button>
-        </div>
-        <label className="block text-sm text-dark-300">Title
-          <input value={form.title} onChange={set('title')} maxLength={200} className="input-field w-full mt-1"
-            placeholder="e.g. Phishing campaign against Malaysian universities" />
-        </label>
-        <label className="block text-sm text-dark-300">Description
-          <textarea value={form.description} onChange={set('description')} rows={3} className="input-field w-full mt-1"
-            placeholder="What it is, where it came from, what to do" />
-        </label>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block text-sm text-dark-300">Threat level
-            <select value={form.threat_level} onChange={set('threat_level')} className="input-field w-full mt-1">
-              <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
-            </select>
-          </label>
-          <label className="block text-sm text-dark-300">Shared with
-            <select value={form.distribution} onChange={set('distribution')} className="input-field w-full mt-1">
-              <option value="organisation">Only our organisation</option>
-              <option value="all_tenants">All tenants</option>
-            </select>
-            {form.distribution === 'all_tenants' && (
-              <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts in theirs only if they turn that on.</span>
-            )}
-          </label>
-        </div>
-        <label className="block text-sm text-dark-300">Tags <span className="text-dark-500">(labels for finding the event, comma separated)</span>
-          <input value={form.tags} onChange={set('tags')} className="input-field w-full mt-1" placeholder="phishing, malaysia" />
-        </label>
-        {iocTags.length > 0 && (
-          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-200 flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p>{iocTags.length === 1 ? 'This tag looks' : 'These tags look'} like {iocTags.length === 1 ? 'an indicator' : 'indicators'}: <span className="font-mono">{iocTags.join(', ')}</span>. Tags are only labels and never match anything.</p>
-              {canIndicators && <button type="button" onClick={moveTagsToIndicators} className="mt-1 underline hover:text-amber-100">Move to indicators</button>}
-            </div>
-          </div>
-        )}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="block text-sm text-dark-300">Malware family <span className="text-dark-500">(optional)</span>
-            <input value={form.malware_family} onChange={set('malware_family')} maxLength={120} className="input-field w-full mt-1" placeholder="e.g. Cobalt Strike" />
-            {form.malware_family.trim() && cat && (
-              <span className={`block text-xs mt-1 ${famSoftware ? 'text-green-400' : 'text-dark-500'}`}>
-                {famSoftware
-                  ? `In ATT&CK: ${famSoftware.name} (${famSoftware.id}), ${famSoftware.count} techniques`
-                  : 'Not in ATT&CK: no techniques from the family'}
-              </span>
-            )}
-          </label>
-          <div className="text-sm text-dark-300">ATT&CK techniques <span className="text-dark-500">(optional)</span>
-            <div className="mt-1"><TechniquePicker cat={cat} value={techniques} onChange={setTechniques} /></div>
-          </div>
-        </div>
-        {canIndicators && <label className="block text-sm text-dark-300">Indicators <span className="text-dark-500">(optional: one per line, added when you save)</span>
-          <textarea value={indicators} onChange={e => setIndicators(e.target.value)} rows={3} className="input-field w-full mt-1 font-mono text-xs"
-            placeholder={'IPs, domains, URLs, hashes, emails or CVE IDs, e.g.\n203.0.113.5\nhxxp://evil[.]example[.]my'} />
-        </label>}
-        <p className="text-xs text-dark-500">
-          A new event is a draft. Its indicators count for alerts once you publish it
-          {form.distribution === 'organisation' ? ', for your organisation only.' : ': in your organisation, and in other tenants that choose to use it.'}
-        </p>
-        {error && <p className="text-sm text-red-400">{error}</p>}
+  useEffect(() => {
+    setHead({
+      title: initial ? 'Edit event' : 'New threat-intel event',
+      subtitle: initial?.title,
+      dirty,
+      footer: (requestClose) => (
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="btn-secondary text-sm">Cancel</button>
-          <button onClick={save} disabled={saving || form.title.trim().length < 3} className="btn-primary text-sm disabled:opacity-50">
+          <button type="button" onClick={initial ? panel.back : requestClose} className="btn-secondary text-sm">Cancel</button>
+          <button type="button" onClick={save} disabled={saving || form.title.trim().length < 3} className="btn-primary text-sm disabled:opacity-50">
             {saving ? 'Saving…' : initial ? 'Save' : 'Create draft'}
           </button>
         </div>
+      ),
+    })
+  }, [initial, dirty, saving, form.title, save, panel, setHead])
+
+  return (
+    <div className="space-y-4">
+      <label className="block text-sm text-dark-300">Title
+        <input value={form.title} onChange={set('title')} maxLength={200} className="input-field w-full mt-1"
+          placeholder="e.g. Phishing campaign against Malaysian universities" />
+      </label>
+      <label className="block text-sm text-dark-300">Description
+        <textarea value={form.description} onChange={set('description')} rows={3} className="input-field w-full mt-1"
+          placeholder="What it is, where it came from, what to do" />
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="block text-sm text-dark-300">Threat level
+          <select value={form.threat_level} onChange={set('threat_level')} className="input-field w-full mt-1">
+            <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+          </select>
+        </label>
+        <label className="block text-sm text-dark-300">Shared with
+          <select value={form.distribution} onChange={set('distribution')} className="input-field w-full mt-1">
+            <option value="organisation">Only our organisation</option>
+            <option value="all_tenants">All tenants</option>
+          </select>
+          {form.distribution === 'all_tenants' && (
+            <span className="block text-xs text-dark-500 mt-1">Other tenants can read it; it raises alerts in theirs only if they turn that on.</span>
+          )}
+        </label>
       </div>
+      <label className="block text-sm text-dark-300">Tags <span className="text-dark-500">(labels for finding the event, comma separated)</span>
+        <input value={form.tags} onChange={set('tags')} className="input-field w-full mt-1" placeholder="phishing, malaysia" />
+      </label>
+      {iocTags.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-200 flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p>{iocTags.length === 1 ? 'This tag looks' : 'These tags look'} like {iocTags.length === 1 ? 'an indicator' : 'indicators'}: <span className="font-mono">{iocTags.join(', ')}</span>. Tags are only labels and never match anything.</p>
+            {canIndicators && <button type="button" onClick={moveTagsToIndicators} className="mt-1 underline hover:text-amber-100">Move to indicators</button>}
+          </div>
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="block text-sm text-dark-300">Malware family <span className="text-dark-500">(optional)</span>
+          <input value={form.malware_family} onChange={set('malware_family')} maxLength={120} className="input-field w-full mt-1" placeholder="e.g. Cobalt Strike" />
+          {form.malware_family.trim() && cat && (
+            <span className={`block text-xs mt-1 ${famSoftware ? 'text-green-400' : 'text-dark-500'}`}>
+              {famSoftware
+                ? `In ATT&CK: ${famSoftware.name} (${famSoftware.id}), ${famSoftware.count} techniques`
+                : 'Not in ATT&CK: no techniques from the family'}
+            </span>
+          )}
+        </label>
+        <div className="text-sm text-dark-300">ATT&CK techniques <span className="text-dark-500">(optional)</span>
+          <div className="mt-1"><TechniquePicker cat={cat} value={techniques} onChange={setTechniques} /></div>
+        </div>
+      </div>
+      {canIndicators && <label className="block text-sm text-dark-300">Indicators <span className="text-dark-500">(optional: one per line, added when you save)</span>
+        <textarea value={indicators} onChange={e => setIndicators(e.target.value)} rows={3} className="input-field w-full mt-1 font-mono text-xs"
+          placeholder={'IPs, domains, URLs, hashes, emails or CVE IDs, e.g.\n203.0.113.5\nhxxp://evil[.]example[.]my'} />
+      </label>}
+      <p className="text-xs text-dark-500">
+        {initial ? 'Changes to a published event update its alerts when you save.' : 'A new event is a draft. Its indicators count for alerts once you publish it'}
+        {!initial && (form.distribution === 'organisation' ? ', for your organisation only.' : ': in your organisation, and in other tenants that choose to use it.')}
+      </p>
+      {error && <p className="text-sm text-red-400">{error}</p>}
     </div>
   )
 }
@@ -261,8 +274,8 @@ function AddAttributes({ eventId, onAdded, showToast }) {
   }
 
   return (
-    <div className="glass-card p-4 space-y-3">
-      <h3 className="text-sm font-semibold text-dark-200">Add indicators</h3>
+    <section className="space-y-3 rounded-lg border border-dark-700/60 p-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-dark-400">Add indicators</h3>
       <textarea value={text} onChange={e => setText(e.target.value)} rows={4} className="input-field w-full font-mono text-xs"
         placeholder={type === 'software'
           ? 'One per line: a program or package name, optionally @version, e.g.\nMOVEit Transfer\nlog4j-core@2.14.1'
@@ -299,7 +312,7 @@ function AddAttributes({ eventId, onAdded, showToast }) {
           )}
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -314,7 +327,7 @@ function SharedAlertChoice({ ev, busy, act }) {
     ? `your default for shared events (${ev.shared_event_alerts ? 'on' : 'off'})`
     : 'chosen for this event'
   return (
-    <div className={`glass-card p-4 flex items-start justify-between gap-4 flex-wrap border ${ev.alerts_here ? 'border-amber-500/40' : 'border-transparent'}`}>
+    <section className={`flex flex-wrap items-start justify-between gap-4 rounded-lg border p-4 ${ev.alerts_here ? 'border-amber-500/40' : 'border-dark-700/60'}`}>
       <div className="min-w-0">
         <h3 className="text-sm font-semibold text-dark-200">
           Alerts in your organisation: <span className={ev.alerts_here ? 'text-amber-300' : 'text-dark-400'}>{ev.alerts_here ? 'On' : 'Off'}</span>
@@ -336,14 +349,12 @@ function SharedAlertChoice({ ev, busy, act }) {
           )}
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
-// ── One event ─────────────────────────────────────────────────
 // What a MyCERT advisory says beyond the event's own fields (workers/src/services/mycert.ts source_meta):
-// its link, MyCERT's rating, the affected products, and the sentence behind each exploited CVE.
-const KIND_LABEL = { advisory: 'Advisory', alert: 'Alert', report: 'Report' }
+// MyCERT's rating, the affected products, and the sentence behind each exploited CVE.
 function MycertFacts({ ev }) {
   const meta = ev.source_meta || {}
   const evidence = Object.entries(meta.exploited_evidence || {})
@@ -353,11 +364,6 @@ function MycertFacts({ ev }) {
         <Shield className="w-3.5 h-3.5 text-eagle-400" />
         <span className="font-semibold">MyCERT {KIND_LABEL[meta.kind] ?? 'advisory'} {ev.external_id}</span>
         {meta.rating && <span>· MyCERT rates it <span className="font-semibold uppercase">{meta.rating}</span></span>}
-        {meta.url && (
-          <a href={meta.url} target="_blank" rel="noreferrer" className="ml-auto text-eagle-400 hover:underline inline-flex items-center gap-0.5">
-            Read it on MyCERT <ExternalLink className="w-3 h-3" />
-          </a>
-        )}
       </p>
       {meta.products?.length > 0 && (
         <p className="text-dark-300"><span className="text-dark-400">Affected: </span>{meta.products.join(' · ')}</p>
@@ -375,52 +381,72 @@ function MycertFacts({ ev }) {
   )
 }
 
-export function EventDetail({ eventId, onBack, onChanged, showToast, backLabel = 'All events' }) {
+// ── One event (a view in the panel): MyCERT advisories open here too ──
+export function EventView({ view, setHead, panel, showToast }) {
   const { can } = useAuth()
   const [ev, setEv] = useState(null)
-  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const load = useCallback(async () => {
     try {
-      const res = await client.get(`/cti/events/${eventId}`)
+      const res = await client.get(`/cti/events/${view.id}`)
       setEv(res.data)
     } catch (err) {
       showToast(errorText(err, 'Failed to load the event'), 'error')
-      onBack()
+      panel.close()
     }
-  }, [eventId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [load, panel.version])
 
-  useEffect(() => { load() }, [load])
-
-  const act = async (fn, okMsg) => {
+  const act = useCallback(async (fn, okMsg) => {
     setBusy(true)
     try {
       const res = await fn()
       showToast(`${okMsg} ${alertChangeText(res?.data)}`.trim())
-      await load()
-      onChanged()
+      panel.changed()
     } catch (err) {
       showToast(errorText(err, 'The change failed'), 'error')
     } finally {
       setBusy(false)
     }
-  }
+  }, [panel, showToast])
 
-  if (!ev) {
-    return <div className="flex justify-center py-16"><div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" /></div>
-  }
+  const mycert = ev?.origin === 'mycert'
+  const editable = !!ev?.can_edit
+  useEffect(() => {
+    if (!ev) return
+    const meta = ev.source_meta || {}
+    setHead({
+      title: ev.title,
+      subtitle: mycert ? `MyCERT ${(KIND_LABEL[meta.kind] ?? 'advisory').toLowerCase()} · published ${day(ev.published_at)}` : `Threat-intel event · ${ev.status === 'published' ? 'published' : 'draft'}`,
+      footer: mycert ? (meta.url ? (
+        <a href={meta.url} target="_blank" rel="noreferrer" className="btn-secondary inline-flex items-center gap-1.5 text-sm">Read it on MyCERT <ExternalLink className="h-3.5 w-3.5" /></a>
+      ) : null) : editable && (can('ti_event.edit') || can('ti_event.publish') || can('ti_event.delete')) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {can('ti_event.edit') && <button onClick={() => panel.push({ kind: 'eventForm', initial: ev, label: ev.title })} disabled={busy} className="btn-secondary flex items-center gap-2 text-sm"><Pencil className="h-4 w-4" /> Edit</button>}
+          {can('ti_event.publish') && (
+            <button onClick={() => act(() => client.post(`/cti/events/${ev.event_id}/${ev.status === 'published' ? 'unpublish' : 'publish'}`), ev.status === 'published' ? 'Unpublished.' : 'Published.')}
+              disabled={busy} className={`${ev.status === 'published' ? 'btn-secondary' : 'btn-primary'} flex items-center gap-2 text-sm`}>
+              {ev.status === 'published' ? <><Undo2 className="h-4 w-4" /> Unpublish</> : <><Send className="h-4 w-4" /> Publish</>}
+            </button>
+          )}
+          {can('ti_event.delete') && <button onClick={() => setConfirmDelete(true)} disabled={busy} className="btn-secondary ml-auto flex items-center gap-2 text-sm hover:text-red-400"><Trash2 className="h-4 w-4" /> Delete</button>}
+        </div>
+      ) : null,
+    })
+  }, [ev, mycert, editable, busy, can, act, panel, setHead])
 
-  const publish = () => act(() => client.post(`/cti/events/${ev.event_id}/${ev.status === 'published' ? 'unpublish' : 'publish'}`),
-    ev.status === 'published' ? 'Unpublished.' : 'Published.')
+  if (!ev) return <Spinner />
+
   const remove = async () => {
-    if (!confirm(`Delete "${ev.title}" and its ${ev.attribute_count} indicator(s)? This cannot be undone.`)) return
+    setConfirmDelete(false)
     setBusy(true)
     try {
       const res = await client.delete(`/cti/events/${ev.event_id}`)
       showToast(`Event deleted. ${alertChangeText(res.data)}`.trim())
-      onChanged()
-      onBack()
+      panel.changed()
+      panel.close()
     } catch (err) {
       showToast(errorText(err, 'Failed to delete the event'), 'error')
       setBusy(false)
@@ -429,180 +455,133 @@ export function EventDetail({ eventId, onBack, onChanged, showToast, backLabel =
   const toggleIds = (a) => act(() => client.patch(`/cti/events/${ev.event_id}/attributes/${a.attribute_id}`, { to_ids: !a.to_ids }),
     a.to_ids ? 'Indicator set to context only.' : 'Indicator used for alerts.')
   const removeAttr = (a) => act(() => client.delete(`/cti/events/${ev.event_id}/attributes/${a.attribute_id}`), 'Indicator removed.')
+  const openIndicator = (a) => panel.push({ kind: 'indicator', value: a.value, label: mycert ? `${ev.external_id?.replace(/\.\d{6}$/, '')}` : ev.title })
+  const tags = (ev.tags || []).filter((t) => !(mycert && (t === 'MyCERT' || KIND_LABEL[t.toLowerCase()])))
+  const alerts = ev.matching_alerts ?? []
 
   return (
-    <div className="space-y-4">
-      <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm text-dark-400 hover:text-dark-100">
-        <ArrowLeft className="w-4 h-4" /> {backLabel}
-      </button>
-
-      <div className="glass-card p-5 space-y-3">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
-            <h2 className="text-xl font-semibold text-dark-50 break-words">{ev.title}</h2>
-            <div className="flex items-center gap-1.5 flex-wrap mt-2">
-              <StatusBadge status={ev.status} />
-              <Badge cls={LEVELS[ev.threat_level]?.cls}>{LEVELS[ev.threat_level]?.label} threat</Badge>
-              <Badge cls="bg-dark-700/60 text-dark-200 border-dark-600">{SHARING[ev.distribution]?.label}</Badge>
-              {ev.shared_in && <Badge cls="bg-sky-500/10 text-sky-300 border-sky-500/30">Shared by {ev.tenant_name ?? 'another tenant'}</Badge>}
-              {(ev.tags || []).map(t => (
-                <Badge key={t} cls="bg-eagle-500/10 text-eagle-300 border-eagle-500/30"><Tag className="w-3 h-3 inline mr-1" />{t}</Badge>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <LevelBadge level={ev.threat_level} suffix=" threat" />
+        {!mycert && <StatusBadge status={ev.status} />}
+        <Badge>{SHARING[ev.distribution]?.label}</Badge>
+        {ev.shared_in && <Badge cls="border-sky-500/30 bg-sky-500/10 text-sky-300">Shared by {ev.tenant_name ?? 'another tenant'}</Badge>}
+        {tags.slice(0, 8).map(t => <Badge key={t} cls="border-eagle-500/30 bg-eagle-500/10 text-eagle-300">{t}</Badge>)}
+        {tags.length > 8 && <span className="text-xs text-dark-500">+{tags.length - 8} tags</span>}
+      </div>
+      {ev.description && <p className="whitespace-pre-wrap text-sm text-dark-300">{mycert ? ev.description.split('\n\nSource:')[0] : ev.description}</p>}
+      {mycert && <MycertFacts ev={ev} />}
+      {(ev.malware_family || ev.attack_techniques?.length > 0) && (
+        <div className="space-y-1.5 text-xs">
+          {ev.malware_family && (
+            <p className="flex flex-wrap items-center gap-1.5 text-dark-300">
+              <Bug className="h-3.5 w-3.5 text-dark-400" /> Malware family: <span className="text-dark-100">{ev.malware_family}</span>
+              {ev.attack_software
+                ? <a href={softwareUrl(ev.attack_software)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-eagle-400 hover:underline">ATT&CK {ev.attack_software_name} ({ev.attack_software}) <ExternalLink className="h-3 w-3" /></a>
+                : <span className="text-dark-500">(not in ATT&CK)</span>}
+            </p>
+          )}
+          {ev.attack_techniques?.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {ev.attack_techniques.map(t => (
+                <a key={t.id} href={techniqueUrl(t.id)} target="_blank" rel="noreferrer" title={t.name} className="rounded bg-dark-700/60 px-1.5 py-0.5 text-dark-200 hover:text-eagle-400">
+                  <span className="font-mono">{t.id}</span> {t.name}
+                </a>
               ))}
-            </div>
-          </div>
-          {ev.can_edit && (can('ti_event.edit') || can('ti_event.publish') || can('ti_event.delete')) && (
-            <div className="flex items-center gap-2 flex-wrap">
-              {can('ti_event.edit') && <button onClick={() => setEditing(true)} disabled={busy} className="btn-secondary text-sm flex items-center gap-2"><Pencil className="w-4 h-4" /> Edit</button>}
-              {can('ti_event.publish') && <button onClick={publish} disabled={busy} className={`${ev.status === 'published' ? 'btn-secondary' : 'btn-primary'} text-sm flex items-center gap-2`}>
-                {ev.status === 'published' ? <><Undo2 className="w-4 h-4" /> Unpublish</> : <><Send className="w-4 h-4" /> Publish</>}
-              </button>}
-              {can('ti_event.delete') && <button onClick={remove} disabled={busy} className="btn-secondary text-sm flex items-center gap-2 hover:text-red-400"><Trash2 className="w-4 h-4" /> Delete</button>}
             </div>
           )}
         </div>
-        {ev.description && <p className="text-sm text-dark-300 whitespace-pre-wrap">{ev.origin === 'mycert' ? ev.description.split('\n\nSource:')[0] : ev.description}</p>}
-        {ev.origin === 'mycert' && <MycertFacts ev={ev} />}
-        {(ev.malware_family || ev.attack_techniques?.length > 0) && (
-          <div className="text-xs space-y-1.5">
-            {ev.malware_family && (
-              <p className="text-dark-300 flex items-center gap-1.5 flex-wrap">
-                <Bug className="w-3.5 h-3.5 text-dark-400" /> Malware family: <span className="text-dark-100">{ev.malware_family}</span>
-                {ev.attack_software
-                  ? <a href={softwareUrl(ev.attack_software)} target="_blank" rel="noreferrer" className="text-eagle-400 hover:underline inline-flex items-center gap-0.5">
-                      ATT&CK {ev.attack_software_name} ({ev.attack_software}) <ExternalLink className="w-3 h-3" />
-                    </a>
-                  : <span className="text-dark-500">(not in ATT&CK)</span>}
-              </p>
-            )}
-            {ev.attack_techniques?.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {ev.attack_techniques.map(t => (
-                  <a key={t.id} href={techniqueUrl(t.id)} target="_blank" rel="noreferrer" title={t.name}
-                    className="px-1.5 py-0.5 rounded bg-dark-700/60 text-dark-200 hover:text-eagle-400">
-                    <span className="font-mono">{t.id}</span> {t.name}
-                  </a>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        <p className="text-xs text-dark-500">
-          {ev.origin === 'mycert'
-            ? `Published by MyCERT ${fmt(ev.published_at)} · loaded ${fmt(ev.created_at)}`
-            : <>Created {fmt(ev.created_at)} · updated {fmt(ev.updated_at)}{ev.published_at && ` · published ${fmt(ev.published_at)}`}</>}
-        </p>
-        <p className="text-xs text-dark-400">
-          {ev.shared_in
-            ? `Shared by ${ev.tenant_name ?? 'another tenant'}. `
-            : ev.status === 'published'
-              ? 'Published: its indicators are used for alerts' + (ev.distribution === 'organisation' ? ' in your organisation.'
-                : ev.distribution === 'platform' ? ' in every tenant.' : ' in your organisation, and in other tenants that turn it on.')
-              : 'Draft: not used for alerts until you publish it.'}
-          {' '}IPs, domains, URLs and software are matched against {ev.shared_in ? 'assets' : 'your assets'}; hashes and emails are kept for reference.
-        </p>
-      </div>
+      )}
+      <p className="text-xs text-dark-400">
+        {mycert ? `Loaded ${day(ev.created_at)}. ` : `Created ${day(ev.created_at)} · updated ${day(ev.updated_at)}. `}
+        {ev.shared_in
+          ? `Shared by ${ev.tenant_name ?? 'another tenant'}. `
+          : ev.status === 'published'
+            ? 'Published: its indicators are used for alerts' + (ev.distribution === 'organisation' ? ' in your organisation. '
+              : ev.distribution === 'platform' ? ' in every organisation. ' : ' in your organisation, and in other tenants that turn it on. ')
+            : 'Draft: not used for alerts until you publish it. '}
+        IPs, domains, URLs and software are matched against {ev.shared_in ? 'devices' : 'your devices'}; hashes are checked by the agents; emails are kept for reference.
+      </p>
 
       {ev.shared_in && <SharedAlertChoice ev={ev} busy={busy} act={act} />}
 
       {ev.status === 'published' && (
-        <div className="glass-card p-4">
-          <h3 className="text-sm font-semibold text-dark-200 flex items-center gap-2 mb-2">
-            <Crosshair className="w-4 h-4 text-accent-red" /> Open alerts this event drives ({ev.matching_alerts?.length ?? 0}{ev.matching_alerts?.length === 50 ? '+' : ''})
+        <section>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-dark-400">
+            On your devices · {alerts.length}{alerts.length === 50 ? '+' : ''} open {alerts.length === 1 ? 'alert' : 'alerts'}
           </h3>
-          {(ev.matching_alerts ?? []).length === 0 ? (
-            <p className="text-xs text-dark-500">{ev.shared_in && !ev.alerts_here ? 'None: alerts from this event are off in your organisation.' : 'None of your assets match it right now.'}</p>
+          {alerts.length === 0 ? (
+            <p className="text-sm text-dark-500">{ev.shared_in && !ev.alerts_here ? 'None: alerts from this event are off in your organisation.' : 'None of your devices has what it names.'}</p>
           ) : (
             <ul className="space-y-1">
-              {ev.matching_alerts.map(m => (
-                <li key={m.event_id} className="text-xs text-dark-300 flex items-center gap-2">
+              {alerts.map(m => (
+                <li key={m.event_id} className="flex items-center gap-2 text-xs text-dark-300">
                   <SevBadge sev={m.severity} />
                   <span className="text-dark-200">{m.event_type === 'cve_detected' ? `${m.package_name ? `${m.package_name}: ` : ''}${m.cve_id}` : alertLabel({ event_type: m.event_type, details: { match_kind: m.match_kind } })}</span>
-                  <span className="font-mono text-dark-400 truncate">{m.event_type === 'cti_match' ? `${m.observed} ↔ ${m.indicator_value}` : ''}</span>
+                  <span className="truncate font-mono text-dark-400">{m.event_type === 'cti_match' ? `${m.observed} ↔ ${m.indicator_value}` : ''}</span>
                   <Link to={`/inventory/${m.asset_id}`} className="ml-auto text-eagle-400 hover:underline">{m.asset_name}</Link>
                 </li>
               ))}
             </ul>
           )}
-        </div>
+        </section>
       )}
 
-      {ev.can_edit && can('ti_event.edit') && <AddAttributes eventId={ev.event_id} showToast={showToast} onAdded={() => { load(); onChanged() }} />}
+      {editable && can('ti_event.edit') && <AddAttributes eventId={ev.event_id} showToast={showToast} onAdded={() => panel.changed()} />}
 
-      <div className="glass-card overflow-hidden">
-        <div className="p-4 border-b border-dark-700/50">
-          <h3 className="text-sm font-semibold text-dark-200">{ev.attribute_count} indicator(s)</h3>
-        </div>
-        {ev.attributes.length === 0 ? (
-          <p className="text-center py-10 text-dark-500 text-sm">No indicators yet{ev.can_edit ? '. Paste some above.' : '.'}</p>
-        ) : (
-          <div className="max-h-[28rem] overflow-y-auto">
-            <table className="w-full text-xs table-fixed">
-              <colgroup><col className="w-[10%]" /><col className="w-[40%]" /><col className="w-[16%]" /><col className="w-[26%]" /><col className="w-[8%]" /></colgroup>
-              <thead className="sticky top-0 z-10 bg-dark-800">
-                <tr className="text-dark-400 border-b border-dark-700">
-                  <th className="text-left py-2 px-3 font-medium">Type</th>
-                  <th className="text-left py-2 px-3 font-medium">Value</th>
-                  <th className="text-left py-2 px-3 font-medium">Used for alerts</th>
-                  <th className="text-left py-2 px-3 font-medium">Comment</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {ev.attributes.map(a => (
-                  <tr key={a.attribute_id} className="border-b border-dark-700/30 hover:bg-dark-700/20">
-                    <td className="py-1.5 px-3 text-dark-300">{TYPE_LABELS[a.type] ?? a.type}</td>
-                    <td className="py-1.5 px-3 font-mono text-dark-100 truncate" title={a.value}>{a.value}</td>
-                    <td className="py-1.5 px-3">
-                      {a.warning ? (
-                        <span className="inline-flex items-center gap-1 text-amber-300" title="On a warninglist: kept for reference, never raises an alert">
-                          <AlertTriangle className="w-3.5 h-3.5" /> {a.warning_label}
-                        </span>
-                      ) : ev.can_edit ? (
-                        <button onClick={() => toggleIds(a)} disabled={busy}
-                          className={a.to_ids ? 'text-green-300 hover:underline' : 'text-dark-500 hover:underline'}>
-                          {a.to_ids ? 'Yes' : 'No (context only)'}
-                        </button>
-                      ) : (a.to_ids ? 'Yes' : 'No (context only)')}
-                    </td>
-                    <td className="py-1.5 px-3 text-dark-400 truncate" title={a.comment || ''}>{a.comment || '—'}</td>
-                    <td className="py-1.5 px-3 text-right">
-                      {ev.can_edit && (
-                        <button onClick={() => removeAttr(a)} disabled={busy} className="text-dark-500 hover:text-red-400" title="Remove">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-dark-400">
+          {mycert ? 'CVEs and indicators' : 'Indicators'} · {ev.attribute_count.toLocaleString()}
+        </h3>
+        <PanelList rows={ev.attributes} one="indicator" empty={editable ? 'No indicators yet. Add some above.' : 'None.'}
+          head={editable ? ['Type', 'Value', 'Used for alerts', 'Comment', ''] : ['Type', 'Value', 'Used for alerts', 'Comment']}
+          row={(a) => (
+            <tr key={a.attribute_id} tabIndex={0} className="cursor-pointer hover:bg-dark-700/30" onClick={() => openIndicator(a)}
+              onKeyDown={(e) => { if (e.key === 'Enter') openIndicator(a) }}>
+              <td><TypeLabel type={a.type} /></td>
+              <td className="max-w-[16rem] break-all font-mono text-xs text-dark-100">{a.value}</td>
+              <td className="text-xs">
+                {a.warning ? (
+                  <span className="inline-flex items-center gap-1 text-amber-300" title="On a warninglist: kept for reference, never raises an alert"><AlertTriangle className="h-3.5 w-3.5" /> {a.warning_label}</span>
+                ) : editable ? (
+                  <button onClick={(e) => { e.stopPropagation(); toggleIds(a) }} disabled={busy} className={a.to_ids ? 'text-green-300 hover:underline' : 'text-dark-500 hover:underline'}>
+                    {a.to_ids ? 'Yes' : 'No (context only)'}
+                  </button>
+                ) : <span className={a.to_ids ? 'text-dark-200' : 'text-dark-500'}>{a.to_ids ? 'Yes' : 'No (context only)'}</span>}
+              </td>
+              <td className="max-w-[14rem] truncate text-xs text-dark-400" title={a.comment || ''}>{a.comment || '—'}</td>
+              {editable && (
+                <td className="text-right">
+                  <button onClick={(e) => { e.stopPropagation(); removeAttr(a) }} disabled={busy} className="text-dark-500 hover:text-red-400" title="Remove" aria-label={`Remove ${a.value}`}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              )}
+            </tr>
+          )} />
+      </section>
 
-      {editing && (
-        <EventDialog initial={ev} onClose={() => setEditing(false)}
-          onSaved={(saved, added) => {
-            setEditing(false)
-            showToast(added?.error ? `Saved, but ${added.error}.` : added ? `Saved. ${added.added} indicator(s) added.` : `Saved. ${alertChangeText(saved)}`.trim(),
-              added?.error ? 'error' : 'success')
-            load(); onChanged()
-          }} />
+      {confirmDelete && (
+        <ConfirmDialog title="Delete this event?" confirmLabel="Delete" danger onCancel={() => setConfirmDelete(false)} onConfirm={remove}>
+          “{ev.title}” and its {ev.attribute_count} indicator(s) are deleted, and the alerts they raised are checked again. This cannot be undone.
+        </ConfirmDialog>
       )}
     </div>
   )
 }
 
-// ── Panel: list ↔ detail ──────────────────────────────────────
+// ── The list ──────────────────────────────────────────────────
 export default function TiEventsPanel({ showToast }) {
+  const panel = useTiPanel()
   const { can, isPlatformSuperadmin, user } = useAuth()
   const canCreate = can('ti_event.create')
   const [events, setEvents] = useState(null)
   const [shared, setShared] = useState({ on: null, canSet: false })   // the tenant's default for shared events
   const [savingShared, setSavingShared] = useState(false)
-  const [filter, setFilter] = useState('all')       // all | ours | shared | drafts
-  const [openId, setOpenId] = useState(null)
-  const [creating, setCreating] = useState(false)
+  const [q, setQ] = useState('')
+  const [owner, setOwner] = useState('')          // '' | ours | shared
+  const [drafts, setDrafts] = useState(false)
+  const [page, setPage] = useState(1)
 
   const load = useCallback(async () => {
     try {
@@ -614,19 +593,18 @@ export default function TiEventsPanel({ showToast }) {
       setEvents([])
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [load, panel.version])
+  useEffect(() => { setPage(1) }, [q, owner, drafts])
 
-  useEffect(() => { load() }, [load])
-
-  if (openId) {
-    return <EventDetail eventId={openId} onBack={() => setOpenId(null)} onChanged={load} showToast={showToast} />
-  }
-
-  // MyCERT's advisories are platform events loaded automatically: a filter of their own
-  const isMycert = (e) => e.origin === 'mycert'
-  const isMine = (e) => e.own || (isPlatformSuperadmin && !e.tenant_id && !isMycert(e))
-  const shown = (events || []).filter(e =>
-    filter === 'ours' ? isMine(e) : filter === 'shared' ? !isMine(e) && !isMycert(e) : filter === 'mycert' ? isMycert(e)
-      : filter === 'drafts' ? e.status === 'draft' : true)
+  const isMine = (e) => e.own || (isPlatformSuperadmin && !e.tenant_id)
+  const query = q.trim().toLowerCase()
+  const base = (events || []).filter((e) => (!query || e.title.toLowerCase().includes(query) || (e.tags || []).some((t) => t.toLowerCase().includes(query)))
+    && (!drafts || e.status === 'draft'))
+  const shown = base.filter((e) => (owner === 'ours' ? isMine(e) : owner === 'shared' ? !isMine(e) : true))
+  const filtered = !!(query || owner || drafts)
+  const clear = () => { setQ(''); setOwner(''); setDrafts(false) }
+  const current = pageWithin(page, PAGE, shown.length)
+  const open = (e) => panel.open({ kind: 'event', id: e.event_id, label: e.title })
 
   const setSharedDefault = async (on) => {
     setSavingShared(true)
@@ -642,33 +620,34 @@ export default function TiEventsPanel({ showToast }) {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex gap-1 bg-dark-800 rounded-lg p-1">
-          {[['all', 'All'], ['ours', 'Ours'], ['shared', 'Shared with us'], ['mycert', 'MyCERT'], ['drafts', 'Drafts']].map(([id, label]) => (
-            <button key={id} onClick={() => setFilter(id)}
-              className={`px-3 py-1.5 rounded-md text-sm ${filter === id ? 'bg-eagle-600 text-on-brand' : 'text-dark-400 hover:text-dark-100'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-3">
+      <FilterBar>
+        <SearchBox value={q} onChange={setQ} placeholder="Search events" />
+        <FilterChip pressed={!owner} onClick={() => setOwner('')} count={base.length}>All</FilterChip>
+        <FilterChip pressed={owner === 'ours'} onClick={() => setOwner('ours')} count={base.filter(isMine).length}>Ours</FilterChip>
+        <FilterChip pressed={owner === 'shared'} onClick={() => setOwner('shared')} count={base.filter((e) => !isMine(e)).length}>Shared with us</FilterChip>
+        <label className="ml-1 inline-flex items-center gap-1.5 text-xs text-dark-300">
+          <input type="checkbox" checked={drafts} onChange={(e) => setDrafts(e.target.checked)} className="accent-eagle-500" /> Drafts only
+        </label>
+        {filtered && <ClearFilters onClick={clear} />}
+        <ListTotal><b>{shown.length.toLocaleString()}</b> {shown.length === 1 ? 'event' : 'events'}</ListTotal>
         {canCreate && (
-          <button onClick={() => setCreating(true)} className="btn-primary text-sm flex items-center gap-2">
-            <Plus className="w-4 h-4" /> New event
+          <button onClick={() => panel.open({ kind: 'eventForm', label: 'New threat-intel event' })} className="btn-primary flex items-center gap-2 text-sm">
+            <Plus className="h-4 w-4" /> New event
           </button>
         )}
-      </div>
+      </FilterBar>
 
-      {filter === 'shared' && shared.on !== null && (
-        <div className="glass-card p-4 flex items-start justify-between gap-4 flex-wrap">
+      {owner === 'shared' && shared.on !== null && (
+        <div className="glass-card flex flex-wrap items-start justify-between gap-4 p-4">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-dark-200">
               Alerts from events other tenants share: <span className={shared.on ? 'text-amber-300' : 'text-dark-400'}>{shared.on ? 'On' : 'Off'} by default</span>
             </h3>
-            <p className="text-xs text-dark-400 mt-1">
+            <p className="mt-1 text-xs text-dark-400">
               {shared.on
                 ? 'Every event another tenant shares with all tenants is matched against your assets and agents, unless you turn it off for that event.'
-                : 'Shared events are for reading only, unless you turn alerts on for an event (open it). Platform events always count.'}
+                : 'Shared events are for reading only, unless you turn alerts on for an event (open it).'}
               {' '}Their alerts say which tenant shared them.
             </p>
           </div>
@@ -681,55 +660,44 @@ export default function TiEventsPanel({ showToast }) {
       )}
 
       <div className="glass-card overflow-hidden">
-        {events === null ? (
-          <div className="flex justify-center py-16"><div className="w-8 h-8 border-4 border-eagle-500/30 border-t-eagle-500 rounded-full animate-spin" /></div>
-        ) : shown.length === 0 ? (
-          <div className="text-center py-16 text-dark-400">
-            <Shield className="w-12 h-12 mx-auto mb-3 opacity-20" />
-            <p className="font-medium">No events here yet</p>
-            <p className="text-sm mt-1">
-              {canCreate ? 'Create one to record a campaign’s indicators (IPs, domains, hashes, CVEs) and share it.' : 'Your analysts have not published any yet.'}
-            </p>
-          </div>
+        {events === null ? <Spinner className="py-20" /> : shown.length === 0 ? (
+          <EmptyState icon={BookOpen} title="No events" filtered={filtered} onClear={clear}>
+            {canCreate ? 'Create one to record a campaign’s indicators (IPs, domains, hashes, CVEs) and share it.' : 'Your analysts have not published any yet.'}
+          </EmptyState>
         ) : (
-          <table className="data-table">
-            <thead>
-              <tr><th>Event</th><th>Level</th><th>Status</th><th>Shared with</th><th>From</th><th>Alerts here</th><th>Indicators</th><th>Updated</th></tr>
-            </thead>
-            <tbody>
-              {shown.map(e => (
-                <tr key={e.event_id} className="cursor-pointer hover:bg-dark-700/30" onClick={() => setOpenId(e.event_id)}>
-                  <td className="max-w-xs">
-                    <p className="text-sm text-dark-100 font-medium truncate" title={e.title}>{e.title}</p>
-                    {(e.tags || []).length > 0 && <p className="text-xs text-dark-500 truncate">{e.tags.join(', ')}</p>}
-                  </td>
-                  <td><Badge cls={LEVELS[e.threat_level]?.cls}>{LEVELS[e.threat_level]?.label}</Badge></td>
-                  <td><StatusBadge status={e.status} /></td>
-                  <td className="text-xs text-dark-300">{SHARING[e.distribution]?.short}</td>
-                  <td className="text-xs text-dark-300">{!e.tenant_id ? 'Platform' : e.own ? 'Us' : e.tenant_name}</td>
-                  <td className="text-xs" title={e.shared_in ? (e.alerts_choice === null ? 'Your default for shared events' : 'Chosen for this event') : undefined}>
-                    {e.alerts_here === undefined ? <span className="text-dark-500">—</span>
-                      : e.alerts_here ? <span className="text-amber-300">Yes</span>
-                      : <span className="text-dark-500">{e.status === 'draft' ? 'Not yet' : 'No'}</span>}
-                  </td>
-                  <td className="text-xs text-dark-300">{e.attribute_count}{e.cve_count > 0 && <span className="text-dark-500"> ({e.cve_count} CVE)</span>}</td>
-                  <td className="text-xs text-dark-400">{fmt(e.updated_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr><th>Event</th><th>Threat</th><th>Status</th><th>Shared with</th><th>Alerts here</th><th>Indicators</th><th>Updated</th></tr>
+                </thead>
+                <tbody>
+                  {shown.slice((current - 1) * PAGE, current * PAGE).map(e => (
+                    <tr key={e.event_id} tabIndex={0} className="cursor-pointer hover:bg-dark-700/30" onClick={() => open(e)}
+                      onKeyDown={(ev) => { if (ev.key === 'Enter') open(e) }}>
+                      <td className="max-w-xs">
+                        <p className="truncate text-sm font-medium text-dark-100" title={e.title}>{e.title}</p>
+                        <p className="truncate text-xs text-dark-500">{!isMine(e) ? `Shared by ${e.tenant_id ? e.tenant_name : 'the platform'}` : (e.tags || []).join(', ')}</p>
+                      </td>
+                      <td><LevelBadge level={e.threat_level} /></td>
+                      <td><StatusBadge status={e.status} /></td>
+                      <td className="text-xs text-dark-300">{SHARING[e.distribution]?.short}</td>
+                      <td className="text-xs" title={e.shared_in ? (e.alerts_choice === null ? 'Your default for shared events' : 'Chosen for this event') : undefined}>
+                        {e.alerts_here === undefined ? <span className="text-dark-500">—</span>
+                          : e.alerts_here ? <span className="text-amber-300">Yes</span>
+                          : <span className="text-dark-500">{e.status === 'draft' ? 'Not yet' : 'No'}</span>}
+                      </td>
+                      <td className="text-xs tabular-nums text-dark-300">{e.attribute_count.toLocaleString()}{e.cve_count > 0 && <span className="text-dark-500"> ({e.cve_count} CVE)</span>}</td>
+                      <td className="whitespace-nowrap text-xs text-dark-400">{day(e.updated_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <ListPager page={current} pageSize={PAGE} total={shown.length} one="event" onChange={setPage} />
+          </>
         )}
       </div>
-
-      {creating && (
-        <EventDialog onClose={() => setCreating(false)}
-          onSaved={(saved, added) => {
-            setCreating(false)
-            showToast(added?.error ? `Draft created, but ${added.error}.` : added ? `Draft created with ${added.added} indicator(s). Publish it to use them.` : 'Draft created. Add indicators, then publish.',
-              added?.error ? 'error' : 'success')
-            load(); setOpenId(saved.event_id)
-          }} />
-      )}
     </div>
   )
 }

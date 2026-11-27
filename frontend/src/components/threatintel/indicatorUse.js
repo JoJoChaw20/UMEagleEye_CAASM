@@ -9,8 +9,8 @@ export const USE_META = {
 }
 
 export const REASON_LABEL = {
-  expired: 'expired: no feed has listed it lately (IPs 30 days, domains and URLs 90)',
-  retired: 'from a feed no longer used (AlienVault OTX)',
+  expired: 'expired: from an older MyCERT advisory (an IP matches for 30 days from the advisory, a domain or URL 90); a feed\'s expired values are deleted',
+  retired: 'from a feed no longer used',
   safe_list: 'on a safe list (CDN, top site, private range...)',
   not_for_detection: 'marked by its source as not for detection',
   no_data: 'nothing here can see this type (emails)',
