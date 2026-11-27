@@ -1,7 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ACTIVE_FEEDS, CTI_STEPS, feedRefresh, nextCtiStep, otxPulseAttack, threatFoxAttack } from './cti'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
+import { ACTIVE_FEEDS, CTI_STEPS, batchUpsert, feedRefresh, nextCtiStep, otxPulseAttack, threatFoxAttack } from './cti'
 import { RETIRED_SOURCES } from './threatIntel'
+import { purgeStaleCti } from './retention'
 import { kevTechniques } from '../lib/kevAttack'
 
 test('feeds: on schedule in production, by hand only on staging (no crons there)', () => {
@@ -52,6 +55,31 @@ test('a family ATT&CK does not describe gets the techniques of its kind and role
   assert.deepEqual(threatFoxAttack({ malware_printable: 'php.shin_webshell' }).attackTechniques, ['T1505.003', 'T1059'])
   // ATT&CK describes Cobalt Strike: its documented techniques are used, nothing is inferred from the kind
   assert.equal(threatFoxAttack({ malware: 'win.cobalt_strike', malware_printable: 'Cobalt Strike', threat_type: 'botnet_cc' }).attackTechniques?.join(), 'T1071')
+})
+
+// a database that records the statement instead of running it
+function recordingDb() {
+  const seen: { sql: string; params: unknown[] }[] = []
+  const db = { execute: async (q: SQL) => { const r = new PgDialect().sqlToQuery(q); seen.push({ sql: r.sql, params: r.params }); return { rows: [] } } }
+  return { db: db as unknown as Parameters<typeof batchUpsert>[0], seen }
+}
+
+test('a value a retired feed stored first becomes the listing feed\'s (source and confidence), instead of never matching', async () => {
+  const { db, seen } = recordingDb()
+  await batchUpsert(db, [{ source: 'ThreatFox', indicatorType: 'ip', value: '203.0.113.9', confidenceScore: '0.75' }])
+  const q = seen[0]!
+  assert.match(q.sql, /source\s+= CASE WHEN c\.source IN \(\$\d+, \$\d+, \$\d+\) THEN excluded\.source ELSE c\.source END/)
+  assert.match(q.sql, /CASE WHEN c\.source = excluded\.source OR c\.source IN \(\$\d+, \$\d+, \$\d+\) THEN excluded\.confidence_score/)
+  for (const s of RETIRED_SOURCES) assert.ok(q.params.includes(s))
+})
+
+test('retention deletes a retired feed\'s rows at once (not after 90 days), unless an alert references them', async () => {
+  const { db, seen } = recordingDb()
+  await purgeStaleCti(db)
+  const q = seen[0]!
+  assert.match(q.sql, /c\.ti_event_id IS NULL\s+AND \(c\.last_seen < now\(\) - make_interval\(days => \$\d+\) OR c\.source IN \(\$\d+, \$\d+, \$\d+\)\)/)
+  assert.match(q.sql, /NOT EXISTS \(SELECT 1 FROM event_cti_indicators e WHERE e\.indicator_id = c\.indicator_id\)/)
+  for (const s of RETIRED_SOURCES) assert.ok(q.params.includes(s))
 })
 
 test('the nightly chain: MyCERT first, then CVE data, bulk indicators and the rest; URLhaus and Feodo retired', () => {

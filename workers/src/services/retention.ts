@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { pruneUnusedPublicAddresses } from './publicAddresses'
+import { RETIRED_SOURCES } from './threatIntel'
 
 type DB = ReturnType<typeof getDb>
+const RETIRED = sql.join(RETIRED_SOURCES.map((s) => sql`${s}`), sql`, `)
 
 // Retention windows. Deletes are batched so one run never holds a long lock or exceeds
 // the free-tier request budget; anything left over is picked up by the next daily run.
@@ -14,17 +16,18 @@ const MAX_BATCHES = 6   // per table, per run
 
 /**
  * Delete feed indicators not re-seen by any feed within CTI_MAX_AGE_DAYS (feeds refresh
- * last_seen on every re-ingest) and not referenced by an alert. Attributes of a
- * threat-intel event (ti_event_id set) are never purged: people wrote them, and they go
- * only when their event is deleted.
+ * last_seen on every re-ingest), and every row of a retired feed (RETIRED_SOURCES: they never
+ * match again, and were left to age out for 90 days, still counted on the Threat Intel page),
+ * unless an alert references it. Attributes of a threat-intel event (ti_event_id set) are never
+ * purged: people wrote them (or MyCERT published them), and they go only with their event.
  */
-async function purgeStaleCti(db: DB): Promise<number> {
+export async function purgeStaleCti(db: DB): Promise<number> {
   const res = await db.execute(sql`
     DELETE FROM cti_indicators
     WHERE indicator_id IN (
       SELECT c.indicator_id FROM cti_indicators c
       WHERE c.ti_event_id IS NULL
-        AND c.last_seen < now() - make_interval(days => ${CTI_MAX_AGE_DAYS})
+        AND (c.last_seen < now() - make_interval(days => ${CTI_MAX_AGE_DAYS}) OR c.source IN (${RETIRED}))
         AND NOT EXISTS (SELECT 1 FROM event_cti_indicators e WHERE e.indicator_id = c.indicator_id)
       LIMIT ${BATCH_SIZE}
     )
@@ -81,7 +84,7 @@ async function purgeOldScans(db: DB): Promise<number> {
 }
 
 /** Run a batched purge until a batch comes back short or MAX_BATCHES is reached. */
-async function drain(purge: (db: DB) => Promise<number>, db: DB): Promise<number> {
+export async function drain(purge: (db: DB) => Promise<number>, db: DB): Promise<number> {
   let total = 0
   for (let i = 0; i < MAX_BATCHES; i++) {
     const n = await purge(db)

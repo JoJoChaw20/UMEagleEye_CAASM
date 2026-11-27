@@ -2,7 +2,7 @@ import type { KVNamespace } from '@cloudflare/workers-types'
 import type { DB } from '../db/client'
 import { ctiIndicators } from '../db/schema'
 import { sql } from 'drizzle-orm'
-import { KEV_SOURCE, refreshCveIntel } from './threatIntel'
+import { KEV_SOURCE, RETIRED_SOURCES, refreshCveIntel } from './threatIntel'
 import { matchIocs } from './iocMatch'
 import { refreshEpss } from './epss'
 import { checkMaliciousPackages } from './maliciousPackages'
@@ -25,6 +25,7 @@ type CtiRow = typeof ctiIndicators.$inferInsert
 
 // Feed entries (not event attributes). Must match idx_cti_feed_value's WHERE.
 const FEED_ROW = sql`ti_event_id IS NULL`
+const RETIRED = sql.join(RETIRED_SOURCES.map((s) => sql`${s}`), sql`, `)
 
 interface OtxPulse {
   indicators: Array<{ type: string; indicator: string }>
@@ -147,6 +148,9 @@ export async function batchUpsert(db: DB, rows: CtiRow[]): Promise<void> {
         malware_family varchar, attack_software varchar, attack_techniques text[], last_seen timestamptz)
       ON CONFLICT (value) WHERE ti_event_id IS NULL     -- the feed rows' partial unique index (idx_cti_feed_value)
       DO UPDATE SET
+        -- a row a retired feed stored first (RETIRED_SOURCES) becomes this feed's: kept under the old
+        -- name it never matched, though this feed lists it now (found 27 Nov 2026: OTX rows refreshed by ThreatFox)
+        source            = CASE WHEN c.source IN (${RETIRED}) THEN excluded.source ELSE c.source END,
         last_seen         = excluded.last_seen,
         -- a feed that names no family does not erase one another feed gave
         malware_family    = coalesce(excluded.malware_family, c.malware_family),
@@ -154,7 +158,7 @@ export async function batchUpsert(db: DB, rows: CtiRow[]): Promise<void> {
         attack_techniques = coalesce(excluded.attack_techniques, c.attack_techniques),
         -- the feed that first listed it keeps its own confidence: another feed listing the same
         -- value only raises it (OTX's flat 70% used to overwrite ThreatFox's real level)
-        confidence_score  = CASE WHEN c.source = excluded.source THEN excluded.confidence_score
+        confidence_score  = CASE WHEN c.source = excluded.source OR c.source IN (${RETIRED}) THEN excluded.confidence_score
                                  ELSE GREATEST(c.confidence_score, excluded.confidence_score) END,
         warning           = excluded.warning`)
   }
