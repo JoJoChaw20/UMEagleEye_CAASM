@@ -165,7 +165,7 @@ export function buildPdf(data, reportType) {
     { value: String(risk.critical ?? 0), label: 'Open critical alerts', color: risk.critical ? C.red : C.ink },
     { value: String(risk.high ?? 0), label: 'Open high alerts', color: risk.high ? SEV.high : C.ink },
     // exploited_or_intel counts each alert once (a KEV alert can also be a threat-intel match); older stories lack it
-    { value: String(risk.exploited_or_intel ?? ((risk.kev ?? 0) + (risk.threat_intel ?? 0))), label: 'Exploited (KEV) or threat-intel matches', color: (risk.kev || risk.threat_intel) ? C.red : C.ink },
+    { value: String(risk.exploited_or_intel ?? ((risk.kev ?? 0) + (risk.threat_intel ?? 0))), label: 'Exploited (KEV / MyCERT) or threat-intel matches', color: (risk.kev || risk.threat_intel) ? C.red : C.ink },
     { value: String(risk.exposed_assets ?? 0), label: 'Internet-facing assets with critical/high', color: risk.exposed_assets ? C.red : C.ink },
     { value: String(data.sla_breaches ?? 0), label: 'Alerts past their fix-time target', color: data.sla_breaches ? C.amber : C.ink },
   ])
@@ -218,8 +218,9 @@ export function buildPdf(data, reportType) {
     { label: 'Exposure', w: 22, get: r => (r.internet_facing ? 'Internet-facing' : 'Internal'), color: r => (r.internet_facing ? C.red : C.body) },
     { label: 'Critical', w: 15, align: 'right', get: r => r.critical, color: r => (r.critical ? C.red : C.muted) },
     { label: 'High', w: 13, align: 'right', get: r => r.high, color: r => (r.high ? SEV.high : C.muted) },
-    { label: 'KEV', w: 11, align: 'right', get: r => r.kev, color: r => (r.kev ? C.red : C.muted) },
-    { label: 'CVE-checked', w: 20, get: r => (r.cve_checked ? 'Yes' : 'No (no SBOM)'), color: r => (r.cve_checked ? C.body : C.amber) },
+    // exploited in the wild: CISA KEV or a MyCERT advisory
+    { label: 'Exploited', w: 15, align: 'right', get: r => r.kev, color: r => (r.kev ? C.red : C.muted) },
+    { label: 'CVE-checked', w: 16, get: r => (r.cve_checked ? 'Yes' : 'No (no SBOM)'), color: r => (r.cve_checked ? C.body : C.amber) },
     { label: 'Owner', w: 37, get: r => r.owner ?? 'none' },
   ], story.hotspots ?? [], { empty: 'No asset has open alerts.' })
 
@@ -341,9 +342,9 @@ export function buildPdf(data, reportType) {
         ? `${r.details.cve_count}${r.details.top_cves?.[0] ? ` (${r.details.top_cves[0].id})` : ''}`
         : r.details?.cve_id ?? 'unknown') },
       { label: 'CVSS', w: 14, align: 'right', get: r => r.details?.max_cvss ?? r.details?.cvss_base_score ?? '-' },
-      { label: 'KEV', w: 12, get: r => (pkgAlert(r) ? String(r.details.kev_count ?? 0) : r.details?.kev ? 'Yes' : 'No'), color: r => (r.details?.kev ? C.red : C.muted) },
+      { label: 'Exploited', w: 15, get: r => (pkgAlert(r) ? String(r.details.kev_count ?? 0) : r.details?.kev ? 'Yes' : 'No'), color: r => (r.details?.kev ? C.red : C.muted) },
       { label: 'Risk', w: 14, align: 'right', get: r => (r.compositeRiskScore == null ? '-' : Number(r.compositeRiskScore).toFixed(1)) },
-      { label: 'Fix', w: 30, get: r => (pkgAlert(r) ? (r.details.fix_to ?? 'none yet')
+      { label: 'Fix', w: 27, get: r => (pkgAlert(r) ? (r.details.fix_to ?? 'none yet')
         : Array.isArray(r.details?.fix_versions) ? r.details.fix_versions.slice(0, 2).join(', ') : '-') },
       { label: 'Since', w: 20, get: r => fmtDate(r.timestamp) },
     ], data.top_cves ?? [], { empty: 'No open vulnerable packages.' })

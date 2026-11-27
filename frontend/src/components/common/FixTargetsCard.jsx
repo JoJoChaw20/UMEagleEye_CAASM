@@ -7,8 +7,8 @@ import client from '../../api/client'
 
 const ROWS = [
   { key: 'compromise', label: 'Possible compromise', help: 'Threat intelligence seen on a device: investigate', unit: 'hours' },
-  { key: 'kev_exposed', label: 'Exploited, internet-facing', help: 'A CVE on CISA KEV on an internet-facing device', unit: 'days' },
-  { key: 'kev', label: 'Exploited, internal', help: 'A CVE on CISA KEV (CISA BOD 22-01: two weeks)', unit: 'days' },
+  { key: 'kev_exposed', label: 'Exploited, internet-facing', help: 'A CVE exploited in the wild (CISA KEV or MyCERT) on an internet-facing device', unit: 'days' },
+  { key: 'kev', label: 'Exploited, internal', help: 'A CVE exploited in the wild, CISA KEV or MyCERT (CISA BOD 22-01: two weeks)', unit: 'days' },
   { key: 'critical', label: 'Critical', help: 'Other critical vulnerabilities and exposures', unit: 'days' },
   { key: 'high', label: 'High', help: 'PCI DSS 6.3.3: critical patches within a month', unit: 'days' },
   { key: 'medium', label: 'Medium', help: '', unit: 'days' },

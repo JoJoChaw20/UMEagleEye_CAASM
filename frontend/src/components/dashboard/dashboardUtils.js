@@ -34,7 +34,7 @@ export function priorityContext(item) {
   const context = []
   if (isDirectThreatIntel(item)) context.push('Threat-intel match · possible compromise')
   else if (item.event_type === 'cve_detected' && d.has_cti_match) context.push('CVE named by threat intelligence')
-  if (d.kev) context.push(d.kev_count > 1 ? `${d.kev_count} on CISA KEV` : 'CISA KEV')
+  if (d.kev) context.push(d.kev_count > 1 ? `${d.kev_count} exploited (KEV / MyCERT)` : 'exploited (KEV / MyCERT)')
   if (d.exploited) context.push('Known exploited')
   // a package alert keeps its worst CVE's values as max_epss / max_cvss
   const epss = d.max_epss ?? d.epss_score

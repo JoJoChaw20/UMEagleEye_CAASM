@@ -221,7 +221,7 @@ export const CONCERNS = [
   },
   {
     id: 'exploitable', title: 'Likely-exploited CVEs', short: 'Exploitable CVEs', icon: Bug, tone: 'serious',
-    why: 'Exploited in the wild (CISA KEV, or a missing Windows update Microsoft marks exploited), ≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
+    why: 'Exploited in the wild (CISA KEV or a MyCERT advisory, or a missing Windows update Microsoft marks exploited), ≥10% chance of exploitation in the next 30 days (EPSS), or critical on an internet-facing host.',
     action: 'Patch within 72h',
   },
   {
@@ -242,7 +242,7 @@ export const TONE = {
 // (5 - tier) x 1000 + a 0-100 score, so the tier is read back from it.
 export const TIERS = {
   1: { tier: 1, label: 'Compromise', hint: 'Threat intelligence seen on this device: investigate within 24 hours', cls: 'bg-red-500/20 text-red-300 border-red-500/50' },
-  2: { tier: 2, label: 'Exploited',  hint: 'A vulnerability attackers are exploiting (CISA KEV): 7 days if internet-facing, otherwise 14', cls: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
+  2: { tier: 2, label: 'Exploited',  hint: 'A vulnerability attackers are exploiting (CISA KEV or a MyCERT advisory): 7 days if internet-facing, otherwise 14', cls: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
   3: { tier: 3, label: 'Fix',        hint: 'Fix by its target: critical 15, high 30, medium 90, low 180 days', cls: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30' },
   4: { tier: 4, label: 'Review',     hint: 'A change or new device to confirm within 7 days', cls: 'bg-dark-700 text-dark-300 border-dark-600' },
 }
@@ -274,7 +274,7 @@ export function riskReasons(e) {
   }
   if (e.event_type === 'cve_detected' && d.has_cti_match) {
     const titles = Array.isArray(d.ti_event_titles) ? d.ti_event_titles : []
-    if (d.kev) out.push({ label: d.kev_count > 1 ? `${d.kev_count} actively exploited (CISA KEV)` : 'Actively exploited (CISA KEV)', tone: 'critical' })
+    if (d.kev) out.push({ label: d.kev_count > 1 ? `${d.kev_count} actively exploited (CISA KEV / MyCERT)` : 'Actively exploited (CISA KEV / MyCERT)', tone: 'critical' })
     if (titles.length) out.push({ label: `In threat intel: ${titles[0]}${titles.length > 1 ? ` +${titles.length - 1}` : ''}`, tone: 'critical' })
     if (!d.kev && !titles.length) out.push({ label: 'Named in threat intel', tone: 'critical' })
   }

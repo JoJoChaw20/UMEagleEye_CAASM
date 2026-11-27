@@ -18,6 +18,7 @@ import { clockStartExpr, dueAtExpr, tierExpr } from '../lib/priority'
 import { KEV_ALERT } from '../lib/alertSignals'
 import { addWeeks, finishedWeeks, weekBounds, weekStartOf, type WeekMetrics } from '../lib/weekly'
 import { baselineSummary } from './securityBaseline'
+import { MYCERT_ORIGIN } from '../lib/mycert'
 
 type DB = ReturnType<typeof getDb>
 
@@ -65,9 +66,16 @@ export async function computeWeeks(db: DB, tenantId: string, weekStarts: string[
       (SELECT count(*) FROM "assets" a WHERE a.tenant_id = ${tenantId}::uuid AND a.created_at < w.e)::int AS assets_total,
       (SELECT count(*) FROM "assets" a WHERE a.tenant_id = ${tenantId}::uuid AND a.created_at >= w.s AND a.created_at < w.e)::int AS assets_added,
       (SELECT p.overall_score FROM posture_metrics p WHERE p.tenant_id = ${tenantId}::uuid AND p.timestamp >= w.s AND p.timestamp < w.e
-        ORDER BY p.timestamp DESC LIMIT 1) AS posture_score
+        ORDER BY p.timestamp DESC LIMIT 1) AS posture_score,
+      (SELECT count(*) FROM ti_events te WHERE te.origin = ${MYCERT_ORIGIN} AND te.published_at >= w.s AND te.published_at < w.e)::int AS mycert_new,
+      (SELECT count(DISTINCT c.ti_event_id)
+         FROM "events" JOIN "assets" ON "assets"."asset_id" = "events"."asset_id"
+         JOIN event_cti_indicators l ON l.event_id = "events"."event_id"
+         JOIN cti_indicators c ON c.indicator_id = l.indicator_id
+         JOIN ti_events te ON te.ti_event_id = c.ti_event_id AND te.origin = ${MYCERT_ORIGIN}
+         WHERE "assets"."tenant_id" = ${tenantId}::uuid AND "events"."first_seen" < w.e AND ${OPEN_AT_END})::int AS mycert_touching
     FROM w`)
-  for (const r of res.rows as Array<{ week_start: string; ev: Record<string, number | null>; by_type: Record<string, number>; assets_total: number; assets_added: number; posture_score: number | null }>) {
+  for (const r of res.rows as Array<{ week_start: string; ev: Record<string, number | null>; by_type: Record<string, number>; assets_total: number; assets_added: number; posture_score: number | null; mycert_new: number; mycert_touching: number }>) {
     const e = r.ev ?? {}
     const n = (k: string) => Number(e[k] ?? 0)
     const resolved = n('resolved')
@@ -83,6 +91,7 @@ export async function computeWeeks(db: DB, tenantId: string, weekStarts: string[
       overdue_end: n('overdue_end'), new: n('new'), resolved, closed_other: n('closed_other'),
       median_resolve_hours: median, on_time: n('on_time'), on_time_pct: resolved ? Math.round((n('on_time') / resolved) * 100) : null,
       kev_open_end: n('kev_open_end'), sightings_new: n('sightings_new'),
+      mycert_new: Number(r.mycert_new ?? 0), mycert_touching: Number(r.mycert_touching ?? 0),
       posture_score: r.posture_score == null ? null : Number(r.posture_score),
     })
   }

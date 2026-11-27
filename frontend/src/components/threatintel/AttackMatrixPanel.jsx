@@ -152,7 +152,7 @@ export default function AttackMatrixPanel({ onShowIndicators, fixedScope }) {
                 ? 'Your events and the published ones shared with you. An event gets the techniques MITRE documents for its malware family plus the ones picked on the event (edit an event to add them).'
                 : data.scope === 'matched'
                   ? 'Indicators behind open threat-intel alerts on your assets (feeds and events; CVEs not counted): what the threats already touching you are known to do.'
-                  : `${cov.with_attack.toLocaleString()} of ${cov.total.toLocaleString()} indicators (OTX, ThreatFox; CISA KEV CVEs are not malware and are not counted). An indicator gets the techniques MITRE documents for its malware family, or the ones the feed names itself.`}
+                  : `${cov.with_attack.toLocaleString()} of ${cov.total.toLocaleString()} indicators (ThreatFox, MyCERT; CVEs are not malware and are not counted). An indicator gets the techniques MITRE documents for its malware family, or the ones the feed or advisory names itself.`}
               {' '}Nothing is guessed from the indicator type.
             </p>
           </div>

@@ -504,7 +504,7 @@ export default function AlertsPage() {
             <thead>
               <tr>
                 {canBulk && <th className="w-8"><input type="checkbox" checked={allOnPageSelected} onChange={toggleAll} aria-label="Select all" /></th>}
-                <th title="Compromise (threat intel seen on the device), Exploited (CISA KEV), Fix, Review. The number is the risk score within the tier.">Priority</th>
+                <th title="Compromise (threat intel seen on the device), Exploited (CISA KEV or MyCERT), Fix, Review. The number is the risk score within the tier.">Priority</th>
                 <th>Alert &amp; why it matters</th>
                 <th>Evidence</th>
                 <th>Asset</th>
@@ -532,7 +532,7 @@ export default function AlertsPage() {
                   <td className="text-dark-200 text-xs min-w-[300px]">
                     <div className="flex items-center gap-1.5 text-sm text-dark-100 font-medium">
                       {isCtiHit(e) && <Crosshair className="w-3.5 h-3.5 text-accent-red" title="Threat-intel match" />}
-                      {e.details?.kev && <span className="text-[11px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="On CISA's Known Exploited Vulnerabilities list">KEV</span>}
+                      {e.details?.kev && <span className="text-[11px] px-1.5 py-0.5 rounded border border-red-500/50 bg-red-500/15 text-red-300 font-semibold" title="Exploited in the wild: on CISA's Known Exploited Vulnerabilities list, or a MyCERT advisory says so">Exploited</span>}
                       {alertLabel(e)}
                     </div>
                     <div className="mt-1"><ReasonChips reasons={riskReasons(e)} max={4} /></div>
@@ -838,7 +838,7 @@ function AlertDrawer({ eventId, canUpdateAlert, canAdvisory, assignees, onClose,
                         <span key={v.version} className="block">{v.version}<span className="text-dark-400"> · {v.cves} CVE{v.cves === 1 ? '' : 's'}</span></span>
                       ))}</span>
                     : d.package_version],
-                  ['CVEs', `${d.cve_count} known${d.kev_count ? ` · ${d.kev_count} exploited in the wild (CISA KEV)` : ''}${d.cti_count && d.cti_count !== d.kev_count ? ` · ${d.cti_count} named by threat intel` : ''}`],
+                  ['CVEs', `${d.cve_count} known${d.kev_count ? ` · ${d.kev_count} exploited in the wild (CISA KEV / MyCERT)` : ''}${d.cti_count && d.cti_count !== d.kev_count ? ` · ${d.cti_count} named by threat intel` : ''}`],
                   ['Fix', d.fix_to
                     ? <span className="text-accent-green">Upgrade to {d.fix_to}<span className="text-dark-400"> · fixes {d.fixable_count} of {d.cve_count}{d.no_fix_count ? `; ${d.no_fix_count} have no fix yet` : ''}</span></span>
                     : <span className="text-dark-300">No fixed version published yet</span>],

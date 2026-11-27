@@ -71,7 +71,7 @@ export default function PackageCveList({ eventId, copies = 1 }) {
                   target="_blank" rel="noreferrer" className="font-mono text-accent-cyan hover:underline whitespace-nowrap">{c.cve_id}</a>
                 <span className="font-mono whitespace-nowrap" style={{ color: cvssColor(c.cvss) }}>CVSS {c.cvss || '—'}</span>
                 <span className="text-dark-400 whitespace-nowrap">EPSS {(c.epss * 100).toFixed(1)}%</span>
-                {c.kev && <span className="text-red-300 whitespace-nowrap">Exploited (CISA KEV)</span>}
+                {c.kev && <span className="text-red-300 whitespace-nowrap" title="On CISA's Known Exploited Vulnerabilities list, or a MyCERT advisory says it is exploited">Exploited (KEV / MyCERT)</span>}
                 {c.threat_intel && !c.kev && <span className="text-red-300 whitespace-nowrap">In threat intel</span>}
                 <span className={`ml-auto whitespace-nowrap ${fix ? 'text-accent-green' : 'text-dark-500'}`}>
                   {c.fixed_at ? `fixed ${new Date(c.fixed_at).toLocaleDateString()}` : fix ? `fixed in ${fix}` : 'no fix yet'}

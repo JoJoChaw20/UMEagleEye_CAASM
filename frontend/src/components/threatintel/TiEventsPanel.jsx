@@ -341,7 +341,41 @@ function SharedAlertChoice({ ev, busy, act }) {
 }
 
 // ── One event ─────────────────────────────────────────────────
-function EventDetail({ eventId, onBack, onChanged, showToast }) {
+// What a MyCERT advisory says beyond the event's own fields (workers/src/services/mycert.ts source_meta):
+// its link, MyCERT's rating, the affected products, and the sentence behind each exploited CVE.
+const KIND_LABEL = { advisory: 'Advisory', alert: 'Alert', report: 'Report' }
+function MycertFacts({ ev }) {
+  const meta = ev.source_meta || {}
+  const evidence = Object.entries(meta.exploited_evidence || {})
+  return (
+    <div className="rounded-lg border border-eagle-500/30 bg-eagle-500/5 p-3 space-y-2 text-xs">
+      <p className="flex items-center gap-2 flex-wrap text-dark-200">
+        <Shield className="w-3.5 h-3.5 text-eagle-400" />
+        <span className="font-semibold">MyCERT {KIND_LABEL[meta.kind] ?? 'advisory'} {ev.external_id}</span>
+        {meta.rating && <span>· MyCERT rates it <span className="font-semibold uppercase">{meta.rating}</span></span>}
+        {meta.url && (
+          <a href={meta.url} target="_blank" rel="noreferrer" className="ml-auto text-eagle-400 hover:underline inline-flex items-center gap-0.5">
+            Read it on MyCERT <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+      </p>
+      {meta.products?.length > 0 && (
+        <p className="text-dark-300"><span className="text-dark-400">Affected: </span>{meta.products.join(' · ')}</p>
+      )}
+      {evidence.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-red-300 font-medium">Exploited in the wild, per MyCERT: these rank like CISA KEV CVEs on your alerts</p>
+          {evidence.map(([cve, why]) => (
+            <p key={cve} className="text-dark-300"><span className="font-mono text-dark-100">{cve}</span> <span className="text-dark-500">“{why}”</span></p>
+          ))}
+        </div>
+      )}
+      <p className="text-dark-500">Loaded from MyCERT automatically, for every organisation; it cannot be edited here.</p>
+    </div>
+  )
+}
+
+export function EventDetail({ eventId, onBack, onChanged, showToast, backLabel = 'All events' }) {
   const { can } = useAuth()
   const [ev, setEv] = useState(null)
   const [editing, setEditing] = useState(false)
@@ -399,7 +433,7 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
   return (
     <div className="space-y-4">
       <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm text-dark-400 hover:text-dark-100">
-        <ArrowLeft className="w-4 h-4" /> All events
+        <ArrowLeft className="w-4 h-4" /> {backLabel}
       </button>
 
       <div className="glass-card p-5 space-y-3">
@@ -426,7 +460,8 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
             </div>
           )}
         </div>
-        {ev.description && <p className="text-sm text-dark-300 whitespace-pre-wrap">{ev.description}</p>}
+        {ev.description && <p className="text-sm text-dark-300 whitespace-pre-wrap">{ev.origin === 'mycert' ? ev.description.split('\n\nSource:')[0] : ev.description}</p>}
+        {ev.origin === 'mycert' && <MycertFacts ev={ev} />}
         {(ev.malware_family || ev.attack_techniques?.length > 0) && (
           <div className="text-xs space-y-1.5">
             {ev.malware_family && (
@@ -452,7 +487,9 @@ function EventDetail({ eventId, onBack, onChanged, showToast }) {
           </div>
         )}
         <p className="text-xs text-dark-500">
-          Created {fmt(ev.created_at)} · updated {fmt(ev.updated_at)}{ev.published_at && ` · published ${fmt(ev.published_at)}`}
+          {ev.origin === 'mycert'
+            ? `Published by MyCERT ${fmt(ev.published_at)} · loaded ${fmt(ev.created_at)}`
+            : <>Created {fmt(ev.created_at)} · updated {fmt(ev.updated_at)}{ev.published_at && ` · published ${fmt(ev.published_at)}`}</>}
         </p>
         <p className="text-xs text-dark-400">
           {ev.shared_in
@@ -584,9 +621,12 @@ export default function TiEventsPanel({ showToast }) {
     return <EventDetail eventId={openId} onBack={() => setOpenId(null)} onChanged={load} showToast={showToast} />
   }
 
-  const isMine = (e) => e.own || (isPlatformSuperadmin && !e.tenant_id)
+  // MyCERT's advisories are platform events loaded automatically: a filter of their own
+  const isMycert = (e) => e.origin === 'mycert'
+  const isMine = (e) => e.own || (isPlatformSuperadmin && !e.tenant_id && !isMycert(e))
   const shown = (events || []).filter(e =>
-    filter === 'ours' ? isMine(e) : filter === 'shared' ? !isMine(e) : filter === 'drafts' ? e.status === 'draft' : true)
+    filter === 'ours' ? isMine(e) : filter === 'shared' ? !isMine(e) && !isMycert(e) : filter === 'mycert' ? isMycert(e)
+      : filter === 'drafts' ? e.status === 'draft' : true)
 
   const setSharedDefault = async (on) => {
     setSavingShared(true)
@@ -605,7 +645,7 @@ export default function TiEventsPanel({ showToast }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex gap-1 bg-dark-800 rounded-lg p-1">
-          {[['all', 'All'], ['ours', 'Ours'], ['shared', 'Shared with us'], ['drafts', 'Drafts']].map(([id, label]) => (
+          {[['all', 'All'], ['ours', 'Ours'], ['shared', 'Shared with us'], ['mycert', 'MyCERT'], ['drafts', 'Drafts']].map(([id, label]) => (
             <button key={id} onClick={() => setFilter(id)}
               className={`px-3 py-1.5 rounded-md text-sm ${filter === id ? 'bg-eagle-600 text-on-brand' : 'text-dark-400 hover:text-dark-100'}`}>
               {label}

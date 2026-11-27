@@ -10,6 +10,7 @@ import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../mid
 import { getDb, type DB } from '../db/client'
 import { ACTIVE_FEEDS, CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
 import { maybeHarvestMycert } from '../services/mycert'
+import { MYCERT_ORIGIN, MYCERT_SOURCE } from '../lib/mycert'
 import { indicatorUseSql } from '../services/threatIntel'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
@@ -30,9 +31,10 @@ export function nextIngestAt(now: Date): Date {
 const OPEN = ['open', 'in_progress'] as const
 const NO_TENANT = '00000000-0000-0000-0000-000000000000'
 
-// The routes below are the global feeds (OTX, ThreatFox, CISA KEV). Attributes of
-// threat-intel events are served by routes/tiEvents.ts, scoped to who may see them.
-const FEED = isNull(ctiIndicators.tiEventId)
+// The routes below are the intel every tenant shares: the global feeds (ThreatFox, CISA KEV...) and
+// MyCERT's advisories (platform events, services/mycert.ts). Attributes of other threat-intel events are
+// served by routes/tiEvents.ts, scoped to who may see them.
+const FEED = or(isNull(ctiIndicators.tiEventId), eq(ctiIndicators.source, MYCERT_SOURCE))!
 
 // IoC Feed filters from the ATT&CK tab.
 // family: an ATT&CK software id (S0154) or the feed's family name.
@@ -252,9 +254,9 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       // The feeds the nightly chain loads, in its order (a retired feed's rows are counted above, not here)
       feeds: ACTIVE_FEEDS.map((source) => ({
         source,
-        // Spamhaus DROP is kept in KV, MyCERT's advisories as events, not as feed rows: their count is the
-        // last run's (DROP's ranges, MyCERT's advisories stored)
-        count:      bySource.find((r) => r.source === source)?.count ?? lastIngest?.feeds?.[source]?.count ?? 0,
+        // Spamhaus DROP is kept in KV, not as indicator rows, and MyCERT counts advisories, not their
+        // indicators: their count is the last run's (DROP's ranges, MyCERT's advisories stored)
+        count:      (source === MYCERT_SOURCE ? undefined : bySource.find((r) => r.source === source)?.count) ?? lastIngest?.feeds?.[source]?.count ?? 0,
         ok:         lastIngest?.feeds?.[source]?.ok ?? null,
         last_ok_at: lastIngest?.feeds?.[source]?.last_ok_at ?? null,
       })),
@@ -565,6 +567,89 @@ app.get('/debug', authMiddleware, requirePlatformSuperadmin, async (c) => {
   }
 
   return c.json(results)
+})
+
+// ── GET /mycert ─── MyCERT's advisories and what each touches here ──
+// The main source (services/mycert.ts): newest first, each with the devices and open alerts it drives in
+// the viewer's tenant (superadmins: all), through the alert↔indicator links (event_cti_indicators: a CVE
+// on a device, an indicator matched or seen). About 150 advisories a year: read in one query, filtered
+// here. ?affecting=1 those touching a device, ?exploited=1 those naming an exploited CVE, ?q= number,
+// title or CVE, ?limit= (default 50). summary counts them all, for the dashboard card.
+app.get('/mycert', authMiddleware, requireAction('cti.view'), async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    // a superadmin may scope it to one tenant (the dashboard's tenant picker, ?tenant_id=)
+    const picked = user.role === 'superadmin' ? c.req.query('tenant_id') : undefined
+    const here = user.role === 'superadmin'
+      ? (picked && /^[0-9a-f-]{36}$/i.test(picked) ? sql`a.tenant_id = ${picked}::uuid` : sql`true`)
+      : sql`a.tenant_id = ${user.tenantId ?? NO_TENANT}::uuid`
+    const res = await db.execute(sql`
+      SELECT te.ti_event_id AS event_id, te.external_id, te.title, te.description, te.threat_level, te.published_at,
+             COALESCE(te.exploited_cves, '{}') AS exploited_cves, te.source_meta, te.tags,
+             (SELECT count(*)::int FROM cti_indicators c WHERE c.ti_event_id = te.ti_event_id AND c.indicator_type = 'cve') AS cve_count,
+             (SELECT count(*)::int FROM cti_indicators c WHERE c.ti_event_id = te.ti_event_id AND c.indicator_type <> 'cve') AS ioc_count,
+             (SELECT array_agg(c.value) FROM cti_indicators c WHERE c.ti_event_id = te.ti_event_id AND c.indicator_type = 'cve') AS cves,
+             hit.devices, hit.alerts
+      FROM ti_events te
+      CROSS JOIN LATERAL (
+        SELECT count(DISTINCT e.asset_id)::int AS devices, count(DISTINCT e.event_id)::int AS alerts
+        FROM cti_indicators c
+        JOIN event_cti_indicators l ON l.indicator_id = c.indicator_id
+        JOIN events e ON e.event_id = l.event_id AND e.status IN ('open', 'in_progress')
+        JOIN assets a ON a.asset_id = e.asset_id
+        WHERE c.ti_event_id = te.ti_event_id AND ${here}
+      ) hit
+      WHERE te.origin = ${MYCERT_ORIGIN} AND te.status = 'published'
+      ORDER BY te.published_at DESC NULLS LAST, te.external_id DESC
+    `)
+    type Row = {
+      event_id: string; external_id: string; title: string; description: string | null; threat_level: string
+      published_at: string | null; exploited_cves: string[]; source_meta: Record<string, unknown> | null; tags: string[]
+      cve_count: number; ioc_count: number; cves: string[] | null; devices: number; alerts: number
+    }
+    const all = (res.rows as Row[]).map((r) => {
+      const meta = r.source_meta ?? {}
+      return {
+        event_id: r.event_id,
+        id: r.external_id,
+        title: r.title,
+        // the title without "MyCERT MA-1506: "
+        headline: r.title.replace(/^MyCERT MA-\d+:\s*/, ''),
+        summary: (r.description ?? '').split('\n\nSource:')[0]!.slice(0, 600),
+        published_at: r.published_at,
+        threat_level: r.threat_level,
+        kind: meta['kind'] ?? null,
+        rating: meta['rating'] ?? null,
+        url: meta['url'] ?? null,
+        products: Array.isArray(meta['products']) ? meta['products'] : [],
+        cve_count: r.cve_count,
+        exploited_cves: r.exploited_cves,
+        ioc_count: r.ioc_count,
+        devices: r.devices,
+        alerts: r.alerts,
+        _cves: r.cves ?? [],
+      }
+    })
+    const monthAgo = Date.now() - 30 * 86_400_000
+    const summary = {
+      total: all.length,
+      last_30d: all.filter((a) => a.published_at && new Date(a.published_at).getTime() >= monthAgo).length,
+      affecting: all.filter((a) => a.devices > 0).length,
+      exploited_affecting: all.filter((a) => a.devices > 0 && a.exploited_cves.length > 0).length,
+      newest_at: all[0]?.published_at ?? null,
+    }
+    const q = c.req.query('q')?.trim().toLowerCase()
+    const items = all.filter((a) =>
+      (c.req.query('affecting') !== '1' || a.devices > 0)
+      && (c.req.query('exploited') !== '1' || a.exploited_cves.length > 0)
+      && (!q || a.id.toLowerCase().includes(q) || a.title.toLowerCase().includes(q) || a._cves.some((v) => v.toLowerCase() === q)))
+    const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') ?? '50') || 50))
+    return c.json({ summary, total: items.length, items: items.slice(0, limit).map(({ _cves, ...a }) => a) })
+  } catch (err) {
+    console.error('cti GET /mycert error:', err)
+    return c.json({ detail: 'Failed to fetch MyCERT advisories' }, 500)
+  }
 })
 
 // ── POST /ingest ─── staging only: load the shared feeds now (feedRefresh) ──

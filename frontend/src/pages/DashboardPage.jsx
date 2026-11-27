@@ -10,6 +10,7 @@ import PriorityActionCentre from '../components/dashboard/PriorityActionCentre'
 import AssetVisibility from '../components/dashboard/AssetVisibility'
 import ExposureAndChanges from '../components/dashboard/ExposureAndChanges'
 import RemediationAndTrend from '../components/dashboard/RemediationAndTrend'
+import MycertCard from '../components/dashboard/MycertCard'
 import { buildPriorityActions, dashboardHref } from '../components/dashboard/dashboardUtils'
 
 export default function DashboardPage() {
@@ -108,6 +109,7 @@ export default function DashboardPage() {
 
       <SecurityOverview summary={summary} posture={posture} history={history} loading={loading} onAssets={() => openInventory({ scope: 'any' })} onAlerts={() => openAlerts({ sort: 'priority' })} onAgents={openAgents} onPosture={openPostureTrend} />
       <PriorityActionCentre actions={priorityActions} loading={loading} available={!errors.summary} tenantId={tenantFilter} />
+      {can('cti.view') && <MycertCard tenantId={tenantFilter} />}
       <ExposureAndChanges overview={summary?.overview} surface={summary?.attack_surface} recentChanges={recentChanges} changesLoading={loading} changesError={errors.changes} showChanges={canAlerts} tenantId={tenantFilter} />
       <AssetVisibility summary={summary} loading={loading} onInventory={openInventory} onAgents={openAgents} tenantId={tenantFilter} />
       <RemediationAndTrend remediation={summary?.remediation} fixTime={summary?.fix_time} posture={posture} history={history} loading={loading} onManage={openAdvisories} tenantId={tenantFilter} />

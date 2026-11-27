@@ -60,8 +60,13 @@ export interface WeekMetrics {
   median_resolve_hours: number | null
   on_time: number                    // of `resolved`, fixed by their due date
   on_time_pct: number | null
-  kev_open_end: number
+  kev_open_end: number               // exploited in the wild: CISA KEV or a MyCERT advisory
   sightings_new: number
+  // MyCERT (the main threat-intel source): advisories it published that week, and how many of its
+  // advisories drove an alert open here when the week ended (through the alert↔indicator links, which are
+  // kept for the present only: a reconstructed week counts today's links). Absent in older records.
+  mycert_new?: number
+  mycert_touching?: number
   posture_score: number | null       // the last daily snapshot of the week
   // The security baseline (services/securityBaseline.ts baselineSummary) when the week was recorded as it
   // ended; null for a reconstructed week (settings cannot be read back from alert dates).
@@ -78,7 +83,8 @@ export const COMPARED: Array<{ key: keyof WeekMetrics | 'tier12'; label: string;
   { key: 'resolved', label: 'Resolved', better: 'up' },
   { key: 'on_time_pct', label: 'Fixed on time (%)', better: 'up' },
   { key: 'median_resolve_hours', label: 'Median time to resolve (h)', better: 'down' },
-  { key: 'kev_open_end', label: 'Open exploited (KEV)', better: 'down' },
+  { key: 'kev_open_end', label: 'Open exploited (KEV / MyCERT)', better: 'down' },
+  { key: 'mycert_touching', label: 'MyCERT advisories touching our devices', better: 'down' },
   { key: 'assets_total', label: 'Devices', better: 'up' },
   { key: 'posture_score', label: 'Posture score', better: 'up' },
   { key: 'baseline_pct', label: 'Security baseline (%)', better: 'up' },

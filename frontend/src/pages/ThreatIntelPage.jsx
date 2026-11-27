@@ -8,6 +8,7 @@ import AttackMatrixPanel from '../components/threatintel/AttackMatrixPanel'
 import MatchesPanel from '../components/threatintel/MatchesPanel'
 import IndicatorPanel, { TypeLabel, TYPE_META } from '../components/threatintel/IndicatorPanel'
 import EvidencePanel from '../components/threatintel/EvidencePanel'
+import MycertPanel from '../components/threatintel/MycertPanel'
 import { REASON_LABEL, USE_META } from '../components/threatintel/indicatorUse'
 import { Tabs, StatTile, Toast, useToast, Spinner, Pager, ago } from '../components/common/PageParts'
 
@@ -93,7 +94,7 @@ export default function ThreatIntelPage({ view }) {
   const canEvents = can('ti_event.view')
   const [stats, setStats] = useState(null)
   const [ingesting, setIngesting] = useState(false)
-  const [tab, setTab] = useState('indicators')
+  const [tab, setTab] = useState('mycert')
   const [subTab, setSubTab] = useState('list')       // a sub-page: its list, or its ATT&CK view
   useEffect(() => { setSubTab('list') }, [view])
   const [lookupInput, setLookupInput] = useState('')
@@ -229,7 +230,7 @@ export default function ThreatIntelPage({ view }) {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="page-title">Threat Intelligence</h1>
-          <p className="text-dark-400 text-sm mt-1 max-w-2xl">Which of your assets threat intelligence names, your own threat-intel events, and the feeds behind them.</p>
+          <p className="text-dark-400 text-sm mt-1 max-w-2xl">Which of your assets threat intelligence names: MyCERT's advisories for Malaysia first, then your own threat-intel events and the global feeds behind them.</p>
         </div>
         {lookupForm}
       </div>
@@ -255,14 +256,17 @@ export default function ThreatIntelPage({ view }) {
 
       <FeedHealth stats={stats} ingesting={ingesting} onIngest={ingest} />
 
-      {/* Matches and Events are sub-pages (sidebar, under Threat Intel) */}
+      {/* Matches and Events are sub-pages (sidebar, under Threat Intel). MyCERT, the main source, comes first. */}
       <Tabs label="Threat intelligence views" active={tab} onChange={setTab} tabs={[
+        { id: 'mycert', label: 'MyCERT advisories' },
         { id: 'indicators', label: 'Indicators' },
         { id: 'matrix', label: 'MITRE ATT&CK' },
         { id: 'evidence', label: 'Coverage' },
       ]} />
 
-      {tab === 'matrix' ? (
+      {tab === 'mycert' ? (
+        <MycertPanel showToast={showToast} />
+      ) : tab === 'matrix' ? (
         // the feeds' view only: the matched and events views are on the Matches and Events sub-pages
         <AttackMatrixPanel fixedScope="feeds" onShowIndicators={showAttackIndicators} />
       ) : tab === 'evidence' ? (
