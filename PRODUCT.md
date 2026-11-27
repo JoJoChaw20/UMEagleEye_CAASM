@@ -34,7 +34,7 @@ Web dashboard (React, Vite, Tailwind, Recharts) over a Cloudflare Workers API. A
 - Asset inventory (My Assets, Discovered, relationship graph), CSV import, duplicate merge, computed criticality.
 - Discovery (networks, scan history, compare), topology, posture score and drift events.
 - Alerts, advisories lifecycle (open, acknowledged, in_progress, resolved), SLA breach notices, CVE-by-fix grouping, threat intel (MyCERT advisories first, then feeds, events, matches), SBOM coverage page.
-- MyCERT answers only requests from Malaysia or Singapore, so the Worker fetches it while handling such a request (agents' check-ins, the dashboard); it needs one at least every 2 days. Supporting sources: CISA KEV and EPSS, ThreatFox, Spamhaus DROP.
+- MyCERT answers only requests from Malaysia or Singapore, so the Worker fetches it while handling such a request (agents' check-ins, the dashboard); it needs one at least every 2 days. Supporting sources: CISA KEV and EPSS, ThreatFox (three sources in all, kept few on purpose).
 - Chatbot with SSE streaming, reports, MFA (TOTP), Google sign-in, agent management.
 - CVE checks only for computers running the agent; printers, routers, IoT and phones are discovered but not CVE-checked.
 - Dark, light and system themes are required; colours run on CSS custom properties and every change must work in all three.

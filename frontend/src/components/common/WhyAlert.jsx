@@ -88,9 +88,8 @@ function chain(e) {
         }
       }
       if (d.match_kind === 'public_address') {
-        const listed = (d.listings ?? []).slice(0, 4).map((l) => l.kind === 'range'
-          ? `${l.source} lists the range ${l.value}${l.ref ? ` (${l.ref})` : ''}: networks hijacked or run by criminals`
-          : `${l.source} lists ${l.value}${l.kind === 'c2' ? ' as a command-and-control or malware server' : l.kind === 'malware' ? ' (a malware download on it)' : ''}${l.confidence != null ? ` (${Math.round(l.confidence * 100)}% confidence)` : ''}`)
+        const listed = (d.listings ?? []).slice(0, 4).map((l) =>
+          `${l.source} lists ${l.value}${l.kind === 'c2' ? ' as a command-and-control or malware server' : l.kind === 'malware' ? ' (a malware download on it)' : ''}${l.confidence != null ? ` (${Math.round(l.confidence * 100)}% confidence)` : ''}`)
         return {
           evidence: `${d.address_status === 'ours' ? "The organisation's own public address" : 'A public address your agents connect from (not yet confirmed as the organisation\'s)'} ${d.indicator_value}; the alert sits on ${where}, its gateway or the computer that reported it`,
           knowledge: listed.length ? listed : [`Listed by ${sources}`],

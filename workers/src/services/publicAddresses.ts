@@ -1,52 +1,15 @@
 // The database side of the organisation's public addresses (lib/publicAddress.ts, D4): recording them,
-// listing them, the blocklist check (rule R11) and Spamhaus DROP.
+// listing them, and the blocklist check (rule R11). Spamhaus DROP (criminal network ranges) was part of it
+// until 28 Nov 2026: it never matched a real address, and the user keeps the sources few (MyCERT, CISA KEV,
+// ThreatFox); an address is still checked against ThreatFox's IPs and URL hosts and the published events.
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { auditLogs, events, publicAddresses } from '../db/schema'
 import { matchableSql } from './threatIntel'
-import { parseDrop, rangesContaining, type DropRange } from '../lib/ipRanges'
 import {
   listKindOf, planR11, r11Details, r11Severity, isPublicAddressStatus,
   type Listing, type R11Have, type R11Want,
 } from '../lib/publicAddress'
-
-// ── Spamhaus DROP ("Don't Route Or Peer"): network ranges hijacked or run by criminals. Free with
-// attribution; fetched at most once a day (the nightly CTI chain), kept in KV (not a table: ~1,800
-// ranges, matched in code against a handful of addresses).
-export const DROP_SOURCE = 'Spamhaus DROP'
-export const DROP_KV_KEY = 'blocklist:spamhaus-drop'
-const DROP_URLS = ['https://www.spamhaus.org/drop/drop_v4.json', 'https://www.spamhaus.org/drop/drop_v6.json']
-
-interface StoredDrop { fetched_at: string; timestamp: number | null; copyright: string | null; ranges: DropRange[] }
-
-/** Load DROP (IPv4 and IPv6) into KV; returns how many ranges. Throws when it could not be read, so the
- *  feed-health line says so; the copy from the last good run stays in KV. */
-export async function ingestSpamhausDrop(kv: KVNamespace): Promise<number> {
-  const ranges: DropRange[] = []
-  let timestamp: number | null = null
-  let copyright: string | null = null
-  for (const url of DROP_URLS) {
-    const res = await fetch(url, { headers: { 'User-Agent': 'UMEagleEye (public address check)' } })
-    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
-    const list = parseDrop(await res.text())
-    ranges.push(...list.ranges)
-    timestamp = list.timestamp ?? timestamp
-    copyright = list.copyright ?? copyright
-  }
-  if (ranges.length === 0) throw new Error('Spamhaus DROP was empty')
-  const stored: StoredDrop = { fetched_at: new Date().toISOString(), timestamp, copyright, ranges }
-  await kv.put(DROP_KV_KEY, JSON.stringify(stored))
-  return ranges.length
-}
-
-async function dropRanges(kv: KVNamespace | null): Promise<DropRange[] | null> {
-  if (!kv) return null
-  try {
-    return (await kv.get<StoredDrop>(DROP_KV_KEY, 'json'))?.ranges ?? null
-  } catch {
-    return null
-  }
-}
 
 export type AddressScope = { tenantId: string } | { all: true }
 
@@ -78,13 +41,12 @@ export interface CheckResult { addresses: number; listed: number; created: numbe
 
 /**
  * R11: the tenant's public addresses against the blocklists (the feeds' IPs and URL hosts the tenant may
- * match, published events, Spamhaus DROP). Stores what each list says on the address, then raises,
+ * match, and published events, MyCERT's included). Stores what each list says on the address, then raises,
  * updates, reopens or resolves one threat-intel alert per (asset, address): on the network's gateway when
  * an agent reported it and it is in the inventory, else on the agent's own computer, else on an asset
  * with that address. An address with none of these is listed on the Network page only.
- * `kv` null (no DROP copy at hand) keeps the DROP listings stored last time.
  */
-export async function checkPublicAddresses(db: DB, kv: KVNamespace | null, scope: AddressScope): Promise<CheckResult> {
+export async function checkPublicAddresses(db: DB, scope: AddressScope): Promise<CheckResult> {
   const out: CheckResult = { addresses: 0, listed: 0, created: 0, updated: 0, reopened: 0, resolved: 0 }
   const where: SQL = 'tenantId' in scope ? sql`p.tenant_id = ${scope.tenantId}::uuid` : sql`true`
   const addrs = await addressesWithAsset(db, where)
@@ -115,19 +77,6 @@ export async function checkPublicAddresses(db: DB, kv: KVNamespace | null, scope
         kind: listKindOf(h.source, h.itype, h.conf, fromEvent), source: fromEvent ? (h.title ?? 'Threat-intel event') : h.source,
         value: h.value.slice(0, 300), confidence: h.conf, family: h.family, ref: h.ti_event_id,
       })
-    }
-    const ranges = await dropRanges(kv)
-    for (const a of addrs) {
-      const mine = listings.get(a.public_address_id)!
-      if (ranges) {
-        for (const r of rangesContaining(a.ip, ranges)) {
-          mine.push({ kind: 'range', source: DROP_SOURCE, value: r.cidr, confidence: null, family: null, ref: r.sblid })
-        }
-      } else {
-        // no DROP copy here: keep what DROP said last time
-        const before = ((a.blocklists as { listings?: Listing[] } | null)?.listings ?? []).filter((l) => l.source === DROP_SOURCE)
-        mine.push(...before)
-      }
     }
   }
 
@@ -204,9 +153,9 @@ export async function checkPublicAddresses(db: DB, kv: KVNamespace | null, scope
 }
 
 /** checkPublicAddresses for one tenant, logged instead of thrown (after an address or status change). */
-export async function checkTenantAddresses(db: DB, kv: KVNamespace | null, tenantId: string): Promise<CheckResult | null> {
+export async function checkTenantAddresses(db: DB, tenantId: string): Promise<CheckResult | null> {
   try {
-    return await checkPublicAddresses(db, kv, { tenantId })
+    return await checkPublicAddresses(db, { tenantId })
   } catch (err) {
     console.error('public addresses: blocklist check failed:', err)
     return null

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { PgDialect } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import { ACTIVE_FEEDS, CTI_STEPS, batchUpsert, feedRefresh, nextCtiStep, otxPulseAttack, threatFoxAttack } from './cti'
+import { ACTIVE_FEEDS, CTI_STEPS, FEED_UNITS, batchUpsert, feedRefresh, nextCtiStep, otxPulseAttack, threatFoxAttack } from './cti'
 import { RETIRED_SOURCES } from './threatIntel'
 import { purgeStaleCti } from './retention'
 import { kevTechniques } from '../lib/kevAttack'
@@ -73,18 +73,20 @@ test('a value a retired feed stored first becomes the listing feed\'s (source an
   for (const s of RETIRED_SOURCES) assert.ok(q.params.includes(s))
 })
 
-test('retention deletes a retired feed\'s rows at once (not after 90 days), unless an alert references them', async () => {
+test('retention deletes feed rows that can no longer alert (retired, safe-listed, expired), unless an alert references them', async () => {
   const { db, seen } = recordingDb()
   await purgeStaleCti(db)
   const q = seen[0]!
-  assert.match(q.sql, /c\.ti_event_id IS NULL\s+AND \(c\.last_seen < now\(\) - make_interval\(days => \$\d+\) OR c\.source IN \(\$\d+, \$\d+, \$\d+\)\)/)
+  assert.match(q.sql, /c\.ti_event_id IS NULL\s+AND \(c\.last_seen < now\(\) - make_interval\(days => \$\d+\) OR c\.source IN \(\$\d+, \$\d+, \$\d+\)\s+OR c\.warning IS NOT NULL OR NOT \(\(c\.ti_event_id IS NOT NULL AND c\.source <> 'MyCERT'\)/)
+  assert.match(q.sql, /c\.last_seen > now\(\) - \(CASE WHEN c\.indicator_type = 'ip' THEN 30\s+ELSE 90 END\)/)
   assert.match(q.sql, /NOT EXISTS \(SELECT 1 FROM event_cti_indicators e WHERE e\.indicator_id = c\.indicator_id\)/)
   for (const s of RETIRED_SOURCES) assert.ok(q.params.includes(s))
 })
 
-test('the nightly chain: MyCERT first, then CVE data, bulk indicators and the rest; URLhaus and Feodo retired', () => {
-  assert.deepEqual(CTI_STEPS, ['mycert', 'kev', 'threatfox', 'drop', 'epss', 'malpkg', 'finish'])
-  assert.deepEqual(ACTIVE_FEEDS, ['MyCERT', 'CISA KEV', 'ThreatFox', 'Spamhaus DROP'])
+test('the nightly chain: MyCERT first, then CVE data, bulk indicators and the rest; URLhaus, Feodo and DROP gone', () => {
+  assert.deepEqual(CTI_STEPS, ['mycert', 'kev', 'threatfox', 'epss', 'malpkg', 'finish'])
+  assert.deepEqual(ACTIVE_FEEDS, ['MyCERT', 'CISA KEV', 'ThreatFox'])
+  assert.deepEqual(ACTIVE_FEEDS.map((s) => FEED_UNITS[s]![1]), ['advisories', 'CVEs', 'indicators'])
   assert.equal(nextCtiStep('mycert'), 'kev')
   assert.equal(nextCtiStep('finish'), null)
   for (const s of ['AlienVault OTX', 'URLhaus', 'Feodo Tracker']) assert.ok(RETIRED_SOURCES.includes(s))

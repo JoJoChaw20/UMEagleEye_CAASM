@@ -39,24 +39,24 @@ export function publicIpOf(raw: unknown): string | null {
 }
 
 // ── R11: the organisation's own address on a blocklist ────────────────────────────────
-// What lists say about an address. 'c2': a botnet command-and-control or malware-server list (Feodo
-// Tracker, ThreatFox) with at least medium confidence; 'malware': a malware download site's host
-// (URLhaus); 'range': a network range Spamhaus DROP lists (hijacked or run by criminals); 'event': a
-// published threat-intel event names it.
-export type ListKind = 'c2' | 'malware' | 'range' | 'event'
+// What lists say about an address. 'c2': ThreatFox's command-and-control or malware-server IPs with at
+// least medium confidence; 'malware': a malware URL hosted on the address; 'event': a published
+// threat-intel event names it (MyCERT's advisories included). Spamhaus DROP's network ranges ('range')
+// were dropped on 28 Nov 2026.
+export type ListKind = 'c2' | 'malware' | 'event'
 export interface Listing {
   kind: ListKind
-  source: string              // "Feodo Tracker", "Spamhaus DROP", an event's title
-  value: string               // the listed value: the IP, the URL, the range
-  confidence: number | null   // 0-1, the feed's own; null for ranges and events
+  source: string              // "ThreatFox", an event's title
+  value: string               // the listed value: the IP, the URL
+  confidence: number | null   // 0-1, the feed's own; null for events
   family: string | null
-  ref: string | null          // DROP's SBL id, the event id
+  ref: string | null          // the event id
 }
 
-export const C2_SOURCES: ReadonlySet<string> = new Set(['Feodo Tracker', 'ThreatFox'])
+export const C2_SOURCES: ReadonlySet<string> = new Set(['ThreatFox'])
 const C2_MIN_CONFIDENCE = 0.5
 
-/** How a matched feed indicator counts: an IP on a C2 / malware-server feed, a URLhaus URL on the IP. */
+/** How a matched feed indicator counts: an IP on a C2 / malware-server feed, a malware URL on the IP. */
 export function listKindOf(source: string, indicatorType: string, confidence: number | null, fromEvent: boolean): ListKind {
   if (fromEvent) return 'event'
   if (indicatorType === 'ip' && C2_SOURCES.has(source) && (confidence ?? 1) >= C2_MIN_CONFIDENCE) return 'c2'

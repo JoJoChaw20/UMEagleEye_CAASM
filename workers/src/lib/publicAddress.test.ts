@@ -5,8 +5,8 @@ import {
   type Listing, type R11Have,
 } from './publicAddress'
 
-const feodo: Listing = { kind: 'c2', source: 'Feodo Tracker', value: '203.106.93.7', confidence: 0.95, family: 'QakBot', ref: null }
-const drop: Listing = { kind: 'range', source: 'Spamhaus DROP', value: '203.106.0.0/16', confidence: null, family: null, ref: 'SBL1' }
+const feodo: Listing = { kind: 'c2', source: 'ThreatFox', value: '203.106.93.7', confidence: 0.95, family: 'QakBot', ref: null }
+const drop: Listing = { kind: 'event', source: 'MyCERT MA-1508: Infostealer Malware', value: '203.106.93.7', confidence: null, family: null, ref: 'ev-1' }
 
 test('R11 severity: ours is firm, unconfirmed is a review item, not ours never alerts', () => {
   assert.equal(r11Severity('ours', [feodo]), 'critical')
@@ -18,11 +18,11 @@ test('R11 severity: ours is firm, unconfirmed is a review item, not ours never a
 })
 
 test('which list a matched indicator counts as', () => {
-  assert.equal(listKindOf('Feodo Tracker', 'ip', 0.95, false), 'c2')
   assert.equal(listKindOf('ThreatFox', 'ip', 0.75, false), 'c2')
   assert.equal(listKindOf('ThreatFox', 'ip', 0.25, false), 'malware')        // weak: not a firm C2 listing
-  assert.equal(listKindOf('URLhaus', 'url', 0.9, false), 'malware')
-  assert.equal(listKindOf('Feodo Tracker', 'ip', 0.95, true), 'event')
+  assert.equal(listKindOf('ThreatFox', 'url', 0.9, false), 'malware')        // a malware URL on the address
+  assert.equal(listKindOf('Feodo Tracker', 'ip', 0.95, false), 'malware')    // retired: no longer a C2 list
+  assert.equal(listKindOf('ThreatFox', 'ip', 0.95, true), 'event')
 })
 
 test('R11 plan: create, keep, update, reopen, resolve; decisions stay closed', () => {
@@ -57,7 +57,7 @@ test('R11 details look like a threat-intel match', () => {
   assert.equal(d.match_kind, 'public_address')
   assert.equal(d.rule, 'R11')
   assert.equal(d.indicator_value, '203.106.93.7')
-  assert.deepEqual(d.sources, ['Feodo Tracker'])
+  assert.deepEqual(d.sources, ['ThreatFox'])
 })
 
 test('public IPv4 addresses are kept, private and special ones are not', () => {

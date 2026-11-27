@@ -222,10 +222,10 @@ export async function refreshIntelAlerts(db: DB, scope: IntelScope): Promise<Ale
   } catch (err) {
     console.error('threat intel: matching assets failed:', err)
   }
-  // An event naming the organisation's own public address (R11); DROP's listings stay as last checked.
+  // An event naming the organisation's own public address (R11).
   if (!('assetId' in scope)) {
     try {
-      const p = await checkPublicAddresses(db, null, scope)
+      const p = await checkPublicAddresses(db, scope)
       out.opened += p.created
       out.reopened += p.reopened
       out.resolved += p.resolved

@@ -339,7 +339,7 @@ app.post('/public-addresses', authMiddleware, requireAction('network.public_addr
       userId: user.userId, tenantId: user.tenantId ?? null, actionType: 'public_address.add', targetEntity: row?.id ?? null,
       previousState: null, newState: { ip, status: 'ours', note },
     })
-    const check = await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!)
+    const check = await checkTenantAddresses(db, user.tenantId!)
     return c.json({ public_address_id: row?.id, ip, status: 'ours', check }, 201)
   })
 
@@ -367,7 +367,7 @@ app.patch('/public-addresses/:id', authMiddleware, requireAction('network.public
     })
     // A status change changes its alert: firm, a review item, or none (R11)
     const changed = next.status !== undefined && next.status !== current.status
-    const check = changed ? await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!) : null
+    const check = changed ? await checkTenantAddresses(db, user.tenantId!) : null
     return c.json({ public_address_id: id, ip: current.ip, status: next.status ?? current.status, note: 'note' in next ? next.note : current.note, check })
   })
 
@@ -386,7 +386,7 @@ app.delete('/public-addresses/:id', authMiddleware, requireAction('network.publi
     previousState: gone, newState: null,
   })
   // its alerts close (R11)
-  const check = await checkTenantAddresses(db, c.env.KV_CACHE, user.tenantId!)
+  const check = await checkTenantAddresses(db, user.tenantId!)
   return c.json({ ok: true, check })
 })
 

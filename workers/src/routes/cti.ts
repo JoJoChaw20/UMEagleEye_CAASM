@@ -8,9 +8,10 @@ import { eq, and, or, isNull, desc, gte, ilike, ne, inArray, sql, type SQL } fro
 import type { Env } from '../types'
 import { authMiddleware, requireAction, requirePlatformSuperadmin } from '../middleware/auth'
 import { getDb, type DB } from '../db/client'
-import { ACTIVE_FEEDS, CTI_INGEST_LOCK, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
+import { ACTIVE_FEEDS, CTI_INGEST_LOCK, FEED_UNITS, LAST_INGEST_KEY, feedRefresh, type LastIngest } from '../services/cti'
 import { maybeHarvestMycert } from '../services/mycert'
 import { MYCERT_ORIGIN, MYCERT_SOURCE } from '../lib/mycert'
+import { MATCH_KINDS } from './events'
 import { indicatorUseSql } from '../services/threatIntel'
 import { ctiIndicators, assets, assetAddresses, tiEvents, events, eventCtiIndicators } from '../db/schema'
 import {
@@ -114,26 +115,34 @@ app.get('/indicators', authMiddleware, requireAction('cti.view'), async (c) => {
     const matched  = c.req.query('matched') === 'true'
     const use      = c.req.query('use')            // agents | assets | reference
 
-    const conditions = [FEED, ...attackConditions(family, technique)]
-    if (use === 'agents' || use === 'assets') conditions.push(sql`${USE} = ${use}`)
-    if (use === 'reference') conditions.push(sql`${USE} LIKE 'reference:%'`)
+    // Every filter but the type and the use: the type chips' counts (by_type) are these split by type, so
+    // they add up to the total shown; `reference` is how many reference-only ones "Show all" would add.
+    const base = [FEED, ...attackConditions(family, technique)]
     // Only indicators behind an open match alert on the user's own assets.
-    if (matched) conditions.push(inArray(ctiIndicators.indicatorId, matchedIndicatorIds(db, c.get('user'))))
-    if (type)   conditions.push(eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve' | 'software'))
-    if (source) conditions.push(ilike(ctiIndicators.source, `%${source}%`))
-    if (search) conditions.push(ilike(ctiIndicators.value, `%${search}%`))
+    if (matched) base.push(inArray(ctiIndicators.indicatorId, matchedIndicatorIds(db, c.get('user'))))
+    if (source) base.push(ilike(ctiIndicators.source, `%${source}%`))
+    if (search) base.push(ilike(ctiIndicators.value, `%${search}%`))
+    const useCond = use === 'agents' || use === 'assets' ? sql`${USE} = ${use}`
+      : use === 'in_use' ? sql`${USE} IN ('agents', 'assets')`            // the Indicators tab's default
+      : use === 'reference' ? sql`${USE} LIKE 'reference:%'` : undefined
+    const withUse = useCond ? [...base, useCond] : base
+    const conditions = type ? [...withUse, eq(ctiIndicators.indicatorType, type as 'ip' | 'domain' | 'hash' | 'url' | 'email' | 'cve' | 'software')] : withUse
 
     const whereClause = and(...conditions)
 
-    const [rows, countRows] = await Promise.all([
+    const [rows, countRows, typeRows, refRows] = await Promise.all([
       db.select({ row: ctiIndicators, use: sql<string>`${USE}` }).from(ctiIndicators).where(whereClause).orderBy(desc(ctiIndicators.lastSeen)).limit(limit).offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(ctiIndicators).where(whereClause),
+      db.select({ type: ctiIndicators.indicatorType, n: sql<number>`count(*)::int` }).from(ctiIndicators).where(and(...withUse)).groupBy(ctiIndicators.indicatorType),
+      db.select({ n: sql<number>`count(*)::int` }).from(ctiIndicators).where(and(...base, sql`${USE} LIKE 'reference:%'`)),
     ])
 
     return c.json({
       total:  countRows[0]?.count ?? 0,
       page,
       limit,
+      by_type: Object.fromEntries(typeRows.map((r) => [r.type, r.n])),
+      reference: refRows[0]?.n ?? 0,
       items:  rows.map((r) => ({ ...toSnake(r.row), ...usedFor(r.use) })),
     })
   } catch (err) {
@@ -185,17 +194,20 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
           inArray(events.status, [...OPEN]),
           isSuper ? undefined : eq(assets.tenantId, ownTenant),
         )),
-      // Threat-intel events this user can see (own drafts and published shared ones)
+      // Threat-intel events this user can see (own drafts and published shared ones), MyCERT's advisories
+      // left out (they have their own tab and count): ours, ours published, and shared with us
       db
         .select({
           total:     sql<number>`count(*)::int`,
           published: sql<number>`count(*) FILTER (WHERE ${tiEvents.status} = 'published')::int`,
+          ours:      sql<number>`count(*) FILTER (WHERE ${tiEvents.tenantId} = ${ownTenant}::uuid)::int`,
+          ours_published: sql<number>`count(*) FILTER (WHERE ${tiEvents.tenantId} = ${ownTenant}::uuid AND ${tiEvents.status} = 'published')::int`,
         })
         .from(tiEvents)
-        .where(isSuper ? undefined : or(
+        .where(and(isNull(tiEvents.origin), isSuper ? undefined : or(
           eq(tiEvents.tenantId, ownTenant),
           and(eq(tiEvents.status, 'published'), inArray(tiEvents.distribution, ['all_tenants', 'platform'])),
-        )),
+        ))),
       c.env.KV_CACHE.get<LastIngest>(LAST_INGEST_KEY, 'json').catch(() => null),
       // What the feed indicators are used for: checked by agents, against assets, or reference only (and why)
       db.select({ use: sql<string>`${USE}`, n: sql<number>`count(*)::int` }).from(ctiIndicators).where(FEED).groupBy(sql`1`),
@@ -243,7 +255,11 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
         assets: matchRows[0]?.assets ?? 0,
         sightings: matchRows[0]?.sightings ?? 0,
       },
-      ti_events: { total: eventRows[0]?.total ?? 0, published: eventRows[0]?.published ?? 0 },
+      ti_events: {
+        total: eventRows[0]?.total ?? 0, published: eventRows[0]?.published ?? 0,
+        ours: eventRows[0]?.ours ?? 0, ours_published: eventRows[0]?.ours_published ?? 0,
+        shared: (eventRows[0]?.total ?? 0) - (eventRows[0]?.ours ?? 0),
+      },
       // feed indicators by what they are used for (agents / assets / reference, with the reasons)
       usage,
       // closed threat-intel alerts, last 90 days, by kind (sighting, ioc, malicious_package, watchlist) and outcome
@@ -254,9 +270,10 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       // The feeds the nightly chain loads, in its order (a retired feed's rows are counted above, not here)
       feeds: ACTIVE_FEEDS.map((source) => ({
         source,
-        // Spamhaus DROP is kept in KV, not as indicator rows, and MyCERT counts advisories, not their
-        // indicators: their count is the last run's (DROP's ranges, MyCERT's advisories stored)
+        // MyCERT counts advisories, not their indicators: its count is the last run's (advisories stored)
         count:      (source === MYCERT_SOURCE ? undefined : bySource.find((r) => r.source === source)?.count) ?? lastIngest?.feeds?.[source]?.count ?? 0,
+        // what the count counts: "89 advisories", "1,805 CVEs", "92,331 indicators"
+        unit:       FEED_UNITS[source] ?? ['indicator', 'indicators'],
         ok:         lastIngest?.feeds?.[source]?.ok ?? null,
         last_ok_at: lastIngest?.feeds?.[source]?.last_ok_at ?? null,
       })),
@@ -574,7 +591,8 @@ app.get('/debug', authMiddleware, requirePlatformSuperadmin, async (c) => {
 // the viewer's tenant (superadmins: all), through the alert↔indicator links (event_cti_indicators: a CVE
 // on a device, an indicator matched or seen). About 150 advisories a year: read in one query, filtered
 // here. ?affecting=1 those touching a device, ?exploited=1 those naming an exploited CVE, ?q= number,
-// title or CVE, ?limit= (default 50). summary counts them all, for the dashboard card.
+// title or CVE, ?page= and ?page_size= (default 20). summary counts them all (the tiles, the dashboard card,
+// the filter chips' counts).
 app.get('/mycert', authMiddleware, requireAction('cti.view'), async (c) => {
   try {
     const db = getDb(c.env.DATABASE_URL)
@@ -644,11 +662,56 @@ app.get('/mycert', authMiddleware, requireAction('cti.view'), async (c) => {
       (c.req.query('affecting') !== '1' || a.devices > 0)
       && (c.req.query('exploited') !== '1' || a.exploited_cves.length > 0)
       && (!q || a.id.toLowerCase().includes(q) || a.title.toLowerCase().includes(q) || a._cves.some((v) => v.toLowerCase() === q)))
-    const limit = Math.min(200, Math.max(1, parseInt(c.req.query('limit') ?? '50') || 50))
-    return c.json({ summary, total: items.length, items: items.slice(0, limit).map(({ _cves, ...a }) => a) })
+    // one page (?page=, ?page_size= or ?limit=, default 20), and how many match the filters
+    const pageSize = Math.min(200, Math.max(1, parseInt(c.req.query('page_size') ?? c.req.query('limit') ?? '20') || 20))
+    const page = Math.max(1, parseInt(c.req.query('page') ?? '1') || 1)
+    const shown = items.slice((page - 1) * pageSize, page * pageSize)
+    return c.json({ summary, total: items.length, page, page_size: pageSize, items: shown.map(({ _cves, ...a }) => a) })
   } catch (err) {
     console.error('cti GET /mycert error:', err)
     return c.json({ detail: 'Failed to fetch MyCERT advisories' }, 500)
+  }
+})
+
+// ── GET /matches/summary ─── the Matches page's counts ──
+// Open threat-intel matches (cti_match alerts) in the viewer's tenant (superadmins: all, or ?tenant_id=):
+// the severity chips' counts (with the kind filter applied), the kind chips' counts (with the severity
+// filter applied), and how many matches and devices the current filters keep ("6 matches on 3 devices").
+// The list itself is GET /events?event_type=cti_match&status=open&severity=&match_kind=&q=&page=.
+app.get('/matches/summary', authMiddleware, requireAction('cti.view'), requireAction('alert.view'), async (c) => {
+  try {
+    const db = getDb(c.env.DATABASE_URL)
+    const user = c.get('user')
+    const picked = user.role === 'superadmin' ? c.req.query('tenant_id') : undefined
+    const tenantCond = user.role === 'superadmin'
+      ? (picked && /^[0-9a-f-]{36}$/i.test(picked) ? sql`a.tenant_id = ${picked}::uuid` : sql`true`)
+      : sql`a.tenant_id = ${user.tenantId ?? NO_TENANT}::uuid`
+    const list = (raw: string | undefined, allowed: readonly string[]) => (raw ?? '').split(',').map((s) => s.trim()).filter((s) => allowed.includes(s))
+    const sev = list(c.req.query('severity'), ['critical', 'high', 'medium', 'low', 'info'])
+    const kinds = list(c.req.query('match_kind'), MATCH_KINDS)
+    const q = c.req.query('q')?.trim()
+    const kind = sql`COALESCE(e.details->>'match_kind', 'ioc')`
+    // on the columns of m below
+    const sevCond = sev.length ? sql`severity IN (${sql.join(sev.map((s) => sql`${s}`), sql`, `)})` : sql`true`
+    const kindCond = kinds.length ? sql`kind IN (${sql.join(kinds.map((k) => sql`${k}`), sql`, `)})` : sql`true`
+    const res = await db.execute(sql`
+      WITH m AS (
+        SELECT e.event_id, e.asset_id, e.severity::text AS severity, ${kind} AS kind
+        FROM events e JOIN assets a ON a.asset_id = e.asset_id
+        WHERE e.event_type = 'cti_match' AND e.status IN ('open', 'in_progress') AND ${tenantCond}
+          ${q ? sql`AND (a.hostname ILIKE ${'%' + q + '%'} OR a.ip_address ILIKE ${'%' + q + '%'} OR e.details->>'indicator_value' ILIKE ${'%' + q + '%'})` : sql``}
+      )
+      SELECT
+        (SELECT COALESCE(jsonb_object_agg(severity, n), '{}'::jsonb) FROM (SELECT severity, count(*)::int AS n FROM m WHERE ${kindCond} GROUP BY 1) x) AS by_severity,
+        (SELECT COALESCE(jsonb_object_agg(kind, n), '{}'::jsonb) FROM (SELECT kind, count(*)::int AS n FROM m WHERE ${sevCond} GROUP BY 1) x) AS by_kind,
+        (SELECT count(*)::int FROM m WHERE ${sevCond} AND ${kindCond}) AS matches,
+        (SELECT count(DISTINCT asset_id)::int FROM m WHERE ${sevCond} AND ${kindCond}) AS devices
+    `)
+    const r = (res.rows[0] ?? {}) as { by_severity?: Record<string, number>; by_kind?: Record<string, number>; matches?: number; devices?: number }
+    return c.json({ by_severity: r.by_severity ?? {}, by_kind: r.by_kind ?? {}, matches: r.matches ?? 0, devices: r.devices ?? 0 })
+  } catch (err) {
+    console.error('cti GET /matches/summary error:', err)
+    return c.json({ detail: 'Failed to count matches' }, 500)
   }
 })
 

@@ -73,6 +73,14 @@ function typeCondition(raw: string | undefined) {
   const real = list.filter((t): t is typeof EVENT_TYPE_VALUES[number] => t !== 'cti_sighting')
   return or(real.length ? inArray(events.eventType, real) : undefined, list.includes('cti_sighting') ? isSighting : undefined)
 }
+// A threat-intel match's kind (details.match_kind; none = 'ioc', the oldest R5 matches): what the
+// Threat Intel Matches page filters on. ?match_kind=sighting,address
+export const MATCH_KINDS = ['sighting', 'ioc', 'watchlist', 'malicious_package', 'public_address'] as const
+export const MATCH_KIND_SQL = sql`COALESCE(${events.details}->>'match_kind', 'ioc')`
+function matchKindCondition(raw: string | undefined) {
+  const list = csv(raw, MATCH_KINDS)
+  return list.length ? and(eq(events.eventType, 'cti_match'), inArray(MATCH_KIND_SQL, list)) : undefined
+}
 const DRIFT_TYPES = new Set([
   'port_opened', 'port_closed', 'version_downgrade', 'version_upgrade',
   'config_change', 'new_package', 'removed_package',
@@ -152,6 +160,7 @@ export function listConditions(user: User, q: (k: string) => string | undefined)
       since && !isNaN(since.getTime()) ? gte(events.firstSeen, since) : undefined,
       isConcernId(concern) ? concernCondition(concern) : undefined,
       q('package') ? sql`${events.details}->>'package_name' = ${q('package')}` : undefined,
+      matchKindCondition(q('match_kind')),
       ageCondition(q('age'), now),
       q('closed') === 'unreviewed' ? eq(events.resolutionNote, UNSEEN_NOTE) : undefined,
       q('overdue') === 'true' ? and(isOpenEvent(), overdueCondition()) : undefined,

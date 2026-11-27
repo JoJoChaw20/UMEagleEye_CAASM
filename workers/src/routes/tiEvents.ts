@@ -23,7 +23,7 @@
 import { Hono, type Context } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Env } from '../types'
 import { authMiddleware, requireAction } from '../middleware/auth'
 import { getDb } from '../db/client'
@@ -188,7 +188,8 @@ app.get('/', authMiddleware, requireAction('ti_event.view'), async (c) => {
     const user = c.get('user') as User
     const db = getDb(c.env.DATABASE_URL)
     const status = c.req.query('status')
-    const conditions = [visibleWhere(user)]
+    // MyCERT's advisories are listed on their own tab (GET /cti/mycert), not among the events
+    const conditions = [visibleWhere(user), isNull(tiEvents.origin)]
     if (status === 'draft' || status === 'published') conditions.push(eq(tiEvents.status, status))
 
     const [rows, setting] = await Promise.all([db

@@ -611,7 +611,7 @@ router.post(
       // A new address is checked against the blocklists at once (R11), after the answer is sent.
       if (isNew) {
         const tenantId = agent.tenantId
-        try { c.executionCtx.waitUntil(checkTenantAddresses(db, c.env.KV_CACHE, tenantId)) } catch { /* no context */ }
+        try { c.executionCtx.waitUntil(checkTenantAddresses(db, tenantId)) } catch { /* no context */ }
       }
     }
 

@@ -6,7 +6,7 @@ import { KEV_SOURCE, RETIRED_SOURCES, refreshCveIntel } from './threatIntel'
 import { matchIocs } from './iocMatch'
 import { refreshEpss } from './epss'
 import { checkMaliciousPackages } from './maliciousPackages'
-import { DROP_SOURCE, checkPublicAddresses, ingestSpamhausDrop } from './publicAddresses'
+import { checkPublicAddresses } from './publicAddresses'
 import { CDN_CIDRS, TOP_DOMAINS_LIST, warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds, techniqueName } from '../lib/attack'
 import { inferredTechniques } from '../lib/malwareKind'
@@ -315,6 +315,7 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
   const now  = new Date()
   const seen = new Set<string>()
   const rows: CtiRow[] = []
+  let safeListed = 0
 
   for (const ioc of data.data) {
     const itype = mapThreatFoxType(ioc.ioc_type)
@@ -327,19 +328,22 @@ export async function ingestThreatFox(db: DB, apiKey: string): Promise<number> {
 
     if (seen.has(value)) continue
     seen.add(value)
+    // A value on a warninglist (github.com, a CDN address, a top site, gov.my) could never raise an alert:
+    // not stored (user, 28 Nov 2026). An analyst's event keeps such values, marked, as context.
+    if (warninglistOf(itype, value)) { safeListed++; continue }
 
     rows.push({
       source:          'ThreatFox',
       indicatorType:   itype,
       value,
-      warning:         warninglistOf(itype, value),
+      warning:         null,
       confidenceScore: ((ioc.confidence_level ?? 50) / 100).toFixed(2),
       ...threatFoxAttack(ioc),
       lastSeen:        now,
     })
   }
 
-  console.log(`[ThreatFox] Upserting ${rows.length} unique rows in batches of ${BATCH_SIZE}`)
+  console.log(`[ThreatFox] Upserting ${rows.length} unique rows in batches of ${BATCH_SIZE} (${safeListed} on a warninglist, not stored)`)
   await batchUpsert(db, rows)
   return rows.length
 }
@@ -411,17 +415,21 @@ export function describeError(err: unknown): string {
 // refreshes the CVE alerts and the asset matches against the new data.
 // 'mycert' comes first: MyCERT's advisories are the main source (services/mycert.ts; platform events,
 // not feed rows). CISA KEV and EPSS give every CVE its exploited and likelihood data, ThreatFox the bulk
-// indicators the agents' sightings check, Spamhaus DROP the public-address check.
+// indicators the agents' sightings check. Three sources, kept few on purpose (user, 28 Nov 2026).
 // AlienVault OTX was dropped on 22 Nov 2026, URLhaus and Feodo Tracker on 27 Nov 2026: their stored rows
-// stop matching at once (RETIRED_SOURCES) and are deleted by retention.
+// stop matching at once (RETIRED_SOURCES) and are deleted by retention. Spamhaus DROP (network ranges, kept
+// in KV for the public-address check) was dropped on 28 Nov 2026: it never matched a real address.
 // 'malpkg' asks OSV whether any device's package versions were since published as malware
-// (services/maliciousPackages.ts; at most 10,000 a night, carrying on the next night).
-// 'drop' loads Spamhaus DROP for the public-address check (services/publicAddresses.ts; kept in KV, not
-// as indicator rows), and 'finish' then checks every tenant's public addresses against all of them (R11).
-export type CtiStep = 'mycert' | 'kev' | 'threatfox' | 'drop' | 'epss' | 'malpkg' | 'finish'
-export const CTI_STEPS: CtiStep[] = ['mycert', 'kev', 'threatfox', 'drop', 'epss', 'malpkg', 'finish']
-/** The feeds the chain loads, in its order, as their `source`: the feed-health line shows these only. */
-export const ACTIVE_FEEDS = [MYCERT_SOURCE, KEV_SOURCE, 'ThreatFox', DROP_SOURCE]
+// (services/maliciousPackages.ts; at most 10,000 a night, carrying on the next night). 'finish' then
+// checks every tenant's public addresses against the refreshed lists (R11).
+export type CtiStep = 'mycert' | 'kev' | 'threatfox' | 'epss' | 'malpkg' | 'finish'
+export const CTI_STEPS: CtiStep[] = ['mycert', 'kev', 'threatfox', 'epss', 'malpkg', 'finish']
+/** The sources the chain loads, in its order, as their `source`, with what their count counts (the
+ *  feed-health line: "MyCERT 89 advisories · CISA KEV 1,805 CVEs · ThreatFox 92,331 indicators"). */
+export const ACTIVE_FEEDS = [MYCERT_SOURCE, KEV_SOURCE, 'ThreatFox']
+export const FEED_UNITS: Record<string, [string, string]> = {
+  [MYCERT_SOURCE]: ['advisory', 'advisories'], [KEV_SOURCE]: ['CVE', 'CVEs'], ThreatFox: ['indicator', 'indicators'],
+}
 export const CTI_INGEST_LOCK = 'cti_ingest_lock'
 
 /**
@@ -468,7 +476,7 @@ export function nextCtiStep(step: CtiStep): CtiStep | null {
   return CTI_STEPS[CTI_STEPS.indexOf(step) + 1] ?? null
 }
 
-const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg' | 'drop' | 'mycert'>,{ source: string; run: (db: DB, ctx: IngestContext) => Promise<number> }> = {
+const FEED_OF: Record<Exclude<CtiStep, 'finish' | 'epss' | 'malpkg' | 'mycert'>,{ source: string; run: (db: DB, ctx: IngestContext) => Promise<number> }> = {
   kev:       { source: KEV_SOURCE,       run: (db) => ingestKev(db) },
   threatfox: { source: 'ThreatFox',      run: (db, k) => ingestThreatFox(db, k.threatFox) },
 }
@@ -528,24 +536,12 @@ export async function runIngestStep(db: DB, kv: KVNamespace, ctx: IngestContext,
     }
     // The organisation's public addresses against the refreshed lists (R11).
     try {
-      const r = await checkPublicAddresses(db, kv, { all: true })
+      const r = await checkPublicAddresses(db, { all: true })
       console.log(`[CTI] Public addresses: ${r.addresses} checked, ${r.listed} listed; alerts ${r.created} new, ${r.reopened} reopened, ${r.resolved} resolved`)
     } catch (err) {
       console.error('[CTI] Checking public addresses failed:', describeError(err))
     }
     return null
-  }
-  if (step === 'drop') {
-    let result: { ok: boolean; count: number }
-    try {
-      result = { ok: true, count: await ingestSpamhausDrop(kv) }
-      console.log(`[CTI] ${DROP_SOURCE}: ${result.count} range(s)`)
-    } catch (err) {
-      result = { ok: false, count: 0 }
-      console.error(`[CTI] ${DROP_SOURCE} failed:`, describeError(err))
-    }
-    await recordFeedResult(kv, DROP_SOURCE, result)
-    return nextCtiStep(step)
   }
   if (step === 'epss') {
     try {
@@ -565,10 +561,10 @@ export async function runIngestStep(db: DB, kv: KVNamespace, ctx: IngestContext,
     }
     return nextCtiStep(step)
   }
-  // A queued job from before a step was dropped ('otx', 'urlhaus', 'feodo'): carry on with DROP and the rest.
+  // A queued job from before a step was dropped ('otx', 'urlhaus', 'feodo', 'drop'): carry on with EPSS and the rest.
   if (!(step in FEED_OF)) {
     console.log(`[CTI] Step '${step}' is no longer run; going on`)
-    return 'drop'
+    return 'epss'
   }
   const feed = FEED_OF[step as keyof typeof FEED_OF]
   let result: { ok: boolean; count: number }

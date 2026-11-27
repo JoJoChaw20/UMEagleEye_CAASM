@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { pruneUnusedPublicAddresses } from './publicAddresses'
-import { RETIRED_SOURCES } from './threatIntel'
+import { RETIRED_SOURCES, freshSql } from './threatIntel'
 
 type DB = ReturnType<typeof getDb>
 const RETIRED = sql.join(RETIRED_SOURCES.map((s) => sql`${s}`), sql`, `)
@@ -15,11 +15,15 @@ const BATCH_SIZE = 5000
 const MAX_BATCHES = 6   // per table, per run
 
 /**
- * Delete feed indicators not re-seen by any feed within CTI_MAX_AGE_DAYS (feeds refresh
- * last_seen on every re-ingest), and every row of a retired feed (RETIRED_SOURCES: they never
- * match again, and were left to age out for 90 days, still counted on the Threat Intel page),
- * unless an alert references it. Attributes of a threat-intel event (ti_event_id set) are never
- * purged: people wrote them (or MyCERT published them), and they go only with their event.
+ * Delete the feed indicators that can no longer raise an alert, unless an alert references them:
+ *   - expired: an IP, domain or URL no feed has listed within its window (threatIntel.ts FEED_FRESH_DAYS:
+ *     30 days for an IP, 90 for a domain or URL), deleted that day; the feed brings it back if it lists it
+ *     again (user, 28 Nov 2026: they were kept 90 days only for lookups);
+ *   - on a warninglist (a value flagged after it was stored: the feeds no longer store such values);
+ *   - not re-seen within CTI_MAX_AGE_DAYS (hashes; KEV's CVEs are re-seen every night);
+ *   - of a retired feed (RETIRED_SOURCES).
+ * Attributes of a threat-intel event (ti_event_id set) are never purged: people wrote them, or MyCERT
+ * published them (its reference-only values are part of the advisory), and they go only with their event.
  */
 export async function purgeStaleCti(db: DB): Promise<number> {
   const res = await db.execute(sql`
@@ -27,7 +31,8 @@ export async function purgeStaleCti(db: DB): Promise<number> {
     WHERE indicator_id IN (
       SELECT c.indicator_id FROM cti_indicators c
       WHERE c.ti_event_id IS NULL
-        AND (c.last_seen < now() - make_interval(days => ${CTI_MAX_AGE_DAYS}) OR c.source IN (${RETIRED}))
+        AND (c.last_seen < now() - make_interval(days => ${CTI_MAX_AGE_DAYS}) OR c.source IN (${RETIRED})
+             OR c.warning IS NOT NULL OR NOT ${freshSql('c')})
         AND NOT EXISTS (SELECT 1 FROM event_cti_indicators e WHERE e.indicator_id = c.indicator_id)
       LIMIT ${BATCH_SIZE}
     )
