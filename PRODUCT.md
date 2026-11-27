@@ -8,18 +8,21 @@ web
 
 ## Users
 
-Primary: IT/security admin at a small organisation (company or university lab), often one or a few people. They triage alerts, review newly discovered devices and act on remediation advisories as part of their day-to-day work. Other roles exist in the app (platform superadmin, tenant_superadmin, tenant_admin, business_owner with read access), but the admin is the confirmed design target.
+Primary: IT/security admin at a small or medium organisation in Malaysia (an SME, or a university lab), often one or a few people. They triage alerts, review newly discovered devices and act on remediation advisories as part of their day-to-day work. Other roles exist in the app (platform superadmin, tenant_superadmin, tenant_admin, business_owner with read access), but the admin is the confirmed design target.
 
 ## Product Purpose
 
 UMEagleEye 2.0 is an AI-driven Cyber Asset Attack Surface Management (CAASM) platform, a University of Malaya FYP (Faculty of Computer Science & Information Technology). It gives visibility into every cyber asset, detects drift and threats, and turns findings into guided remediation and posture reporting. Success: an admin sees what is on the network, what changed, what is exploitable, and what to fix first, with no infrastructure to run.
 
+UMEagleEye is a CAASM localised for Malaysian SMEs (user's direction, 27 Nov 2026): the threats it ranks and explains come first from MyCERT (CyberSecurity Malaysia), the national CERT, rather than from global feeds alone.
+
 ## Positioning
 
-Four mechanisms, all confirmed by the user:
+Five mechanisms, all confirmed by the user:
+- Localised to Malaysia: MyCERT's advisories are the main threat-intel source, loaded daily as platform events. Their CVEs are checked against each device's software, a CVE MyCERT says is exploited ranks like a CISA KEV one, their indicators go to the agents, and Malaysian official domains (gov.my, edu.my, mil.my) never raise alerts, so the genuine portal a local scam imitates is not flagged.
 - Serverless: Cloudflare Workers, Pages, Queues, R2 and Neon Postgres; no always-on servers.
 - Identity-resolved inventory: active scans, passive sniffing and agent reports merge into one device per real device, with duplicate detection and merge.
-- CVEs grouped by fix plus threat-intel context: alerts collapse to one upgrade action, ranked by CISA KEV, EPSS and indicator matches, with a "Why this alert" explanation.
+- CVEs grouped by fix plus threat-intel context: alerts collapse to one upgrade action, ranked by exploitation (CISA KEV or MyCERT), EPSS and indicator matches, with a "Why this alert" explanation.
 - AI advisories and chatbot: DeepSeek writes remediation advisories and answers questions with live posture and alert context.
 
 ## Operating Context
@@ -30,7 +33,8 @@ Web dashboard (React, Vite, Tailwind, Recharts) over a Cloudflare Workers API. A
 
 - Asset inventory (My Assets, Discovered, relationship graph), CSV import, duplicate merge, computed criticality.
 - Discovery (networks, scan history, compare), topology, posture score and drift events.
-- Alerts, advisories lifecycle (open, acknowledged, in_progress, resolved), SLA breach notices, CVE-by-fix grouping, threat intel (feeds, events, matches), SBOM coverage page.
+- Alerts, advisories lifecycle (open, acknowledged, in_progress, resolved), SLA breach notices, CVE-by-fix grouping, threat intel (MyCERT advisories first, then feeds, events, matches), SBOM coverage page.
+- MyCERT answers only requests from Malaysia or Singapore, so the Worker fetches it while handling such a request (agents' check-ins, the dashboard); it needs one at least every 2 days. Supporting sources: CISA KEV and EPSS, ThreatFox, Spamhaus DROP.
 - Chatbot with SSE streaming, reports, MFA (TOTP), Google sign-in, agent management.
 - CVE checks only for computers running the agent; printers, routers, IoT and phones are discovered but not CVE-checked.
 - Dark, light and system themes are required; colours run on CSS custom properties and every change must work in all three.

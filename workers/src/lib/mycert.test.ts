@@ -45,7 +45,8 @@ test('a page: number, kind, headline, date, keywords, rating, summary, products;
     { tags: 'microsoft, outlook, cve-2026-124194, active exploitation' },
     p('1.0 Introduction') + '<p>Microsoft released an update for a flaw in Outlook that it says is being actively exploited. The flaw is tracked as CVE-2026-124194.</p>'
     + '<p>MyCERT rates this HIGH and advises users to patch.</p>'
-    + p('4.0 Affected Products') + `<table>${row('Product', 'Affected', 'Action')}${row('Office LTSC 2021 (Outlook)', 'Affected versions', 'Apply the update')}</table>`
+    + p('4.0 Affected Products') + `<table>${row('Product', 'Affected', 'Action')}${row('Office LTSC 2021 (Outlook)', 'Affected versions', 'Apply the update')}`
+    + `${row('Product / component', 'Version')}${row('Distribution', 'Status')}</table>`
     + '<p>Confirm the KB for each build.</p>' + CONTACT
     + p('6.0 References') + '<p>Related: CVE-2025-00001 (an older Outlook flaw)</p>')
   const a = parseMycertAdvisory(html)!

@@ -314,7 +314,8 @@ export function parseMycertAdvisory(html: string): MycertAdvisory | null {
   const affected = [...region(all, AFFECTED_HEADING)].flatMap((s) => s.lines)
   const rows = affected.filter((l) => l.includes('\t'))
   const products = [...new Set((rows.length ? rows.map((l) => l.split('\t')[0]!.trim()) : affected.filter((l) => l.length <= 120 && !l.endsWith(':')))
-    .filter((p) => p && !/^(products?|software|platforms?|affected|vendors?|components?|versions?)$/i.test(p))
+    // a header row: "Product", "Product / component", "Distribution", "Affected versions"...
+    .filter((p) => p && !/^(products?|software|platforms?|affected( (products?|versions?|software))?|vendors?|components?|versions?|distributions?|items?|names?|packages?|systems?)(\s*[/&,]\s*\w+)*$/i.test(p))
     .map((p) => p.slice(0, 160)))].slice(0, 15)
 
   const intro = all.find((s) => s.major > 0 && INTRO_HEADING.test(s.title)) ?? all.find((s) => s.major > 0)
