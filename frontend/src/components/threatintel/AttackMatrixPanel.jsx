@@ -11,9 +11,9 @@ import { useTiPanel } from './tiPanelContext'
 const SHADE = '#3393ff'
 const COLUMN_ROWS = 14
 const SCOPES = {
-  feeds:   { label: 'All feeds',          layer: 'threat-intel feeds' },
-  matched: { label: 'Matched our assets', layer: 'indicators matching our assets' },
-  events:  { label: 'Our events',         layer: 'threat-intel events' },
+  feeds:   { label: 'All sources',              layer: 'threat-intel sources (MyCERT, ThreatFox)' },
+  matched: { label: 'Matched our devices',      layer: 'indicators matching our devices' },
+  events:  { label: 'Events (ours and shared)', layer: 'threat-intel events' },
 }
 
 const rgba = (hex, a) => {
@@ -39,7 +39,7 @@ function navigatorLayer(data) {
     name: `UMEagleEye ${SCOPES[data.scope]?.layer ?? 'threat intel'}`,
     versions: { attack: data.attack.version.split('.')[0], navigator: '5.1.0', layer: '4.5' },
     domain: 'enterprise-attack',
-    description: `Indicators per technique (${SCOPES[data.scope]?.label ?? data.scope}): the techniques MITRE ATT&CK v${data.attack.version} documents for each malware family, plus techniques named by the feed or event. Exported ${new Date().toISOString().slice(0, 10)}.`,
+    description: `Indicators per technique (${SCOPES[data.scope]?.label ?? data.scope}): the techniques MITRE ATT&CK v${data.attack.version} documents for each malware family, plus techniques named by the source, advisory or event. Exported ${new Date().toISOString().slice(0, 10)}.`,
     sorting: 3,
     layout: { layout: 'side', showID: true, showName: true },
     hideDisabled: false,
@@ -142,11 +142,11 @@ export default function AttackMatrixPanel({ fixedScope }) {
                 ? `${data.events_with_attack} of ${data.events_total} events have ATT&CK techniques`
                 : data.scope === 'matched'
                   ? `${cov.with_attack.toLocaleString()} of ${cov.total.toLocaleString()} indicators matching your assets have ATT&CK techniques`
-                  : `${pct(cov.with_attack, cov.total)}% of feed indicators have ATT&CK techniques`}
+                  : `${pct(cov.with_attack, cov.total)}% of the sources' indicators have ATT&CK techniques`}
             </h3>
             <p className="text-xs text-dark-400 mt-1">
               {isEvents
-                ? 'Your events and the published ones shared with you. An event gets the techniques MITRE documents for its malware family plus the ones picked on the event (edit an event to add them).'
+                ? 'Your events and the published ones shared with you: the events listed on this page (MyCERT\'s advisories count on the overview, with the sources). An event gets the techniques MITRE documents for its malware family plus the ones picked on the event (edit an event to add them).'
                 : data.scope === 'matched'
                   ? 'Indicators behind open threat-intel alerts on your assets (feeds and events; CVEs not counted): what the threats already touching you are known to do.'
                   : `${cov.with_attack.toLocaleString()} of ${cov.total.toLocaleString()} indicators (ThreatFox, MyCERT; CVEs are not malware and are not counted). An indicator gets the techniques MITRE documents for its malware family, or the ones the feed or advisory names itself.`}
@@ -175,7 +175,7 @@ export default function AttackMatrixPanel({ fixedScope }) {
             <p className="text-dark-100 font-medium">{(cov.with_family - Math.min(cov.with_family, cov.with_attack)).toLocaleString()} indicators</p>
           </div>
           <div className="bg-dark-800/60 rounded-lg p-2.5">
-            <p className="text-dark-400">No family named by the feed</p>
+            <p className="text-dark-400" title="ThreatFox lists many values as unknown malware; a MyCERT advisory covering several families does not tie each indicator to one">No family named by the source</p>
             <p className="text-dark-100 font-medium">{(cov.total - cov.with_family).toLocaleString()} indicators</p>
           </div>
         </div>)}
@@ -212,7 +212,7 @@ export default function AttackMatrixPanel({ fixedScope }) {
               ? 'No event has ATT&CK techniques yet. Edit an event to name its malware family or pick techniques.'
               : data.scope === 'matched'
                 ? 'No open threat-intel alert on your assets has ATT&CK techniques.'
-                : 'No feed indicator has ATT&CK techniques yet. Families are recorded as the feeds are ingested.'}
+                : 'No indicator has ATT&CK techniques yet. Families and techniques are recorded as the sources load each morning.'}
           </p>
         ) : (
           <div className="overflow-x-auto">

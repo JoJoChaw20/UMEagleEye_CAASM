@@ -270,7 +270,10 @@ app.get('/stats', authMiddleware, requireAction('cti.view'), async (c) => {
       // The feeds the nightly chain loads, in its order (a retired feed's rows are counted above, not here)
       feeds: ACTIVE_FEEDS.map((source) => ({
         source,
-        // MyCERT counts advisories, not their indicators: its count is the last run's (advisories stored)
+        // MyCERT counts advisories, not their indicators: its count is the last run's (advisories stored);
+        // the others count every row they have stored, the Indicators tab's total with "Show reference-only
+        // too" ticked (and its default total too: a feed's values that can no longer alert are deleted at the
+        // end of each nightly update, so its rows are all in use; only MyCERT keeps reference-only values)
         count:      (source === MYCERT_SOURCE ? undefined : bySource.find((r) => r.source === source)?.count) ?? lastIngest?.feeds?.[source]?.count ?? 0,
         // what the count counts: "89 advisories", "1,805 CVEs", "92,331 indicators"
         unit:       FEED_UNITS[source] ?? ['indicator', 'indicators'],
@@ -348,10 +351,12 @@ export async function matrixGroups(
         count:    sql<number>`(SELECT count(*)::int FROM cti_indicators c WHERE c.ti_event_id = ti_events.ti_event_id AND c.indicator_type <> 'cve')`,
       })
       .from(tiEvents)
-      .where(isSuper ? undefined : or(
+      // the events the Events page lists: MyCERT's advisories are left out (their techniques count on the
+      // overview, with the sources), so this view shows what that list shows
+      .where(and(isNull(tiEvents.origin), isSuper ? undefined : or(
         eq(tiEvents.tenantId, ownTenant),
         and(eq(tiEvents.status, 'published'), inArray(tiEvents.distribution, ['all_tenants', 'platform'])),
-      ))
+      )))
       .orderBy(desc(tiEvents.updatedAt))
       .limit(500)
     groups = rows.map((r) => ({ ...r, label: r.title }))

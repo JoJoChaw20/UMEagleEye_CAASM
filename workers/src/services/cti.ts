@@ -7,6 +7,7 @@ import { matchIocs } from './iocMatch'
 import { refreshEpss } from './epss'
 import { checkMaliciousPackages } from './maliciousPackages'
 import { checkPublicAddresses } from './publicAddresses'
+import { drain, purgeStaleCti } from './retention'
 import { CDN_CIDRS, TOP_DOMAINS_LIST, warninglistOf } from '../lib/warninglist'
 import { resolveSoftware, techniqueIds, techniqueName } from '../lib/attack'
 import { inferredTechniques } from '../lib/malwareKind'
@@ -519,6 +520,14 @@ export async function runIngestStep(db: DB, kv: KVNamespace, ctx: IngestContext,
       if (flagged) console.log(`[CTI] ${flagged} stored indicator(s) put on a warninglist`)
     } catch (err) {
       console.error('[CTI] Warninglist re-check failed:', describeError(err))
+    }
+    // Then the feed values that can no longer alert go (expired, on a warninglist): those that expired
+    // overnight would otherwise wait for the midnight retention run, counted as stored but not in use.
+    try {
+      const purged = await drain(purgeStaleCti, db)
+      if (purged) console.log(`[CTI] ${purged} feed indicator(s) that can no longer alert deleted`)
+    } catch (err) {
+      console.error('[CTI] Deleting stale indicators failed:', describeError(err))
     }
     // CVE alerts follow the refreshed feeds (KEV additions, entries that aged out).
     try {
